@@ -1,7 +1,15 @@
 extends "res://scripts/media_surface.gd"
 var source_location := {}
 signal changed
+var autoplay := preload("res://scripts/photo_autoplay.gd").new()
 var _image_rotations := {} # Album-session viewing transforms; never modify source pixels.
+var _rotation_preview := false
+var _rotation_depth := false
+var _rotation_portrait := false
+var _rotation_start := 0.0
+var ground_vertical := false
+var _placeholder_rotation := 0.0
+const Placement := preload("res://scripts/interface_move.gd")
 const Info := preload("res://scripts/image_info.gd")
 const Naming := preload("res://scripts/media_naming.gd")
 const Thumbnails := preload("res://scripts/thumbnail_cache.gd")
@@ -142,7 +150,7 @@ var _inspect_pointer_material: StandardMaterial3D
 var mode_memory := ModeMemory.new("user://photo_settings")
 var panorama_tiles := preload("res://scripts/panorama_tiles.gd").new()
 
-const DEFAULT_CURVE := 0.35
+const DEFAULT_CURVE := 25.4
 const DEFAULT_DISTANCE := 3.0
 const PHOTO_DISTANCE_LIMITS := DISTANCE_LIMITS
 const PHOTO_SCALE_LIMITS := SCALE_LIMITS
@@ -205,6 +213,8 @@ func _init() -> void:
 	flat_pose.origin.z = -DEFAULT_DISTANCE
 
 func restore_view_settings(settings: ConfigFile) -> void:
+	autoplay.set_interval(settings.get_value("photo", "autoplay_interval", autoplay.DEFAULT_INTERVAL))
+	ground_vertical = bool(settings.get_value("photo_screen", "ground_vertical", false))
 	cache_each = clampi(int(settings.get_value("photo", "cache_each", 1)), 1, 2)
 	magazine.right_to_left = bool(settings.get_value("photo_screen", "magazine_rtl", false))
 	reading_layout = int(settings.get_value("photo_screen", "reading_layout", -1))
@@ -212,17 +222,18 @@ func restore_view_settings(settings: ConfigFile) -> void:
 	spatial_preferred = bool(settings.get_value("photo", "spatial_preferred", false))
 	var distance := float(settings.get_value("photo_screen", "distance", DEFAULT_DISTANCE))
 	var scale := float(settings.get_value("photo_screen", "scale", 1.0))
-	var curve := float(settings.get_value("photo_screen", "curve", DEFAULT_CURVE))
 	var zoom := float(settings.get_value("photo_screen", "magnification", DEFAULT_MAGNIFICATION))
 	var feather := float(settings.get_value("photo_screen", "edge_feather_strength", DEFAULT_EDGE_FEATHER))
 	screen_distance = clampf(distance, PHOTO_DISTANCE_LIMITS.x, PHOTO_DISTANCE_LIMITS.y) if is_finite(distance) else DEFAULT_DISTANCE
 	screen_scale = clampf(scale, PHOTO_SCALE_LIMITS.x, PHOTO_SCALE_LIMITS.y) if is_finite(scale) else 1.0
-	screen_curve = clampf(curve, 0.0, 1.0) if is_finite(curve) else DEFAULT_CURVE
+	restore_screen_curve(settings, "photo_screen", 0.35)
 	inspect_magnification = clampf(zoom, INSPECT_LIMITS.x, INSPECT_LIMITS.y) if is_finite(zoom) else DEFAULT_MAGNIFICATION
 	edge_feather_strength = clampf(feather, EDGE_FEATHER_LIMITS.x, EDGE_FEATHER_LIMITS.y) if is_finite(feather) else DEFAULT_EDGE_FEATHER
 	gallery.restore_settings(settings)
 
 func save_layout_settings(settings: ConfigFile) -> void:
+	settings.set_value("photo", "autoplay_interval", autoplay.interval)
+	settings.set_value("photo_screen", "ground_vertical", ground_vertical)
 	settings.set_value("photo", "cache_each", cache_each)
 	gallery.save_settings(settings)
 	# The temporary container layout must not replace the ordinary photo layout on disk.
@@ -250,8 +261,16 @@ func _screen_dimensions(aspect: float) -> Vector2:
 	return Vector2(width, width / aspect)
 
 func _curve_radius() -> float:
-	# Keep the edges in front even when a large photo reaches the shared arc limit.
-	return maxf(super._curve_radius(), _flat.size.x * _flat.size.x / (4.0 * screen_distance))
+	return _photo_curve_radius(_flat.size, _curve_rotation())
+
+func _curve_rotation() -> float: return deg_to_rad(screen_rotation)
+
+func _photo_curve_radius(size: Vector2, rotation: float) -> float:
+	return curve_radius_for(size, rotation)
+
+func _legacy_curve_radius(value: float) -> float:
+	var width := curve_span(_flat.size, _curve_rotation())
+	return maxf(super._legacy_curve_radius(value), width * width / (4.0 * screen_distance))
 
 func set_edge_feather_strength(value: float) -> void:
 	if not is_finite(value): return
@@ -295,7 +314,7 @@ func pan_hand(step: Vector2) -> void:
 	if inspect: return
 	# Translate within the photo's plane; do not orbit a magnified photo round the head.
 	flat_pose.origin += flat_pose.basis * Vector3(step.x, step.y, 0) * 3.0
-	panel.transform = flat_pose
+	_apply_flat_pose()
 
 func _ready() -> void:
 	initialize_surface(SHADER)
@@ -479,11 +498,101 @@ func navigate(direction: int) -> bool:
 	if (geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete: target = posmod(target, queue.size())
 	return select_image(target, 1 if direction > 0 else -1)
 
+func can_rotate_image() -> bool:
+	return geometry == Geometry.Geometry.FLAT and not loading and not _presentation_pending and not _transition_active \
+		and _texture != null and panel.visible and not gallery.overview() and not gallery.returning
+
+func autoplay_failed() -> bool:
+	return not error.is_empty() or ((depth_requested or auto_depth) and not depth_error.is_empty()) \
+		or ((portrait_requested or auto_portrait) and not portrait_error.is_empty()) \
+		or ((spatial_requested or spatial_preferred) and not spatial_error.is_empty()) \
+		or not panorama_tiles.error.is_empty() or animation.failed
+
+func autoplay_ready() -> bool:
+	if local_uri.is_empty() or _texture == null or not panel.is_visible_in_tree() or loading or _presentation_pending \
+		or _transition_active or _reveal_seconds > 0 or placeholder_visible() or _rotation_preview or inspect \
+		or gallery.overview() or gallery.returning or gallery.has_capture() or not _presentation_effects_ready(): return false
+	if gallery.focus >= 0 and gallery.progress < 1.0: return false
+	if portrait_requested and (not is_equal_approx(_portrait_strength, depth_strength) or not _portrait_pending_depth.is_empty()): return false
+	if spatial_requested and (not is_instance_valid(_spatial) or not _spatial.prepared or not _spatial.visible): return false
+	if panorama_tiles.active() and panorama_tiles.wanted.any(func(cell): return not panorama_tiles.tiles.has(cell)): return false
+	if not _upload.is_empty(): return false
+	if _layer_eligible() and _origin() != null and not layer_shown:
+		var source := _layer_source()
+		if not source.is_empty() and source.image != null: return false
+	return true
+
+func autoplay_identity() -> Array:
+	return [_serial, _display_request, local_uri, index, _presented_us, geometry, stereo_sbs, top_bottom, swap_eyes,
+		screen_rotation, depth_requested, depth_strength, depth_position, portrait_requested, _portrait_serial,
+		spatial_requested, gallery.mode, gallery.focus]
+
+func toggle_autoplay() -> void:
+	if not autoplay.enabled and (queue.size() < 2 or gallery.overview() or (local_uri.is_empty() and not loading)): return
+	autoplay.set_enabled(not autoplay.enabled); changed.emit()
+
+func rotation_epoch() -> int: return _serial
+
+func layout_head(head: Transform3D) -> Transform3D:
+	return Placement.menu_head(head) if ground_vertical else head
+
+func constrain_layout_pose(pose: Transform3D, preserve_roll: bool = false) -> Transform3D:
+	if ground_vertical:
+		var level := Placement._horizontal_basis(pose.basis)
+		if preserve_roll:
+			var x := pose.basis.x.slide(level.z).normalized()
+			if x.length_squared() > 0.5: level = Basis(x, level.z.cross(x).normalized(), level.z)
+		pose.basis = level
+	return pose
+
+func set_ground_vertical(enabled: bool) -> void:
+	if enabled == ground_vertical: return
+	finish_transition(); close_inspect(); gallery.cancel_all()
+	ground_vertical = enabled
+	# Reframe the existing layout about its anchor, keeping its position and batch.
+	var basis: Basis = layout_head(view_camera.global_transform).basis if is_instance_valid(view_camera) else Basis.IDENTITY
+	var next_anchor := gallery.anchor
+	next_anchor.basis = basis
+	var motion := next_anchor * gallery.anchor.affine_inverse()
+	var pose := global_transform * flat_pose
+	pose.basis = basis
+	gallery._layout_offsets.clear(); gallery._viewing_offsets.clear()
+	gallery.transform_layout(motion)
+	set_flat_world_pose(pose)
+	gallery.synchronize()
+	changed.emit()
+
+func begin_screen_rotation() -> void:
+	_rotation_preview = true; _rotation_depth = depth_enabled; _rotation_portrait = portrait_enabled
+	_rotation_start = screen_rotation
+
+func set_screen_rotation(value: float) -> void:
+	if not is_finite(value): return
+	if _rotation_preview and not is_equal_approx(value, screen_rotation):
+		# Keep native stereo generation at committed quarter turns, once on release.
+		depth_enabled = false; portrait_enabled = false; _hide_layer(); _upload = {}
+	super.set_screen_rotation(value)
+	if screen_curve > 0.0 and absf(sin(_curve_rotation())) > 0.00001: _hide_layer(); _upload = {}
+	_process_spatial()
+
+func _cancel_rotation_preview() -> void:
+	if not _rotation_preview: return
+	_rotation_preview = false
+	depth_enabled = _rotation_depth; portrait_enabled = _rotation_portrait
+	if geometry == Geometry.Geometry.FLAT: super.set_screen_rotation(_rotation_start)
+
+func finish_screen_rotation(commit: bool) -> void:
+	if not _rotation_preview: return
+	_rotation_preview = false
+	depth_enabled = _rotation_depth; portrait_enabled = _rotation_portrait
+	if commit: _image_rotations[local_uri] = fposmod(screen_rotation, 360.0)
+	_apply_geometry()
+	if commit: _refresh_rotated_depth()
+	_process_spatial(); changed.emit()
+
 func rotate_clockwise() -> bool:
-	if geometry != Geometry.Geometry.FLAT or loading or _presentation_pending or _transition_active \
-		or _texture == null or not panel.visible or gallery.overview() or gallery.returning: return false
+	if not can_rotate_image(): return false
 	close_inspect()
-	# The roll is composed after flat_pose, so the picture's centre and placement stay fixed.
 	screen_rotation = fposmod(screen_rotation + 90.0, 360.0)
 	_image_rotations[local_uri] = screen_rotation
 	_apply_geometry()
@@ -566,6 +675,7 @@ func _select(target: int, direction: int = 0, outgoing: MeshInstance3D = null) -
 		changed.emit()
 		return true
 	if target == index and not loading and _texture != null: return false
+	_cancel_rotation_preview()
 	_portrait_auto_due = false
 	# Gallery cards already supply the outgoing preview. Do not hold an old full-size
 	# colour/pair/scene while another large comic is decoded and converted.
@@ -724,16 +834,17 @@ func _size_placeholder(target: int, info: Dictionary) -> void:
 	var aspect := dimensions.x / dimensions.y
 	if mode.stereo_sbs: aspect *= 2.0 if mode.top_bottom else 0.5
 	_placeholder_size = _screen_dimensions(aspect) * screen_scale
-	var radius := maxf(screen_distance / maxf(screen_curve, 0.001), _placeholder_size.x / 2.4)
-	radius = maxf(radius, _placeholder_size.x * _placeholder_size.x / (4.0 * screen_distance))
+	var rotation := deg_to_rad(float(_image_rotations.get(str(queue[target].uri), 0.0))) if target >= 0 and target < queue.size() else 0.0
+	_placeholder_rotation = rotation
+	var radius := _photo_curve_radius(_placeholder_size, rotation)
 	if screen_curve > 0:
-		_placeholder.mesh = _cylinder(_placeholder_size, radius)
+		_placeholder.mesh = _cylinder(_placeholder_size, radius, 48, rotation)
 	else:
 		var quad := QuadMesh.new(); quad.size = _placeholder_size; _placeholder.mesh = quad
 	_placeholder_material.set_shader_parameter("surface_size", _placeholder_size)
 	_placeholder_material.set_shader_parameter("feather_metres", soft_edge_metres(_placeholder_size))
 	if _transition_active: _update_transition()
-	else: _placeholder.transform = flat_pose
+	else: _placeholder.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, rotation), Vector3.ZERO)
 
 func _departing_material(surface: MeshInstance3D) -> ShaderMaterial:
 	var copy := surface.material_override.duplicate() as ShaderMaterial
@@ -795,7 +906,7 @@ func _show_placeholder(target: int, info: Dictionary, outgoing: MeshInstance3D =
 	_size_placeholder(target, info)
 	_placeholder.visible = true
 	_placeholder_material.set_shader_parameter("reveal_progress", -1.0)
-	_placeholder.transform = flat_pose
+	_placeholder.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, _placeholder_rotation), Vector3.ZERO)
 	material.set_shader_parameter("presentation_opacity", 0.0)
 	material.set_shader_parameter("reveal_progress", 1.0)
 	_detail.visible = false; inspect = false; hide_inspect_pointer()
@@ -833,7 +944,7 @@ func preview_navigation(offset: float) -> void:
 	_swipe_offset = clampf(offset / 0.09, -1.0, 1.0) * minf(_flat.size.x * 0.14, 0.5)
 	if _transition_active or geometry != Geometry.Geometry.FLAT or (previous == 0.0 and _swipe_offset == 0.0): return
 	var surface := _placeholder if (loading or _presentation_pending) and placeholder_visible() else panel
-	surface.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, deg_to_rad(screen_rotation)), Vector3.ZERO)
+	surface.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, _placeholder_rotation if surface == _placeholder else deg_to_rad(screen_rotation)), Vector3.ZERO)
 	surface.position += flat_pose.basis * Vector3(_swipe_offset, 0, 0)
 
 static func _decode(job: Dictionary) -> Dictionary:
@@ -1579,7 +1690,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 		else:
 			finish_transition()
 			_placeholder.visible = true
-			_placeholder.transform = flat_pose
+			_placeholder.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, _placeholder_rotation), Vector3.ZERO)
 			_placeholder_material.set_shader_parameter("presentation_opacity", 1.0)
 			_reveal_seconds = REVEAL_SECONDS
 			_placeholder_material.set_shader_parameter("reveal_progress", 0.0)
@@ -1635,7 +1746,7 @@ func _update_transition() -> void:
 	var eased := fraction * fraction * (3.0 - 2.0 * fraction)
 	var travel := Vector3.ZERO if _portrait_switching else Vector3.RIGHT * _transition_width * float(_transition_direction)
 	var surface := _placeholder if (loading or _presentation_pending) and placeholder_visible() else panel
-	surface.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, deg_to_rad(screen_rotation)), Vector3.ZERO)
+	surface.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, _placeholder_rotation if surface == _placeholder else deg_to_rad(screen_rotation)), Vector3.ZERO)
 	surface.position += flat_pose.basis * travel * (1.0 - eased)
 	surface.material_override.set_shader_parameter("presentation_opacity", eased)
 	if is_instance_valid(_departing):
@@ -1654,7 +1765,7 @@ func finish_transition() -> void:
 		_departing = null
 	_transition_active = false
 	if panel and geometry == Geometry.Geometry.FLAT: _apply_flat_pose()
-	if _placeholder: _placeholder.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, deg_to_rad(screen_rotation)), Vector3.ZERO)
+	if _placeholder: _placeholder.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, _placeholder_rotation), Vector3.ZERO)
 	if _placeholder_material: _placeholder_material.set_shader_parameter("presentation_opacity", 1.0)
 	if material: material.set_shader_parameter("presentation_opacity", 0.0 if _presentation_pending or (loading and placeholder_visible()) else 1.0)
 
@@ -1690,7 +1801,7 @@ func _process_presentation() -> void:
 	if not _presentation_effects_ready(): return
 	var source := _layer_source()
 	# The layer path finishes only after upload AND successful submission, under the cover.
-	if error.is_empty() and _layer_possible(geometry) and _origin() != null and not source.is_empty() and source.image != null: return
+	if _layer_eligible(true) and _origin() != null and not source.is_empty() and source.image != null: return
 	_ensure_full_texture()
 	_finish_presentation()
 
@@ -1702,6 +1813,7 @@ func apply_focus_world_pose(pose: Transform3D) -> void:
 	_set_flat_world_pose(pose, false)
 
 func _set_flat_world_pose(pose: Transform3D, remember_viewing: bool) -> void:
+	pose = constrain_layout_pose(pose)
 	var previous := flat_pose
 	super.set_flat_world_pose(pose)
 	if geometry == 0 and remember_viewing: gallery.remember_focus_pose(pose)
@@ -1709,7 +1821,7 @@ func _set_flat_world_pose(pose: Transform3D, remember_viewing: bool) -> void:
 	if is_instance_valid(_departing):
 		_departing_pose = movement * _departing_pose
 	if _placeholder:
-		_placeholder.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, deg_to_rad(screen_rotation)), Vector3.ZERO)
+		_placeholder.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, _placeholder_rotation), Vector3.ZERO)
 	if _transition_active:
 		_update_transition()
 	elif _swipe_offset != 0.0:
@@ -1736,14 +1848,14 @@ func _apply_geometry() -> void:
 		target.set_shader_parameter("pano_rect", Info.panorama_rect(_metadata))
 		target.set_shader_parameter("native_stereo", bool(_metadata.get("native_stereo", false)))
 		target.set_shader_parameter("spatial_disparity", clampf(float(_metadata.get("spatial_disparity", 0)), -1.0, 1.0))
-		target.set_shader_parameter("photo_depth", depth_enabled and not pair_pending and not stereo_sbs and geometry == Geometry.Geometry.FLAT)
+		target.set_shader_parameter("photo_depth", depth_enabled and not _rotation_preview and not pair_pending and not stereo_sbs and geometry == Geometry.Geometry.FLAT)
 		target.set_shader_parameter("depth_strength", depth_strength)
 		target.set_shader_parameter("depth_convergence", DepthPosition.convergence(depth_position))
 		target.set_shader_parameter("depth_texture", _depth_texture)
 		target.set_shader_parameter("depth_rect", _depth_rect)
-		target.set_shader_parameter("photo_stereo", depth_enabled and _stereo_texture != null and not stereo_sbs and geometry == Geometry.Geometry.FLAT)
+		target.set_shader_parameter("photo_stereo", depth_enabled and not _rotation_preview and _stereo_texture != null and not stereo_sbs and geometry == Geometry.Geometry.FLAT)
 		target.set_shader_parameter("stereo_texture", _stereo_texture)
-		target.set_shader_parameter("portrait_enabled", portrait_enabled)
+		target.set_shader_parameter("portrait_enabled", portrait_enabled and not _rotation_preview)
 		target.set_shader_parameter("portrait_texture", _portrait_texture)
 		target.set_shader_parameter("generated_size", Vector2(_stereo_texture.get_width() / 2.0, _stereo_texture.get_height()) if _stereo_texture else Vector2.ONE)
 	_update_inspect()
@@ -1888,10 +2000,7 @@ func update_inspect_pointer(origin: Vector3, direction: Vector3, hand: String = 
 		var uv := _inspect_uv(origin, ray)
 		var x := (uv.x - 0.5) * _flat.size.x
 		var y := (0.5 - uv.y) * _flat.size.y
-		var local := Vector3(x, y, 0)
-		if screen_curve > 0.0:
-			var radius := _curve_radius()
-			local = Vector3(sin(x / radius) * radius, y, (1.0 - cos(x / radius)) * radius)
+		var local := surface_point(Vector3(x, y, 0))
 		endpoint = panel.to_global(local)
 	elif hit:
 		# Intersect the immersive sphere to place the endpoint on the displayed picture.
@@ -1918,24 +2027,8 @@ func update_inspect_pointer(origin: Vector3, direction: Vector3, hand: String = 
 	return hit
 
 func _inspect_uv(origin: Vector3, direction: Vector3) -> Vector2:
-	if screen_curve <= 0.0:
-		var point: Variant = screen_point(origin, direction)
-		return Vector2(-1, -1) if point == null else Vector2(point.x / _flat.size.x + 0.5, 0.5 - point.y / _flat.size.y)
-	var inverse := panel.global_transform.affine_inverse()
-	var start := inverse * origin
-	var ray := (inverse.basis * direction).normalized()
-	var radius := _curve_radius()
-	var a := ray.x * ray.x + ray.z * ray.z
-	var b := 2.0 * (start.x * ray.x + (start.z - radius) * ray.z)
-	var c := start.x * start.x + pow(start.z - radius, 2) - radius * radius
-	var discriminant := b * b - 4.0 * a * c
-	if a < 0.000001 or discriminant < 0: return Vector2(-1, -1)
-	for distance in [(-b - sqrt(discriminant)) / (2 * a), (-b + sqrt(discriminant)) / (2 * a)]:
-		if distance <= 0: continue
-		var hit: Vector3 = start + ray * distance
-		var uv := Vector2(0.5 + atan2(hit.x, radius - hit.z) * radius / _flat.size.x, 0.5 - hit.y / _flat.size.y)
-		if Rect2(0, 0, 1, 1).has_point(uv): return uv
-	return Vector2(-1, -1)
+	var hit: Variant = screen_hit(origin, direction)
+	return surface_uv(panel.to_local(hit)) if hit != null else Vector2(-1, -1)
 
 func pan_content(step: Vector2) -> void:
 	if not inspect or geometry != 0: return
@@ -1954,16 +2047,12 @@ func _flat_crop_mapping(at: Vector2) -> Vector4:
 	var eye := view_camera.global_transform if view_camera else Transform3D(Basis.IDENTITY, Vector3(0, 1.6, 0))
 	var view := eye.affine_inverse()
 	var x := (at.x - 0.5) * _flat.size.x
-	var local := Vector3(x, (0.5 - at.y) * _flat.size.y, 0)
-	var tangent_u := Vector3(_flat.size.x, 0, 0)
-	if screen_curve > 0.0:
-		var radius := _curve_radius()
-		var angle := x / radius
-		local.x = sin(angle) * radius; local.z = (1.0 - cos(angle)) * radius
-		tangent_u = Vector3(cos(angle), 0, sin(angle)) * _flat.size.x
+	var plane := Vector3(x, (0.5 - at.y) * _flat.size.y, 0)
+	var local := surface_point(plane)
+	var tangent_u := surface_tangent(plane, Vector3(_flat.size.x, 0, 0))
 	var source := view * (panel.global_transform * local)
 	var source_u := _projected_tangent(source, view.basis * panel.global_basis * tangent_u)
-	var source_v := _projected_tangent(source, view.basis * panel.global_basis * Vector3(0, -_flat.size.y, 0))
+	var source_v := _projected_tangent(source, view.basis * panel.global_basis * surface_tangent(plane, Vector3(0, -_flat.size.y, 0)))
 	var window := view * _detail.global_position
 	var size: Vector2 = _detail.mesh.size
 	var window_u := _projected_tangent(window, view.basis * _detail.global_basis * Vector3(size.x, 0, 0))
@@ -2304,7 +2393,7 @@ func snapshot() -> Dictionary:
 	var shown_size: Vector2=Vector2(panorama_tiles.dimensions) if panorama_tiles.active() else _size
 	var progress: Dictionary = _loading_status.duplicate()
 	progress.elapsed_ms = Time.get_ticks_msec() - _loading_started_ms
-	return {"cache_each":cache_each,"animated":animation.available(),"animation_paused":animation.paused,"animation_ended":animation.ended,"animation_failed":animation.failed,"raw_preview":_metadata.get("raw_preview",false),
+	return {"autoplay_enabled":autoplay.enabled,"autoplay_interval":autoplay.interval,"ground_vertical":ground_vertical,"cache_each":cache_each,"animated":animation.available(),"animation_paused":animation.paused,"animation_ended":animation.ended,"animation_failed":animation.failed,"raw_preview":_metadata.get("raw_preview",false),
 		"spatial_preferred":spatial_preferred,"spatial_requested":spatial_requested,"spatial_ready":_spatial.prepared if is_instance_valid(_spatial) else false,"spatial_available":can_spatial(),"spatial_error":spatial_error,
 		"spatial_report":_spatial.report if is_instance_valid(_spatial) else {},"has_image": _texture != null, "loading": loading or _presentation_pending, "loading_caption": Loading.caption(progress) if loading else "", "placeholder": placeholder_visible(), "preparing_depth": _presentation_pending or not _pending_display.is_empty(), "title": title, "index": position, "count": queue.size(),
 		"magazine_single": magazine.single(position), "magazine_pages": magazine.count(position) if magazine.active() else 1, "magazine_rtl": magazine.right_to_left,
@@ -2541,6 +2630,8 @@ func _release_full_photo(release_runtime: bool = true, release_reading_cache: bo
 	hide_inspect_pointer()
 
 func close_image(notify: bool = true, next_online_uri: String = "") -> void:
+	autoplay.set_enabled(false)
+	_cancel_rotation_preview()
 	_image_rotations.clear(); screen_rotation = 0.0
 	animation.close()
 	auto_portrait = false; _portrait_auto_due = false
@@ -2672,6 +2763,7 @@ static func _read_portrait(result: Dictionary) -> Dictionary:
 	return {"image":image,"strength":strength,"mask":mask,"rotation":int(result.get("rotation", 0))}
 
 func _process_portrait() -> void:
+	if _rotation_preview: return
 	if _portrait_thread and not _portrait_thread.is_alive():
 		var data: Dictionary = _portrait_thread.wait_to_finish(); _portrait_thread = null
 		var id := int(_portrait_job.id)
@@ -2730,6 +2822,7 @@ func _layer_source() -> Dictionary:
 ## The layer can show the photo as the shader would now: no shader-only effects or transitions.
 func _layer_eligible(preparing: bool = false) -> bool:
 	return not animation.available() and not spatial_requested and _display_request > 0 and _texture != null and panel.visible and not loading and error.is_empty() \
+		and not _rotation_preview and not (geometry == 0 and screen_curve > 0.0 and absf(sin(_curve_rotation())) > 0.00001) \
 		and not gallery.overview() and ((_presentation_pending and preparing and _presentation_effects_ready()) or \
 		(not _presentation_pending and not _transition_active and _reveal_seconds == 0 and not placeholder_visible())) \
 		and _layer_possible(geometry)

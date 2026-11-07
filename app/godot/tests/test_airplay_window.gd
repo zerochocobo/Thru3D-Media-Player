@@ -29,8 +29,15 @@ class LayerFixture extends RefCounted:
 	var hidden := false
 	var id := 6
 	var source_pixels := Vector2i(886, 1920)
+	var sort_order := 0
+	var presentations := 0
+	var resize_allowed := true
+	var present_allowed := true
 	func hide() -> void: hidden = true
 	func destroy() -> bool: destroys += 1; return true
+	func resize_decoder_producer(_size: Vector2i) -> bool: return resize_allowed
+	func present(_pose: Transform3D, _size: Vector2, _crop: Rect2) -> bool:
+		presentations += 1; hidden = not present_allowed; return present_allowed
 class TestSession extends Session:
 	var created: Array = []
 	func _make_layer(slot: int, size: Vector2i) -> RefCounted:
@@ -157,6 +164,45 @@ func run() -> void:
 		check(is_equal_approx(window.size.x / window.size.y, float(dimensions.x) / dimensions.y), "Phone orientation updates the complete live picture aspect")
 		check(window.global_transform.is_equal_approx(placed) and is_equal_approx(maxf(window.size.x, window.size.y), longest), "Phone rotation preserves the placed window centre, distance and longest edge")
 	var bridge := Bridge.new(); session.platform = bridge; session.epoch = 7
+	var display := LayerFixture.new(); display.source_pixels = Vector2i(1334, 1920); session.layer = display
+	var live := {"target_width": 1334, "target_height": 1920, "width": 1334, "height": 1920,
+		"video_ready": true, "layer_slot": 6, "frames": 0, "submitted_frames": 0}
+	session._present_window(window, live)
+	check(display.presentations == 0 and not window.frame.visible, "A configured decoder without an output buffer does not expose an empty Surface")
+	live.submitted_frames = 1
+	session._present_window(window, live)
+	check(display.presentations == 1 and window.frame.visible and not display.hidden, "The first submitted iPad frame starts the XR layer before any rendered callback")
+	for i in range(30):
+		live.submitted_frames += 1
+		session._present_window(window, live)
+	check(display.presentations == 31 and window.frame.visible and live.frames == 0, "Absent rendered timing callbacks cannot keep decoded AirPlay video hidden")
+	live.submitted_frames = 0; live.frames = 500
+	session._present_window(window, live)
+	check(not window.frame.visible and display.presentations == 31, "An old callback count cannot reveal a replacement decoder before it submits a frame")
+	live.submitted_frames = 1; live.frames = 0; live.width = 1328
+	session._present_window(window, live)
+	check(not window.frame.visible and display.presentations == 31, "The first-output fix retains the exact output extent guard")
+	live.width = 1334; live.error = "AirPlay decoder unavailable"
+	session._present_window(window, live)
+	check(not window.frame.visible and display.presentations == 31, "Decoder errors still hide the AirPlay layer despite queued output")
+	live.error = ""; live.layer_slot = 7
+	session._present_window(window, live)
+	check(not window.frame.visible and display.presentations == 31, "A different producer slot cannot expose a stale Surface")
+	live.layer_slot = 6; display.resize_allowed = false
+	session._present_window(window, live)
+	check(not window.frame.visible and display.presentations == 31, "Producer resize failure remains hidden and is distinct from waiting for output")
+	display.resize_allowed = true; display.present_allowed = false
+	session._present_window(window, live)
+	check(not window.frame.visible and display.hidden, "A failed layer submission hides its cutout")
+	display.present_allowed = true
+	session._present_window(window, live)
+	check(window.frame.visible and not display.hidden, "Layer submission can recover without a reconnect or rendered callback")
+	session.layer = null
+	session._present_window(window, live)
+	check(not window.frame.visible, "OES fallback still waits for updateTexImage rather than queued Surface output")
+	live.frames = 1
+	session._present_window(window, live)
+	check(window.frame.visible, "OES fallback becomes visible only when its own texture has a frame")
 	var portrait := LayerFixture.new(); session.layer = portrait
 	var landscape := {"target_width": 1920, "target_height": 886, "video_ready": true, "layer_slot": 6}
 	check(not session._sync_layer(landscape) and portrait.hidden and portrait.destroys == 0, "Rotation hides the old extent but retains its producer until acknowledged")
@@ -166,6 +212,10 @@ func run() -> void:
 	check(session.created.size() == 1 and portrait.destroys == 0, "Repeated polls cannot replace or destroy an unacknowledged producer")
 	landscape.layer_slot = 7
 	check(session._sync_layer(landscape) and portrait.destroys == 1 and session.layer == replacement, "New producer acknowledgement permits releasing the old Surface exactly once")
+	var rotated := {"target_width": 1920, "target_height": 886, "width": 1920, "height": 886,
+		"video_ready": true, "layer_slot": 7, "frames": 0, "submitted_frames": 1}
+	session._present_window(window, rotated)
+	check(window.frame.visible and replacement.presentations == 1, "A rotated producer starts from its own decoded output without waiting for a callback")
 	check(window.global_transform.is_equal_approx(placed), "Producer rotation leaves the existing spatial window untouched")
 	var back := {"target_width": 886, "target_height": 1920, "video_ready": true, "layer_slot": 7}
 	check(not session._sync_layer(back) and session.pending_layer.id == 6, "Back rotation reuses the other dedicated slot without touching browser or movie PiP")

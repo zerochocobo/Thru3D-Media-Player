@@ -105,6 +105,10 @@ The normal video rail remains 0–100%, with an explicit boost extending to 200%
 
 0.16.5 retains the compiled video depth model across seek revisions, adds same-grade shot-cut handling and bounds burned-in letterbox detection/fill before depth inference. The visible source video is preserved; this is a depth-input preparation step, not removal of content bars or a guarantee for every encoded border. No new weight or private evaluation sample/result is included.
 
-Private-beach scene models/textures/manifests and tools/beach modeling studies are excluded from public Git. Only resource-gated app integration/shader source is retained because ordinary player code references it; it is not a published ready scenery. Normal Debug excludes its data and hides the entry/falls back to cinema, without requiring regeneration. Release resource guards remain fail-closed when callers lack separately required assets; public source does not supply the private modeling payload. New photo/Gaussian-model investigations are not deployed replacements.
+Private-beach scene models/textures/manifests, generated audio and tools/beach modeling studies remain excluded from public Git. Runtime integration and shader source are retained for source closure; new photo/Gaussian model investigations are not deployed replacements.
 
-From 0.17.1 all Release builds exclude private-beach resources and reject IncludePrivateBeach. Default normal/diagnostic Debug also excludes them; an explicit Debug-only inclusion remains for separately authorized testing with caller-supplied assets. Hidden/missing-resource selections fall back to cinema. These rules replace the historical Release-resource preparation expectation above; modeling assets and dependent prototype fixtures remain excluded from public Git.
+## 0.17.2 scenery preparation
+
+Release, normal Debug and diagnostic Debug now all require the beach payload and expose its entry. Missing scenery must stop package validation; it is not silently removed. IncludePrivateBeach remains a compatibility argument without an inclusion/exclusion effect. This replaces the 0.17.1 exclusion policy. Public source does not provide the private models, textures, generated audio or scene bundle: obtain appropriately licensed version-matched assets separately before building. No personal backup, model weight, signing material or internal modeling record is published by this change.
+
+0.17.2起各类构建均要求沙滩资源，缺失应停止；旧IncludePrivateBeach只保留参数兼容。公开仓库仍不含场景／模型／贴图／生成声音，须自行提供许可与版本匹配的资源，不能把源码接入视作完整可构建素材包。

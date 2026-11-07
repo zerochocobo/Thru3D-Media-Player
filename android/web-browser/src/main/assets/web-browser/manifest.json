@@ -1,23 +1,103 @@
 {
   "manifest_version": 2,
   "name": "Thru3D video handoff",
-  "version": "1.53",
-  "browser_specific_settings": { "gecko": { "id": "web-video@thru3d.local" } },
-  "permissions": ["nativeMessaging", "nativeMessagingFromContent", "geckoViewAddons", "cookies", "webRequest", "webRequestBlocking", "http://*/*", "https://*/*",
-    "https://*.youtube.com/*", "https://*.bilibili.com/*", "https://*.douyin.com/*", "https://*.iesdouyin.com/*",
-    "https://*.weibo.com/*", "https://*.weibo.cn/*", "https://*.iqiyi.com/*", "https://*.mgtv.com/*",
-    "https://*.qq.com/*", "https://*.youku.com/*", "https://*.vimeo.com/*", "https://*.dailymotion.com/*",
-    "https://*.dai.ly/*", "https://*.twitch.tv/*", "https://*.tubitv.com/*", "https://*.redbull.com/*",
-    "https://*.redbull.tv/*", "https://*.astalavr.com/*",
-    "https://*.tiktok.com/*", "https://*.instagram.com/*", "https://*.facebook.com/*", "https://*.fb.watch/*",
-    "https://*.twitter.com/*", "https://*.x.com/*", "https://*.reddit.com/*", "https://*.redd.it/*",
-    "https://*.streamable.com/*", "https://*.ted.com/*", "https://*.archive.org/*", "https://*.rumble.com/*",
-    "https://*.odysee.com/*", "https://*.nicovideo.jp/*", "https://*.nico.ms/*", "https://*.naver.com/*", "https://*.kakao.com/*"],
-  "background": { "scripts": ["background.js", "bilibili.js", "bilibili-response.js", "douyin.js", "douyin-response.js", "weibo.js", "mango.js", "mango-response.js", "youku.js", "youku-response.js", "tencent.js", "tencent-response.js", "plex.js", "network.js"], "persistent": true },
-  "content_scripts": [{
-    "matches": ["http://*/*", "https://*/*"],
-    "js": ["bilibili.js", "douyin.js", "play-button.js", "weibo.js", "mango.js", "youku.js", "tencent.js", "plex.js", "danmaku.js", "media.js"],
-    "run_at": "document_start",
-    "all_frames": true
-  }]
+  "version": "1.57",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "web-video@thru3d.local"
+    }
+  },
+  "permissions": [
+    "nativeMessaging",
+    "nativeMessagingFromContent",
+    "geckoViewAddons",
+    "cookies",
+    "webRequest",
+    "webRequestBlocking",
+    "http://*/*",
+    "https://*/*",
+    "https://*.youtube.com/*",
+    "https://*.bilibili.com/*",
+    "https://*.douyin.com/*",
+    "https://*.iesdouyin.com/*",
+    "https://*.weibo.com/*",
+    "https://*.weibo.cn/*",
+    "https://*.iqiyi.com/*",
+    "https://*.mgtv.com/*",
+    "https://*.qq.com/*",
+    "https://*.youku.com/*",
+    "https://*.vimeo.com/*",
+    "https://*.dailymotion.com/*",
+    "https://*.dai.ly/*",
+    "https://*.twitch.tv/*",
+    "https://*.tubitv.com/*",
+    "https://*.redbull.com/*",
+    "https://*.redbull.tv/*",
+    "https://*.astalavr.com/*",
+    "https://*.tiktok.com/*",
+    "https://*.instagram.com/*",
+    "https://*.facebook.com/*",
+    "https://*.fb.watch/*",
+    "https://*.twitter.com/*",
+    "https://*.x.com/*",
+    "https://*.reddit.com/*",
+    "https://*.redd.it/*",
+    "https://*.streamable.com/*",
+    "https://*.ted.com/*",
+    "https://*.archive.org/*",
+    "https://*.rumble.com/*",
+    "https://*.odysee.com/*",
+    "https://*.nicovideo.jp/*",
+    "https://*.nico.ms/*",
+    "https://*.naver.com/*",
+    "https://*.kakao.com/*"
+  ],
+  "background": {
+    "scripts": [
+      "iqiyi.js",
+      "background.js",
+      "bilibili.js",
+      "bilibili-response.js",
+      "douyin.js",
+      "douyin-response.js",
+      "weibo.js",
+      "mango.js",
+      "mango-response.js",
+      "youku.js",
+      "youku-response.js",
+      "tencent.js",
+      "tencent-response.js",
+      "plex.js",
+      "niconico.js",
+      "niconico-response.js",
+      "network.js"
+    ],
+    "persistent": true
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "iqiyi.js",
+        "bilibili.js",
+        "douyin.js",
+        "douyin-current.js",
+        "niconico.js",
+        "niconico-player.js",
+        "play-button.js",
+        "weibo.js",
+        "mango.js",
+        "youku.js",
+        "tencent.js",
+        "plex.js",
+        "danmaku.js",
+        "media.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ]
 }

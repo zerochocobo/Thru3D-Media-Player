@@ -4,7 +4,7 @@ The library sidebar provides independent DLNA and AirPlay reception switches/sta
 
 The protocol is based on pinned UxPlay and Android adaptation, with retained ShairPlay/RPiPlay, llhttp/playfair, libplist and OpenSSL notices in third_party/airplay. sources.json records exact source URLs, archive hashes and patched outputs. Prepare-Airplay.ps1/prepare_airplay.py restore those sources for the native CMake build. The 20-byte SRP-SHA1 proof-length patch and local synthetic regression are included. Pairing/session keys are runtime data, never source assets; no phone identity, password, private key or captured stream is shipped.
 
-AirPlay窗口不是原生提取所有手机应用视频；接收需要合适网络及来源允许。PIN／会话凭据仅运行时产生，源码不含用户手机记录或投屏样本。普通Debug继续排除私人沙滩资源，不需要生成沙滩建模。
+AirPlay窗口不是原生提取所有手机应用视频；接收需要合适网络及来源允许。PIN／会话凭据仅运行时产生，源码不含用户手机记录或投屏样本。0.17.2起Debug与Release均要求另行准备沙滩资源，公开Git仍不含场景／模型数据。
 
 ## 0.17.1 access and decoder configuration
 
@@ -15,3 +15,5 @@ Pairing without a manually entered code is the default. A globally remembered pa
 The optimized Linux host protocol regression reproducibly accepts an earlier Digest challenge nonce after a failed password attempt (HTTP/RTSP 200 where 401 is expected). This is an unresolved authentication freshness defect, not a passing security check. The upstream nonce-generation call is inside an assertion that is removed with `NDEBUG`; the optimized host build uses that flag. Android behavior has not been independently retested during this source synchronization. Do not rely on the password option as a strong network access boundary; use experimental reception only on a trusted network. The released runtime source is preserved here pending a separately validated fix.
 
 0.17.1 本地优化构建的协议回归可重复发现旧 Digest nonce 被接受，不能把口令模式当作可靠的网络访问边界；请只在可信网络使用实验性接收。上游 nonce 生成位于会被 NDEBUG 移除的断言内，本轮未重新验收 Android 行为，也未修改发布运行源码来掩盖失败。
+
+0.17.2 includes a change to begin composition after decoded output submission, but its reported phone picture/audio issue has not completed acceptance and is not advertised as a verified fix. The optimized-host authentication defect above is not repaired by this source update.

@@ -6,12 +6,14 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.KeyCharacterMap
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
+import android.view.inputmethod.BaseInputConnection
 import org.json.JSONArray
 import org.json.JSONObject
 import org.mozilla.geckoview.AllowOrDeny
@@ -69,6 +71,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         var back = false
         var forward = false
         var editing = false
+        var keyboardVisible = false
+        var keyboardManual = false
         var editor: InputConnection? = null
         var editorAction = EditorInfo.IME_ACTION_UNSPECIFIED
         var editorType = 0
@@ -101,6 +105,9 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         val tencentClicks = mutableMapOf<WebExtension.Port, Long>()
         val mangoClicks = mutableMapOf<WebExtension.Port, Long>()
         val youkuClicks = mutableMapOf<WebExtension.Port, Long>()
+        val niconicoClicks = mutableMapOf<WebExtension.Port, Long>()
+        val iqiyiClicks = mutableMapOf<WebExtension.Port, Long>()
+        val douyinClicks = mutableMapOf<WebExtension.Port, Long>()
         var betaRequest = 0L
         var betaSelection = ""
         var fullScreen = false
@@ -149,6 +156,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     private var input: BrowserInput? = null
     @Volatile private var customKeyboard = false
     private val keyboardSession = WebBrowserKeyboardSession()
+    private var keyboardShowSerial = 0L
+    private var keyboardEditorSerial = 0L
     private var library: WebBrowserLibrary? = null
     private var networkPolicy: WebBrowserNetworkPolicy? = null
     private var recordHistory = false
@@ -341,7 +350,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     }
     private fun sendNetworkPolicy(tab: Tab) {
         val message = JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
-            .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url)).put("youku",WebBrowserYouku.enabled(tab.url))
+            .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url)).put("youku",WebBrowserYouku.enabled(tab.url)).put("iqiyi",WebBrowserIqiyi.enabled(tab.url)).put("niconico",WebBrowserNiconico.enabled(tab.url))
             .put("bilibili", bilibiliEnabled(tab)).put("douyin", douyinEnabled(tab)).put("weibo", WebBrowserWeibo.document(tab.url)).put("diagnostics", mediaDiagnosticsEnabled())
         tab.ports.keys.forEach { runCatching { it.postMessage(message) } }
     }
@@ -542,6 +551,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             }
             override fun onPageStart(session: GeckoSession, url: String) {
                 if (!ownsSession(tab, session)) return
+                if (input?.tab === tab) hideInput()
+                tab.keyboardManual = false
                 if (!tab.awake) return
                 beginNavigation(tab, url)
                 tab.url = url
@@ -555,8 +566,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 tab.navigation++; tab.pauseToken = 0; tab.pauseReports.clear()
                 tab.weiboRequest = 0; tab.weiboSelection = ""; tab.weiboClicks.clear()
                 tab.betaRequest = 0; tab.betaSelection = ""; tab.bilibiliClicks.clear()
-                tab.tencentClicks.clear();tab.mangoClicks.clear();tab.youkuClicks.clear()
-                tab.media.clear(); tab.sources.clear(); tab.fullScreen = false; tab.editor = null; tab.editing = false
+                tab.tencentClicks.clear();tab.mangoClicks.clear();tab.youkuClicks.clear();tab.niconicoClicks.clear();tab.iqiyiClicks.clear();tab.douyinClicks.clear()
+                tab.media.clear(); tab.sources.clear(); tab.fullScreen = false; tab.editor = null; tab.editing = false; tab.keyboardVisible = false
                 tab.error = ""; tab.progress = 0; publish()
 
             }
@@ -660,7 +671,9 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val tencentEnabled = WebBrowserTencent.enabled(tab.url)
                             val mangoEnabled = WebBrowserMango.enabled(tab.url)
                             val youkuEnabled = WebBrowserYouku.enabled(tab.url)
-                            val network = if (networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled || youkuEnabled) WebBrowserNetworkMedia.candidates(item,includeSegments=tencentEnabled) else JSONArray()
+                            val iqiyiEnabled = WebBrowserIqiyi.enabled(tab.url)
+                            val niconicoEnabled = WebBrowserNiconico.enabled(tab.url)
+                            val network = if (networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled || youkuEnabled || iqiyiEnabled || niconicoEnabled) WebBrowserNetworkMedia.candidates(item,includeSegments=tencentEnabled || iqiyiEnabled || niconicoEnabled) else JSONArray()
                             val bilibili = item.optJSONObject("bilibili")?.takeIf { bilibiliEnabled &&
                                 !item.optBoolean("protected") && it.toString().length <= 96 * 1024 && it.optString("page") == tab.url }
                             val serverHeaders = item.optJSONObject("server_headers")?.let { data ->
@@ -672,17 +685,22 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val tencent = if(tencentEnabled) WebBrowserTencent.metadata(item,tab.url) else null
                             val mango = if(mangoEnabled) WebBrowserMango.metadata(item,tab.url) else null
                             val youku = if(youkuEnabled) WebBrowserYouku.metadata(item,tab.url) else null
+                            val niconico=if(niconicoEnabled)WebBrowserNiconico.metadata(item,tab.url) else null
+                            val iqiyi = if(iqiyiEnabled) WebBrowserIqiyi.metadata(item,tab.url) else null
                             val biliIdentity = bilibili?.let { "${it.optString("id")}:${it.optString("cid")}:${it.optInt("part")}:${it.optString("ep")}" }.orEmpty()
                             val captureIdentity = "${tab.id}:${tab.navigation}:${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}:${tab.bilibiliProbe}:${tab.douyinCaptureEnabled}:${weibo?.optString("page").orEmpty()}:$biliIdentity" +
                                 (tencent?.let { ":tencent:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
                                 (mango?.let { ":mango:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
-                                (youku?.let { ":youku:${it.optString("id")}:${it.optString("revision")}" } ?: "")
+                                (youku?.let { ":youku:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
+                                (niconico?.let { ":niconico:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
+                                (iqiyi?.let { ":iqiyi:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
+                                (douyin?.let { ":douyin:${it.optString("id")}:${it.optString("revision")}" } ?: "")
                             safe.put(JSONObject().put("width", item.optInt("width").coerceIn(0, 32768))
                                 .put("id", id).put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play"))
                                 .put("server_play", server && item.optBoolean("server_play"))
                                 .put("server_media", server)
                                 .put("bilibili_ready", bilibili != null && item.optBoolean("bilibili_ready"))
-                                .put("douyin_ready", douyin != null && item.optBoolean("douyin_ready"))
+                                .put("douyin_ready", douyin != null && item.optBoolean("douyin_ready")).put("douyin_page",douyin?.optString("page").orEmpty())
                                 .put("weibo_ready", weibo != null && item.optBoolean("weibo_ready"))
                                 .put("weibo_selected", weibo != null && item.optBoolean("weibo_selected"))
                                 .put("weibo_page", weibo?.optString("page").orEmpty())
@@ -690,11 +708,13 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                 .put("tencent_page",tencent?.optString("page").orEmpty())
                                 .put("mango_ready",mango != null && item.optBoolean("mango_ready"))
                                 .put("youku_ready",youku != null && item.optBoolean("youku_ready"))
+                                .put("niconico_ready",niconico!=null && item.optBoolean("niconico_ready")).put("niconico_page",niconico?.optString("page").orEmpty())
+                                .put("iqiyi_ready",iqiyi != null && item.optBoolean("iqiyi_ready")).put("iqiyi_page",iqiyi?.optString("page").orEmpty())
                                 .put("youku_page",youku?.let { "https://v.youku.com/v_show/id_${it.optString("id")}.html" }.orEmpty())
                                 .put("mango_capture", if (mangoEnabled) WebBrowserMango.captureDiagnostics(data)
                                     .put("frame_matches", item.optString("frame") == tab.url).put("binding_valid", mango != null) else null)
                                 .put("mango_page",mango?.let { "https://www.mgtv.com/b/${it.optString("id")}.html" }.orEmpty())
-                                .put("selection", if (weibo != null || bilibili != null || tencent != null || mango != null || youku != null) captureIdentity else "")
+                                .put("selection", if (weibo != null || bilibili != null || tencent != null || mango != null || youku != null || iqiyi != null || douyin != null || niconico != null) captureIdentity else "")
                                 .put("network_media", networkEnabled && (network.length() > 0 || !item.optBoolean("protected") && WebBrowserNetworkMedia.address(item.optString("source")) != null))
                                 .put("media_epoch", "${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}")
                                 .put("protected", item.optBoolean("protected"))
@@ -708,11 +728,13 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                     .put("network", network)
                                     .put("network_enabled", networkEnabled)
                                     .put("bilibili_enabled", bilibiliEnabled).put("bilibili", bilibili)
-                                    .put("douyin_enabled", douyinEnabled).put("douyin", douyin)
+                                    .put("douyin_enabled", douyinEnabled).put("douyin", douyin).put("douyin_source",if(douyin!=null)item.optString("douyin_source") else "")
                                     .put("weibo_enabled", weiboEnabled).put("weibo", weibo)
                                     .put("tencent_enabled",tencentEnabled).put("tencent",tencent)
                                     .put("mango_enabled",mangoEnabled).put("mango",mango)
                                     .put("youku_enabled",youkuEnabled).put("youku",youku)
+                                    .put("niconico_enabled",niconicoEnabled).put("niconico",niconico).put("niconico_source",if(niconico!=null)item.optString("niconico_source") else "")
+                                    .put("iqiyi_enabled",iqiyiEnabled).put("iqiyi",iqiyi).put("iqiyi_source",if(iqiyi!=null)item.optString("iqiyi_source") else "")
                                     .put("douyin_boundary", if (mediaDiagnosticsEnabled()) WebBrowserDouyin.metadataDiagnostics(item,tab.url,douyinEnabled,douyin != null) else null)
                                     .put("bilibili_probe", tab.bilibiliProbe)
                                     .put("diagnostic_max_height", if (tab.bilibiliProbe == "uncapped" && bilibiliEligible(tab)) 2160 else 1080)
@@ -749,6 +771,24 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                     tab.youkuClicks[port] = youkuClick
                                     tab.betaRequest = ++nextBetaRequest; tab.betaSelection = captureIdentity
                                 }
+                                val niconicoClick = item.optLong("niconico_request")
+                                if (niconico != null && item.optBoolean("niconico_ready") && niconicoClick > (tab.niconicoClicks[port] ?: 0) &&
+                                    niconicoClick in 1..Int.MAX_VALUE.toLong() && active && current() === tab && tab.pauseToken == 0L) {
+                                    tab.niconicoClicks[port] = niconicoClick
+                                    tab.betaRequest = ++nextBetaRequest; tab.betaSelection = captureIdentity
+                                }
+                                val iqiyiClick = item.optLong("iqiyi_request")
+                                val douyinClick = item.optLong("douyin_request")
+                                if (douyin != null && item.optBoolean("douyin_ready") && douyinClick > (tab.douyinClicks[port] ?: 0) &&
+                                    douyinClick in 1..Int.MAX_VALUE.toLong() && active && current() === tab && tab.pauseToken == 0L) {
+                                    tab.douyinClicks[port] = douyinClick
+                                    tab.betaRequest = ++nextBetaRequest; tab.betaSelection = captureIdentity
+                                }
+                                if (iqiyi != null && item.optBoolean("iqiyi_ready") && iqiyiClick > (tab.iqiyiClicks[port] ?: 0) &&
+                                    iqiyiClick in 1..Int.MAX_VALUE.toLong() && active && current() === tab && tab.pauseToken == 0L) {
+                                    tab.iqiyiClicks[port] = iqiyiClick
+                                    tab.betaRequest = ++nextBetaRequest; tab.betaSelection = captureIdentity
+                                }
                             }
                         }
                         tab.media[port] = safe
@@ -759,13 +799,13 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     override fun onDisconnect(port: WebExtension.Port) {
                         tab.ports.remove(port); tab.media.remove(port); tab.sources.remove(port); tab.pauseReports.remove(port); tab.weiboClicks.remove(port)
                         tab.bilibiliClicks.remove(port)
-                        tab.tencentClicks.remove(port);tab.mangoClicks.remove(port);tab.youkuClicks.remove(port)
+                        tab.tencentClicks.remove(port);tab.mangoClicks.remove(port);tab.youkuClicks.remove(port);tab.niconicoClicks.remove(port);tab.iqiyiClicks.remove(port);tab.douyinClicks.remove(port)
                         updateFullscreen(tab); publish()
                     }
                 })
                 port.postMessage(JSONObject().put("action", if (displayed(tab)) "resume" else "suspend"))
                 port.postMessage(JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
-                    .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url)).put("youku",WebBrowserYouku.enabled(tab.url))
+                    .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url)).put("youku",WebBrowserYouku.enabled(tab.url)).put("iqiyi",WebBrowserIqiyi.enabled(tab.url)).put("niconico",WebBrowserNiconico.enabled(tab.url))
                     .put("bilibili", bilibiliEnabled(tab)).put("douyin", douyinEnabled(tab)).put("weibo", WebBrowserWeibo.document(tab.url)).put("diagnostics", mediaDiagnosticsEnabled()))
                 if (tab.pauseToken > 0) port.postMessage(JSONObject().put("action", "pause_media").put("token", tab.pauseToken))
             }
@@ -922,7 +962,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     private fun suspendTab(tab: Tab) {
         if (!tab.awake) return
         tab.restorePosition = null; tab.restoreOrigin = ""; tab.restoreThroughScript = false
-        tab.editor?.finishComposingText(); tab.editor = null; tab.editing = false
+        tab.editor?.finishComposingText(); tab.editor = null; tab.editing = false; tab.keyboardManual = false; tab.keyboardVisible = false
         tab.ports.keys.forEach { runCatching { it.postMessage(JSONObject().put("action", "suspend")
             .put("keep_pause", playbackHold.protects(tab.id, tab.navigation)).put("pause_token", tab.pauseToken)) } }
         tab.playback?.pause()
@@ -1034,7 +1074,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         tab.fullscreen.reset(); tab.fullscreenPort = null; tab.capturedFullscreenRequest = 0
         tab.fullScreen = false; tab.playback = null; tab.playing = false
         tab.restorePosition = null; tab.restoreThroughScript = false; tab.restoreOrigin = ""
-        tab.editor = null; tab.editing = false; tab.protectedInput = false
+        tab.editor = null; tab.editing = false; tab.protectedInput = false; tab.keyboardManual = false
         unlinkSession(tab)
     }
     private fun stoppedTab(tab: Tab, error: String) {
@@ -1229,12 +1269,12 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     }
                 }
             }
-            "restore_weibo", "restore_mango", "restore_youku" -> {
+            "restore_weibo", "restore_mango", "restore_youku", "restore_iqiyi", "restore_douyin", "restore_niconico" -> {
                 val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id } ?: return@dispatch
                 if (!tab.awake || window(id).tab != tab.id || tab.navigation != request.optLong("navigation", -1) ||
                     tab.url != request.optString("origin")) return@dispatch
                 val selection = request.optString("selection")
-                val kind=when(request.optString("action")) { "restore_mango" -> "mango"; "restore_youku" -> "youku"; else -> "weibo" }
+                val kind=when(request.optString("action")) { "restore_mango" -> "mango"; "restore_youku" -> "youku"; "restore_niconico" -> "niconico"; "restore_iqiyi" -> "iqiyi"; "restore_douyin" -> "douyin"; else -> "weibo" }
                 for ((port,list) in tab.sources) for (index in 0 until list.length()) {
                     val item = list.getJSONObject(index)
                     val data=item.optJSONObject(kind) ?: continue
@@ -1340,24 +1380,55 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     }
 
     private fun installKeyboardDelegate(tab: Tab) {
-        // null restores Gecko's complete system-IME delegate when the feature is off.
-        tab.session.textInput.setDelegate(if (!customKeyboard) null else object : GeckoSession.TextInputDelegate {
+        // Observe visibility without replacing Gecko's complete system-IME behavior.
+        tab.session.textInput.setDelegate(null)
+        val system = tab.session.textInput.delegate
+        tab.session.textInput.setDelegate(object : GeckoSession.TextInputDelegate {
+            private fun owns(session: GeckoSession) = ownsSession(tab, session) && current() === tab && active
             override fun restartInput(session: GeckoSession, reason: Int) {
-                if (!customKeyboard || !ownsSession(tab, session) || current() !== tab) return
+                if (!owns(session)) return
+                keyboardEditorSerial++
+                if (!customKeyboard) system.restartInput(session, reason)
                 if (reason == GeckoSession.TextInputDelegate.RESTART_REASON_BLUR) {
-                    keyboardSession.close(); tab.editing = false; tab.editor = null; publish()
-                } else captureKeyboardEditor(tab)
+                    if (tab.keyboardManual) {
+                        tab.editing = false; tab.editor = null
+                        if (customKeyboard) captureKeyboardEditor(tab)
+                        publish(); return
+                    }
+                    keyboardShowSerial++; keyboardSession.close(); tab.keyboardVisible = false
+                    tab.editing = false; tab.editor = null; publish()
+                } else if (customKeyboard) captureKeyboardEditor(tab)
             }
             override fun showSoftInput(session: GeckoSession) {
-                if (!customKeyboard || !ownsSession(tab, session) || current() !== tab) return
-                if (keyboardSession.target?.tab != tab.id || tab.editor == null) captureKeyboardEditor(tab)
+                if (!owns(session)) return
+                keyboardShowSerial++
+                if (customKeyboard) {
+                    if (keyboardSession.target?.tab != tab.id || tab.editor == null) captureKeyboardEditor(tab)
+                } else {
+                    system.showSoftInput(session); tab.keyboardVisible = true; publish()
+                }
             }
             override fun hideSoftInput(session: GeckoSession) {
-                if (!customKeyboard || !ownsSession(tab, session) || current() !== tab) return
-                keyboardSession.close(); tab.editing = false; tab.editor = null; publish()
+                if (!owns(session)) return
+                // A manual page keyboard remains available for shortcuts after a field blurs.
+                if (tab.keyboardManual) {
+                    if (customKeyboard) captureKeyboardEditor(tab)
+                    publish(); return
+                }
+                if (!customKeyboard) system.hideSoftInput(session)
+                keyboardShowSerial++; keyboardSession.close(); tab.keyboardVisible = false
+                tab.editing = false; tab.editor = null; publish()
             }
-            // Our popup keeps preedit locally and never requests extracted field contents.
-            // Selection/cursor edits continue to be owned by Gecko's InputConnection.
+            override fun updateSelection(session: GeckoSession, start: Int, end: Int, composingStart: Int, composingEnd: Int) {
+                if (!customKeyboard && owns(session)) system.updateSelection(session, start, end, composingStart, composingEnd)
+            }
+            override fun updateExtractedText(session: GeckoSession, request: android.view.inputmethod.ExtractedTextRequest,
+                                             text: android.view.inputmethod.ExtractedText) {
+                if (!customKeyboard && owns(session)) system.updateExtractedText(session, request, text)
+            }
+            override fun updateCursorAnchorInfo(session: GeckoSession, info: android.view.inputmethod.CursorAnchorInfo) {
+                if (!customKeyboard && owns(session)) system.updateCursorAnchorInfo(session, info)
+            }
         })
     }
 
@@ -1370,8 +1441,10 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         tab.editorType = info.inputType
         tab.editorAction = info.imeOptions and EditorInfo.IME_MASK_ACTION
         tab.editing = connection != null && info.inputType != 0
-        if (tab.editing) {
-            tab.protectedInput = true
+        if (!tab.editing) tab.editor = null
+        tab.keyboardVisible = tab.editing || tab.keyboardManual
+        if (tab.keyboardVisible) {
+            if (tab.editing) tab.protectedInput = true
             keyboardSession.open(tab.window, tab.id, tab.navigation)
         }
         publish()
@@ -1379,12 +1452,21 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
 
     private fun editKeyboard(target: WebBrowserKeyboardSession.Target, command: String, value: String) {
         val tab = current() ?: return
-        val editor = tab.editor ?: return
-        if (!active || !tab.editing || tab.id != target.tab || tab.window != target.window || tab.navigation != target.navigation) return
+        if (!active || tab.id != target.tab || tab.window != target.window || tab.navigation != target.navigation) return
         if (command == "close") {
             tab.session.setFocused(false); hideInput(); publish(); return
         }
         if (value.length > 2048 || '\u0000' in value) return
+        val editor = tab.editor
+        if (editor == null || !tab.editing) {
+            ui.post {
+                if (customKeyboard && tab.keyboardManual && keyboardSession.accepts(target) && current() === tab &&
+                    active && tab.navigation == target.navigation && input?.tab === tab && tab.editor == null) {
+                    pageKeyboardInput(tab, command, value)
+                }
+            }
+            return
+        }
         val action = tab.editorAction
         (editor.handler ?: ui).post {
             if (!customKeyboard || !keyboardSession.accepts(target) || input?.tab !== tab || tab.editor !== editor ||
@@ -1405,9 +1487,93 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         }
     }
 
+    /** Forward physical-style keys to Gecko even when no DOM text editor is focused. */
+    private fun pageKeyboardInput(tab: Tab, command: String, value: String = ""): Boolean {
+        if (!active || current() !== tab || input?.tab !== tab) return false
+        fun event(key: KeyEvent): Boolean = when (key.action) {
+            KeyEvent.ACTION_UP -> tab.session.textInput.onKeyUp(key.keyCode, key)
+            KeyEvent.ACTION_MULTIPLE -> tab.session.textInput.onKeyMultiple(key.keyCode, key.repeatCount, key)
+            else -> tab.session.textInput.onKeyDown(key.keyCode, key)
+        }
+        val request = WebBrowserPageKeyboard.input(command, value) ?: return false
+        if (request is WebBrowserPageKeyboard.Input.Text) {
+            val keys = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(request.value.toCharArray())
+            if (keys != null) keys.forEach { event(it) }
+            else event(KeyEvent(SystemClock.uptimeMillis(), request.value, KeyCharacterMap.VIRTUAL_KEYBOARD, 0))
+            return true
+        }
+        val code = when ((request as WebBrowserPageKeyboard.Input.Press).key) {
+            WebBrowserPageKeyboard.Key.BACKSPACE -> KeyEvent.KEYCODE_DEL
+            WebBrowserPageKeyboard.Key.DELETE -> KeyEvent.KEYCODE_FORWARD_DEL
+            WebBrowserPageKeyboard.Key.ENTER -> KeyEvent.KEYCODE_ENTER
+            WebBrowserPageKeyboard.Key.LEFT -> KeyEvent.KEYCODE_DPAD_LEFT
+            WebBrowserPageKeyboard.Key.RIGHT -> KeyEvent.KEYCODE_DPAD_RIGHT
+        }
+        event(KeyEvent(KeyEvent.ACTION_DOWN, code)); event(KeyEvent(KeyEvent.ACTION_UP, code))
+        return true
+    }
+
+    /** An IME connection for page shortcuts, not a hidden URL editor. Composition stays local
+     * until committed; the committed characters become Gecko key events on the UI thread. */
+    private inner class PageKeyboardConnection(view: View, private val owner: Tab, private val navigation: Long,
+                                               private val serial: Long) : BaseInputConnection(view, true) {
+        override fun getHandler(): Handler = ui
+        private fun send(command: String, text: String = ""): Boolean {
+            if (text.length > 2048 || '\u0000' in text) return false
+            ui.post {
+                if (active && current() === owner && owner.navigation == navigation && owner.keyboardManual &&
+                    serial == keyboardEditorSerial && input?.tab === owner) pageKeyboardInput(owner, command, text)
+            }
+            return true
+        }
+        override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean =
+            text != null && text.length <= 2048 && super.setComposingText(text, newCursorPosition)
+        override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+            val sent = send("text", text?.toString().orEmpty())
+            editable?.clear(); return sent
+        }
+        override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+            if (!editable.isNullOrEmpty()) return super.deleteSurroundingText(beforeLength, afterLength)
+            repeat(beforeLength.coerceIn(0,32)) { send("backspace") }
+            repeat(afterLength.coerceIn(0,32)) { send("delete") }
+            return true
+        }
+        override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean =
+            deleteSurroundingText(beforeLength, afterLength)
+        override fun performEditorAction(actionCode: Int): Boolean = send("enter")
+        override fun sendKeyEvent(event: KeyEvent): Boolean {
+            val key = KeyEvent(event)
+            ui.post {
+                if (active && current() === owner && owner.navigation == navigation && owner.keyboardManual &&
+                    serial == keyboardEditorSerial && input?.tab === owner) {
+                    when (key.action) {
+                        KeyEvent.ACTION_UP -> owner.session.textInput.onKeyUp(key.keyCode, key)
+                        KeyEvent.ACTION_MULTIPLE -> owner.session.textInput.onKeyMultiple(key.keyCode, key.repeatCount, key)
+                        else -> owner.session.textInput.onKeyDown(key.keyCode, key)
+                    }
+                }
+            }
+            return true
+        }
+    }
+
     private inner class BrowserInput(owner: Activity) : View(owner) {
         var tab: Tab? = null
+        private var imeInsetsVisible = false
         init { isFocusable = true; isFocusableInTouchMode = true; importantForAutofill = IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS }
+        override fun onApplyWindowInsets(insets: android.view.WindowInsets): android.view.WindowInsets {
+            if (!customKeyboard && android.os.Build.VERSION.SDK_INT >= 30) {
+                val visible = insets.isVisible(android.view.WindowInsets.Type.ime())
+                // Some XR runtimes use an independent floating IME without insets.
+                // Only a previously reported IME may use its disappearance as dismissal.
+                if (visible || imeInsetsVisible) {
+                    imeInsetsVisible = visible
+                    if (!visible) tab?.keyboardManual = false
+                    tab?.keyboardVisible = visible; publish()
+                }
+            }
+            return super.onApplyWindowInsets(insets)
+        }
         override fun onCheckIsTextEditor(): Boolean = !customKeyboard
         // All supported Android versions use View's nullable handler (GeckoView's
         // Android 24+ path), including late IME callbacks after detachment.
@@ -1416,18 +1582,29 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             val owner = tab ?: return null
             val navigation = owner.navigation
             val connection = owner.session.textInput.onCreateInputConnection(info)
+            val editing = connection != null && info.inputType != 0
+            val pageKeys = !editing && owner.keyboardManual
+            if (pageKeys) {
+                info.inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                info.imeOptions = EditorInfo.IME_ACTION_NONE or EditorInfo.IME_FLAG_NO_EXTRACT_UI
+            }
             ui.post {
                 if (tab === owner && owner.navigation == navigation && active && current() === owner) {
-                    owner.editor = connection
+                    owner.editor = if (editing) connection else null
                     owner.editorAction = info.imeOptions and EditorInfo.IME_MASK_ACTION
-                    owner.editing = connection != null && info.inputType != 0
+                    owner.editing = editing
                     if (owner.editing) owner.protectedInput = true
                     publish()
                 }
             }
-            return connection
+            return if (pageKeys) PageKeyboardConnection(this, owner, navigation, keyboardEditorSerial) else connection
         }
-        override fun onKeyPreIme(code: Int, event: KeyEvent): Boolean = tab?.session?.textInput?.onKeyPreIme(code, event) ?: false
+        override fun onKeyPreIme(code: Int, event: KeyEvent): Boolean {
+            if (code == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+                keyboardShowSerial++; tab?.keyboardVisible = false; tab?.keyboardManual = false; publish()
+            }
+            return tab?.session?.textInput?.onKeyPreIme(code, event) ?: false
+        }
         override fun onKeyDown(code: Int, event: KeyEvent): Boolean = tab?.session?.textInput?.onKeyDown(code, event) ?: false
         override fun onKeyUp(code: Int, event: KeyEvent): Boolean = tab?.session?.textInput?.onKeyUp(code, event) ?: false
     }
@@ -1469,11 +1646,43 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             return@dispatch
         }
         val tab = current() ?: return@dispatch
-        if (!active || !tab.editing) return@dispatch
-        val editor = tab.editor ?: return@dispatch
+        if (!active) return@dispatch
+        if (command in setOf("show", "close") && text.isNotEmpty()) {
+            val target = runCatching { JSONObject(text) }.getOrNull() ?: return@dispatch
+            if (target.optInt("window") != tab.window || target.optInt("tab") != tab.id || target.optLong("navigation", -1) != tab.navigation) return@dispatch
+        }
+        if (command == "show") {
+            tab.keyboardManual = true
+            tab.session.setFocused(true); attachInput(tab)
+            if (customKeyboard) captureKeyboardEditor(tab)
+            else input?.let { view ->
+                val serial = ++keyboardShowSerial
+                val navigation = tab.navigation
+                val manager = view.context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                view.post {
+                    if (serial != keyboardShowSerial || current() !== tab || !active || tab.navigation != navigation || input?.tab !== tab) return@post
+                    manager.restartInput(view)
+                    manager.showSoftInput(view, 0,
+                    object : android.os.ResultReceiver(ui) {
+                        override fun onReceiveResult(code: Int, data: android.os.Bundle?) {
+                            if (serial != keyboardShowSerial || current() !== tab || !active || tab.navigation != navigation || input?.tab !== tab) return
+                            tab.keyboardVisible = code == android.view.inputmethod.InputMethodManager.RESULT_SHOWN ||
+                                code == android.view.inputmethod.InputMethodManager.RESULT_UNCHANGED_SHOWN
+                            publish()
+                        }
+                    })
+                }
+            }
+            return@dispatch
+        }
         if (command == "close") {
             tab.session.setFocused(false); hideInput(); publish(); return@dispatch
         }
+        if (!tab.editing) {
+            if (tab.keyboardManual) pageKeyboardInput(tab, command, text)
+            return@dispatch
+        }
+        val editor = tab.editor ?: return@dispatch
         val value = if (command == "paste") {
             val clipboard = activity()?.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
             clipboard?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()?.take(2048).orEmpty()
@@ -1511,10 +1720,12 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     }
 
     private fun hideInput() {
+        keyboardShowSerial++
+        keyboardEditorSerial++
         keyboardSession.close()
         tabs.forEach { tab ->
             tab.editor?.let { editor -> (editor.handler ?: ui).post { editor.finishComposingText() } }
-            tab.editing = false; tab.editor = null
+            tab.editing = false; tab.editor = null; tab.keyboardVisible = false; tab.keyboardManual = false
         }
         input?.let { view ->
             val imm = view.context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
@@ -1532,11 +1743,13 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             .put("network_capture_available", tab != null && WebBrowserNetworkPolicy.available(tab.url))
             .put("network_capture_enabled", tab != null && networkEnabled(tab))
             .put("bilibili_beta_available", tab != null && bilibiliEligible(tab))
-            .put("douyin_beta_available", tab != null && douyinEnabled(tab) && WebBrowserDouyin.pageId(tab.url) != null)
+            .put("douyin_beta_available", tab != null && douyinEnabled(tab))
             .put("weibo_beta_available", tab != null && WebBrowserWeibo.document(tab.url))
             .put("tencent_beta_available",tab != null && WebBrowserTencent.enabled(tab.url))
             .put("mango_beta_available",tab != null && WebBrowserMango.enabled(tab.url))
             .put("youku_beta_available",tab != null && WebBrowserYouku.enabled(tab.url))
+            .put("niconico_beta_available",tab != null && WebBrowserNiconico.enabled(tab.url))
+            .put("iqiyi_beta_available",tab != null && WebBrowserIqiyi.enabled(tab.url))
             .put("weibo_request", tab?.weiboRequest ?: 0).put("weibo_selection", tab?.weiboSelection.orEmpty())
             .put("beta_request", tab?.betaRequest ?: 0).put("beta_selection", tab?.betaSelection.orEmpty())
             .put("fullscreen_request", tab?.fullscreen?.request ?: 0).put("fullscreen_video", tab?.fullscreen?.active == true)
@@ -1551,9 +1764,10 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             .put("retained_for_playback", tab != null && playbackHold.protects(tab.id, tab.navigation))
             .put("playing", tab != null && (tab.playing || tab.media.values.any { list -> (0 until list.length()).any { i -> list.getJSONObject(i).optBoolean("playing") } }))
             .put("error", tab?.error.orEmpty()).put("editing", tab?.editing == true).put("videos", videos).put("fullscreen", tab?.fullScreen == true)
-            .put("custom_keyboard", customKeyboard && tab != null && keyboardSession.target?.tab == tab.id && tab.editing)
+            .put("keyboard_visible", active && tab != null && current() === tab && tab.keyboardVisible)
+            .put("custom_keyboard", customKeyboard && tab != null && keyboardSession.target?.tab == tab.id && tab.keyboardVisible)
             .put("keyboard_epoch", if (customKeyboard && tab != null && keyboardSession.target?.tab == tab.id) keyboardSession.target?.epoch ?: 0 else 0)
-            .put("keyboard_latin", tab?.editorType?.let { type ->
+            .put("keyboard_latin", tab?.editorType?.takeIf { it != 0 }?.let { type ->
                 val variation = type and android.text.InputType.TYPE_MASK_VARIATION
                 (type and android.text.InputType.TYPE_MASK_CLASS) != android.text.InputType.TYPE_CLASS_TEXT ||
                     variation in setOf(android.text.InputType.TYPE_TEXT_VARIATION_URI, android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,

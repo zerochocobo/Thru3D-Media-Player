@@ -52,6 +52,24 @@ func _run() -> void:
 	menu.press_pointer("right_hand", entry.node.global_position + Vector3(0, 0, 1), -menu.global_basis.z, true)
 	menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, false)
 	check(menu._adjustment == "photo_view" and menu._adjust_rows.size() == 4, "Real ray/trigger opens four adjustment sliders")
+	menu._activate(Menu.PHOTO_ADJUST_BACK)
+	menu._activate(Menu.PHOTO_CURVE)
+	check(menu._adjustment == "photo_curve" and menu._adjust_rows.has(Menu.SCREEN_CURVE_SLIDER), "Photo curve button opens the continuous editor")
+	var arc_row: Dictionary = menu._adjust_rows[Menu.SCREEN_CURVE_SLIDER]
+	var arc_y: float = arc_row.knob.position.y
+	var arc_knob: Object = arc_row.knob
+	menu.press_pointer("right_hand", point(menu, arc_row.left + arc_row.width * 0.8, arc_y), -menu.global_basis.z, true)
+	menu.refresh_values()
+	check(menu.has_pointer_capture() and menu._adjust_rows[Menu.SCREEN_CURVE_SLIDER].knob == arc_knob and is_equal_approx(photo.screen_curve, 144), "Photo curve previews degrees and retains pointer capture")
+	menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, false)
+	var arc_config := ConfigFile.new(); arc_config.load(main.settings_path)
+	check(is_equal_approx(float(arc_config.get_value("photo_screen", "curve_degrees", -1)), 144), "Photo arc saves in degrees on release")
+	var arc_restored := Photo.new(); arc_restored.restore_view_settings(arc_config)
+	check(is_equal_approx(arc_restored.screen_curve, 144), "Photo custom arc survives configuration reload")
+	arc_restored.free()
+	check(menu._adjust_rows[Menu.SCREEN_CURVE_SLIDER].ticks.size() == 5, "Photo arc reference values are slider ticks")
+	menu._activate(Menu.PHOTO_ADJUST_BACK)
+	menu._activate(Menu.PHOTO_ADJUST)
 	check(photo.edge_feather_strength == 1.0 and menu._adjust_rows[453].label.text == "100%", "Default feather preserves the current effect")
 	check(is_equal_approx(menu._adjust_rows[450].span.z, 0.1) and is_equal_approx(menu._adjust_rows[451].span.z * 100, 5.0), "Photo adjustment steps match video: 0.1 metres and 5 percent")
 	check(not menu.allows_playback_sticks(), "Image adjustment panel isolates playback shortcuts")
@@ -102,9 +120,10 @@ func _run() -> void:
 	check(Vector2(main.video.screen_distance, main.video.screen_scale) == video_before, "Photo adjustments preserve separate video parameters")
 	photo.set_screen_distance(Photo.PHOTO_DISTANCE_LIMITS.x)
 	photo.set_screen_scale(Photo.PHOTO_SCALE_LIMITS.y)
-	photo.set_screen_curve(1.0)
-	for corner in 4:
-		check(photo.screen_corner(corner).z < photo.screen_distance, "Largest curved image stays in front at closest distance")
+	photo.set_screen_curve(160.0)
+	var curved_corner: Vector3 = photo.screen_corner(1)
+	photo.set_screen_distance(20)
+	check(photo.screen_corner(1).is_equal_approx(curved_corner), "Large photo retains the selected curved shape when moved")
 	photo.set_screen_scale(1.0)
 	# Capture dismissal commits the last preview once.
 	var y: float = menu._adjust_rows[450].knob.position.y

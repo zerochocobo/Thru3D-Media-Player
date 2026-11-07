@@ -27,7 +27,7 @@ const Thru3DDouyin = (() => {
       u.protocol === 'https:' && !u.username && !u.password && !u.hash ? value : null; }
     catch (_) { return null; }
   };
-  const objectPath = u => /^\/(?:[a-fA-F0-9]{32}|[a-fA-F0-9]{64})\/[a-fA-F0-9]{8,16}(\/video\/tos\/cn\/tos-cn-[a-zA-Z0-9-]{1,96}\/[A-Za-z0-9_-]{8,240}(?:\/[A-Za-z0-9_-]{8,240})?\/?)$/.exec(u.pathname)?.[1];
+  const objectPath = u => /^(?:\/(?:[a-fA-F0-9]{32}|[a-fA-F0-9]{64})\/[a-fA-F0-9]{8,16})?(\/video\/tos\/cn\/tos-cn-[a-zA-Z0-9-]{1,96}\/[A-Za-z0-9_-]{8,240}(?:\/[A-Za-z0-9_-]{8,240})?\/?)$/.exec(u.pathname)?.[1];
   const sourceId = value => {
     if(!address(value))return null;
     try {
@@ -56,7 +56,6 @@ const Thru3DDouyin = (() => {
         return [decode(n<0?p:p.slice(0,n)),decode(n<0?'':p.slice(n+1))];
       });
       let original=query(a);const keys=new Set(original.map(p=>p[0]));
-      const received=query(b).filter(([key])=>keys.has(key)||!['temp','__vid','testst'].includes(key));
       // A new detail response rotates request tracing fields for the very same
       // signed file. Only the site's currentSrc __vid binding permits that case;
       // path/object, all other parameters and duplicate counts still agree.
@@ -64,6 +63,12 @@ const Thru3DDouyin = (() => {
       const bound=/^[1-9][0-9]{14,19}$/.test(contentId)&&ids.length===1&&ids[0][1]===contentId;
       const assetBound=/^[1-9][0-9]{14,19}$/.test(contentId)&&(!ids.length||bound)&&
         !!objectPath(a)&&objectPath(a)===objectPath(b);
+      // The actual player appends browser context fields to its declared file.
+      // Only additions on an already bound TOS object qualify; existing values,
+      // authentication/signature parameters and every other query still agree.
+      const appended=assetBound?['webid','fid']:[];
+      if(appended.some(key=>!keys.has(key)&&query(b).filter(p=>p[0]===key).length>1))return false;
+      const received=query(b).filter(([key])=>keys.has(key)||!['temp','__vid','testst',...appended].includes(key));
       const ignored=assetBound?['cquery','l','dy_q','btag']:bound?['cquery','l']:[];
       const stable=list=>list.filter(p=>!ignored.includes(p[0]));
       const ordered = list => list.map(p=>JSON.stringify(p)).sort();

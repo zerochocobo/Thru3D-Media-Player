@@ -520,51 +520,63 @@ internal class MpvVideoBridge(
                 captions.filter { it.language.isNotBlank() }.forEach { host.subtitleLanguages[it.location] = it.language }
                 if (SidecarSubtitles.supportsDirectory(uri)) captions.forEach { host.subtitleLocations[it.title] = it.location }
                 if (host.closing || stopped) { host.closeDescriptors(); return@post }
-                render(Runnable {
-                    if (host.closing || stopped) return@Runnable
-                    try {
-                        host.owner = EGL14.eglGetCurrentContext()
-                        host.markStartup("native_create_started_ms")
-                        if (host.layerRequested) {
-                            host.layerSurface = runCatching { VideoLayerNative.createSurface(surfaceWidth, surfaceHeight) }
-                                .onFailure { android.util.Log.w("QuestPlayer", "Video layer surface unavailable", it) }.getOrNull()
-                            host.layer = host.layerSurface != null
-                            if (host.layer) currentLayerSurface = host.layerSurface
-                            // Alpha on the layer always copies: the hand-off made the decoder allocate a buffer per frame.
-                            if (host.layer && (host.debugCopy || host.alphaLayer)) host.copy = runCatching {
-                                LayerCopy(host.layerSurface!!, surfaceWidth, surfaceHeight, host.copyFlip, holdable = host.alphaLayer,
-                                    heldLimit = debugInt("debug.vrpp.layer.held", 8).coerceIn(2, 12),
-                                    // The output resolution setting caps the compositor window as it caps the RGBA frames.
-                                    maxOutputWidth = debugInt("debug.vrpp.layer.window_max", host.maxWidth),
-                                    compact = debugProperty("debug.vrpp.layer.compact").let { if (BuildConfig.DEBUG && it.isNotEmpty()) it == "1" else host.memorySaver })
-                                    .also { it.keepFrames = host.alphaLayer }
-                            }.onFailure { android.util.Log.w("QuestPlayer", "Layer copy unavailable", it) }.getOrNull()
-                            if (host.layer && host.copy == null && host.debugFanout) host.fanout = runCatching {
-                                LayerFanout(host.layerSurface!!, surfaceWidth, surfaceHeight, holdable = host.alphaLayer).also { it.keepFrames = host.alphaLayer }
-                            }.onFailure { android.util.Log.w("QuestPlayer", "Layer fan-out unavailable", it) }.getOrNull()
+                val surfaceReleaseDeadline = android.os.SystemClock.elapsedRealtime() + 10_000L
+                render(object : Runnable {
+                    override fun run() {
+                        if (host.closing || stopped) return
+                        if (host.layerRequested && !layerSurfaceLease.acquire(host)) {
+                            // The XR swapchain backs MediaCodec. RequestClose is asynchronous:
+                            // do not destroy its Surface while the preceding decoder can still write.
+                            // Retry off-frame; never block Godot's render thread or the source worker.
+                            if (android.os.SystemClock.elapsedRealtime() >= surfaceReleaseDeadline) {
+                                fail(session, "MPV_SURFACE_RELEASE_TIMEOUT", IllegalStateException("Previous decoder Surface is still closing"))
+                            } else worker.postDelayed({ render(this) }, 16L)
+                            return
                         }
-                        host.handle = MpvSourceNative.create(app, nativePath, startMs, hardware, audio, host.maxWidth,
-                            extra.flatMap { listOf(it.location, it.title) }.toTypedArray(),
-                            captions.flatMap { listOf(it.location, it.title) }.toTypedArray(), host.exactStart,
-                            if (host.layer) host.copy?.surface ?: host.fanout?.surface ?: host.layerSurface else null, disc?.mvc == true || mkv != null, surfaceWidth, surfaceHeight, iso, tlsCaFile,
-                            host.interleavePolicy.sequential, if (iso) host.discPlaylist else -1,
-                            networkCacheMiB(app, host.remote, session.inference, host.memorySaver),
-                            requiredPrimaryAudio = extra.any { it.requiredPrimary })
-                        check(host.handle > 0)
-                        host.markStartup("native_created_ms")
-                        host.loadingPhase = "reading"
-                        synchronized(host) {
-                            check(MpvSourceNative.setSpeed(host.handle, host.speed))
-                            val serial = MpvSourceNative.setSubtitleDelay(host.handle, host.subtitleDelay)
-                            check(serial > 0)
-                            host.subtitleCommand = maxOf(host.subtitleCommand, serial)
-                        }
-                        MpvSourceNative.setFrameCap(host.handle, frameCap(session))
-                        MpvSourceNative.setDirect(host.handle, direct(session))
-                        // Native creation stays paused until focus policy has
-                        // run off the Godot GL thread.
-                        refreshPlayback()
-                    } catch (failure: Throwable) { fail(session, "MPV_SOURCE_START_FAILED", failure) }
+                        try {
+                            host.owner = EGL14.eglGetCurrentContext()
+                            host.markStartup("native_create_started_ms")
+                            if (host.layerRequested) {
+                                host.layerSurface = runCatching { VideoLayerNative.createSurface(surfaceWidth, surfaceHeight) }
+                                    .onFailure { android.util.Log.w("QuestPlayer", "Video layer surface unavailable", it) }.getOrNull()
+                                host.layer = host.layerSurface != null
+                                if (!host.layer) layerSurfaceLease.release(host) {}
+                                // Alpha on the layer always copies: the hand-off made the decoder allocate a buffer per frame.
+                                if (host.layer && (host.debugCopy || host.alphaLayer)) host.copy = runCatching {
+                                    LayerCopy(host.layerSurface!!, surfaceWidth, surfaceHeight, host.copyFlip, holdable = host.alphaLayer,
+                                        heldLimit = debugInt("debug.vrpp.layer.held", 8).coerceIn(2, 12),
+                                        // The output resolution setting caps the compositor window as it caps the RGBA frames.
+                                        maxOutputWidth = debugInt("debug.vrpp.layer.window_max", host.maxWidth),
+                                        compact = debugProperty("debug.vrpp.layer.compact").let { if (BuildConfig.DEBUG && it.isNotEmpty()) it == "1" else host.memorySaver })
+                                        .also { it.keepFrames = host.alphaLayer }
+                                }.onFailure { android.util.Log.w("QuestPlayer", "Layer copy unavailable", it) }.getOrNull()
+                                if (host.layer && host.copy == null && host.debugFanout) host.fanout = runCatching {
+                                    LayerFanout(host.layerSurface!!, surfaceWidth, surfaceHeight, holdable = host.alphaLayer).also { it.keepFrames = host.alphaLayer }
+                                }.onFailure { android.util.Log.w("QuestPlayer", "Layer fan-out unavailable", it) }.getOrNull()
+                            }
+                            host.handle = MpvSourceNative.create(app, nativePath, startMs, hardware, audio, host.maxWidth,
+                                extra.flatMap { listOf(it.location, it.title) }.toTypedArray(),
+                                captions.flatMap { listOf(it.location, it.title) }.toTypedArray(), host.exactStart,
+                                if (host.layer) host.copy?.surface ?: host.fanout?.surface ?: host.layerSurface else null, disc?.mvc == true || mkv != null, surfaceWidth, surfaceHeight, iso, tlsCaFile,
+                                host.interleavePolicy.sequential, if (iso) host.discPlaylist else -1,
+                                networkCacheMiB(app, host.remote, session.inference, host.memorySaver),
+                                requiredPrimaryAudio = extra.any { it.requiredPrimary })
+                            check(host.handle > 0)
+                            host.markStartup("native_created_ms")
+                            host.loadingPhase = "reading"
+                            synchronized(host) {
+                                check(MpvSourceNative.setSpeed(host.handle, host.speed))
+                                val serial = MpvSourceNative.setSubtitleDelay(host.handle, host.subtitleDelay)
+                                check(serial > 0)
+                                host.subtitleCommand = maxOf(host.subtitleCommand, serial)
+                            }
+                            MpvSourceNative.setFrameCap(host.handle, frameCap(session))
+                            MpvSourceNative.setDirect(host.handle, direct(session))
+                            // Native creation stays paused until focus policy has
+                            // run off the Godot GL thread.
+                            refreshPlayback()
+                        } catch (failure: Throwable) { fail(session, "MPV_SOURCE_START_FAILED", failure) }
+                    }
                 })
             } catch (failure: Throwable) { fail(session, (failure as? StrmFailure)?.code ?: "MPV_LOCAL_SOURCE_FAILED", failure) }
             finally { host.sourcePreparing = false }
@@ -1316,13 +1328,12 @@ internal class MpvVideoBridge(
         for (host in hosts) if (host.closing && !host.sourcePreparing && sessions.values.none { it.host === host }) {
             try {
                 if (host.handle == 0L || MpvSourceNative.close(host.handle, host.owner != EGL14.eglGetCurrentContext())) {
-                    host.handle = 0; host.closeDescriptors(); hosts.remove(host)
-                    // A newer playback may already own the current swapchain; only the last one destroys it.
+                    host.handle = 0; host.closeDescriptors()
+                    // Release only after MPV and its optional copy producer have stopped writing.
                     host.fanout?.close(); host.fanout = null
                     host.copy?.close(); host.copy = null
-                    if (host.layer && currentLayerSurface === host.layerSurface) {
-                        VideoLayerNative.destroySurface(); currentLayerSurface = null
-                    }
+                    if (host.layer) layerSurfaceLease.release(host) { VideoLayerNative.destroySurface() }
+                    hosts.remove(host)
                 } else if (!host.closeStuckLogged) {
                     // Diagnostics only: a source that does not finish closing keeps a native slot.
                     val wait = JSONObject(MpvSourceNative.closeWait(host.handle))
@@ -2063,7 +2074,7 @@ internal class MpvVideoBridge(
     // GL thread: layer pair tokens (no bridge slot behind them), in a range of their own: an Alpha layer
     // session also holds render bridge tokens in the same lease map.
     private var layerTokens = 1L shl 40
-    @Volatile private var currentLayerSurface: android.view.Surface? = null
+    private val layerSurfaceLease = VideoSurfaceLease<Host>()
     /** Debug builds: an integer system property, [fallback] when unset or not a number. */
     private fun debugInt(name: String, fallback: Int): Int = if (BuildConfig.DEBUG) debugProperty(name).toIntOrNull() ?: fallback else fallback
     private fun debugProperty(name: String): String = try {

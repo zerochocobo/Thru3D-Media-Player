@@ -22,12 +22,10 @@ param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT }
     [switch]$QuestStore,
     # Comparison build: store native libraries without ZIP compression, retaining extraction.
     [switch]$UncompressedNativeLibraries,
-    # One explicit Debug build for headset review; every other build excludes beach resources.
+    # Legacy: every build includes the private beach now; accepted so older commands still run.
     [switch]$IncludePrivateBeach,
     [ValidateRange(0,2100000000)][int]$AndroidVersionCode = 0)
 $ErrorActionPreference = 'Stop'
-if ($IncludePrivateBeach -and $BuildType -ne 'Debug') { throw 'IncludePrivateBeach only applies to Debug; Release must not ship the beach until it is accepted.' }
-$env:THRU3D_INCLUDE_PRIVATE_BEACH = if ($IncludePrivateBeach) { '1' } else { '' }
 if (($PicoChinaStore -or $AndroidVersionCode -gt 0) -and ($BuildType -ne 'Release' -or $XrVendor -ne 'Pico')) {
     throw 'PicoChinaStore and AndroidVersionCode are limited to PICO Release builds.'
 }
@@ -152,10 +150,6 @@ if ($IncludeDiagnostics) {
     if ($null -eq $originalExportPresets) { $originalExportPresets = [IO.File]::ReadAllBytes($exportPresetsPath) }
     $diagnosticPresets = [IO.File]::ReadAllText($exportPresetsPath).Replace('exclude_filter="tests/*,media/*"', 'exclude_filter="tests/*"').Replace('include_filter="i18n/*.json,', 'include_filter="media/*.mp4,i18n/*.json,')
     [IO.File]::WriteAllText($exportPresetsPath, $diagnosticPresets, [Text.UTF8Encoding]::new($false))
-}
-if (-not $IncludePrivateBeach) {
-    if ($null -eq $originalExportPresets) { $originalExportPresets = [IO.File]::ReadAllBytes($exportPresetsPath) }
-    & "$PSScriptRoot/environment/Prepare-DebugModelExport.ps1" -PresetsPath $exportPresetsPath
 }
 $artifactDirectory = Join-Path $workspace 'build/output'
 $logDirectory = Join-Path $artifactDirectory 'logs'
@@ -528,9 +522,9 @@ try {
     & "$PSScriptRoot\Assert-WebVideoPackaged.ps1" -ArchivePath $apkPath
     & (Join-Path $workspace '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'Build-ChineseLexicon.py') --check --archive $apkPath
     if ($LASTEXITCODE -ne 0) { throw 'Packaged Chinese keyboard lexicon or notices differ.' }
-    # Beach resources stay out of every package unless one Debug build explicitly requests them.
+    # Every build ships the private beach; the gate fails a package without it.
     & "$PSScriptRoot\Assert-CinemaPackaged.ps1" -ArchivePath $apkPath
-    & "$PSScriptRoot\Assert-PrivateBeachPackaged.ps1" -ArchivePath $apkPath -ExpectExcluded:(-not $IncludePrivateBeach)
+    & "$PSScriptRoot\Assert-PrivateBeachPackaged.ps1" -ArchivePath $apkPath
     $rvmLibrary = Join-Path $nativeEvidenceDirectory 'libquest_rvm.so'
     [IO.Compression.ZipFileExtensions]::ExtractToFile($nativeEntry, $rvmLibrary, $true)
 } finally { $apkArchive.Dispose() }

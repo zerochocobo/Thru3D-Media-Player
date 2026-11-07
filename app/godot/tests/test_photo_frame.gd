@@ -29,7 +29,7 @@ func capture(name: String) -> void:
 	await process_frame
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
-	var output := ProjectSettings.globalize_path("res://../previews")
+	var output := ProjectSettings.globalize_path("res://../../build/output/photo-orientation/frame-preview")
 	DirAccess.make_dir_recursive_absolute(output)
 	root.get_texture().get_image().save_png(output.path_join(name + ".png"))
 
@@ -106,11 +106,12 @@ func run() -> void:
 		main._on_photo_adjustment("screen_distance", 2.7)
 		check(is_equal_approx(world(photo).origin.distance_to(main._eye()), 2.7), "Distance slider also targets the stable photo centre during transitions")
 		photo.finish_transition()
+		var rotation_before_recenter: float = photo.screen_rotation
 		main.xr_camera.transform = Transform3D(Basis.from_euler(Vector3(0.5, 0.6, -0.3)), Vector3(0.6, 1.4, 0.4))
 		main._on_photo_action("recenter"); photo.finish_transition()
 		var centered: Transform3D = main._head_pose() * Transform3D(Basis.IDENTITY, Vector3(0, 0, -photo.screen_distance))
 		check(world(photo).is_equal_approx(centered), "Explicit recenter puts either reading layout at the current gaze centre including pitch and roll")
-		check(photo.screen_rotation == 17 and is_equal_approx(photo.screen_curve, 0.35) and is_equal_approx(photo.screen_scale, 1.2), "Recenter preserves picture size, content rotation, curvature and distance")
+		check(photo.screen_rotation == rotation_before_recenter and is_equal_approx(photo.screen_curve, 0.35) and is_equal_approx(photo.screen_scale, 1.2), "Recenter preserves picture size, content rotation, curvature and distance")
 		await capture("%d-centered" % layout)
 		main.xr_camera.position += Vector3(0.02, -0.01, 0.03)
 		main._on_photo_action("photo_next"); await settle(main); photo.finish_transition()

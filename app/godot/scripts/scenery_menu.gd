@@ -8,6 +8,7 @@ static var SELECTED: Color:
 const TextInput := preload("res://scripts/system_text_input.gd")
 const BUILTINS := [["cinema","Grand cinema"],["private_beach","Private beach"],["belfast","Belfast sunset"],["morning","Morning sky"],
 	["night","Milky Way panorama"],["dark","Dark background"],["passthrough","Passthrough"]]
+const PREVIEWS := ["cinema","private_beach","belfast","morning","night"]
 const CARD := 200000
 const BACK := 10100
 const ADD := 10101
@@ -56,9 +57,24 @@ var _bottom := -.71
 var _notice := ""
 var _help_return := ""
 var _issue_index := 0
+## Turning ring on the card that is loading; it animates between refreshes.
+var _spinner: Node3D
+const SPINNER_DOTS := 10
+const SPINNER_SPEED := 5.0
 const LEFT := -.67
 const RIGHT := .67
 const CARD_SIZE := Vector2(.43,.28)
+## The scene page fits four cards a row: seven built-in scenes in two rows, then
+## three of the viewer's backgrounds beside the add card.
+const SCENE_CARD := Vector2(.32,.23)
+const SCENE_COLUMNS := 4
+const SCENE_PITCH := Vector2(.345,.24)
+const SCENE_CUSTOM_PER_PAGE := SCENE_COLUMNS-1
+## Scene page rhythm: the title-to-rule gap, rule-to-label, rule-to-first-card centre,
+## and the gap from a card row to the next rule.
+const SCENE_RULE := Vector4(.165,.05,.215,.035)
+## The footer sits below the last rule; its button stays clear of the status line.
+const SCENE_FOOTER := Vector2(.065,.12)
 
 func _left(text: String, point: Vector2, size: int = TEXT_BODY, width: float = 1.30, ink: Color = Color(-1, -1, -1, -1), parent: Node = self) -> Label3D:
 	var label:=_label(_fit_title(text,"",width,size),Vector3(point.x,point.y,.009),size,parent)
@@ -146,6 +162,7 @@ func navigate_back() -> bool:
 	refresh(); return true
 
 func _process(delta: float) -> void:
+	if is_instance_valid(_spinner) and visible: _spinner.rotation.z-=delta*SPINNER_SPEED
 	if not visible or not state_provider.is_valid() or has_pointer_capture() or editor.active(): return
 	_poll+=delta
 	if _poll<.25: return
@@ -164,8 +181,10 @@ func refresh() -> void:
 
 func _draw() -> void:
 	_clear_layout(); choices.begin(mode + view + modal)
+	_spinner=null
 	var height:=1.42
-	if not modal.is_empty(): height=1.10 if modal=="requirements" else .82 if modal=="issues" else .76 if modal=="delete" else .58
+	if modal.is_empty() and view=="scene": height=_scene_height()
+	elif not modal.is_empty(): height=1.10 if modal=="requirements" else .82 if modal=="issues" else .76 if modal=="delete" else .58
 	elif view in ["manage","review"]:
 		var count: int=library.reviews.size() if view=="review" else library.assets.size()
 		height=.46+clampi(ceili(count/3.0),1,2)*.30
@@ -276,26 +295,34 @@ func _draw_cards() -> void:
 		for item in BUILTINS:
 			if library.allowed(mode,item[0]): _cards.append({"id":item[0],"title":I18n.t(item[1]),"builtin":true})
 		var builtin_count:=_cards.size()
-		_left(I18n.t("Built-in scenes"),Vector2(LEFT,.475),TEXT_BODY,1.0)
-		_left(I18n.t("My backgrounds") + " · %d" % library.assets.size(),Vector2(LEFT,-.195),TEXT_BODY,.50)
-		_button(MANAGE,I18n.t("Manage"),Vector2(.52,-.195),Vector2(.30,.065))
-		_glyph(HELP,"info",Vector2(.29,-.195),.055,true,I18n.t("Panorama requirements"))
+		var builtin_y:=_section(_top-SCENE_RULE.x,I18n.t("Built-in scenes"))
+		var custom_rule:=_below(builtin_y,ceili(builtin_count/float(SCENE_COLUMNS)))
+		var custom_y:=_section(custom_rule,I18n.t("My backgrounds") + " · %d" % library.assets.size())
+		var label_y:=custom_rule-SCENE_RULE.y
+		_button(MANAGE,I18n.t("Manage"),Vector2(.52,label_y),Vector2(.30,.065))
+		_glyph(HELP,"info",Vector2(.29,label_y),.055,true,I18n.t("Panorama requirements"))
+		var footer_rule:=_below(custom_y,1)
+		_rule(footer_rule)
+		var footer_y:=footer_rule-SCENE_FOOTER.x
 		var rows: Array = library.rows()
-		page=clampi(page,0,maxi(0,ceili(rows.size()/2.0)-1))
-		for item in rows.slice(page*2,page*2+2): _cards.append(item)
-		for i in builtin_count: _card(_cards[i],i,Vector2(-.47+(i%3)*.47,.31-(i/3)*.30))
-		var start := _cards.size() - mini(2,rows.size()-page*2)
-		for i in range(start,_cards.size()): _card(_cards[i],i,Vector2(-.47+(i-start)*.47,-.39))
-		_button(ADD,"",Vector2(.47,-.39),CARD_SIZE,not _state.get("busy",false))
+		var per_page := SCENE_CUSTOM_PER_PAGE
+		page=clampi(page,0,maxi(0,ceili(rows.size()/float(per_page))-1))
+		for item in rows.slice(page*per_page,page*per_page+per_page): _cards.append(item)
+		for i in builtin_count: _card(_cards[i],i,_scene_slot(i%SCENE_COLUMNS,builtin_y-(i/SCENE_COLUMNS)*SCENE_PITCH.y),SCENE_CARD)
+		var start := _cards.size() - mini(per_page,rows.size()-page*per_page)
+		for i in range(start,_cards.size()): _card(_cards[i],i,_scene_slot(i-start,custom_y),SCENE_CARD)
+		# The add card follows the backgrounds on this page, settling in the last column once it fills.
+		_button(ADD,"",_scene_slot(_cards.size()-start,custom_y),SCENE_CARD,not _state.get("busy",false))
 		var add_card: Node3D=_buttons.back().node
-		_icon("plus",Vector3(0,.018,.007),.06,MUTED,add_card)
-		_left(I18n.t("Add panorama"),Vector2(-.185,-.114),TEXT_AUX,.37,MUTED if _state.get("busy",false) else UiTheme.color("label"),add_card)
+		var add_layout := _card_layout(SCENE_CARD)
+		_icon("plus",Vector3(0,add_layout.image_y,.007),.06,MUTED,add_card)
+		_left(I18n.t("Add panorama"),add_layout.caption,TEXT_AUX,add_layout.caption_width,MUTED if _state.get("busy",false) else UiTheme.color("label"),add_card)
 		_tips[ADD]=I18n.t("JPG / PNG / WebP · 360° 2:1 · VR180 1:1")
-		if _state.get("choice","") not in ["dark","passthrough"]: _button(ADJUST,I18n.t("Adjust"),Vector2(.52,-.58),Vector2(.30,.065))
-		if not library.reviews.is_empty(): _button(REVIEW,I18n.t("Review")+" (%d)"%library.reviews.size(),Vector2(-.16,-.58),Vector2(.52,.065))
-		elif _state.get("can_import",false): _button(CURRENT,I18n.t("Use current panorama"),Vector2(-.16,-.58),Vector2(.70,.065),not _state.get("busy",false))
-		else: _left(_selected_title(),Vector2(LEFT,-.58),TEXT_AUX,.88,MUTED)
-		_paging(ceili(rows.size()/2.0),-.195,-.04)
+		if _state.get("choice","") not in ["dark","passthrough"]: _button(ADJUST,I18n.t("Adjust"),Vector2(.52,footer_y),Vector2(.30,.065))
+		if not library.reviews.is_empty(): _button(REVIEW,I18n.t("Review")+" (%d)"%library.reviews.size(),Vector2(-.16,footer_y),Vector2(.52,.065))
+		elif _state.get("can_import",false): _button(CURRENT,I18n.t("Use current panorama"),Vector2(-.16,footer_y),Vector2(.70,.065),not _state.get("busy",false))
+		else: _left(_selected_title(),Vector2(LEFT,footer_y),TEXT_AUX,.88,MUTED)
+		_paging(ceili(rows.size()/float(per_page)),label_y,-.04)
 	else:
 		_cards=library.review_rows() if view=="review" else library.rows()
 		var pages:=maxi(1,ceili(_cards.size()/6.0)); page=clampi(page,0,pages-1)
@@ -319,33 +346,70 @@ func _draw_cards() -> void:
 			_card(_cards[i],i,Vector2(-.47+(slot%3)*.47,_top-.42-(slot/3)*.30))
 		_paging(pages,_bottom+.12)
 
-func _card(item: Dictionary,index: int,point: Vector2) -> void:
+## Panel height that wraps the built-in rows, one row of backgrounds and the footer.
+func _scene_height() -> float:
+	var count:=0
+	for item in BUILTINS: if library.allowed(mode,item[0]): count+=1
+	var section:=SCENE_RULE.z+SCENE_CARD.y*.5+SCENE_RULE.w
+	return SCENE_RULE.x+2*section+(maxi(1,ceili(count/float(SCENE_COLUMNS)))-1)*SCENE_PITCH.y+SCENE_FOOTER.x+SCENE_FOOTER.y
+
+## A rule with its section label; returns the centre of the section's first card row.
+func _section(rule_y: float,text: String) -> float:
+	_rule(rule_y)
+	_left(text,Vector2(LEFT,rule_y-SCENE_RULE.y),TEXT_BODY,.50)
+	return rule_y-SCENE_RULE.z
+
+## Where the next rule goes beneath `rows` card rows starting at `first_y`.
+func _below(first_y: float,rows: int) -> float:
+	return first_y-(maxi(1,rows)-1)*SCENE_PITCH.y-SCENE_CARD.y*.5-SCENE_RULE.w
+
+func _rule(y: float) -> void:
+	var line:=_quad(Vector2(1.34,.003),Vector3(0,y,.006),UiTheme.color("divider"),11); add_child(line); _decorations.append(line)
+
+func _scene_slot(column: int,y: float) -> Vector2:
+	return Vector2(-SCENE_PITCH.x*(SCENE_COLUMNS-1)*.5+column*SCENE_PITCH.x,y)
+
+## Picture, caption and badge placement for a card of this size; text keeps its size.
+static func _card_layout(size: Vector2) -> Dictionary:
+	var image := Vector2(size.x-.016,(size.x-.016)*9.0/16.0)
+	var image_y := size.y*.5-.008-image.y*.5
+	return {"image":image,"image_y":image_y,"caption":Vector2(-size.x*.5+.03,image_y-image.y*.5-.024),
+		"caption_width":size.x-.06,"badge":Vector2(size.x*.5-.045,size.y*.5-.045)}
+
+func _card(item: Dictionary,index: int,point: Vector2,size: Vector2 = CARD_SIZE) -> void:
 	var id:=str(item.id)
-	var active: bool = selected.has(id) if bulk or view=="review" else id == str(_state.get("selected",""))
-	_button(CARD+index,"",point,CARD_SIZE)
+	var pending := str(_state.get("pending",""))
+	var loading: bool = not bulk and view!="review" and id==pending
+	# A press answers at once: the chosen card takes the highlight while its scene loads.
+	var active: bool = selected.has(id) if bulk or view=="review" else id == (pending if not pending.is_empty() else str(_state.get("selected","")))
+	_button(CARD+index,"",point,size)
 	var node: Node3D=_buttons.back().node
+	var layout := _card_layout(size)
 	if active:
 		_buttons.back().base_color=ACCENT; node.material_override.set_shader_parameter("surface_color",ACCENT)
-		var inset:=_quad(CARD_SIZE-Vector2.ONE*.005,Vector3(0,0,.003),TILE,11)
+		var inset:=_quad(size-Vector2.ONE*.005,Vector3(0,0,.003),TILE,11)
 		inset.material_override.set_shader_parameter("corner_radius",.012); node.add_child(inset)
-	var texture: Texture2D = load("res://backgrounds/previews/"+id+".jpg") if item.get("builtin",false) and id in ["cinema","belfast","morning","night"] else library.texture(id)
+	# The beach's image lives with its resources, so builds without the scene do not carry it.
+	var preview_path: String="res://environments/private_beach/preview.jpg" if id=="private_beach" else "res://backgrounds/previews/"+id+".jpg"
+	var texture: Texture2D = load(preview_path) if item.get("builtin",false) and id in PREVIEWS else library.texture(id)
 	if texture:
-		var image:=MeshInstance3D.new(); var mesh:=QuadMesh.new(); mesh.size=Vector2(.414,.233); image.mesh=mesh
-		image.position=Vector3(0,.018,.006); image.material_override=_material(Color.WHITE,12); image.material_override.albedo_texture=texture
+		var image:=MeshInstance3D.new(); var mesh:=QuadMesh.new(); mesh.size=layout.image; image.mesh=mesh
+		image.position=Vector3(0,layout.image_y,.006); image.material_override=_material(Color.WHITE,12); image.material_override.albedo_texture=texture
 		if texture.get_width()>texture.get_height()*1.78:
 			var crop: float=(16.0/9.0)/(float(texture.get_width())/texture.get_height())
 			image.material_override.uv1_scale=Vector3(crop,1,1); image.material_override.uv1_offset=Vector3((1-crop)/2,0,0)
 		node.add_child(image)
-	else: _icon("passthrough" if id=="passthrough" else "circle",Vector3(0,.018,.007),.065,MUTED,node)
+	else: _icon("passthrough" if id=="passthrough" else "circle",Vector3(0,layout.image_y,.007),.065,MUTED,node)
+	if loading: _loading_overlay(node,layout)
 	var caption:=str(item.title)
 	if view=="review": caption+=" · "+("VR180" if item.get("geometry",3)==1 else "360°")
 	var has_actions:=view=="manage" and not bulk
-	_left(caption,Vector2(-.185,-.114),TEXT_AUX,.25 if has_actions else .37,UiTheme.color("label"),node)
+	_left(caption,layout.caption,TEXT_AUX,layout.caption_width-(.12 if has_actions else 0.0),UiTheme.color("label"),node)
 	_tips[CARD+index]=str(item.title)
 	if active:
-		var badge:=_quad(Vector2(.035,.035),Vector3(.17,.095,.012),ACCENT,14)
+		var badge:=_quad(Vector2(.035,.035),Vector3(layout.badge.x,layout.badge.y,.012),ACCENT,14)
 		badge.material_override.set_shader_parameter("corner_radius",.0175); node.add_child(badge)
-		_icon("check",Vector3(.17,.095,.015),.024,UiTheme.color("scene_check"),node).material_override.render_priority=16
+		_icon("check",Vector3(layout.badge.x,layout.badge.y,.015),.024,UiTheme.color("scene_check"),node).material_override.render_priority=16
 	if has_actions:
 		for action in [[RENAMES+index,"edit",.11,"Rename"],[REMOVES+index,"trash",.18,"Remove"]]:
 			var centre:=point+Vector2(float(action[2]),-.114)
@@ -367,6 +431,15 @@ func _card(item: Dictionary,index: int,point: Vector2) -> void:
 			var badge:=_quad(Vector2(caption_width,.036),Vector3(badge_centre,.097,.012),PANEL,14)
 			badge.material_override.set_shader_parameter("corner_radius",.008); node.add_child(badge)
 			_label(" · ".join(names),Vector3(badge_centre,.097,.015),12,node).render_priority=16
+
+func _loading_overlay(card: Node3D,layout: Dictionary) -> void:
+	var shade:=MeshInstance3D.new(); var mesh:=QuadMesh.new(); mesh.size=layout.image; shade.mesh=mesh
+	shade.position=Vector3(0,layout.image_y,.008); shade.material_override=_material(Color(0,0,0,.45),13); card.add_child(shade)
+	_spinner=Node3D.new(); _spinner.position=Vector3(0,layout.image_y,.010); card.add_child(_spinner)
+	for index in SPINNER_DOTS:
+		var angle := TAU*index/SPINNER_DOTS
+		var dot:=_quad(Vector2.ONE*.014,Vector3(cos(angle),sin(angle),0)*.036,Color(1,1,1,.15+.85*index/float(SPINNER_DOTS-1)),14)
+		dot.material_override.set_shader_parameter("corner_radius",.007); _spinner.add_child(dot)
 
 func _paging(pages: int,y: float,x: float = -.63) -> void:
 	if pages<=1: return
@@ -394,7 +467,7 @@ func _draw_adjust() -> void:
 			{"key":"cinema_screen_light","value":_state.get("cinema_screen_light",true),"choices":[],"switch":true}]
 		_button(CURRENT,I18n.t("Return to start"),Vector2(.44,_bottom+.13),Vector2(.46,.075),bool(_state.get("cinema_ready",true)))
 	elif choice=="private_beach":
-		rows=[{"key":"beach_hours","value":_state.get("beach_hours",9.0),"choices":[6.0,9.0,12.0,15.0,18.0,21.0,0.0].map(func(x): return {"value":x,"label":"%d:00"%int(x)})},
+		rows=[{"key":"beach_time_mode","value":_state.get("beach_time_mode","auto"),"choices":[{"value":"auto","label":"Auto"},{"value":"day","label":"Day"},{"value":"night","label":"Night"}]},
 			{"key":"cinema_interaction","value":_state.get("cinema_interaction","watch"),"choices":[{"value":"watch","label":"Watch"},{"value":"move","label":"Free movement"}]},
 			{"key":"beach_screen_light","value":_state.get("beach_screen_light",1.0),"choices":[{"value":0.0,"label":"Off"},{"value":.5,"label":"Low"},{"value":1.0,"label":"Medium"},{"value":1.6,"label":"High"}]}]
 		_button(BEACH_SCREEN,I18n.t("Screen placement"),Vector2(-.22,_bottom+.13),Vector2(.46,.075),bool(_state.get("cinema_ready",false)))
@@ -417,10 +490,8 @@ func _draw_adjust() -> void:
 func _draw_beach_screen() -> void:
 	var busy: bool = _state.get("beach_screen_loading",false)
 	var rows := [
-		["width","Screen width",Vector3(3,20,.5),"m"],
-		["sideways","Left / right",Vector3(-35,35,.5),"m"],
+		["width","Screen width",Vector3(1,20,.5),"m"],
 		["distance","Forward / back",Vector3(-40,40,.5),"m"],
-		["rotation","Rotation",Vector3(-180,180,5),"°"],
 		["tilt","Tilt",Vector3(-15,15,1),"°"]]
 	for i in rows.size():
 		var row: Array=rows[i]; var y:=_top-.26-i*.13

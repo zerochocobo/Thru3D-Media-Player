@@ -17,6 +17,7 @@ var scenery_rotation := Vector3.ZERO
 ## Godot's blending keep correct alpha over the hole) and the backdrop draws the sky instead.
 var video_layer := false
 var menu_layers := false
+var browser_layer := false
 var backdrop: MeshInstance3D
 var _panorama_backdrop: ShaderMaterial
 var _spatial_backdrop: ShaderMaterial
@@ -45,6 +46,11 @@ func set_video_layer(active: bool) -> void:
 func set_menu_layers(active: bool) -> void:
 	if active == menu_layers: return
 	menu_layers = active
+	if environment: _set_background(applied_passthrough)
+
+func set_browser_layer(active: bool) -> void:
+	if active == browser_layer: return
+	browser_layer = active
 	if environment: _set_background(applied_passthrough)
 
 func set_scenery(value: Sky, yaw_degrees: float = 0.0, spatial_backdrop: ShaderMaterial = null) -> void:
@@ -114,7 +120,8 @@ func _apply_requested_mode() -> bool:
 	return true
 
 func _set_background(transparent: bool) -> void:
-	var layer := (video_layer or menu_layers) and not preview
+	# Browser pages remain native underlays when their entire menu is hidden.
+	var layer := (video_layer or menu_layers or browser_layer) and not preview
 	viewport.transparent_bg = transparent or layer
 	environment.sky = null if transparent or layer else scenery
 	environment.sky_rotation = scenery_rotation
@@ -286,6 +293,7 @@ func capabilities() -> Dictionary:
 		"foveation_level": foveation_level,
 		"render_scale": render_scale,
 		"menu_layers": menu_layers,
+		"browser_layer": browser_layer,
 		# Vendors can shrink the actual render region without changing the allocated eye buffers.
 		"meta_dynamic_resolution_enabled": bool(ProjectSettings.get_setting("xr/openxr/extensions/meta/dynamic_resolution", true)),
 		"render_target_size_scope": "allocated_eye_buffer",

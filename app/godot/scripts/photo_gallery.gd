@@ -84,12 +84,9 @@ func set_mode(value: int, reason: String = "layout") -> void:
 func recenter(reset_viewing: bool = true) -> void:
 	if reset_viewing: _viewing_offsets.clear()
 	if photo and is_instance_valid(photo.view_camera):
-		var head: Transform3D = photo.view_camera.global_transform
-		var forward := -head.basis.z; forward.y = 0
-		forward = forward.normalized() if forward.length() > 0.01 else Vector3.FORWARD
-		anchor = Transform3D(Basis(Vector3.UP, atan2(-forward.x, -forward.z)), head.origin)
+		anchor = _view_head()
 	else: anchor = Transform3D(Basis.IDENTITY, Vector3(0, 1.6, 0))
-	if _layout_offsets.has(mode): anchor = _view_head() * _layout_offsets[mode]
+	if _layout_offsets.has(mode): anchor = photo.constrain_layout_pose(_view_head() * _layout_offsets[mode])
 	_yaw = 0.0; _reflow = true
 	if focus >= 0: _place_focus()
 
@@ -112,8 +109,10 @@ func translate_layout(offset: Vector3) -> void:
 
 func transform_layout(motion: Transform3D) -> void:
 	if not motion.is_finite(): return
-	anchor = motion * anchor
-	focus_pose = motion * focus_pose
+	var next: Transform3D = photo.constrain_layout_pose(motion * anchor) if photo else motion * anchor
+	motion = next * anchor.affine_inverse()
+	anchor = next
+	focus_pose = photo.constrain_layout_pose(motion * focus_pose) if photo else motion * focus_pose
 	if focus >= 0: remember_focus_pose(focus_pose)
 	for card in cards.values():
 		card.pose = motion * card.pose
@@ -415,8 +414,11 @@ func _build(current: int) -> void:
 	var used := {current: true} if mode == Layout.SIDES else {}
 	if mode == Layout.SIDES:
 		# Continue from the picture's actual edge, rather than placing previews over it.
-		var frame: Transform3D = photo.global_transform * photo.flat_pose * Transform3D(Basis(Vector3.FORWARD, deg_to_rad(photo.screen_rotation)), Vector3.ZERO)
-		var edge: Vector3 = photo.screen_corner(1); edge.y = 0
+		var frame: Transform3D = photo.global_transform * photo.flat_pose
+		var edge := Vector3.ZERO
+		for corner in 4:
+			var point: Vector3 = frame.affine_inverse() * photo.panel.to_global(photo.screen_corner(corner))
+			if point.x > edge.x: edge = point
 		var viewing_distance := maxf(Vector2(edge.x, photo.screen_distance - edge.z).length(), 0.25)
 		var edge_angle := atan2(absf(edge.x), photo.screen_distance - edge.z)
 		var eye_frame := frame * Transform3D(Basis.IDENTITY, Vector3(0, 0, photo.screen_distance))
@@ -631,17 +633,15 @@ func activate(index: int) -> void:
 func _place_focus() -> void:
 	var head := _view_head()
 	if _viewing_offsets.has(mode):
-		focus_pose = head * _viewing_offsets[mode]; return
-	var direction := -head.basis.z; direction.y = 0
-	var level := Transform3D(Basis(Vector3.UP, atan2(-direction.x, -direction.z)), head.origin) if direction.length() > 0.01 else Transform3D(Basis.IDENTITY, head.origin)
-	focus_pose = level * Transform3D(Basis.IDENTITY, Vector3(0, 0, -maxf(1.5, photo.screen_distance)))
+		focus_pose = photo.constrain_layout_pose(head * _viewing_offsets[mode]); return
+	focus_pose = head * Transform3D(Basis.IDENTITY, Vector3(0, 0, -maxf(1.5, photo.screen_distance)))
 	_viewing_offsets[mode] = head.affine_inverse() * focus_pose
 
 func _view_head() -> Transform3D:
 	if photo and is_instance_valid(photo.view_camera):
 		var transform: Transform3D = photo.view_camera.global_transform
 		if transform.is_finite() and absf(transform.basis.determinant()) > 0.001:
-			return Transform3D(transform.basis.orthonormalized(), transform.origin)
+			return photo.layout_head(Transform3D(transform.basis.orthonormalized(), transform.origin))
 	return anchor
 
 func remember_focus_pose(pose: Transform3D) -> void:
@@ -668,6 +668,7 @@ func _animate_focus() -> void:
 	var size: Vector2 = photo._flat.size if photo.index == focus and photo.geometry == 0 else Vector2(2.8, 2.8 / _aspect(focus))
 	if photo.loading and photo.pending_index == focus: size = photo._placeholder_size
 	card.node.global_transform = card.pose if eased <= 0 else (focus_pose if eased >= 1 else card.pose.interpolate_with(focus_pose, eased))
+	card.node.global_transform = photo.constrain_layout_pose(card.node.global_transform, true)
 	var shape := []
 	for i in 4: shape.append(card.shape[i] if eased <= 0 else (RECT[i] if eased >= 1 else card.shape[i].lerp(RECT[i], eased)))
 	var shown_size: Vector2 = card.size if eased <= 0 else (size if eased >= 1 else card.size.lerp(size, eased))

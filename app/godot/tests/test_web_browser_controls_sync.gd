@@ -1,0 +1,125 @@
+extends SceneTree
+const Menu := preload("res://scripts/library_menu.gd")
+const Fixture := preload("res://tests/test_web_browser_panel.gd")
+const Chinese := preload("res://scripts/chinese_input.gd")
+const I18n := preload("res://scripts/i18n.gd")
+const Depth := preload("res://scripts/web_browser_depth.gd")
+var checks:=0
+var failures: Array[String]=[]
+var menu: Node3D
+var platform: Object
+var browser: RefCounted
+var host: Node3D
+var footer: Node3D
+func _initialize() -> void: run.call_deferred()
+func check(ok: bool, message: String) -> void:
+	checks+=1
+	if not ok: failures.append(message)
+func poll() -> void:
+	browser.next_poll=0; browser.tick()
+	if footer: footer.sync()
+func keyboard_selected() -> bool:
+	return footer._buttons.filter(func(b): return b.target==footer.KEYBOARD)[0].base_color==footer.ACCENT
+
+func run() -> void:
+	platform=Fixture.Platform.new(); platform.browser.merge({"tab_id":7,"navigation":3,"fullscreen":false,"keyboard_visible":false},true)
+	menu=Menu.new(); root.add_child(menu); menu.attach_platform(platform); menu.toggle(); menu.set_process(false)
+	menu._activate(Menu.NAV_BASE+Menu.Section.WEB)
+	browser=menu.web_browser; browser.open("https://example.test/video"); poll()
+	host=browser.windows[1]; footer=host.effect_controls; host.set_process(false)
+	host.depth.config_path=ProjectSettings.globalize_path("res://../../build/output/browser-controls/preferences.cfg")
+	host.depth.auto_3d_hidden=false; host.depth.enabled=false
+	var defaults:=Depth.new(); check(not defaults.auto_3d_hidden,"Auto 3D on hidden menus defaults off")
+	check(not keyboard_selected(),"Keyboard control is available and unselected when closed")
+	footer.near_hands.right_hand=true;footer.entered=0;footer.sync(1000)
+	var keyboard_button: Dictionary=footer._buttons.filter(func(b):return b.target==footer.KEYBOARD)[0]
+	var origin: Vector3=keyboard_button.node.to_global(Vector3(0,0,.5))
+	host.press_pointer("right_hand",origin,-footer.global_basis.z,true)
+	host.release_pointer("right_hand",origin,-footer.global_basis.z,true)
+	check(platform.inputs.back()[0]=="show","Closed keyboard button requests show")
+	var target: Dictionary=JSON.parse_string(platform.inputs.back()[1])
+	check(int(target.window)==1 and int(target.tab)==7 and int(target.navigation)==3,"Manual keyboard commands bind to the current window, tab and navigation")
+	platform.browser.editing=true; poll()
+	check(not keyboard_selected(),"An existing editor alone does not mean the system keyboard is visible")
+	platform.browser.keyboard_visible=true; poll()
+	check(keyboard_selected(),"Page-triggered system keyboard selects the same button")
+	footer._activate(footer.KEYBOARD)
+	check(platform.inputs.back()[0]=="close","Selected keyboard button requests hide")
+	platform.browser.keyboard_visible=false; poll()
+	check(not keyboard_selected(),"System keyboard dismissal clears selection")
+	var actions_before: Array=platform.actions.duplicate()
+	var requests_before: int=platform.beta_requests
+	platform.browser.fullscreen=true; poll()
+	check(not host.toolbar_shown and not host.depth.enabled,"Web fullscreen hides menus with auto 3D off by default")
+	check(footer._buttons.filter(func(b): return b.target==footer.CHROME)[0].base_color==footer.ACCENT,"Fullscreen shares the selected hide-menu button")
+	check(platform.actions==actions_before and platform.beta_requests==requests_before and not browser.handoff,"Fullscreen stays in the browser without pause, resolution or player handoff")
+	footer._activate(footer.CHROME); poll()
+	check(host.toolbar_shown,"Manually showing menus during fullscreen survives further status polls")
+	platform.browser.fullscreen=false; poll()
+	check(host.toolbar_shown,"Exiting fullscreen respects a manual menu choice")
+	platform.browser.fullscreen=true; poll(); platform.browser.fullscreen=false; poll()
+	check(host.toolbar_shown,"Automatic fullscreen hiding restores previous menus on exit")
+	footer._activate(footer.CHROME)
+	platform.browser.fullscreen=true; poll(); platform.browser.fullscreen=false; poll()
+	check(not host.toolbar_shown,"A previously hidden menu stays hidden after fullscreen")
+	footer._activate(footer.CHROME)
+	browser.ensure_window(2)
+	var peer: Node3D=browser.windows[2]; peer.show_window(); peer.set_process(false)
+	peer.depth.config_path=host.depth.config_path
+	host._depth_changed("auto_3d_hidden",true)
+	check(peer.depth.auto_3d_hidden,"Setting is shared by both existing browser windows")
+	var restored:=Depth.new(); restored.config_path=host.depth.config_path; restored.load_preferences()
+	check(restored.auto_3d_hidden,"Setting persists globally across browser sessions")
+	host.depth.strength=0.0; footer._activate(footer.CHROME)
+	check(host.depth.enabled and host.depth.strength>0 and host.depth.state=="preparing","Manual menu hiding starts 3D with a usable remembered strength")
+	footer._activate(footer.CHROME)
+	check(host.depth.enabled,"Showing menus keeps the user's current 3D effect")
+	host.depth.enabled=false; platform.browser.fullscreen=true; poll()
+	check(host.depth.enabled and not host.toolbar_shown,"Fullscreen follows the same auto 3D policy")
+	platform.browser.fullscreen=false; poll(); host._depth_changed("auto_3d_hidden",false)
+	check(host.depth.enabled and not peer.depth.auto_3d_hidden,"Disabling the default affects future hides without turning off current 3D")
+	for language in ["zh","zh_Hant","en","ja"]:
+		I18n.use(language); host.depth_settings=true; host.refresh()
+		var switches: Array=host.depth_choices.targets.values().filter(func(item): return item.key=="auto_3d_hidden")
+		check(switches.size()==1 and switches[0].value==true,"Browser settings use one shared sliding switch in "+language)
+		var title: Label3D=host._labels.filter(func(label): return label.text==I18n.t("3D when menus hide"))[0]
+		var width: float=host.ui_font().get_string_size(title.text,HORIZONTAL_ALIGNMENT_LEFT,-1,title.font_size).x*title.pixel_size
+		check(width<.82,"Short label clears the switch in "+language)
+		var toggle: int=host.depth_choices.targets.find_key(switches[0])
+		host._activate(toggle)
+		check(host.depth.auto_3d_hidden,"Sliding switch opens the global default")
+		host._depth_changed("auto_3d_hidden",false)
+	host.depth_settings=false; host.refresh()
+	Chinese.quest=true; I18n.use("zh"); Chinese.configure(true)
+	var original_url: String=str(platform.browser.url)
+	var original_draft: String=browser.draft
+	platform.browser.merge({"custom_keyboard":true,"keyboard_epoch":100,"keyboard_latin":false,"editing":false},true);poll()
+	check(Chinese.active() and keyboard_selected(),"Manual Chinese page keyboard can be visible without any focused text field")
+	Chinese.popup.type_key("5")
+	var page_key: Dictionary=JSON.parse_string(platform.inputs.back()[1])
+	check(platform.inputs.back()[0]=="custom" and page_key.command=="text" and page_key.text=="5","A number is forwarded directly to the current page without an editor")
+	check(page_key.tab==7 and page_key.window==1 and page_key.navigation==3,"Page shortcut input keeps the current window/tab/navigation binding")
+	check(str(platform.browser.url)==original_url and browser.draft==original_draft and not menu.system_text_input.active(),"Showing the page keyboard never opens, changes or submits the address editor")
+	footer._activate(footer.KEYBOARD)
+	check(not Chinese.active() and not keyboard_selected(),"Manual no-field page keyboard can be hidden again")
+	platform.browser.merge({"custom_keyboard":false,"keyboard_epoch":0,"editing":false},true);poll()
+	platform.browser.merge({"custom_keyboard":true,"keyboard_epoch":1,"keyboard_latin":false,"editing":true},true); poll()
+	check(Chinese.active() and keyboard_selected(),"Quest Simplified Chinese selection uses the app keyboard and selects the footer button")
+	check(platform.browser_commands.any(func(item): return item.action=="keyboard_mode" and item.enabled),"Quest Chinese keyboard mode reaches native Gecko input")
+	footer._activate(footer.KEYBOARD)
+	check(not Chinese.active() and not keyboard_selected(),"Footer hide immediately closes the app keyboard and clears selection")
+	poll(); check(not Chinese.active(),"Stale custom-keyboard status cannot reopen a manually hidden popup")
+	footer._activate(footer.KEYBOARD)
+	check(platform.inputs.back()[0]=="show","Footer show uses the current custom keyboard mode")
+	platform.browser.keyboard_epoch=2; poll()
+	check(Chinese.active() and keyboard_selected(),"New native editor lease reopens the Simplified Chinese keyboard")
+	Chinese.popup.close(true); footer.sync()
+	check(not keyboard_selected(),"Closing the Chinese popup itself also clears footer selection")
+	I18n.use("en"); poll()
+	check(not Chinese.enabled() and platform.browser_commands.back().action=="keyboard_mode" and not platform.browser_commands.back().enabled,"Non-Chinese language uses the system keyboard despite the stored Chinese preference")
+	Chinese.configure(false); Chinese.close()
+	if is_instance_valid(Chinese.popup): Chinese.popup.free(); Chinese.popup=null
+	menu.free(); platform.free()
+	for failure in failures: push_error(failure)
+	print("Browser controls sync: %d checks, %d failures"%[checks,failures.size()])
+	quit(0 if failures.is_empty() else 1)

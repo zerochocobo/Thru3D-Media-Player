@@ -18,6 +18,8 @@ internal class WebBrowserNetworkPolicy(saved: String, private val save: (String)
             "Tencent Video" to setOf("v.qq.com"),
             "Mango TV" to setOf("mgtv.com"),
             "Youku" to setOf("youku.com"),
+            "iQIYI" to setOf("iqiyi.com"),
+            "Douyin" to setOf("douyin.com", "iesdouyin.com"),
             "Twitch" to setOf("twitch.tv"),
             "TikTok" to setOf("tiktok.com"),
             "Instagram Reels" to setOf("instagram.com"),
@@ -28,7 +30,6 @@ internal class WebBrowserNetworkPolicy(saved: String, private val save: (String)
         fun available(url: String): Boolean {
             val origin = origin(url) ?: return false
             val host = URI(origin).host.removeSuffix(".")
-            if (host == "douyin.com" || host.endsWith(".douyin.com") || host == "iesdouyin.com" || host.endsWith(".iesdouyin.com")) return false
             return nativeHosts.none { host == it || host.endsWith(".$it") }
         }
         fun origin(value: String): String? = runCatching {

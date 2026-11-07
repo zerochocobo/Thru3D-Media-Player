@@ -204,6 +204,8 @@ vec3 screen_light_sample(vec3 p,vec3 n,vec3 emitter,vec3 facing_normal,float are
 	float facing=max(dot(n,direction),0.0)*max(dot(facing_normal,-direction),0.0);
 	return film_color*facing*min(1.8,area/(distance2+1.0));
 }
+uniform vec3 fire_position = vec3(0.0,-100.0,0.0);
+uniform vec3 fire_light = vec3(0.0);
 vec3 local_light(vec3 p,vec3 n) {
 	vec3 delta = screen_origin-p;
 	float distance2 = dot(delta,delta);
@@ -216,7 +218,9 @@ vec3 local_light(vec3 p,vec3 n) {
 	}
 	vec3 lamp_delta = lamp_position-p;
 	float lamp = max(dot(n,normalize(lamp_delta)),0.0)/(1.0+dot(lamp_delta,lamp_delta)*2.0);
-	return (film+vec3(0.9,0.32,0.065)*lamp)*(1.0-day_mix);
+	vec3 fire_delta = fire_position-p;
+	float fire = max(dot(n,normalize(fire_delta))*.75+.25,0.0)/(1.0+dot(fire_delta,fire_delta)*.45);
+	return (film+vec3(0.9,0.32,0.065)*lamp)*(1.0-day_mix)+fire_light*fire;
 }
 
 uniform int surface_kind = 0;
@@ -229,11 +233,13 @@ varying vec3 world_position;
 varying vec3 world_normal;
 varying vec3 world_tangent;
 varying vec3 world_binormal;
+varying vec3 props_local;
 void vertex() {
 	world_position=(MODEL_MATRIX*vec4(VERTEX,1.0)).xyz;
 	world_normal=normalize(MODEL_NORMAL_MATRIX*NORMAL);
 	world_tangent=normalize((MODEL_MATRIX*vec4(TANGENT,0.0)).xyz);
 	world_binormal=normalize((MODEL_MATRIX*vec4(BINORMAL,0.0)).xyz);
+	props_local=day_mix<1.0 ? local_light(world_position,world_normal) : vec3(0.0);
 }
 void fragment() {
 	vec3 n=normalize(world_normal);
@@ -272,8 +278,9 @@ void fragment() {
 		albedo=vec3(.75,.71,.61); roughness=.85;
 	}
 	vec3 ambient=ambient_irradiance(n)*ao;
-	float sun=max(dot(n,moving_light_direction),0.0)*moving_visibility(world_position,normalize(world_normal))*sun_visibility(world_position)*moving_direct_mix;
-	vec3 color=albedo*(ambient+beach_day_sun()*sun+local_light(world_position,n));
+	float sun=max(dot(n,moving_light_direction),0.0)*moving_direct_mix;
+	if (sun>0.0) sun*=moving_visibility(world_position,normalize(world_normal))*sun_visibility(world_position);
+	vec3 color=albedo*(ambient+beach_day_sun()*sun+props_local);
 	vec3 half_dir=normalize(moving_light_direction+normalize(CAMERA_POSITION_WORLD-world_position));
 	color+=moving_specular_tint*vec3(surface_kind==1 ? .018 : .06)*pow(max(dot(n,half_dir),0.0),mix(90.0,12.0,roughness))*sun;
 	if (surface_kind==4) color+=vec3(.9,.42,.12)*(1.0-day_mix);

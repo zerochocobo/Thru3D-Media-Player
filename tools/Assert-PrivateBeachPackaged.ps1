@@ -8,9 +8,7 @@ $zip = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
 try {
     $prefix = if ([IO.Path]::GetExtension($ArchivePath) -ieq '.apk') { 'assets/' } else { '' }
     $exclusionMarker = $zip.GetEntry($prefix + 'environments/private_beach_debug_excluded.txt')
-    # A running Build-Player may have parsed the older call before this policy
-    # changed. Its export still records the new exclusion policy here.
-    if (-not $PSBoundParameters.ContainsKey('ExpectExcluded') -and $exclusionMarker) { $ExpectExcluded = $true }
+    # Every build ships the beach now; only an explicit -ExpectExcluded check accepts its absence.
     if ($ExpectExcluded) {
         if (-not $exclusionMarker) { throw 'Package is missing the beach exclusion marker.' }
         $markerReader = [IO.StreamReader]::new($exclusionMarker.Open())
@@ -39,7 +37,7 @@ try {
         Write-Output 'Private beach modeling resources excluded from package.'
         return
     }
-    if ($exclusionMarker) { throw 'Explicit beach package unexpectedly excludes beach modeling resources.' }
+    if ($exclusionMarker) { throw 'Package unexpectedly excludes the private beach.' }
     $manifest = Get-Content -LiteralPath (Join-Path $project ($directory + 'build_manifest.json')) -Raw | ConvertFrom-Json
     if ($manifest.schema_version -ne 2 -or $manifest.scene_id -ne 'private_beach') { throw 'Unsupported beach staging manifest.' }
     function Require-Entry([string]$Relative) {
@@ -80,11 +78,11 @@ try {
         $name = [string]$manifest.textures.$key
         if ([string]::IsNullOrEmpty($name)) { throw "Beach texture is absent from staging manifest: $key" }
         $mapping = Read-EntryText ($directory + $name + '.import')
-        $match = [regex]::Match($mapping, '(?m)^path(?:\.etc2)?="res://([^"]+\.etc2\.ctex)"')
-        if (-not $match.Success) { throw "Beach texture has no exported ETC2 mapping: $name" }
+        $match = [regex]::Match($mapping, '(?m)^path(?:\.etc2)?="res://([^"]+\.ctex)"')
+        if (-not $match.Success) { throw "Beach texture has no exported ETC2 or uncompressed mapping: $name" }
         $relative = $match.Groups[1].Value
         $source = [IO.File]::ReadAllText((Join-Path $project ($directory + $name + '.import')))
-        $expected = [regex]::Match($source, '(?m)^path(?:\.etc2)?="res://([^"]+\.etc2\.ctex)"')
+        $expected = [regex]::Match($source, '(?m)^path(?:\.etc2)?="res://([^"]+\.ctex)"')
         if (-not $expected.Success -or $relative -cne $expected.Groups[1].Value) { throw "Beach texture mapping differs: $name" }
         Assert-EntryMatchesFile $relative (Join-Path $project $relative)
     }
@@ -104,5 +102,5 @@ try {
         if (-not $match.Success) { throw "Beach runtime script has no compiled mapping: $name" }
         $null = Require-Entry $match.Groups[1].Value
     }
-    Write-Output 'Private beach package verified: layout/navigation bundle, 4 scenes, 21 ETC2 textures, firework audio, 16 shaders/includes and 16 runtime scripts.'
+    Write-Output 'Private beach package verified: layout/navigation bundle, 4 scenes, 21 ETC2/uncompressed textures, firework audio, 16 shaders/includes and 16 runtime scripts.'
 } finally { $zip.Dispose() }

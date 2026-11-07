@@ -215,7 +215,11 @@ func snapshot(mode: String) -> Dictionary:
 		elif mode!=("image" if app.photo_active else "global"): status="Saved for this mode"
 		elif app.temporary_passthrough: status="Temporary passthrough active"
 		elif (app.photo_active and app.photo.geometry!=0) or (not app.photo_active and app.video.geometry!=0): status="Saved; visible after immersive viewing"
-	state.merge({"selected":selected,"choice":background.choice,"yaw":background.yaw,"brightness":background.brightness,
+	# The card the viewer just chose shows its progress until the scene is actually on screen.
+	var pending: String=str(_pending[mode].next) if _pending.has(mode) else ""
+	if pending.is_empty() and background.choice in ["cinema","private_beach"] and app.cinema_environment and not app.cinema_environment.is_ready and app.cinema_environment.error.is_empty():
+		pending=selected
+	state.merge({"selected":selected,"pending":pending,"choice":background.choice,"yaw":background.yaw,"brightness":background.brightness,
 		"busy":library.busy or not _pending.is_empty(),"status":status,"can_import":app.photo_active and app.photo.can_background(),"catalog":library.assets,"reviews":library.reviews,"import_progress":library.import_progress},true)
 	return state
 

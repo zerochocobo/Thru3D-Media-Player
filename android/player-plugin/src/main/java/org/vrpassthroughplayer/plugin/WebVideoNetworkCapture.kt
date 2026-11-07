@@ -22,6 +22,7 @@ internal class WebVideoNetworkCapture(
     val projections = HashMap<URI, JSONObject?>()
     private var reads = 0
     private var formatSequence = 0
+    private var declaredReader: ((URI, Map<String,String>, Boolean)->Pair<URI,ByteArray>)? = null
     var inspectedFiles = 0; private set
     var videoFiles = 0; private set
     var audioFiles = 0; private set
@@ -86,7 +87,7 @@ internal class WebVideoNetworkCapture(
     }
     private fun read(resource: Resource, prefix: Boolean): Pair<URI, ByteArray> = bodies.getOrPut(resource.uri) {
         require(++reads <= 12) { "Browser probe budget" }
-        fetch(resource.uri, resource.headers, prefix)
+        declaredReader?.invoke(resource.uri,resource.headers,prefix) ?: fetch(resource.uri, resource.headers, prefix)
     }
     private fun format(resource: Resource, video: String, audio: String, width: Int = 0, height: Int = 0): JSONObject = JSONObject()
         .put("format_id", "network-${++formatSequence}")
@@ -105,6 +106,44 @@ internal class WebVideoNetworkCapture(
 
     /** Explicit site Beta must preserve the decoded representation, including parallel HLS leaves. */
     fun resolveCurrent(page: WebVideoPage, media: JSONObject): JSONObject? = resolve(page, media, null, true)
+
+    /** A site-bound HLS graph also retains each observed key/init request's own headers. */
+    internal fun resolveCurrentHls(page: WebVideoPage,media: JSONObject,master: Pair<URI,String>): JSONObject? = runCatching { inspectCurrentHls(page,media,master) }.getOrNull()
+    internal fun inspectCurrentHls(page: WebVideoPage,media: JSONObject,master: Pair<URI,String>): JSONObject {
+        require(!media.optBoolean("protected") && media.optString("source").isEmpty())
+        require(loadObserved(media,true)!=null)
+        val manifests=resources.values.filter { it.kind=="hls" }
+        require(manifests.size in 1..6 && resources.values.none { it.kind=="dash" })
+        require(resources[master.first]?.kind=="hls" && master.second.startsWith("#EXTM3U") && master.second.toByteArray(Charsets.UTF_8).size<=48*1024)
+        inlineManifests[master.first]=master.second;bodies[master.first]=master.first to master.second.toByteArray(Charsets.UTF_8)
+        return manifestInfo(page,media,manifests,true)
+    }
+
+    internal fun readRaw(uri: URI,headers: Map<String,String>,prefix: Boolean): Pair<URI,ByteArray> {
+        require(++reads<=12) { "Browser probe budget" };return fetch(uri,headers,prefix)
+    }
+    internal fun requestHeaders(uri: URI,fallback: Map<String,String>): Map<String,String> =
+        resources[uri]?.headers ?: WebVideoRequestHeaders(emptyMap(),cookieJar).forUrl(uri,fallback)
+
+    /** A selected SDK can supply a complete inline timeline without making an HLS GET.
+     * These derived resources are not relabelled as browser observations. */
+    internal fun resolveDeclaredHls(page: WebVideoPage,media: JSONObject,base: URI,body: String,
+        reader: (URI,Map<String,String>,Boolean)->Pair<URI,ByteArray>): JSONObject? = runCatching {
+        require(!media.optBoolean("protected"))
+        require(body.startsWith("#EXTM3U") && body.toByteArray(Charsets.UTF_8).size<=160*1024)
+        require(loadObserved(media,true)!=null)
+        val common=mapOf("user-agent" to media.optString("agent"),"referer" to media.getString("frame"),"origin" to "https://www.iqiyi.com")
+        val root=Resource(base,"hls",common)
+        resources[base]=root;inlineManifests[base]=body;bodies[base]=base to body.toByteArray(Charsets.UTF_8)
+        declaredReader=reader
+        try {
+            manifestInfo(page,media,listOf(root),true).also { info ->
+                // The synthetic inline root is not an observed media request. Its
+                // ordinary headers already live on the format itself.
+                info.getJSONArray("formats").getJSONObject(0).getJSONObject("browser_headers").remove(base.toString())
+            }
+        } finally { declaredReader=null }
+    }.getOrNull()
 
     /** The site already returned this VOD body in its observed metadata response.
      * Its adapter must bind actual segment requests first. Never refetch the root:
@@ -131,8 +170,7 @@ internal class WebVideoNetworkCapture(
         return resolve(page, JSONObject(media.toString()).put("source", ""), video to audio)
     }
 
-    private fun resolve(page: WebVideoPage, media: JSONObject, boundPair: Pair<URI, URI>?, current: Boolean = false, segments: Boolean = false): JSONObject? {
-        if (media.optBoolean("protected")) return null
+    private fun loadObserved(media: JSONObject,segments: Boolean): JSONArray? {
         val candidates = WebBrowserNetworkMedia.candidates(media, includeSegments = segments)
         val scopedCookies = LinkedHashMap<String, JSONObject>()
         for (i in 0 until candidates.length()) {
@@ -150,6 +188,11 @@ internal class WebVideoNetworkCapture(
         }
         scopedCookies.values.forEach(cookieJar::put)
         if (cookieJar.toString().length > 65536) return null
+        return candidates
+    }
+    private fun resolve(page: WebVideoPage, media: JSONObject, boundPair: Pair<URI, URI>?, current: Boolean = false, segments: Boolean = false): JSONObject? {
+        if (media.optBoolean("protected")) return null
+        val candidates=loadObserved(media,segments) ?: return null
         var direct = WebBrowserNetworkMedia.address(media.optString("source"))
         if (direct != null) for (i in 0 until candidates.length()) {
             val c = candidates.getJSONObject(i)

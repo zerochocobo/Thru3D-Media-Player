@@ -246,7 +246,7 @@ func prepare_main() -> bool:
 	# otherwise an eye-buffer hole would erase that video's pixels behind transparent edges.
 	if not layer or not layer.pip_supported() or not video.panel.visible: return false
 	if _main_failed_generation == layer.generation and Time.get_ticks_msec() < _main_retry_after: return false
-	if not layer.supports(1 if video.geometry == 2 else video.geometry, video.geometry == 0 and video.screen_curve > 0): return false
+	if not layer.supports_surface(video, 1 if video.geometry == 2 else video.geometry): return false
 	var common := parameters(video._binding.material, COMMON)
 	if common.size() != 84: return false
 	if _avoid_generation == layer.generation and _avoid_main == common:

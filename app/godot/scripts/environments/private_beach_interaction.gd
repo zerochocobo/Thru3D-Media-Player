@@ -28,6 +28,17 @@ var _view_floor_y := INF
 var _scene_hand := ""
 var _scene_kind := ""
 var _scene_hover := {}
+## Screen drag state: width anchor for a corner, last ray angles for a grip.
+var _screen_drag := {}
+var seat_id := ""
+var _scene_marks := {}
+var _seat_arc_end := 0
+## Stick push speed as a share of the current distance per second, with a floor.
+const SCREEN_PUSH_RATE := .6
+const SCREEN_PUSH_MIN := 1.5
+const STICK_DEADZONE := .2
+## Hand travel is magnified by the screen's distance over a comfortable reach.
+const HAND_REACH := .45
 
 func _ready() -> void:
 	# Refresh the tracked viewer before the child host may commit a screen edit.
@@ -116,6 +127,10 @@ func view_record() -> Dictionary:
 	var head := _camera.global_position
 	var height := _tracked_height()
 	var record := {"schema":1,"x":head.x,"z":head.z,"yaw":_head_yaw(),"eye_height":height,"mode":interaction}
+	if not seat_id.is_empty():
+		# The saved seat restores its own eye; the head may sit inside the chair's collider.
+		record.seat=seat_id; record.eye_height=clampf(height,.3,2.5); record.mode="watch"
+		return record
 	if not BeachMovement.valid_view_record(record) or not _destination_supported(Vector3(head.x,_movement.terrain.ground(head.x,head.z),head.z)): return {}
 	return record
 
@@ -153,6 +168,12 @@ func _update_active() -> void:
 		_original_rig=_rig.global_transform; _has_original_rig=true
 	set_process(true)
 	if not _position_applied and _tracking_ready():
+		var saved_seat_id: String=str(_restore_view.get("seat",""))
+		if beach.seats.has(saved_seat_id):
+			interaction="watch"; _movement.set_moving(false); suspend()
+			_position_applied=true
+			_sit(saved_seat_id)
+			return
 		var point: Vector3 = _movement.eye_position
 		# Room-scale X/Z can move across a small slope without changing the
 		# tracking floor. Restore that floor instead of adding a vertical jump.
@@ -205,6 +226,7 @@ func _sync_tracking() -> void:
 	if interaction=="move": head.y=_movement.terrain.ground(head.x,head.z)+Locomotion.EYE_HEIGHT
 	_movement.eye_position=head; _movement.yaw=_head_yaw()
 	_movement.selected_seat=""
+	beach.viewer_seated=not seat_id.is_empty()
 
 func _viewer_position() -> Vector3:
 	if active: return _camera.global_position if _tracking_ready() else Vector3.INF
@@ -225,6 +247,8 @@ func _land(floor_position: Vector3,heading: float) -> void:
 func set_interaction(value: String) -> bool:
 	if value not in ["watch","move"] or not active or not _position_applied or not _tracking_ready(): return false
 	if interaction==value: return true
+	# Free movement starts from the sand beside the lounger, never from inside it.
+	if not seat_id.is_empty() and value=="move": _stand_up()
 	_sync_tracking(); suspend()
 	if not _movement.set_moving(value=="move"): return false
 	interaction=value
@@ -238,7 +262,7 @@ func home() -> bool:
 	# Like the auditorium's Home, this explicit reset can recover a tracked head
 	# that physically stepped outside the virtual navigation boundary.
 	if not _destination_supported(point): return false
-	interaction="watch"; _movement.set_moving(false); suspend()
+	interaction="watch"; _movement.set_moving(false); suspend(); seat_id=""
 	_land(point,0.0); _sync_tracking(); _remember_view(0,true,true); changed.emit()
 	return true
 
@@ -252,10 +276,90 @@ func scene_press(hand: String,origin: Vector3,direction: Vector3) -> bool:
 	if not active or not _position_applied or not _tracking_ready() or not _scene_hand.is_empty() or not _capture_hand.is_empty(): return false
 	if beach.firework_hit(origin,direction):
 		beach.press_firework(hand); _scene_kind="firework"
+	elif beach.grab_handheld(hand,null,[origin,direction]): return true
+	elif _begin_screen_resize(origin,direction): _scene_kind="screen_resize"
 	elif beach.begin_drag(direction): _scene_kind="drag"
 	else: return false
 	_scene_hand=hand
 	return true
+
+func _begin_screen_resize(origin: Vector3,direction: Vector3) -> bool:
+	var hit: Dictionary=beach.screen_hit(origin,direction)
+	if hit.is_empty() or not hit.corner or beach.screen_loading: return false
+	var layout: Dictionary=beach.screen_layout
+	# The stand stays planted: the panel grows from the middle of its lower edge.
+	var anchor: Vector3=layout.center-layout.up*float(layout.half_size.y)
+	var reach: float=hit.point.distance_to(anchor)
+	if reach<.01: return false
+	beach.begin_screen_preview()
+	_screen_drag={"anchor":anchor,"normal":layout.normal,"reach":reach,"width":float(layout.parameters.width),"before":ScreenEdit.parameters(layout.parameters)}
+	return true
+
+func screen_grab(hand: String,origin: Vector3,direction: Vector3) -> bool:
+	if not active or not _position_applied or not _tracking_ready() or not _scene_hand.is_empty() or not _capture_hand.is_empty() or beach.screen_loading: return false
+	if beach.screen_hit(origin,direction).is_empty(): return false
+	beach.begin_screen_preview()
+	var layout: Dictionary=beach.screen_layout
+	var axis := Vector3(layout.normal.x,0,layout.normal.z).normalized()
+	_screen_drag={"origin":origin,"axis":axis,"center":layout.center,"before":ScreenEdit.parameters(layout.parameters)}
+	_scene_hand=hand; _scene_kind="screen_move"
+	return true
+
+## A grip drag ends on grip; everything else belongs to the trigger.
+func scene_input_matches(action: String) -> bool:
+	return (action=="grip_click")==(_scene_kind=="screen_move")
+
+func screen_editing() -> bool:
+	return _scene_kind in ["screen_resize","screen_move"]
+
+func _update_screen_drag(origin: Vector3,direction: Vector3) -> void:
+	if _scene_kind=="screen_resize":
+		var normal: Vector3=_screen_drag.normal
+		var facing := direction.dot(normal)
+		if absf(facing)<.0001: return
+		var t: float=(_screen_drag.anchor-origin).dot(normal)/facing
+		if t<=0.0: return
+		var reach: float=(origin+direction*t).distance_to(_screen_drag.anchor)
+		beach.preview_screen({"width":clampf(float(_screen_drag.width)*reach/float(_screen_drag.reach),1.0,20.0)})
+		beach.show_screen_marks(beach.screen_hit(origin,direction))
+		return
+	# Pulling the hand back brings the screen closer, magnified by its distance.
+	var axis: Vector3=_screen_drag.axis
+	var range_ := _screen_range()
+	var gain := clampf(range_/HAND_REACH,3.0,40.0)
+	var travel: float=-(origin-_screen_drag.origin).dot(axis)*gain
+	_screen_drag.origin=origin
+	_slide_screen(travel)
+
+func _screen_range() -> float:
+	var eye: Vector3=_viewer_position()
+	var center: Vector3=beach.screen_layout.center
+	return Vector2(center.x-eye.x,center.z-eye.z).length() if eye.is_finite() else 10.0
+
+## Moves the whole stand straight along the line it faces; positive is farther away.
+func _slide_screen(travel: float) -> void:
+	if is_zero_approx(travel): return
+	var axis: Vector3=_screen_drag.axis
+	var center: Vector3=beach.screen_layout.center-axis*travel
+	beach.preview_screen({"center_x":center.x,"center_z":center.z})
+
+## Held grip: stick forward pushes the screen away, back pulls it in.
+func scene_stick(left: Vector2,right: Vector2,delta: float) -> bool:
+	if _scene_kind!="screen_move": return false
+	var held: Vector2=left if _scene_hand=="left_hand" else right
+	if not held.is_finite(): return true
+	var pushed := signf(held.y)*maxf(absf(held.y)-STICK_DEADZONE,0.0)/(1.0-STICK_DEADZONE)
+	if pushed!=0.0: _slide_screen(pushed*maxf(SCREEN_PUSH_MIN,_screen_range()*SCREEN_PUSH_RATE)*delta)
+	return true
+
+func _finish_screen_drag() -> void:
+	var before: Dictionary=_screen_drag.get("before",{})
+	_screen_drag={}
+	beach.show_screen_marks({})
+	# Commit rebuilds navigation and shadows; a rejected spot returns to where the drag began.
+	var edited: Dictionary=ScreenEdit.parameters(beach.screen_layout.parameters)
+	if edited==before: beach.request_screen(before)
+	elif not request_screen(edited): beach.request_screen(before)
 
 func scene_held(hand: String) -> bool:
 	return _scene_hand==hand
@@ -265,6 +369,7 @@ func scene_release(hand: String) -> bool:
 	var kind := _scene_kind
 	_scene_hand=""; _scene_kind=""
 	if kind=="firework": beach.release_firework(hand)
+	elif kind in ["screen_resize","screen_move"]: _finish_screen_drag()
 	else:
 		beach.end_drag()
 		hours_committed.emit(beach.hours)
@@ -276,7 +381,15 @@ func scene_hover(hand: String,origin: Vector3,direction: Vector3,valid: bool) ->
 	var target := ""
 	if valid and active and _position_applied:
 		if beach.firework_hit(origin,direction): target="firework"
-		elif beach.celestial_hit(direction): target="body"
+		else:
+			var hit: Dictionary=beach.screen_hit(origin,direction)
+			if not hit.is_empty():
+				target="corner" if hit.corner else "screen"
+				if _scene_hand.is_empty(): _scene_marks[hand]=hit
+			elif beach.celestial_hit(direction): target="body"
+		if target not in ["corner","screen"]: _scene_marks.erase(hand)
+	else: _scene_marks.erase(hand)
+	if _scene_hand.is_empty(): beach.show_screen_marks(_scene_marks.values()[0] if not _scene_marks.is_empty() else {})
 	var entered: bool=not target.is_empty() and target!=_scene_hover.get(hand,"")
 	if _scene_hover.get(hand,"")!=target:
 		_scene_hover[hand]=target
@@ -294,6 +407,7 @@ func update_pointer(hand: String,origin: Vector3,direction: Vector3,valid: bool 
 	if hand==_scene_hand and not hand.is_empty():
 		if not valid: scene_release(hand)
 		elif _scene_kind=="drag": beach.drag_to(direction)
+		elif screen_editing(): _update_screen_drag(origin,direction)
 		return
 	super.update_pointer(hand,origin,direction,valid)
 
@@ -319,10 +433,47 @@ func ray_hit(origin: Vector3,direction: Vector3,_held_seat := "") -> Dictionary:
 	_sync_tracking()
 	var hit: Dictionary = _movement.arc_target(origin,direction)
 	if hit.is_empty(): return hit
+	var seat := _seat_on_arc(hit.points)
+	if not seat.is_empty():
+		var marker: Vector3=beach.seats[seat].marker
+		return {"kind":"seat","id":seat,"position":marker,"points":PackedVector3Array(hit.points.slice(0,int(_seat_arc_end)+1))+PackedVector3Array([marker]),"valid":true,"distance":origin.distance_to(marker)}
 	if hit.kind=="none": hit.kind="miss"; hit.position=hit.points[-1]
 	hit.valid=hit.get("valid",false) and _valid_destination(hit.position)
 	hit.distance=origin.distance_to(hit.position)
 	return hit
+
+func _seat_on_arc(points: PackedVector3Array) -> String:
+	# Chairs are body colliders, so the arc stops on them; test it against their volumes.
+	for index in range(points.size()-1):
+		var a: Vector3=points[index]; var b: Vector3=points[index+1]
+		for id in beach.seats:
+			var box: AABB=beach.seats[id].box
+			if box.has_point(b) or box.intersects_segment(a,b):
+				_seat_arc_end=index
+				return id
+	return ""
+
+func _stand_up() -> void:
+	# Beside the lounger, on the sand, keeping the heading.
+	var eye: Vector3=beach.seats[seat_id].eye
+	seat_id=""; beach.viewer_seated=false
+	for offset in [Vector3(-1.1,0,0),Vector3(1.1,0,0),Vector3(0,0,-1.6)]:
+		var point: Vector3=eye+offset
+		point.y=_movement.terrain.ground(point.x,point.z)
+		if _destination_supported(point):
+			_land(point,_head_yaw()); _sync_tracking()
+			return
+
+func _sit(id: String) -> void:
+	var seat: Dictionary=beach.seats[id]
+	var eye: Vector3=seat.eye
+	var screen: Vector3=beach.screen_layout.center
+	seat_id=id; interaction="watch"; _movement.set_moving(false); suspend()
+	var before := _rig.global_transform
+	_align_head(eye,atan2(eye.x-screen.x,eye.z-screen.z))
+	_view_floor_y=beach.navigation.ground(eye.x,eye.z)
+	if not before.is_equal_approx(_rig.global_transform): view_relocated.emit(before,_rig.global_transform)
+	_sync_tracking(); _remember_view(0,true,true); changed.emit()
 
 func _valid_destination(point: Vector3) -> bool:
 	if not _destination_supported(point): return false
@@ -344,8 +495,12 @@ func pointer_release(hand: String,origin: Vector3,direction: Vector3,valid: bool
 	# screen edit that completed since press. Stale press-time targets never land.
 	var target := _pointer_target(origin,direction) if valid else {}
 	_capture={}; _capture_hand=""; hide_pointer(hand)
+	if target.get("kind","")=="seat":
+		_sit(str(target.id))
+		return true
 	if target.get("valid",false) and _valid_destination(target.position):
 		if _movement.teleport_floor(target.position):
+			seat_id=""
 			var heading := _head_yaw()
 			suspend(); _land(target.position,heading); _sync_tracking(); _remember_view(0,true,true); changed.emit()
 	return true
@@ -361,8 +516,14 @@ func request_screen(changes: Dictionary) -> bool:
 func set_night(enabled: bool) -> void:
 	if beach: beach.set_night(enabled)
 
-func set_hours(value: float) -> void:
-	if beach: beach.set_hours(value)
+func set_hours(value: float,notify := true) -> void:
+	if beach: beach.set_hours(value,notify)
+
+func set_surf(audible: bool) -> void:
+	if beach: beach.surf_wanted=audible
+
+func set_low_end(value: bool) -> void:
+	if beach: beach.set_low_end(value)
 
 func set_screen_light(strength: float) -> void:
 	if beach: beach.set_screen_light(strength)

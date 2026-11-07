@@ -2686,9 +2686,11 @@ func navigate_back() -> bool:
 	if system_text_input.active(): system_text_input.cancel("", true); return true
 	if subtitle_filter.active(): subtitle_filter.close(); return true
 	if web_browser.active():
-		if web_browser.tabs_open: web_browser.tabs_open = false; web_browser.refresh_windows()
-		elif web_browser.data.get("editing", false): platform.web_browser_input("close", "")
-		else: web_browser.close(); refresh()
+		if web_browser.tabs_open:
+			web_browser.tabs_open = false; web_browser.window_action.clear(); web_browser.refresh_windows()
+		elif web_browser.window_state(web_browser.focused_window).get("editing", false) or web_browser.keyboard_visible(web_browser.focused_window):
+			platform.web_browser_input("close", "")
+		else: web_browser.action(web_browser.BASE)
 		return true
 	if web_browser.library.back(): return true
 	if collections.active(): collections.close(); return true

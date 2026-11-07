@@ -154,7 +154,7 @@ func _run() -> void:
 	photo.zoom_view(100)
 	check(photo.magnification == 2.0 and photo.view_zoom == 0.0, "Visible detail window keeps its fixed default and never zooms the sphere")
 	photo.set_projection(0)
-	photo.set_screen_curve(1.0)
+	photo.set_screen_curve(120.0)
 	photo.toggle_inspect()
 	var hit := photo.panel.to_global(Vector3.ZERO)
 	check(photo.inspect_ray(hit + Vector3(0,0,2), Vector3.FORWARD), "Curved flat photo supports ray inspection")
@@ -233,7 +233,7 @@ func _run() -> void:
 	check(enlarged > 1.0 and not main.photo.inspect and main.photo.material.get_shader_parameter("content_zoom") == 1.0,
 		"Right vertical shortcut enlarges the complete photo without cropping or entering inspect")
 	main.photo.set_corner_hover(1)
-	for curve in [0.0, 1.0]:
+	for curve in [0.0, 120.0]:
 		main.photo.set_screen_curve(curve)
 		var before: Vector3 = main.photo.screen_corner(1)
 		var handle: Vector3 = main.photo._handles[1].position

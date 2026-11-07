@@ -40,7 +40,7 @@ In 0.16.2 Douyin native/Beta playback remains unavailable. Adapter and diagnosti
 
 0.16.5 supports independent edge/corner resizing across nominal viewport thresholds, portrait layouts and pixel-budget limits; beyond layout bounds the window scales rather than repeatedly changing page resolution. Current-page state is restored after eligible SPA native handoff. Trust follows the verified page/frame's real current-media requests and track identity, including related hosting domains; each request retains only its own observed credential scope. This does not authorize copying cookies/Authorization to unrelated requests.
 
-For this release Douyin is temporarily unavailable after the featured-entry regression, including diagnostic overrides; paused Douyin/Mango/Youku research is not resumed by this source synchronization. Historical direct-page results do not establish featured/home/unchanged-URL switching acceptance. Jellyfin/Plex web adapters are retained source and are not advertised as completed0.16.5 features; normal media-library support is separate.
+In the historical 0.16.5 release Douyin was temporarily unavailable after the featured-entry regression, including diagnostic overrides; paused Douyin/Mango/Youku research is not resumed by this source synchronization. Historical direct-page results do not establish featured/home/unchanged-URL switching acceptance. Jellyfin/Plex web adapters are retained source and are not advertised as completed0.16.5 features; normal media-library support is separate.
 
 ## 0.17.0 scope
 
@@ -49,3 +49,7 @@ Experimental page/focused-region stereo conversion and person passthrough can be
 ## 0.17.1 explicit handoff and pure-page view
 
 Fullscreen and Emby/Jellyfin/Plex page playback stay in the browser; no automatic pause, native-player switch or speculative background pre-resolution is triggered by them. Users retain browser 3D and explicit playback actions. Existing server buttons/retained-document return remain; the proposed new server Beta experiment is withdrawn. Pure-page view hides chrome/resize handles while preserving page interaction/focus, with an explicit way back. The strength popup stays above the lower frame. Compatible Youku Beta uses actual current-media association and source-scoped requests; site/account/entitlement/verification limits remain. Passive iQIYI diagnostic source is not an enabled Beta or a completed release feature.
+
+## 0.17.2 adapted routes and controls
+
+iQIYI, Douyin and Niconico add site-specific Play Beta routes with actually observed current-media/request binding and retained-page return. Niconico reuses the observed signed master manifest and restores time through the bound player setCurrentTime API. Foreign sites keep the legacy manual button independently cancellable alongside Beta; domestic presentation is unchanged. This supersedes the older Douyin/iQIYI availability statements above, without claiming all-content, entitlement or headset acceptance. Server buttons remain the existing manual ones; no fullscreen auto-handoff or withdrawn server experiment is restored. Keyboard visibility, address-field paste and focus aspect matching improve; hidden controls can optionally enable browser3D. Unfocused-key delivery and per-site fullscreen chrome behavior are not advertised as verified features.

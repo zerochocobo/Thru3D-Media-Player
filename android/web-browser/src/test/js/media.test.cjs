@@ -16,7 +16,7 @@ function fixture(count = 1, blob = true, options = {}) {
     play() { this.playCalls = (this.playCalls || 0) + 1; if (!options.deferPlay) { this.paused = false; this.emit('play'); } return Promise.resolve(); } }));
   const document = { nodeType: 9, querySelector: () => options.canonical ? {href: options.canonical} : null, querySelectorAll(s) { return s === 'video' ? videos : s === 'script:not([src])' ? options.scripts || [] : []; }, fullscreenElement: options.fullscreen === false ? null : videos[0] };
   if(options.siteState)document.defaultView={wrappedJSObject:options.siteState};
-  if(options.tencent){document.body={append(node){node.parentElement=this;}};document.createElement=()=>({style:{},dataset:{},remove(){this.parentElement=null;}});}
+  if(options.tencent||options.niconico){document.body={append(node){node.parentElement=this;}};document.createElement=()=>({style:{},dataset:{},remove(){this.parentElement=null;}});}
   const location = { href: options.page || 'https://page.test/watch' }, clock = {now:Date.now()};
   const context = vm.createContext({ document, location, navigator: { userAgent: 'Fixture' }, URL, Date:class extends Date {static now(){return clock.now;}},
     browser: { runtime: { connectNative: () => native, connect: () => network } }, MutationObserver: class { constructor(callback) { observers.push(callback); } observe() {} disconnect() {} },
@@ -37,6 +37,16 @@ function fixture(count = 1, blob = true, options = {}) {
     controls:(_,choose)=>{selectWeibo=choose;return {sync(){}};},
     binding:(v,requests)=>requests.some(r=>r.kind==='file'&&r.url===v.currentSrc) ? {page:v.publicPage||'https://weibo.com/123456/ABCDE',id:'ABCDE',source:v.currentSrc} : null
   };
+  if(options.iqiyi)context.Thru3DIqiyi={page:()=>({id:'v_current'}),matches:()=>false,
+    capture:()=>({ready:true,id:'v_current',revision:'a1',page:location.href,src:videos[0].currentSrc}),
+    binding:(video,data)=>video===videos[0]&&video.currentSrc===data.src?data:null,
+    restore:(_,video,data,time,play)=>{video.currentTime=time;if(play)video.play();else video.pause();return true;}};
+  if(options.niconico){
+    context.innerWidth=1600;context.innerHeight=1000;context.getComputedStyle=()=>({});
+    videos[0].currentSrc='blob:https://www.nicovideo.jp/current';
+    videos[0].getBoundingClientRect=()=>({left:100,top:100,right:900,bottom:700,width:800,height:600});
+    vm.runInContext(fs.readFileSync(path.join(__dirname,'../../main/assets/web-browser/niconico.js'),'utf8'),context);
+  }
   vm.runInContext(script, context);
   const flush = () => { for (let n = 0; timers.length && n < 10; n++) timers.splice(0).forEach(f => f()); };
   const report = () => native.messages.filter(m => m.type === 'media').at(-1)?.videos;
@@ -50,6 +60,28 @@ function fixture(count = 1, blob = true, options = {}) {
     resources(entries) { resourceObservers.forEach(f=>f({getEntries:()=>entries})); },
     emit(name,value={}) { (events[name] || []).forEach(f=>f(value)); } };
 }
+
+function niconicoFixture(){
+  const f=fixture(1,true,{page:'https://www.nicovideo.jp/watch/sm9',niconico:true,playButtons:true,fullscreen:false});
+  const root='https://related.test/root.m3u8',video='https://related.test/video.m3u8',audio='https://related.test/audio.m3u8';
+  const data={id:'sm9',root,revision:'a1',variants:[{video,audio,width:3840,height:2160,duration:100,audio_duration:100,resources:[],vcodec:'avc1.640033',acodec:'mp4a.40.2'}]};
+  f.native.onMessage.fire({action:'network_policy',niconico:true});
+  f.network.onMessage.fire({type:'network',page:f.location.href,niconico:[data],candidates:[root,video,audio].map(url=>({url,kind:'hls',at:Date.now()}))});f.flush();return f;
+}
+test('Niconico real action requires a trusted click and revalidates a replaced blob before handoff',()=>{
+  const f=niconicoFixture(),button=f.playButtons.find(b=>b.site==='niconico');assert.ok(button.ready);assert.equal(f.report()[0].niconico_ready,true);
+  const click={composedPath:()=>[button.host],preventDefault(){},stopImmediatePropagation(){}};
+  f.emit('click',{...click,isTrusted:false});f.flush();assert.equal(f.report()[0].niconico_request,0);
+  f.emit('click',{...click,isTrusted:true});f.flush();assert.equal(f.report()[0].niconico_request,1);
+  f.videos[0].currentSrc='blob:https://www.nicovideo.jp/replacement';f.videos[0].emit('loadstart');f.flush();assert.equal(f.report()[0].niconico_request,0);
+});
+test('Niconico paused return rejects old revisions and holds delayed site autoplay only until real user input',()=>{
+  const f=niconicoFixture(),v=f.videos[0],message={action:'restore_niconico',id:'1',epoch:1,page:f.location.href,revision:'a1',time:50,play:false};
+  f.native.onMessage.fire({...message,revision:'obsolete'});assert.equal(v.currentTime,3);
+  f.native.onMessage.fire(message);assert.equal(v.currentTime,50);assert.equal(v.paused,true);
+  v.play();assert.equal(v.paused,true);f.emit('pointerdown',{isTrusted:false});v.play();assert.equal(v.paused,true);
+  f.emit('pointerdown',{isTrusted:true});v.play();assert.equal(v.paused,false);
+});
 
 test('retained suspension preserves the exact pause lease and failure restores original playing videos', async()=>{
   const f=fixture(2);f.videos[1].pause();
@@ -74,6 +106,20 @@ test('ordinary or stale-token suspension never retains a pause lease',()=>{
     const f=fixture();f.native.onMessage.fire({action:'pause_media',token:91,playing_ids:['1']});
     f.native.onMessage.fire(message);
     assert.equal(f.native.messages.at(-1).pause_token,0);
+  }
+});
+
+test('iQIYI paused return survives delayed SDK autoplay but yields to real user input and replacements',()=>{
+  const make=()=>{const f=fixture(2,true,{page:'https://www.iqiyi.com/v_current.html',iqiyi:true});
+    f.native.onMessage.fire({action:'restore_iqiyi',id:'1',epoch:1,page:f.location.href,revision:'a1',time:50,play:false});return f;};
+  const f=make(),v=f.videos[0];assert.equal(v.currentTime,50);assert(v.paused);
+  v.play();assert(v.paused,'SDK autoplay during seek must preserve the paused return');
+  v.paused=false;v.emit('playing');assert(v.paused);
+  f.videos[1].play();assert.equal(f.videos[1].paused,false,'An unrelated preview is not held');
+  f.emit('pointerdown',{isTrusted:false});v.play();assert(v.paused);
+  f.emit('pointerdown',{isTrusted:true});v.play();assert.equal(v.paused,false,'Normal page play remains available');
+  for(const mutate of [f=>{f.clock.now+=30001;},f=>{f.location.href+='?next';},f=>{f.videos[0].currentSrc='blob:replacement';},f=>{f.videos[0].emit('loadstart');}]){
+    const g=make();mutate(g);g.videos[0].play();assert.equal(g.videos[0].paused,false,'Stale return intent cannot hold a replacement');
   }
 });
 

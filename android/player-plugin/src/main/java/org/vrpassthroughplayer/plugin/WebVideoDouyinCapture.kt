@@ -11,11 +11,32 @@ internal object WebVideoDouyinCapture {
         WebVideoPage("douyin", it, "https://www.douyin.com/video/$it")
     }
 
+    fun selectedPage(media: JSONObject): WebVideoPage? =
+        if (media.optJSONObject("douyin")?.optString("binding") == "rendered_card")
+            WebBrowserDouyin.renderedId(media)?.let { WebVideoPage("douyin", it, "https://www.douyin.com/video/$it") }
+        else page(media.optString("frame"))
+
+    fun page(document: String,media: JSONObject?): WebVideoPage? = runCatching {
+        require(media!=null&&media.optBoolean("douyin_enabled")&&media.optString("capture_identity").isNotEmpty())
+        require(WebBrowserDouyin.metadata(media,document,true)!=null)
+        selectedPage(media)
+    }.getOrNull()
+
+    fun keeps(page: WebVideoPage,initial: JSONObject,latest: JSONObject): Boolean {
+        if(selectedPage(latest)!=page||candidate(page,latest)==null)return false
+        val a=initial.optJSONObject("douyin") ?: return false
+        val b=latest.optJSONObject("douyin") ?: return false
+        return listOf("id","revision","src").all { a.optString(it)==b.optString(it) } &&
+            initial.optLong("network_epoch")==latest.optLong("network_epoch") &&
+            initial.optString("capture_identity")==latest.optString("capture_identity")
+    }
+
     fun candidate(page: WebVideoPage, media: JSONObject): JSONObject? = runCatching {
         require(page.site == "douyin" && media.optBoolean("douyin_enabled") && !media.optBoolean("protected"))
         val data = media.getJSONObject("douyin")
         require(data.toString().length <= 96 * 1024 && data.getString("id") == page.id)
-        require(data.getString("page") == media.getString("frame") && WebVideoDouyinCapture.page(data.getString("page")) == page)
+        require(data.getString("page") == media.getString("frame") && selectedPage(media) == page)
+        require(WebBrowserDouyin.metadata(media,media.getString("frame"),true)!=null)
         val duration = data.getDouble("duration")
         require(duration.isFinite() && duration > 0 && duration <= 86400)
         require(abs(duration - media.getDouble("duration")) <= maxOf(.5, duration * .01))

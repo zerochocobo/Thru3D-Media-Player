@@ -128,9 +128,19 @@ func run() -> void:
 		check(photo.depth_enabled and int(photo._display_depth_data.rotation) == rotation, "Only the matching pair becomes visible")
 		check(photo._display_depth_data.image.get_data() == depth.get_data(), "Rotations reuse the unchanged model depth")
 		var key: String = photo._layer_source().key
-		check(key != previous_key and key.ends_with("r%d" % rotation), "XR upload identity includes angle")
+		check(key != previous_key and key.contains(":r%d:" % rotation), "XR upload identity includes angle")
 		previous_key = key
 		check(not photo._valid_cached_depth(data(old_rotation),0), "CPU/GPU cache rejects a previous-angle pair")
+	# Drag previews do not launch inference/pair generation for intermediate angles.
+	var preview_calls := host.calls.size()
+	photo.begin_screen_rotation(); photo.set_screen_rotation(43); photo.set_screen_rotation(112)
+	check(host.calls.size()==preview_calls and not photo.depth_enabled and not photo._presentation_pending, "Continuous drag hides the old pair without starting conversion")
+	photo.set_screen_rotation(90); photo.finish_screen_rotation(true)
+	check(host.calls.size()==preview_calls+1 and host.calls.back().rotation==90, "Release regenerates the final stereo angle once")
+	deliver(photo._display_request,1.0,90); await settle()
+	check(photo.depth_enabled and not photo._rotation_preview, "New stereo pair resumes after drag commit")
+	photo.begin_screen_rotation(); photo.set_screen_rotation(0); photo.finish_screen_rotation(true)
+	deliver(photo._display_request,1.0,0); await settle()
 	# Foreground and neighbour angle validation must use each file's own remembered angle.
 	photo.rotate_clockwise(); deliver(photo._display_request,1.0,90); await settle()
 	check(photo._valid_cached_depth(data(0),1) and not photo._valid_cached_depth(data(0),0), "Neighbour cache uses its own photo angle")

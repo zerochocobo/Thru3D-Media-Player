@@ -4,6 +4,15 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.17.2 — 2026-11-08
+
+- Add the private-beach cinema to distributed builds, with loungers, free movement, day/night controls, draggable sun/moon and nighttime handheld fireworks. Reorganize the scenery picker into compact four-column sections with the add-panorama card next to custom backgrounds. Public Git retains integration/shader source; scene/model/texture/audio payloads remain separately supplied and are not included here. Lower-tier hardware acceptance is not established by the Quest 3 observations.
+- Add photo autoplay with a 3–30 second interval (5 seconds by default), timed from the final displayed image without waiting for neighbour preparation. Improve continuous rotation, 90-degree snapping, upright/ground layouts and contextual picture controls.
+- Add continuous video/photo screen curvature and horizontal, vertical or spherical curve modes for eligible ordinary videos with a panorama-image background; preserve horizontal curvature after content rotation and independent cinema settings.
+- Add compatible iQIYI, Douyin and Niconico Play Beta routes with current-media/request binding and retained-page/playhead return. Keep the legacy manual player button alongside Beta on foreign sites; domestic-site presentation remains separate. Niconico restores absolute position through the bound page player. These routes do not establish all-content, membership or headset compatibility.
+- Improve browser keyboard visibility controls, address-field paste actions, focus-region aspect matching and the option to enable 3D when hiding browser controls. Keep browser Back separate from dismissing playback controls and improve source/library switching and pure-page rendering. Fullscreen continues to stay in the browser.
+- Retry eligible hardware decoding while the retained webpage releases its decoder, and identify software fallback for affected 4K-and-larger sources. Model weights, private scenery/media, keys, passwords, profiles/backups and internal development/promotion material remain excluded. 3D text protection remains off; the known AirPlay optimized-host authentication issue remains documented in the technical guide.
+
 ## 0.17.1 — 2026-11-07
 
 - Add a pure-page browser view that hides menus, borders and resize handles while keeping page clicks, scrolling and region focus available; toggle again to restore chrome. Keep the 3D strength popup above the lower frame so it remains visible and usable.

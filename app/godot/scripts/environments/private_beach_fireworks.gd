@@ -14,6 +14,12 @@ const LAUNCH_Z_MAX := 142.0
 const BURST_RISE_MIN := 128.0
 const BURST_RISE_MAX := 140.0
 const SPARK_RADIUS := Vector2(.46,.12)
+## Peony, chrysanthemum, willow, tilted ring, palm, strobe.
+const STYLE_COUNT := 6
+## Burst sound per style; the bank has three burst recordings.
+const STYLE_SOUND := [0,0,2,1,2,1]
+const SALVO_CHANCE := .2
+const FLASHES := 2
 var slots: Array[Dictionary]=[]
 var held: Dictionary={}
 var queue: Array[int]=[]
@@ -40,7 +46,7 @@ func configure(sample_ground: Callable,seed_value := -1) -> void:
 	for index in POOL_SIZE:
 		var multimesh := MultiMesh.new(); multimesh.transform_format=MultiMesh.TRANSFORM_3D
 		multimesh.use_colors=true; multimesh.use_custom_data=true
-		multimesh.mesh=quad; multimesh.instance_count=STARS*TRAIL+ROCKET
+		multimesh.mesh=quad; multimesh.instance_count=STARS*TRAIL+ROCKET*2+FLASHES
 		multimesh.custom_aabb=AABB(Vector3(-150,-110,0),Vector3(300,370,300))
 		var node := MultiMeshInstance3D.new(); node.multimesh=multimesh; node.visible=false
 		var material := ShaderMaterial.new(); material.shader=SparkShader
@@ -66,8 +72,8 @@ func press(source: String) -> bool:
 	if not enabled or queue.size()>=QUEUE_LIMIT:
 		rejected+=1; return false
 	if bag.is_empty():
-		bag=[0,1,2]
-		for index in range(2,0,-1):
+		bag.assign(range(STYLE_COUNT))
+		for index in range(STYLE_COUNT-1,0,-1):
 			var other := random.randi_range(0,index)
 			var swap := bag[index]; bag[index]=bag[other]; bag[other]=swap
 	queue.append(bag.pop_back()); accepted+=1
@@ -86,58 +92,116 @@ func dispatch() -> void:
 		if slot.active or queue.is_empty(): continue
 		start(slot,queue.pop_front())
 
-func start(slot: Dictionary,style: int) -> void:
-	var x := random.randf_range(-12.0,12.0)
-	var z := random.randf_range(LAUNCH_Z_MIN,LAUNCH_Z_MAX)
-	var launch := Vector3(x,float(ground.call(x,z))+.15,z)
-	# Preserve festival-scale expansion, but finish above the distant hills.
-	# The former low burst sent downward stars through the modeled terrain and
-	# the long-lived willow reached the rear edge of the walking rectangle.
-	var burst := launch+Vector3(random.randf_range(-5,5),random.randf_range(BURST_RISE_MIN,BURST_RISE_MAX),0)
-	var life := 5.6 if style==2 else 4.2
-	var palette := [Color(1,.045,.015),Color(1,.52,.075),Color(.035,.24,1),Color(.68,.025,1),Color(.07,1,.12),Color(.02,.85,1),Color(1,.12,.47)]
+func _random_direction() -> Vector3:
+	var direction := Vector3(random.randfn(),random.randfn(),random.randfn())
+	return direction.normalized() if direction.length_squared()>.0001 else Vector3.UP
+
+func _next_color() -> int:
 	if color_bag.is_empty():
-		for index in palette.size(): color_bag.append(index)
+		for index in PALETTE.size(): color_bag.append(index)
 		for index in range(color_bag.size()-1,0,-1):
 			var other := random.randi_range(0,index)
 			var swap := color_bag[index]; color_bag[index]=color_bag[other]; color_bag[other]=swap
 		# A new shuffled cycle must not repeat the preceding shell's hue.
 		if color_bag.back()==last_color:
 			var swap := color_bag[0]; color_bag[0]=color_bag[-1]; color_bag[-1]=swap
-	last_color=color_bag.pop_back(); colors.append(last_color)
+	last_color=color_bag.pop_back()
+	return last_color
+
+const PALETTE := [Color(1,.045,.015),Color(1,.52,.075),Color(.035,.24,1),Color(.68,.025,1),Color(.07,1,.12),Color(.02,.85,1),Color(1,.12,.47)]
+const GOLD := Color(1,.62,.2)
+const SILVER := Color(.9,.92,1)
+
+## Each shell draws its shape, size, height, colours and salvo at random, so no two read alike.
+func start(slot: Dictionary,style: int) -> void:
+	var x := random.randf_range(-24.0,24.0)
+	var z := random.randf_range(LAUNCH_Z_MIN,LAUNCH_Z_MAX)
+	var launch := Vector3(x,float(ground.call(x,z))+.15,z)
+	# Finish above the distant hills: low bursts sent stars through the terrain.
+	var burst := launch+Vector3(random.randf_range(-8,8),random.randf_range(BURST_RISE_MIN,BURST_RISE_MAX),random.randf_range(-6,6))
+	var salvo := random.randf()<SALVO_CHANCE
+	var burst2 := burst+Vector3(random.randf_range(-16,16),random.randf_range(-10,8),random.randf_range(-8,8))
+	var first: Color=PALETTE[_next_color()]
+	colors.append(last_color)
 	if colors.size()>32: colors.pop_front()
-	var tint: Color=palette[last_color]
+	var second: Color=PALETTE[(last_color+random.randi_range(2,4))%PALETTE.size()]
+	var size := random.randf_range(.8,1.15)
+	var params := {"speed":58.0,"drag":.8,"gravity":9.8,"life":4.2,"trail":1.0,"shift":second,"shift_at":2.0,"twinkle":0.0,"count":STARS}
+	match style:
+		0: params.merge({"count":random.randi_range(260,420),"shift_at":random.randf_range(.35,.55),"life":random.randf_range(3.6,4.4)},true)
+		1: params.merge({"count":random.randi_range(320,460),"trail":2.4,"shift":first,"shift_at":.4,"speed":64.0},true)
+		2: params.merge({"count":random.randi_range(220,320),"speed":36.0,"drag":.45,"gravity":14.0,"life":6.0,"trail":3.5,"shift":Color(.75,.22,.04),"shift_at":.55,"twinkle":.8},true)
+		3: params.merge({"count":200,"speed":52.0,"trail":1.2},true)
+		4: params.merge({"count":9*14,"speed":46.0,"gravity":11.0,"life":4.6,"trail":3.0,"shift":first,"shift_at":.6},true)
+		5: params.merge({"count":random.randi_range(260,380),"life":4.0,"trail":.6,"twinkle":1.0,"shift":SILVER},true)
+	# Rings mostly face the shore, tipped enough to read as rings in depth.
+	var ring_basis := Basis.from_euler(Vector3(random.randf_range(-.45,.45),random.randf_range(-.35,.35),random.randf_range(-.6,.6)))
+	var palm: Array[Vector3]=[]
+	for comet in 9:
+		var spread := TAU*comet/9.0+random.randf_range(-.2,.2)
+		palm.append(Vector3(cos(spread)*.8,random.randf_range(.2,.7),sin(spread)*.8).normalized())
+	var count: int=params.count
+	var split: int=int(count*.6) if salvo else count
 	var mm: MultiMesh=slot.node.multimesh
 	for star in STARS:
-		var y := 1.0-2.0*(star+.5)/STARS
-		var angle := star*2.39996323+random.randf_range(-.04,.04)
-		var direction := Vector3(sqrt(1-y*y)*cos(angle),y,sqrt(1-y*y)*sin(angle))
-		if style==1: direction=Vector3(cos(angle),sin(angle),random.randf_range(-.04,.04))
-		if style==2: direction.y=absf(direction.y)*.7
-		direction*=random.randf_range(.85,1.0)
-		var inner := style==0 and star%4==0
-		if inner: direction*=.43
+		var direction := _random_direction()
+		var tint: Color=first
+		if style==1 or style==2 or style==4: tint=GOLD
+		if style==5: tint=SILVER
+		match style:
+			3:
+				if star<140:
+					var angle := TAU*star/140.0+random.randf_range(-.02,.02)
+					direction=ring_basis*Vector3(cos(angle),sin(angle),random.randf_range(-.03,.03))
+				else:
+					direction*=.35; tint=second
+			4:
+				var trunk: Vector3=palm[star%9]
+				direction=(trunk+_random_direction()*.05).normalized()*random.randf_range(.75,1.0)
+		if style!=3 and style!=4: direction*=random.randf_range(.72,1.0)
+		direction*=size
+		var used: bool=star<count
+		var group := 1.0 if salvo and star>=split else 0.0
+		if group>0.0 and style!=5: tint=second
+		tint.a=1.0 if used else 0.0
 		var custom := Color(direction.x*.5+.5,direction.y*.5+.5,direction.z*.5+.5,random.randf())
 		for tail in TRAIL:
 			var index := star*TRAIL+tail
-			mm.set_instance_transform(index,Transform3D(Basis.IDENTITY,Vector3(tail*.045,0,0)))
+			mm.set_instance_transform(index,Transform3D(Basis.IDENTITY,Vector3(tail*.045,0,group)))
 			mm.set_instance_custom_data(index,custom); mm.set_instance_color(index,tint)
-	for tail in ROCKET:
-		var index := STARS*TRAIL+tail
-		mm.set_instance_transform(index,Transform3D(Basis.IDENTITY,Vector3(tail*.035,1,0)))
-		mm.set_instance_color(index,Color(1,.67,.27))
-	slot.material.set_shader_parameter("launch",launch); slot.material.set_shader_parameter("burst",burst)
-	slot.material.set_shader_parameter("lifetime",life)
-	slot.material.set_shader_parameter("flight_time",FLIGHT_TIME)
-	slot.material.set_shader_parameter("speed",42.0 if style==2 else 58.0)
-	slot.material.set_shader_parameter("drag",.45 if style==2 else .8)
-	slot.material.set_shader_parameter("spark_radius",SPARK_RADIUS)
-	slot.material.set_shader_parameter("age",0.0)
-	slot.material.set_shader_parameter("scene_visibility",visibility)
-	slot.age=0.0; slot.life=FLIGHT_TIME+life+.5; slot.active=true; slot.node.visible=true
+	for group in 2:
+		for tail in ROCKET:
+			var index := STARS*TRAIL+group*ROCKET+tail
+			mm.set_instance_transform(index,Transform3D(Basis.IDENTITY,Vector3(tail*.035,1,group)))
+			mm.set_instance_color(index,Color(1,.67,.27,1.0 if group==0 or salvo else 0.0))
+	for group in FLASHES:
+		var index := STARS*TRAIL+ROCKET*2+group
+		mm.set_instance_transform(index,Transform3D(Basis.IDENTITY,Vector3(0,2,group)))
+		mm.set_instance_color(index,Color(1,1,1,1.0 if group==0 or salvo else 0.0))
+	var material: ShaderMaterial=slot.material
+	material.set_shader_parameter("launch",launch); material.set_shader_parameter("burst",burst)
+	material.set_shader_parameter("burst2",burst2)
+	var second_delay := random.randf_range(.35,.9) if salvo else 0.0
+	material.set_shader_parameter("second_delay",second_delay)
+	material.set_shader_parameter("lifetime",params.life)
+	material.set_shader_parameter("flight_time",FLIGHT_TIME)
+	material.set_shader_parameter("speed",params.speed)
+	material.set_shader_parameter("drag",params.drag)
+	material.set_shader_parameter("gravity",params.gravity)
+	material.set_shader_parameter("trail_scale",params.trail)
+	material.set_shader_parameter("shift_color",Vector3(params.shift.r,params.shift.g,params.shift.b))
+	material.set_shader_parameter("shift_at",params.shift_at)
+	material.set_shader_parameter("twinkle",params.twinkle)
+	material.set_shader_parameter("flash_size",random.randf_range(7.0,11.0)*size)
+	material.set_shader_parameter("spark_radius",SPARK_RADIUS*(1.35 if style==4 else 1.0))
+	material.set_shader_parameter("age",0.0)
+	material.set_shader_parameter("scene_visibility",visibility)
+	slot.age=0.0; slot.life=FLIGHT_TIME+second_delay+float(params.life)+.5; slot.active=true; slot.node.visible=true
 	launched+=1; styles.append(style)
 	if styles.size()>32: styles.pop_front()
-	if audio!=null: audio.schedule(slots.find(slot),launch,burst,style,random.randf_range(.97,1.03),FLIGHT_TIME)
+	if audio!=null:
+		audio.schedule(slots.find(slot),launch,burst,STYLE_SOUND[style],random.randf_range(.97,1.03),FLIGHT_TIME)
+		if salvo: audio.schedule_second(slots.find(slot),burst2,STYLE_SOUND[(style+1)%STYLE_COUNT],random.randf_range(.92,1.08),FLIGHT_TIME+second_delay)
 
 func advance(delta: float) -> void:
 	if audio!=null: audio.advance(delta)
@@ -160,4 +224,4 @@ func active_count() -> int:
 func evidence() -> Dictionary:
 	return {"accepted":accepted,"launched":launched,"rejected":rejected,"cancelled_queued":cancelled,
 		"active":active_count(),"queued":queue.size(),"styles":styles,"colors":colors,"pool_size":POOL_SIZE,
-		"instances_per_slot":STARS*TRAIL+ROCKET,"texture_bytes":0}
+		"instances_per_slot":STARS*TRAIL+ROCKET*2+FLASHES,"texture_bytes":0}

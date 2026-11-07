@@ -204,6 +204,8 @@ vec3 screen_light_sample(vec3 p,vec3 n,vec3 emitter,vec3 facing_normal,float are
 	float facing=max(dot(n,direction),0.0)*max(dot(facing_normal,-direction),0.0);
 	return film_color*facing*min(1.8,area/(distance2+1.0));
 }
+uniform vec3 fire_position = vec3(0.0,-100.0,0.0);
+uniform vec3 fire_light = vec3(0.0);
 vec3 local_light(vec3 p,vec3 n) {
 	vec3 delta = screen_origin-p;
 	float distance2 = dot(delta,delta);
@@ -216,7 +218,9 @@ vec3 local_light(vec3 p,vec3 n) {
 	}
 	vec3 lamp_delta = lamp_position-p;
 	float lamp = max(dot(n,normalize(lamp_delta)),0.0)/(1.0+dot(lamp_delta,lamp_delta)*2.0);
-	return (film+vec3(0.9,0.32,0.065)*lamp)*(1.0-day_mix);
+	vec3 fire_delta = fire_position-p;
+	float fire = max(dot(n,normalize(fire_delta))*.75+.25,0.0)/(1.0+dot(fire_delta,fire_delta)*.45);
+	return (film+vec3(0.9,0.32,0.065)*lamp)*(1.0-day_mix)+fire_light*fire;
 }
 
 uniform vec3 base_color=vec3(.04,.05,.06);

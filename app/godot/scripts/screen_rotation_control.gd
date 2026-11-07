@@ -1,5 +1,5 @@
 extends "res://scripts/ray_menu.gd"
-## Hover-only replacement for the lower-left resize bracket on free flat video.
+## Hover-only replacement for the lower-left resize bracket on free flat media.
 const ROTATE := 1
 const TIP := "Hold either curved arrow to keep turning, or drag to rotate; release to snap to the nearest 90°."
 const DRAG_START := 4.0
@@ -105,7 +105,10 @@ static func _arc_mesh() -> ArrayMesh:
 
 static func valid_capture(video: Node3D, grab: Dictionary) -> bool:
 	return video != null and grab.has("rotate") and video.geometry == 0 and video.panel.visible \
-		and video.local_uri == grab.uri and video.media.session_id == grab.session
+		and video.local_uri == grab.uri and _epoch(video) == grab.session
+
+static func _epoch(surface: Node3D) -> int:
+	return surface.rotation_epoch() if surface.has_method("rotation_epoch") else surface.media.session_id
 
 ## Intersect the unrotated placement plane, so rotating the panel never feeds back into the drag.
 static func ray_angle(video: Node3D, ray: Variant) -> Variant:
@@ -130,7 +133,7 @@ func begin(video: Node3D, hand: String, ray: Variant) -> Dictionary:
 	var direction: Vector3 = inverse.basis * ray[1]
 	var local_corner: Vector3 = inverse * video.panel.to_global(video.screen_corner(corner))
 	var offset := origin + direction * ((local_corner.z - origin.z) / direction.z) - local_corner
-	return {"hand": hand, "uri": video.local_uri, "session": video.media.session_id, "moved": false,
+	return {"hand": hand, "uri": video.local_uri, "session": _epoch(video), "moved": false,
 		"rotate": {"start": video.screen_rotation, "last": float(angle), "travel": 0.0, "corner": corner,
 			"dragging": false, "hold_direction": -1.0 if offset.x > offset.y + 0.001 else 1.0,
 			"next_hold": Time.get_ticks_msec() + HOLD_DELAY_MS}}

@@ -8,6 +8,7 @@ var _saved := {}
 var _front: MeshInstance3D
 var _front_material: Material
 var _matte: StandardMaterial3D
+var _aspect_tried := 0.0
 
 func sync(host: Node3D,video: Node3D,fraction := 1.0) -> bool:
 	if not host or not host.is_ready or not video or not video.panel or video.geometry!=0:
@@ -21,11 +22,19 @@ func sync(host: Node3D,video: Node3D,fraction := 1.0) -> bool:
 	video.subtitle_ground_provider=Callable(host.navigation,"ground")
 	var layout: Dictionary = host.screen_layout
 	var base: Vector2 = video._screen_base
+	# The whole panel is the picture: it takes the video's shape instead of framing it in black.
+	var aspect := base.x/maxf(base.y,.001)
+	if absf(aspect-float(layout.parameters.aspect))>.01 and not is_equal_approx(aspect,_aspect_tried) and not host.screen_loading:
+		_aspect_tried=aspect
+		host.request_screen({"aspect":aspect})
 	var size: Vector2 = layout.half_size*2
 	var scale := minf(size.x/maxf(base.x,.001),size.y/maxf(base.y,.001))*clampf(fraction,.1,1)
 	video.cinema.enabled=false; video.screen_preset=""
-	if not is_equal_approx(video.screen_scale,scale) or video.screen_curve!=0 or video.curve_radius!=0 or video.screen_rotation!=0:
-		video.screen_scale=scale; video.screen_curve=0; video.curve_radius=0; video.screen_rotation=0
+	# The picture bends with the panel it lies on.
+	var radius: float=float(layout.get("radius",0.0))
+	var curve: float=rad_to_deg(size.x/radius) if radius>0.0 else 0.0
+	if not is_equal_approx(video.screen_scale,scale) or not is_equal_approx(video.screen_curve,curve) or not is_equal_approx(video.curve_radius,radius) or video.screen_rotation!=0:
+		video.screen_scale=scale; video.screen_curve=curve; video.curve_radius=radius; video.screen_rotation=0
 		video._apply_geometry()
 	var pose := Transform3D(Basis(layout.right,layout.up,layout.normal),layout.center+layout.normal*.035)
 	if not (video.global_transform*video.flat_pose).is_equal_approx(pose): video.set_flat_world_pose(pose)

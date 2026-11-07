@@ -4,6 +4,7 @@ const UiTheme := preload("res://scripts/ui_theme.gd")
 const I18n := preload("res://scripts/i18n.gd")
 const Sites := preload("res://scripts/web_video_sites.gd")
 const BASE := 985000
+const PASTE := BASE + 8
 const SITE_BASE := BASE + 100
 const COLUMNS := 3
 const ROWS := 5
@@ -50,14 +51,16 @@ func draw() -> bool:
 	menu._set_backdrop(frame[0], frame[1])
 	_caption(I18n.t("Browser"), Vector2(-0.49, 0.435), 29, UiTheme.color("web_title")).horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	menu._icon("globe", Vector3(0.73, 0.435, 0.009), 0.054, UiTheme.color("web_icon"))
-	menu._button(BASE, "", Vector2(0.055, 0.27), Vector2(1.13, 0.115))
+	menu._button(BASE, "", Vector2(-0.015, 0.27), Vector2(0.99, 0.115))
 	var field: Dictionary = menu._buttons.back()
 	field.base_color = UiTheme.color("web_input")
 	field.node.material_override.set_shader_parameter("surface_color", field.base_color)
-	menu._icon("search", Vector3(-0.505, 0, 0.006), 0.04, UiTheme.color("web_search"), field.node)
+	menu._icon("search", Vector3(-0.435, 0, 0.006), 0.04, UiTheme.color("web_search"), field.node)
 	var text: String = panel.address if not panel.address.is_empty() else I18n.t("Website or video link")
-	var input := _caption(menu._fit_title(text, "", 0.95, 21), Vector2(-0.46, 0), 21, UiTheme.color("web_input_ink") if not panel.address.is_empty() else UiTheme.color("web_hint"), field.node)
+	var input := _caption(menu._fit_title(text, "", 0.82, 21), Vector2(-0.39, 0), 21, UiTheme.color("web_input_ink") if not panel.address.is_empty() else UiTheme.color("web_hint"), field.node)
 	input.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	menu._button(PASTE, "", Vector2(0.565, 0.27), Vector2(0.12, 0.115), true, "paste")
+	menu._tips[PASTE] = I18n.t("Paste")
 	menu._button(BASE + 1, "", Vector2(0.725, 0.27), Vector2(0.12, 0.115), not panel.address.strip_edges().is_empty(), "next", true)
 	menu._tips[BASE + 1] = I18n.t("Open")
 	var destination: Dictionary = menu.web_browser.data
@@ -116,6 +119,12 @@ func action(target: int) -> bool:
 	var menu: Node = panel.menu
 	if target >= SITE_BASE and target < SITE_BASE + Sites.FEATURED.size():
 		if expanded and visible_sites().has(target - SITE_BASE): menu.web_browser.open(Sites.FEATURED[target - SITE_BASE].url)
+		return true
+	if target == PASTE:
+		var text: String = menu.web_browser.clipboard_address()
+		if not text.is_empty():
+			if menu.system_text_input.active("web_home"): menu.system_text_input.set_text("web_home", text)
+			else: _edited(text)
 		return true
 	if target < BASE or target > BASE + 7: return false
 	match target - BASE:

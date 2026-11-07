@@ -171,6 +171,7 @@ const SCREEN_CINEMA_OFF := 477
 const SCREEN_PRESET := 490
 const SCREEN_EYE_LEVEL := 530
 const SCREEN_CURVE := 540
+const SCREEN_CURVE_SLIDER := 544
 const EYE_LEVELS := [1.0 / 3.0, 0.5]
 const ScreenPresets := preload("res://scripts/screen_presets.gd")
 const VideoAspect := preload("res://scripts/video_aspect.gd")
@@ -215,8 +216,7 @@ const PLAYBACK_MODE_TIPS := {
 	"shuffle": "Shuffle: play videos in random order."}
 const Surface := preload("res://scripts/media_surface.gd")
 const SeekFeedback := preload("res://scripts/seek_feedback.gd")
-## Flat screen curve steps (the video's CURVES) and their names.
-const CURVE_NAMES := ["Off", "Slight", "Medium", "Full"]
+## Curvature reference ticks and slider use total arc degrees, shared with the media surface.
 
 const Grade := preload("res://scripts/color_grade.gd")
 var _adjustment := ""
@@ -2233,11 +2233,12 @@ func _choice_tile(target: int) -> bool:
 func _settings_key() -> String:
 	return str([_state.get("cast", {})]) + str([_state.get("source_uri", ""), _state.get("has_video", false),
 		_state.get("portrait_requested", false), _state.get("flat_passthrough_requested", false), _state.get("portrait_auto", true), _state.get("portrait_enhanced", false),
-		_state.get("playback_mode", "single"), _state.get("screen_curve", 0.0), _state.get("seek_mode", "speed"), _state.get("depth_render", "stretch"), _state.get("depth_text_protection", true), _state.get("stereo", false), _state.get("geometry", 0),
+		_state.get("playback_mode", "single"), _state.get("seek_mode", "speed"), _state.get("depth_render", "stretch"), _state.get("depth_text_protection", true), _state.get("stereo", false), _state.get("geometry", 0),
 		_state.get("show_fps", false), _state.get("alpha_keep_background", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
 		_state.get("immersive_adjustment_gauges", true), _state.get("video_auto_3d", false),
 		_state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("screen_scene_curve", true), _state.get("cinema_lights", "auto"),
+		_state.get("screen_curve_modes_available", false), _state.get("screen_curve_mode", "horizontal"),
 		_state.get("video_aspect_preset", "original"), _state.get("depth_requested", false),
 		_state.get("error", ""), _state.get("error_report", {}), _alpha_expanded])
 
@@ -2260,10 +2261,6 @@ func _setting_choices(operation: String) -> Dictionary:
 			return {"key": "depth_render", "value": _state.get("depth_render", "stretch"), "choices": [
 				{"value": "fill", "label": "Fill gaps", "hint": "Fills the background behind moving edges"},
 				{"value": "stretch", "label": "Stretch edges", "hint": "Stretches edges, like spatial photos"}]}
-		"screen_curve":
-			var values: Array = []
-			for i in Surface.CURVES.size(): values.append({"value": Surface.CURVES[i], "label": CURVE_NAMES[i]})
-			return {"key": "screen_curve", "value": _state.get("screen_curve", 0.0), "choices": values}
 		"audio":
 			if not _enabled("audio") or _state.get("audio_options", []).is_empty(): return {}
 			return {"key": "audio_track", "value": _state.get("audio_track_id", -1), "choices": _state.get("audio_options", [])}
@@ -2776,7 +2773,7 @@ func _caption_text(operation: String) -> String:
 		"subtitle_distance": return "%.1f m · %+.0f°" % [float(_state.get("subtitle_distance", 5.0)), float(_state.get("subtitle_position", SubtitleDepth.DEFAULT_POSITION))]
 		"screen_distance": return "%.1f m" % float(_state.get("screen_distance", Surface.SCREEN_DISTANCE))
 		"color_grade": return str(_state.get("color_grade", {}).get("preset", "Original"))
-		"screen_curve": return CURVE_NAMES[clampi(roundi(float(_state.get("screen_curve", 0.0)) / 0.35), 0, 3)]
+		"screen_curve": return _curve_caption(float(_state.get("screen_curve", 0.0)))
 	return operation
 
 func _status_text() -> String:
@@ -2852,12 +2849,15 @@ func _draw_screen_settings() -> void:
 	if CinemaFeature.enabled() and _state.get("screen_scene_locked", false):
 		# Movement and lights live in the scene settings and footer; this page shapes the picture.
 		var scene_curve: bool = _state.get("screen_scene_curve", true)
-		var top := _settings_frame(0.56 if scene_curve else 0.40)
+		# The beach screen itself resizes; a picture-inside-the-wall size only fits the cinema.
+		var scene_picture: bool = _state.get("screen_scene_picture", true)
+		var lift := 0.0 if scene_picture else 0.09
+		var top := _settings_frame((0.56 if scene_curve else 0.40) - lift)
 		_draw_settings_tabs(top - 0.055)
 		# The fixed cinema screen keeps its wall; only the picture inside it scales.
-		_adjustment_row(CINEMA_PICTURE_SIZE, "cinema_picture_size", "Picture size", Vector3(40, 100, 5), top - .16)
-		_draw_video_aspect(top - .25)
-		if scene_curve: _draw_curve_choices(top - .45)
+		if scene_picture: _adjustment_row(CINEMA_PICTURE_SIZE, "cinema_picture_size", "Picture size", Vector3(40, 100, 5), top - .16)
+		_draw_video_aspect(top - .25 + lift)
+		if scene_curve: _draw_curve_slider(top - .45 + lift)
 		choices.bounds = Vector2(POPUP_BOTTOM + 0.015, top - 0.10)
 		choices.finish()
 		refresh_values()
@@ -2865,7 +2865,8 @@ func _draw_screen_settings() -> void:
 	var flat: bool = _state.get("has_video", false) and int(_state.get("geometry", 0)) == 0
 	var spatial_fov: bool = flat and _state.get("spatial_video", false) and _state.get("spatial_metadata", {}).has("horizontal_fov_degrees")
 	var cinema: bool = flat and _state.get("screen_cinema", false)
-	var top := _settings_frame(0.24 + (0.665 if flat else 0.0) + (0.10 if cinema else 0.0) + (0.08 if spatial_fov else 0.0))
+	var curve_mode: bool = flat and not cinema and _state.get("screen_curve_modes_available", false)
+	var top := _settings_frame(0.24 + (0.665 if flat else 0.0) + (0.10 if cinema else 0.0) + (0.08 if spatial_fov else 0.0) + (0.09 if curve_mode else 0.0))
 	_draw_settings_tabs(top - 0.055)
 	var y := top - 0.16
 	if flat:
@@ -2908,7 +2909,10 @@ func _draw_screen_settings() -> void:
 		_tips[SCREEN_SET_DEFAULT] = I18n.t("Lock the current size, distance, cinema mode and viewing height. Controller recenter and player Center restore them after temporary adjustments. Click again to replace the locked settings with the current ones.")
 		y -= 0.005
 		y -= 0.09
-		_draw_curve_choices(y)
+		if curve_mode:
+			_draw_curve_mode(y)
+			y -= 0.09
+		_draw_curve_slider(y)
 		y -= 0.09
 	if not cinema:
 		_adjustment_row(452, "screen_rotation", "Screen rotation", Vector3(-180, 180, 1), y)
@@ -2923,13 +2927,34 @@ func _draw_screen_settings() -> void:
 	choices.bounds = Vector2(POPUP_BOTTOM + 0.015, top - 0.10)
 	choices.finish()
 
-func _draw_curve_choices(y: float) -> void:
-	var title := _label(I18n.t("Screen curve"), Vector3(-0.50, y, 0.004), TEXT_BODY)
+func _draw_curve_mode(y: float) -> void:
+	var title := _label(I18n.t("Curve mode"), Vector3(-0.50, y, 0.004), TEXT_BODY)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	for index in Surface.CURVES.size():
-		_button(SCREEN_CURVE + index, I18n.t(CURVE_NAMES[index]), Vector2(-0.092 + index * 0.168, y), Vector2(0.156, 0.05))
-		set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
-		_buttons.back().base_color = SELECTED if is_equal_approx(float(_state.get("screen_curve", 0.0)), Surface.CURVES[index]) else TILE
+	choices.field(null, {"key": "screen_curve_mode", "value": _state.get("screen_curve_mode", "horizontal"), "compact": true, "choices": [
+		{"value": "horizontal", "label": "Left/right"}, {"value": "vertical", "label": "Up/down"},
+		{"value": "spherical", "label": "Spherical"}]}, Vector2(0.16, y), 0.646, 0.055)
+
+func _curve_tick_values() -> Array:
+	var values: Array = _state.get("screen_curve_ticks", Surface.CURVES).duplicate()
+	var maximum := float(_state.get("screen_curve_max", Surface.MAX_CURVE))
+	if not is_equal_approx(float(values.back()), maximum): values.append(maximum)
+	return values
+
+func _curve_caption(value: float) -> String:
+	return "%.0f°" % value if is_equal_approx(value, roundf(value)) else "%.1f°" % value
+
+func _draw_curve_slider(y: float, title: String = "Screen curve") -> void:
+	_adjustment_row(SCREEN_CURVE_SLIDER, "screen_curve", title, Vector3(0.0, float(_state.get("screen_curve_max", Surface.MAX_CURVE)), 0.1), y)
+	if _state.get("screen_curve_modes_available", false) and _state.get("screen_curve_mode", "horizontal") == "spherical":
+		_tips[SCREEN_CURVE_SLIDER] = I18n.t("Sphere angle is measured along the screen diagonal.")
+	var row: Dictionary = _adjust_rows[SCREEN_CURVE_SLIDER]
+	row["ticks"] = []
+	for value in _curve_tick_values():
+		var x: float = row.left + row.width * value / row.span.y
+		var marker := _decoration(Vector2(0.003, 0.02), Vector2(x, y), UiTheme.color("knob"))
+		_style_slider_marker(marker)
+		var caption := _label(_curve_caption(value), Vector3(x, y + 0.03, 0.004), 11)
+		row.ticks.append({"marker": marker, "label": caption})
 
 func _draw_video_aspect(y: float) -> void:
 	var stereo: bool = _state.get("stereo", false) or _state.get("depth_requested", false)
@@ -3100,6 +3125,7 @@ func _adjustment_default(key: String) -> Variant:
 	if key == "bar_transparency": return 14.0
 	if Grade.DEFAULTS.has(key): return Grade.DEFAULTS[key]
 	return {"screen_distance": Surface.SCREEN_DISTANCE, "screen_scale": 100.0, "cinema_picture_size": 100.0, "video_aspect_factor": 1.0,
+		"screen_curve": 0.0,
 		"view_horizontal": 0.0, "view_vertical": 0.0, "view_zoom": 0.0,
 		"screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0,
 		"stereo_horizontal": 0.0, "stereo_vertical": 0.0}.get(key)
@@ -3165,7 +3191,7 @@ func _refresh_adjustments() -> void:
 	for row in _adjust_rows.values():
 		var distance: bool = row.key in ["subtitle_distance", "screen_distance", "portrait_distance"]
 		var position: bool = row.key == "subtitle_position"
-		var defaults := {"screen_scale": 100.0, "cinema_picture_size": 100.0, "screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0, "stereo_horizontal": 0.0, "stereo_vertical": 0.0}
+		var defaults := {"screen_curve": 0.0, "screen_scale": 100.0, "cinema_picture_size": 100.0, "screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0, "stereo_horizontal": 0.0, "stereo_vertical": 0.0}
 		defaults["bar_transparency"] = 14.0
 		defaults[DepthPosition.KEY] = 0.0
 		for key in Surface.ImmersiveAdjustments.KEYS: defaults[key] = 0.0
@@ -3173,6 +3199,14 @@ func _refresh_adjustments() -> void:
 		defaults["video_aspect_factor"] = 1.0
 		var value := float(_state.get(row.key, defaults[row.key])) if defaults.has(row.key) else (float(_state.get(row.key, 5.0 if row.key == "subtitle_distance" else Surface.SCREEN_DISTANCE)) if distance else (float(_state.get(row.key, SubtitleDepth.DEFAULT_POSITION)) if position else float(values.get(row.key, Grade.DEFAULTS[row.key]))))
 		row["value"] = value
+		if row.key == "screen_curve":
+			row.span.y = maxf(0.001, float(_state.get("screen_curve_max", Surface.MAX_CURVE)))
+			var ticks := _curve_tick_values()
+			for index in row.ticks.size():
+				var x: float = row.left + row.width * ticks[index] / row.span.y
+				row.ticks[index].marker.position.x = x
+				row.ticks[index].label.position.x = x
+				row.ticks[index].label.text = _curve_caption(ticks[index])
 		var fraction := clampf((value - row.span.x) / (row.span.y - row.span.x), 0, 1)
 		if row.key == "subtitle_distance": fraction = SubtitleDepth.slider_fraction(value)
 		if row.key == "video_aspect_factor": fraction = VideoAspect.slider_fraction(value)
@@ -3182,6 +3216,7 @@ func _refresh_adjustments() -> void:
 		if row.key == "screen_distance" and value < 10: row.label.text = "%.2f m" % value
 		if row.key == "portrait_distance" and value < 10: row.label.text = "%.2f m" % value
 		if row.key in ["screen_scale", "cinema_picture_size", "portrait_scale"]: row.label.text = "%d%%" % roundi(value)
+		elif row.key == "screen_curve": row.label.text = _curve_caption(value)
 		elif row.key == "screen_rotation": row.label.text = "%+.0f°" % value if value != 0 else "0°"
 		elif row.key == "playback_speed": row.label.text = "%.2f×" % value
 		elif row.key == DepthPosition.KEY: row.label.text = "%+.0f" % value if value != 0 else "0"
@@ -3243,8 +3278,6 @@ func _activate_adjustment(target: int) -> void:
 			adjustment_requested.emit("stereo_reset", true)
 		elif target == SPATIAL_DISPARITY and _state.get("spatial_video", false):
 			setting_requested.emit("spatial_auto_disparity", not _state.get("spatial_auto_disparity", true))
-	elif _adjustment == "screen" and target >= SCREEN_CURVE and target < SCREEN_CURVE + Surface.CURVES.size() and _enabled("screen_curve"):
-		setting_requested.emit("screen_curve", Surface.CURVES[target - SCREEN_CURVE])
 	elif _adjustment == "screen" and target >= SCREEN_PRESET and target < SCREEN_PRESET + ScreenPresets.ITEMS.size() and _state.get("screen_cinema", false) and _state.get("has_video", false) and int(_state.get("geometry", 0)) == 0:
 		adjustment_requested.emit("screen_preset", ScreenPresets.ITEMS[target - SCREEN_PRESET].id)
 	elif _adjustment == "screen" and target >= SCREEN_EYE_LEVEL and target < SCREEN_EYE_LEVEL + EYE_LEVELS.size() and _state.get("screen_cinema", false):

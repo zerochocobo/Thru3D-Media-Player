@@ -53,6 +53,10 @@ const CinemaEnvironment := preload("res://scripts/environments/cinema_environmen
 const BeachEnvironment := preload("res://scripts/environments/private_beach_interaction.gd")
 const BeachVideo := preload("res://scripts/environments/private_beach_video.gd")
 const BeachScreenEdit := preload("res://scripts/environments/private_beach_screen_edit.gd")
+const BEACH_DAY_HOURS := 9.0
+const BEACH_NIGHT_HOURS := 21.0
+const BEACH_SWEEP_HOURS_PER_SECOND := 3.0
+const TimeOfDay := preload("res://scripts/environments/private_beach_time.gd")
 const CinemaFilmLight := preload("res://scripts/environments/cinema_film_light.gd")
 const CinemaScreenBorder := preload("res://scripts/environments/cinema_screen_border.gd")
 const CinemaPictureResize := preload("res://scripts/environments/cinema_picture_resize.gd")
@@ -62,8 +66,7 @@ const CinemaMenuLayout := preload("res://scripts/environments/cinema_menu_layout
 const CINEMA_PICTURE_MIN := 0.4
 ## Shrinking moves the picture centre down by this share of the freed height.
 const CINEMA_PICTURE_DROP := 0.2
-## Cinema curve levels as fixed radii (metres): the edges come forward at most ~5 m, well short
-## of the stairs and seats; the centre stays on the wall. Full centres the arc on the default seat.
+## Legacy cinema radii for settings migration. Continuous arcs retain the old minimum radius.
 const CINEMA_CURVE_RADII := {0.35: 50.0, 0.7: 35.0, 1.0: 24.0}
 ## Automatic house lights wait this long after playback stops before rising.
 const CINEMA_LIGHTS_UP_DELAY_MS := 1500
@@ -418,7 +421,7 @@ func _ready() -> void:
 	_restore_subtitle_settings()
 	video.color_grade.restore(settings.get_value("video", "color_grade", {}))
 	_restore_flat_video_settings()
-	video.screen_curve = clampf(float(settings.get_value("screen", "curve", 0.0)), 0.0, 1.0)
+	video.restore_screen_curve(settings, "screen")
 	add_child(video)
 	_update_thumbnail_protection()
 	video.sharpness = Quality.load_video_sharpness(settings)
@@ -619,8 +622,10 @@ func _ready() -> void:
 		if saved_beach_view is Dictionary: beach_environment.saved_view=saved_beach_view.duplicate(true)
 		else: beach_environment.view_restore_failed=true
 		beach_environment.configure(xr_origin, xr_camera)
-		beach_environment.set_hours(_beach_hours())
+		beach_environment.set_hours(_beach_target_hours())
 		beach_environment.set_screen_light(float(settings.get_value("private_beach", "screen_light", 1.0)))
+		beach_environment.set_low_end(low_end_gpu)
+		beach_environment.beach.handheld_pulse.connect(_beach_handheld_pulse)
 		beach_environment.hours_committed.connect(func(hours: float) -> void: _on_setting_changed("beach_hours", hours))
 		beach_environment.view_relocated.connect(_on_cinema_view_relocated)
 		beach_environment.changed.connect(_on_cinema_environment_changed)
@@ -828,7 +833,7 @@ func _on_controller_release(action: String, hand: String = "") -> void:
 	var consumed_key := hand + "/" + action
 	var consumed: bool = _controller_consumed.has(consumed_key)
 	_controller_consumed.erase(consumed_key)
-	if action == "trigger_click" and beach_environment and beach_environment.scene_release(hand): stick_controls.suspend(); return
+	if action in ["trigger_click", "grip_click"] and beach_environment and beach_environment.scene_held(hand) and beach_environment.scene_input_matches(action) and beach_environment.scene_release(hand): stick_controls.suspend(); return
 	if is_instance_valid(airplay_session) and airplay_session.pip.release(hand, action): stick_controls.suspend(); return
 	if video and video.get("pip") and video.pip.release(hand, action): stick_controls.suspend(); return
 	if not interface_move.capture.is_empty() and interface_move.capture.hand == hand and interface_move.capture.input == action:
@@ -954,6 +959,8 @@ func _on_controller_button(action: String, hand: String = "") -> void:
 	if action == "ax_button" and hand == "right_hand" and _cinema_interaction_owns():
 		return
 	if action == "trigger_click" and first_press and _beach_scene_press(hand):
+		_controller_consumed[hand + "/" + action] = true; return
+	if action == "grip_click" and first_press and _beach_screen_grab(hand):
 		_controller_consumed[hand + "/" + action] = true; return
 	if action == "trigger_click" and first_press and _cinema_interaction_owns() and not _cinema_input_blocked():
 		cinema_environment.suspend(); _show_player_menu()
@@ -1438,6 +1445,7 @@ func _on_system_recentered() -> void:
 var subtitle_tasks: RefCounted
 
 func _process(delta: float) -> void:
+	_tick_photo_autoplay(delta)
 	if subtitle_tasks: subtitle_tasks.tick()
 	_guard_alpha_rate(delta)
 	cast_session.tick()
@@ -1476,6 +1484,9 @@ func _process(delta: float) -> void:
 	_sync_display_policy()
 	_sync_cinema_screen()
 	_update_cinema_film_light(delta)
+	_update_beach_time(delta)
+	_update_beach_handhelds()
+	if beach_environment: beach_environment.set_surf(_beach_surf_audible())
 	_update_view_follow()
 	_refresh_session_controls()
 	if _gallery_save_after > 0 and Time.get_ticks_msec() >= _gallery_save_after:
@@ -1541,6 +1552,10 @@ func _sync_display_policy() -> void:
 	# Opening the browser only pauses the native video. Its 90/120 Hz video rate then made Gecko
 	# and the menu miss 8–44 frames a second on Quest 3; a paused frame needs no extra refresh.
 	var browsing: bool = recent_menu != null and recent_menu.web_browser.active()
+	# A pure webpage has no visible HD menu slots once its lower controls fade.
+	# Keep the page's alpha hole working independently of menu-layer visibility.
+	display.set_browser_layer(browsing and recent_menu.web_browser.windows.values().any(func(window):
+		return window.is_visible_in_tree() and is_instance_valid(window.surface) and window.surface.shown))
 	# GPU inference shares the GPU with every extra refresh: 8K VR180 Alpha ran 62 fps at 72 Hz,
 	# 40 at 90 and 25 at 120 on Quest 3 (2026-10-21). Alpha and 2D->3D keep the menu rate.
 	if playing and not browsing and not video.alpha_requested and not video.depth_requested:
@@ -1549,6 +1564,8 @@ func _sync_display_policy() -> void:
 			# Eye-buffer video (shaped screens, packed masks) renders every refresh: at most 90 Hz.
 			var cap: float = Quality.load_refresh_cap(settings, low_end_gpu)
 			if not video.layer_capable() or video.fisheye_overloaded: cap = minf(cap, 90.0)
+			# The beach draws its whole world every refresh and measured 10 ms alone: 120 Hz halves the view.
+			if _beach_active(): cap = minf(cap, 72.0 if low_end_gpu else 90.0)
 			rate = display.video_refresh_rate(float(fps), display.available_refresh_rates(), cap)
 	var now := Time.get_ticks_msec()
 	if not is_equal_approx(rate, _refresh_wanted):
@@ -1557,7 +1574,8 @@ func _sync_display_policy() -> void:
 		display.set_refresh_preference(rate)
 	display.check_refresh()
 	# The cinema hall renders in the eye buffers: lighten it while playback runs above 90 Hz.
-	display.set_scene_relief(_cinema_scene_active() and not photo_active and display.refresh_preference > 90.5)
+	# The beach fills the whole view at every rate: 11.8 -> 9.0 ms from the centre lounger at night.
+	display.set_scene_relief(_cinema_scene_active() and not photo_active and (display.refresh_preference > 90.5 or _beach_active()))
 	_sample_playback_diagnostics(playing and video.media.state == "playing")
 
 ## Once a second: playback windows for the exported log (see playback_diagnostics.gd).
@@ -2140,23 +2158,26 @@ const STICK_DEADZONE := 0.2
 var _grab := {}
 
 func _screen_rotation_allowed() -> bool:
-	if not is_instance_valid(screen_rotation_control) or photo_active or not video or not _input_focused(): return false
-	if video.geometry != Geometry.Geometry.FLAT: return false
-	if video.cinema.active(video) or _cinema_video_locked() or video.local_uri.is_empty() or not video.panel.visible: return false
-	if not interface_move.capture.is_empty() or video.pip.blocked(): return false
+	if not is_instance_valid(screen_rotation_control) or not _viewer() or not _input_focused(): return false
+	if _viewer().geometry != Geometry.Geometry.FLAT: return false
+	if _viewer().local_uri.is_empty() or not _viewer().panel.visible: return false
+	if photo_active:
+		if not photo or not photo.can_rotate_image() or photo.inspect: return false
+	elif video.cinema.active(video) or _cinema_video_locked() or video.pip.blocked(): return false
+	if not interface_move.capture.is_empty(): return false
 	var menu := _active_menu()
-	return (menu == null or menu == player_menu) and not _menu_captured(menu) and video.cast_allows("screen_rotation")
+	return (menu == null or menu == player_menu) and not _menu_captured(menu) and (photo_active or video.cast_allows("screen_rotation"))
 
 func _screen_rotation_hit(ray: Variant) -> bool:
 	if ray == null or not _screen_rotation_allowed(): return false
-	var corner := ScreenRotationControl.lower_left_corner(video)
-	if video.corner_at(ray[0], ray[1]) != corner or ScreenRotationControl.ray_angle(video, ray) == null: return false
-	var distance: float = ray[0].distance_to(video.panel.to_global(video.screen_corner(corner)))
+	var corner := ScreenRotationControl.lower_left_corner(_viewer())
+	if _viewer().corner_at(ray[0], ray[1]) != corner or ScreenRotationControl.ray_angle(_viewer(), ray) == null: return false
+	var distance: float = ray[0].distance_to(_viewer().panel.to_global(_viewer().screen_corner(corner)))
 	var menu := _active_menu()
 	if menu:
 		var menu_hit: Dictionary = menu.pointer_hit(ray[0], ray[1])
 		if not menu_hit.is_empty() and float(menu_hit.distance) <= distance: return false
-	if not video.pip.hit(ray[0], ray[1]).is_empty(): return false
+	if not photo_active and not video.pip.hit(ray[0], ray[1]).is_empty(): return false
 	return true
 
 func _try_screen_rotation(hand: String) -> bool:
@@ -2164,19 +2185,27 @@ func _try_screen_rotation(hand: String) -> bool:
 	if not _grab.is_empty() or not _screen_rotation_allowed(): return false
 	var ray: Variant = _ray(hand)
 	if not _screen_rotation_hit(ray): return false
-	_grab = screen_rotation_control.begin(video, hand, ray)
+	_grab = screen_rotation_control.begin(_viewer(), hand, ray)
 	if _grab.is_empty(): return false
+	_grab["photo"] = photo_active
+	if photo_active: photo.begin_screen_rotation()
 	_video_control_tap.clear(); stick_controls.suspend()
-	video.set_corner_hover(-1)
+	_viewer().set_corner_hover(-1)
 	_update_screen_rotation_control()
 	return true
 
 func _finish_screen_rotation(cancelled: bool = false) -> void:
 	var grab := _grab
 	_grab = {}
-	if not photo_active and video and not video.cinema.active(video) and not _cinema_video_locked():
-		if not cancelled: ScreenRotationControl.drag(video, grab, _ray(grab.hand))
-		if ScreenRotationControl.finish(video, grab, cancelled): _save_playback_adjustments()
+	var surface: Node3D = photo if grab.get("photo", false) else video
+	if ScreenRotationControl.valid_capture(surface, grab):
+		if not cancelled: ScreenRotationControl.drag(surface, grab, _ray(grab.hand))
+		var rotated := ScreenRotationControl.finish(surface, grab, cancelled)
+		if surface == photo: photo.finish_screen_rotation(rotated)
+		elif rotated and not video.cinema.active(video) and not _cinema_video_locked(): _save_playback_adjustments()
+	elif surface == photo and photo and grab.get("uri", "") == photo.local_uri and grab.get("session", -1) == photo.rotation_epoch():
+		# A hidden panel or projection change may invalidate hit testing in the same photo.
+		photo.set_screen_rotation(float(grab.rotate.start)); photo.finish_screen_rotation(false)
 	stick_controls.suspend()
 
 func _update_screen_rotation_control() -> void:
@@ -2187,18 +2216,18 @@ func _update_screen_rotation_control() -> void:
 	if _grab.is_empty():
 		for hand in hands: targets[hand] = _screen_rotation_hit(_ray(hand))
 	var dragging := _grab.has("rotate")
-	screen_rotation_control.sync(video, _screen_rotation_allowed() and (dragging or targets.values().has(true)), dragging, int(_grab.rotate.corner) if dragging else -1)
+	screen_rotation_control.sync(_viewer(), _screen_rotation_allowed() and (dragging or targets.values().has(true)), dragging, int(_grab.rotate.corner) if dragging else -1)
 	if not screen_rotation_control.visible: return
 	for hand in hands:
 		var ray: Variant = _ray(hand)
 		var targeted: bool = targets.get(hand, false)
 		screen_rotation_control.update_pointer(hand, ray[0] if targeted else Vector3.ZERO, ray[1] if targeted else Vector3.ZERO, targeted)
 		if _grab.has("rotate") and _grab.hand == hand and ray != null:
-			var point: Variant = video.screen_point(ray[0], ray[1])
-			screen_rotation_control.update_move_pointer(hand, ray[0], video.panel.to_global(point) if point != null else screen_rotation_control.global_position, true)
+			var point: Variant = _viewer().screen_point(ray[0], ray[1])
+			screen_rotation_control.update_move_pointer(hand, ray[0], _viewer().panel.to_global(point) if point != null else screen_rotation_control.global_position, true)
 
 func _screen_rotation_mouse_input(event: InputEvent) -> bool:
-	if not event is InputEventMouse or photo_active or not video or not is_instance_valid(video.view_camera): return false
+	if not event is InputEventMouse or not _viewer() or not is_instance_valid(_viewer().view_camera): return false
 	_screen_rotation_mouse_position = event.position
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
@@ -2211,6 +2240,8 @@ func _screen_rotation_mouse_input(event: InputEvent) -> bool:
 	return false
 
 func _update_flat_grab_stick(left: Vector2, right: Vector2, delta: float) -> void:
+	if _beach_active() and beach_environment.scene_stick(left, right, delta):
+		stick_controls.suspend(); return
 	if not _input_focused() or _active_menu() or not interface_move.capture.is_empty() or _grab.is_empty() or _grab.has("resize") or _grab.has("inspect") or _grab.has("rotate") or _viewer().geometry != Geometry.Geometry.FLAT:
 		return
 	var held := left if _grab.hand == "left_hand" else right
@@ -2228,8 +2259,8 @@ func _eye() -> Vector3:
 func _ray(hand: String) -> Variant:
 	if not _input_focused(): return null
 	if hand == "mouse":
-		if _screen_rotation_mouse_position == null or not video or not is_instance_valid(video.view_camera): return null
-		return [video.view_camera.project_ray_origin(_screen_rotation_mouse_position), video.view_camera.project_ray_normal(_screen_rotation_mouse_position)]
+		if _screen_rotation_mouse_position == null or not _viewer() or not is_instance_valid(_viewer().view_camera): return null
+		return [_viewer().view_camera.project_ray_origin(_screen_rotation_mouse_position), _viewer().view_camera.project_ray_normal(_screen_rotation_mouse_position)]
 	if hand_pointers.has(hand) and hand_pointers[hand].source == "hand": return hand_pointers[hand].ray
 	if HandPointer.is_optical(_hand_tracker(hand)): return null
 	return _controller_ray(hand)
@@ -2269,8 +2300,10 @@ func _update_controller_feedback(delta: float) -> void:
 		if photo_active and pose == null and ray != null: pose = Transform3D(Basis.IDENTITY, ray[0])
 		if cinema_environment:
 			var scene_held: bool = cinema_environment == beach_environment and beach_environment.scene_held(hand)
-			var valid_cinema_ray: bool = ray != null and focused and (_cinema_interaction_owns() or scene_held) and not _cinema_input_blocked()
-			if _beach_active() and beach_environment.scene_hover(hand, ray[0] if ray != null else Vector3.ZERO, ray[1] if ray != null else Vector3.FORWARD, ray != null and focused and menu == null and not _cinema_input_blocked()):
+			if scene_held and beach_environment.screen_editing(): _sync_cinema_screen()
+			# A held scene gesture keeps its ray while the playback bar is open.
+			var valid_cinema_ray: bool = ray != null and focused and ((_cinema_interaction_owns() and not _cinema_input_blocked()) or scene_held)
+			if _beach_active() and beach_environment.scene_hover(hand, ray[0] if ray != null else Vector3.ZERO, ray[1] if ray != null else Vector3.FORWARD, focused and not _beach_scene_blocked(ray)):
 				_scene_target_pulse(hand)
 			cinema_environment.update_pointer(hand, ray[0] if ray != null else Vector3.ZERO, ray[1] if ray != null else Vector3.FORWARD, valid_cinema_ray)
 		var engaged: bool = not controller_bindings.down[hand].is_empty() \
@@ -2299,8 +2332,13 @@ func _update_controller_feedback(delta: float) -> void:
 			or (video.pip.selecting > 0 and video.pip.selection_hand == hand)):
 			# The local window draws its own endpoint; avoid a second ray through it to the video.
 			world_pointer = false; engaged = true; pointer_engaged = true
+		# Beach: with no menu up and nothing playing, a controller aimed at the screen
+		# shows its ray to the exact spot, so corners and the panel can be found.
+		var screen_aim: Variant = _beach_screen_aim(hand, ray, menu)
+		if screen_aim != null: point = screen_aim; world_pointer = true
 		alphas[hand] = controller_feedback.update_hand(hand, pose, ray, point, engaged, menu != null, delta,
-			world_pointer, _controller_activity(hand) if pose != null and feedback_visible else {}, false, pointer_engaged, feedback_visible, photo_active)
+			world_pointer, _controller_activity(hand) if pose != null and feedback_visible else {}, false, pointer_engaged,
+			feedback_visible or screen_aim != null, photo_active or screen_aim != null)
 		if menu and not photo_active and pose != null:
 			_menu_touched_ms = maxi(_menu_touched_ms, Time.get_ticks_msec() - int(controller_feedback.activity_age(hand) * 1000.0))
 		if photo: photo.gallery.hide_pointer(hand)
@@ -2330,7 +2368,7 @@ func _menu_pointer_owned(menu: Node3D, hand: String) -> bool:
 ## A ray near a flat screen corner shows its bracket: pressing there resizes.
 func _update_corner_hover() -> void:
 	if _grab.has("rotate") or (is_instance_valid(screen_rotation_control) and screen_rotation_control._hover.values().has(ScreenRotationControl.ROTATE)):
-		if video: video.set_corner_hover(-1)
+		if _viewer(): _viewer().set_corner_hover(-1)
 		return
 	if not photo_active and video and video.get("pip") and video.pip.blocked():
 		video.set_corner_hover(-1); return
@@ -2394,7 +2432,8 @@ func _begin_grab(hand: String, keep_controls: bool = false) -> void:
 	if point != null and Vector2(point.x, point.y).length() > 0.05:
 		_grab["resize"] = {"corner": corner, "start_length": Vector2(point.x, point.y).length(), "start_scale": _viewer().screen_scale}
 		if _cinema_picture_resizable():
-			var capture := CinemaPictureResize.begin(video, corner, ray, _cinema_picture_size(), CINEMA_PICTURE_DROP)
+			var capture := CinemaPictureResize.begin(video, corner, ray, _cinema_picture_size(), CINEMA_PICTURE_DROP,
+				float(settings.get_value("appearance", "cinema_curve_degrees", video.screen_curve)))
 			if capture.is_empty(): _grab.erase("resize")
 			else: _grab.resize["scene_picture"] = capture
 		elif not photo_active and video.cinema.active(video):
@@ -2416,11 +2455,11 @@ func _update_grab() -> void:
 	if _grab.is_empty():
 		return
 	if _grab.has("rotate"):
-		if not _screen_rotation_allowed() or not ScreenRotationControl.valid_capture(video, _grab) or _ray(_grab.hand) == null:
+		if not _screen_rotation_allowed() or _grab.get("photo", false) != photo_active or not ScreenRotationControl.valid_capture(_viewer(), _grab) or _ray(_grab.hand) == null:
 			_finish_screen_rotation(true)
 		else:
-			ScreenRotationControl.drag(video, _grab, _ray(_grab.hand))
-			ScreenRotationControl.hold_tick(video, _grab, Time.get_ticks_msec())
+			ScreenRotationControl.drag(_viewer(), _grab, _ray(_grab.hand))
+			ScreenRotationControl.hold_tick(_viewer(), _grab, Time.get_ticks_msec())
 		return
 	if view_follow.enabled and _head_pose() == null:
 		_grab.clear()
@@ -2614,6 +2653,7 @@ func _set_cinema_mode(enabled: bool) -> void:
 	if enabled and view_follow.enabled: _on_session_control("follow")
 	interface_move.placements.erase(&"video"); view_follow.forget(&"video")
 	video.cinema.configure(video, enabled, _head_pose())
+	video.set_curve_modes_available(_curve_modes_available())
 	video.set_screen_distance(clampf(distance, video.DISTANCE_LIMITS.x, video.DISTANCE_LIMITS.y))
 	if leaving: _place_screen(true)
 
@@ -2657,6 +2697,11 @@ func _cinema_video_locked() -> bool:
 	if portrait_screen.active and not photo_active: return false
 	return not photo_active and (not _cinema_screen_saved.is_empty() or
 		(CinemaFeature.enabled() and background != null and background.choice == "cinema"))
+
+func _curve_modes_available() -> bool:
+	return video != null and background != null and not photo_active and not portrait_screen.active \
+		and video.geometry == Geometry.Geometry.FLAT and not video.cinema.enabled \
+		and background.choice in ["belfast", "morning", "night", "custom"]
 
 func _set_screen_preference(key: String, value: Variant) -> void:
 	if portrait_screen.active: return
@@ -2715,7 +2760,8 @@ func _save_screen() -> void:
 		_save_photo_adjustments()
 		return
 	_remember_current_screen()
-	_set_screen_preference("curve", video.screen_curve)
+	_set_screen_preference("curve_degrees", video.screen_curve)
+	_set_screen_preference("curve_mode", video.screen_curve_mode)
 	settings.save(settings_path)
 
 func _zoom_video(amount: float, hand: String = "right_hand") -> void:
@@ -2910,7 +2956,11 @@ func _viewer() -> Node3D:
 	return photo if photo_active and photo else video
 
 func _prepare_cast_switch() -> void:
-	if recent_menu: recent_menu.web_browser.playback_return.clear()
+	if recent_menu:
+		# Dropping only the Godot dictionary leaves the retained Gecko document pinned.
+		# Release its pause lease before hibernating, just as a library replacement does.
+		recent_menu.web_browser.playback_selected("")
+		recent_menu.web_browser.close(true)
 	_clear_controls_locks()
 	_grab.clear(); interface_move.cancel(); stick_controls.suspend()
 	photo_hands.cancel(); photo_swipe.cancel(); memory_swipe.cancel()
@@ -3297,7 +3347,34 @@ func _on_photo_changed() -> void:
 	if player_menu and player_menu.visible: player_menu.refresh_values()
 	if calibration_board: calibration_board.visible = false
 
+func _tick_photo_autoplay(delta: float) -> void:
+	if not photo or not photo.autoplay.enabled: return
+	if not photo_active:
+		photo.autoplay.set_enabled(false); photo.changed.emit(); return
+	var menu := _active_menu()
+	var blocked: bool = not _input_focused() or _vr_passthrough_active() or not _grab.is_empty() \
+		or not interface_move.capture.is_empty() or not photo_hands.owners.is_empty() or ChineseInput.active() \
+		or photo.comic.speech_state in ["preparing", "playing", "speaking"]
+	if menu:
+		blocked = blocked or menu != photo_menu or photo_menu.section != 0 or not photo_menu._adjustment.is_empty() \
+			or photo_menu._gallery_open or photo_menu._layout_open or photo_menu._mode_open or photo_menu._scenery_open \
+			or photo_menu._depth_open or photo_menu.online.opened or photo_menu.has_pointer_capture()
+	photo.autoplay.tick(photo, delta, blocked)
+
 func _on_photo_adjustment(key: String, value: Variant) -> void:
+	if key == "autoplay_interval":
+		if photo.autoplay.set_interval(value): photo.changed.emit()
+		settings.set_value("photo", key, photo.autoplay.interval)
+		if not photo_menu.has_pointer_capture(): settings.save(settings_path)
+		return
+	if key == "ground_vertical":
+		if not value is bool: return
+		if _grab.has("rotate"): _finish_screen_rotation(true)
+		_grab.clear(); interface_move.cancel(); stick_controls.suspend()
+		photo.set_ground_vertical(value)
+		interface_move.placements.erase(&"photo"); view_follow.forget(&"photo")
+		photo.save_layout_settings(settings); settings.save(settings_path)
+		photo_menu.refresh(); return
 	if key == "depth_position":
 		if value is Dictionary:
 			if str(value.get("source_uri", "")) != photo.local_uri: return
@@ -3342,6 +3419,9 @@ func _on_photo_adjustment(key: String, value: Variant) -> void:
 			if photo.geometry != Geometry.Geometry.FLAT: return
 			photo.set_screen_scale(float(value))
 			photo.changed.emit()
+		"screen_curve":
+			if photo.geometry != Geometry.Geometry.FLAT or photo.portrait_requested: return
+			photo.set_screen_curve(float(value)); photo.changed.emit()
 		"inspect_magnification":
 			photo.set_inspect_magnification(float(value))
 		"edge_feather_strength":
@@ -3350,7 +3430,7 @@ func _on_photo_adjustment(key: String, value: Variant) -> void:
 func _save_photo_adjustments() -> void:
 	settings.set_value("photo_screen", "distance", photo.screen_distance)
 	settings.set_value("photo_screen", "scale", photo.screen_scale)
-	settings.set_value("photo_screen", "curve", photo._portrait_curve if photo.portrait_requested else photo.screen_curve)
+	settings.set_value("photo_screen", "curve_degrees", photo._portrait_curve if photo.portrait_requested else photo.screen_curve)
 	settings.set_value("photo_screen", "magnification", photo.inspect_magnification)
 	settings.set_value("photo_screen", "edge_feather_strength", photo.edge_feather_strength)
 	photo.save_layout_settings(settings)
@@ -3404,6 +3484,7 @@ func _update_photo_inspect() -> void:
 		photo.update_inspect_pointer(ray[0], ray[1], _inspect_hand)
 
 func _on_photo_action(operation: String) -> void:
+	if operation == "photo_autoplay": photo.toggle_autoplay(); return
 	if operation == "comic_toggle":
 		photo.comic.set_enabled(not photo.comic.enabled); photo.comic.preferences.save(settings); settings.save(settings_path); photo_menu.refresh(); return
 	if operation == "comic_preview": photo.comic.preview(); return
@@ -3575,7 +3656,7 @@ func _place_screen(recenter: bool = false) -> void:
 		return
 	var pose: Variant = _view_pose(_viewer().screen_distance, 0.0)
 	if recenter and photo_active and photo.gallery.mode in [0, 1, 4] and head != null:
-		pose = head * Transform3D(Basis.IDENTITY, Vector3(0, 0, -photo.screen_distance))
+		pose = photo.layout_head(head) * Transform3D(Basis.IDENTITY, Vector3(0, 0, -photo.screen_distance))
 	var moved: Variant = interface_move.placement(_surface_key(_viewer()), head) if not recenter and _flat_followable(_viewer()) else null
 	if moved != null:
 		pose = moved
@@ -3637,7 +3718,8 @@ func _follow_screen_pose(surface: Node3D, head: Transform3D, recenter: bool = fa
 	var key := _surface_key(surface)
 	var saved: Variant = null if recenter else view_follow.pose(key, head)
 	if saved != null: return saved
-	var pose := head * Transform3D(Basis.IDENTITY, Vector3(0, 0, -surface.screen_distance))
+	var frame: Transform3D = photo.layout_head(head) if surface == photo else head
+	var pose := frame * Transform3D(Basis.IDENTITY, Vector3(0, 0, -surface.screen_distance))
 	view_follow.capture(key, head, pose)
 	return pose
 
@@ -3840,6 +3922,11 @@ func _navigate_back() -> void:
 	if music_menu and music_menu.visible:
 		if not music_menu.navigate_back(): _close_music_menu()
 		return
+	# A returned webpage may coexist with leftover player controls. Consume this
+	# press on those controls; only a later press belongs to browser history.
+	if recent_menu and recent_menu.web_browser.active() and player_menu and player_menu.visible:
+		if not player_menu.navigate_back(): player_menu.dismiss()
+		return
 	if recent_menu and recent_menu.visible:
 		if recent_menu.has_method("navigate_back") and recent_menu.navigate_back(): return
 		if _has_open_media():
@@ -4012,7 +4099,7 @@ func _close_current_media(restore_browser: bool = true) -> void:
 	_external_video_uri = ""
 	if restore_browser and recent_menu and recent_menu.web_browser.has_playback_return(video.local_uri):
 		_return_to_web_video(false, video.local_uri); return
-	if not restore_browser and recent_menu: recent_menu.web_browser.playback_return.clear()
+	if not restore_browser and recent_menu: recent_menu.web_browser.playback_selected("")
 	if cast_session.token > 0: cast_session.detach()
 	_clear_controls_locks()
 	if puzzle_game and puzzle_game.active:
@@ -4167,7 +4254,7 @@ func _library_settings() -> Dictionary:
 		"cinema_error": cinema_environment.error if cinema_environment else "",
 		"cinema_interaction": cinema_environment.interaction if cinema_environment else "watch",
 		"cinema_seat": str(cinema_environment.snapshot().get("seat", "")) if cinema_environment else "",
-		"beach_hours": _beach_hours(),
+		"beach_time_mode": _beach_time_mode(),
 		"beach_screen_light": float(settings.get_value("private_beach", "screen_light", 1.0)),
 		"beach_screen": _beach_screen_values(),
 		"beach_screen_default": _beach_screen_values(true),
@@ -4315,8 +4402,13 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 		"cinema_interaction":
 			_cinema_request_interaction(str(value))
 		"beach_hours":
-			settings.set_value("private_beach", "hours", float(value)); settings.save(settings_path)
+			# Dragging the sun or moon chooses that time and leaves automatic switching.
+			var night: bool = TimeOfDay.state(float(value)).daylight < .5
+			settings.set_value("private_beach", "night_hours" if night else "hours", float(value))
+			settings.set_value("private_beach", "time_mode", "night" if night else "day"); settings.save(settings_path)
 			if beach_environment: beach_environment.set_hours(float(value))
+		"beach_time_mode":
+			settings.set_value("private_beach", "time_mode", str(value)); settings.save(settings_path)
 		"beach_screen_light":
 			settings.set_value("private_beach", "screen_light", float(value)); settings.save(settings_path)
 			if beach_environment: beach_environment.set_screen_light(float(value))
@@ -4496,8 +4588,11 @@ func _on_menu_action(operation: String) -> void:
 		else: video.captures.toggle()
 		return
 	if operation == "screen_curve" and _cinema_video_locked():
-		var levels: Array = video.CURVES
-		_set_cinema_curve(levels[(levels.find(_cinema_curve()) + 1) % levels.size()]); return
+		var next := 0.0
+		for value in _cinema_curve_presets():
+			if value > video.screen_curve + 0.001:
+				next = value; break
+		_set_cinema_curve(next); return
 	if operation.begins_with("screen_") and _cinema_video_locked(): return
 	if operation == "cinema_seat": return # Retired action, including stale UI events.
 	if operation.begins_with("cinema_lights_"):
@@ -4609,6 +4704,12 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		_sync_cinema_screen()
 		return
 	if key == "screen_curve" and _cinema_video_locked(): _set_cinema_curve(float(value)); return
+	if key == "screen_curve_mode":
+		if not _curve_modes_available(): return
+		video.set_curve_modes_available(true)
+		if video.set_screen_curve_mode(str(value)):
+			_save_screen(); video.changed.emit()
+		return
 	if _cinema_video_locked() and key.begins_with("screen_"): return
 	if photo_active: return
 	if key.begins_with("listening_"):
@@ -4819,9 +4920,13 @@ func _menu_state() -> Dictionary:
 		"portrait_enhanced": video.portrait.enhanced,
 		"portrait_depth_status": video.portrait_depth_status(),
 		"screen_curve": video.screen_curve, "screen_distance": _surface_distance(video) if video.cinema.active(video) else video.screen_distance,
+		"screen_curve_max": _cinema_curve_max() if _cinema_video_locked() else video.MAX_CURVE,
+		"screen_curve_ticks": _cinema_curve_presets() if _cinema_video_locked() else video.CURVES,
+		"screen_curve_mode": video.screen_curve_mode, "screen_curve_modes_available": _curve_modes_available(),
 		"screen_is_default": _flat_video_is_default(), "screen_default_locked": settings.has_section_key("screen", "default_view"), "screen_cinema": video.cinema.enabled,
 		"screen_scene_locked": _cinema_video_locked(),
-		"screen_scene_curve": not _beach_active(),
+		"screen_scene_curve": true,
+		"screen_scene_picture": not _beach_active(),
 		"cinema_lights": str(settings.get_value("appearance", "cinema_lights", "auto")),
 		"cinema_picture_size": _cinema_picture_size() * 100.0,
 		"screen_preset": _active_screen_preset(), "screen_dimensions": video._flat.size,
@@ -4858,7 +4963,7 @@ func _menu_state() -> Dictionary:
 		"subtitle_files_revision": video.subtitle_files_revision,
 		"subtitle_files_state": video.subtitle_files_state, "subtitle_file_loading": video.subtitle_file_loading, "subtitle_file_error": video.subtitle_file_error,
 		"title": video.display_name, "source_size": "%s x %s" % [video.media.format.get("width", "?"), video.media.format.get("height", "?")],
-		"codec": details.get("codec", "Unknown codec"),
+		"codec": str(details.get("codec", "Unknown codec")) + (" · " + I18n.t("Software decoding") if video.software_decode_limited() else ""),
 		"position_ms": video.control.display_position_ms(), "duration_ms": video.control.duration_ms,
 		"seek_feedback": seek_feedback.snapshot(),
 		"xr_state": "Desktop preview" if display.preview else display.session_state,
@@ -5088,6 +5193,34 @@ func _cinema_scene_active() -> bool:
 func environment_for_background(id: String) -> Node3D:
 	return beach_environment if id=="private_beach" else grand_cinema_environment if id=="cinema" else null
 
+func _beach_time_mode() -> String:
+	var mode := str(settings.get_value("private_beach", "time_mode", "auto"))
+	return mode if mode in ["auto", "day", "night"] else "auto"
+
+## Daytime and night-time hours the viewer last chose; automatic mode moves between them.
+func _beach_target_hours() -> float:
+	var mode := _beach_time_mode()
+	var night: bool = mode == "night" or (mode == "auto" and _film_dark())
+	if night: return float(settings.get_value("private_beach", "night_hours", BEACH_NIGHT_HOURS))
+	var day := _beach_hours()
+	return day if TimeOfDay.state(day).daylight >= .5 else BEACH_DAY_HOURS
+
+## Hours sweep forward, so a film start plays out as a sunset and its end as a sunrise.
+func _update_beach_time(delta: float) -> void:
+	if not _beach_active() or beach_environment.beach.dragging(): return
+	var current: float = beach_environment.beach.hours
+	var ahead := fposmod(_beach_target_hours() - current, 24.0)
+	if ahead < .001 or ahead > 23.999: return
+	var step := minf(ahead, BEACH_SWEEP_HOURS_PER_SECOND * delta)
+	beach_environment.set_hours(fposmod(current + step, 24.0), ahead - step < .001)
+
+## The sea is heard only when nothing else is: no playing video and no background music.
+func _beach_surf_audible() -> bool:
+	if not _beach_active() or not _input_focused(): return false
+	if video and not video.local_uri.is_empty() and video.media.state == "playing": return false
+	var music: Variant = music_menu.audio if music_menu else null
+	return music == null or music.paused or music.player == null or not music.player.playing
+
 func _beach_hours() -> float:
 	# Earlier versions stored only a day/night choice.
 	var legacy_night: bool = settings.get_value("private_beach", "night", false)
@@ -5149,13 +5282,70 @@ func _cinema_pointer_press(hand: String) -> bool:
 	cinema_environment.pointer_press(hand, ray[0], ray[1])
 	return true
 
+## Scene gestures also work with the playback bar open, unless the ray is on the bar.
+func _beach_scene_blocked(ray: Variant) -> bool:
+	if ray == null or not _input_focused() or photo_active or not interface_move.capture.is_empty() or not _grab.is_empty() or not _inspect_blocked.is_empty(): return true
+	if puzzle_game != null and puzzle_game.active: return true
+	var menu := _active_menu()
+	return menu != null and (menu != player_menu or _menu_captured(menu) or not menu.ray_hit(ray[0], ray[1]).is_empty())
+
 func _beach_scene_press(hand: String) -> bool:
-	if not _beach_active() or _cinema_input_blocked(): return false
+	if not _beach_active(): return false
 	var ray: Variant = _ray(hand)
-	if ray == null or not beach_environment.scene_press(hand, ray[0], ray[1]): return false
+	if _beach_scene_blocked(ray) or not beach_environment.scene_press(hand, ray[0], ray[1]): return false
 	_video_control_tap.clear(); stick_controls.suspend()
 	_scene_target_pulse(hand)
 	return true
+
+func _beach_screen_grab(hand: String) -> bool:
+	if not _beach_active(): return false
+	var pose: Variant = _move_pose(hand)
+	# Reaching to the table and gripping takes the firework under the hand.
+	if pose != null and beach_environment.beach.grab_handheld(hand, pose.origin, null):
+		_video_control_tap.clear(); stick_controls.suspend(); return true
+	var ray: Variant = _ray(hand)
+	if _beach_scene_blocked(ray) or not beach_environment.screen_grab(hand, ray[0], ray[1]): return false
+	_video_control_tap.clear(); stick_controls.suspend()
+	_scene_target_pulse(hand)
+	return true
+
+var _beach_pinch := {}
+## Both hands may hold a firework. Controllers give their grip pose; tracked hands
+## give a palm grip, and a fresh pinch takes the item at the fingers or on the ray.
+func _update_beach_handhelds() -> void:
+	if not beach_environment or not beach_environment.beach.is_ready: return
+	var poses := {}
+	if _beach_active() and _input_focused():
+		var space: Transform3D = xr_origin.global_transform * XRServer.get_reference_frame() if xr_origin else Transform3D.IDENTITY
+		for hand in ControllerBindings.HANDS:
+			var pose: Variant = _move_pose(hand)
+			var tracker := _hand_tracker(hand)
+			if pose == null and xr_origin and HandPointer.is_optical(tracker):
+				pose = HandPointer.grip_pose(tracker, space, XRServer.world_scale)
+				var pinching: bool = hand_pointers.has(hand) and hand_pointers[hand].down
+				if pinching and not _beach_pinch.get(hand, false) and not _beach_scene_blocked(hand_pointers[hand].ray):
+					beach_environment.beach.grab_handheld(hand, HandPointer.pinch_position(tracker, space, XRServer.world_scale), hand_pointers[hand].ray)
+				_beach_pinch[hand] = pinching
+			if pose != null: poses[hand] = pose
+			var ray: Variant = _ray(hand)
+			var reach: Variant = pose.origin if pose != null else null
+			if HandPointer.is_optical(tracker) and xr_origin: reach = HandPointer.pinch_position(tracker, space, XRServer.world_scale)
+			beach_environment.beach.aim_handheld(hand, reach, ray if not _beach_scene_blocked(ray) else null)
+	beach_environment.beach.handheld_poses = poses
+
+## Where this hand's ray meets the beach screen, or null: only in watch mode, with
+## no menu and no playing video, unless the hand is already dragging the screen.
+func _beach_screen_aim(hand: String, ray: Variant, menu: Node3D) -> Variant:
+	if not _beach_active() or ray == null or menu != null or _cinema_interaction_owns(): return null
+	var dragging: bool = beach_environment.scene_held(hand) and beach_environment.screen_editing()
+	if not dragging and video and not video.local_uri.is_empty() and video.media.state == "playing": return null
+	var hit: Dictionary = beach_environment.beach.screen_hit(ray[0], ray[1])
+	return hit.point if not hit.is_empty() else null
+
+func _beach_handheld_pulse(hand: String, strength: float) -> void:
+	var controller := left_controller if hand == "left_hand" else right_controller
+	if controller is XRController3D and _controller_allowed(hand) and controller.get_is_active() and controller.get_has_tracking_data():
+		controller.trigger_haptic_pulse("haptic", 0.0, strength, .09, 0.0)
 
 func _scene_target_pulse(hand: String) -> void:
 	var controller := left_controller if hand == "left_hand" else right_controller
@@ -5213,6 +5403,8 @@ func _process_cinema_move_stick(left: Vector2, right: Vector2, delta: float) -> 
 	cinema_environment.poll_sticks(left, turn, delta)
 
 func _on_cinema_view_relocated(previous: Transform3D, current: Transform3D) -> void:
+	# The beach lands the viewer after its scene loads, far from where menus were placed.
+	if _beach_active(): _reposition_cinema_menus()
 	if not recent_menu is LibraryMenu: return
 	var browser: RefCounted = recent_menu.web_browser
 	if not interface_move.capture.is_empty() and interface_move.capture.targets.any(func(target): return browser.windows.values().has(target.get("node"))):
@@ -5220,6 +5412,7 @@ func _on_cinema_view_relocated(previous: Transform3D, current: Transform3D) -> v
 	browser.relocate_view(previous, current)
 
 func _on_cinema_environment_changed() -> void:
+	_apply_beach_curve()
 	if _cinema_scene_active() and not _beach_active():
 		var seat := str(cinema_environment.snapshot().get("seat", ""))
 		if not seat.is_empty() and seat != str(settings.get_value("appearance", "cinema_seat", "")):
@@ -5243,6 +5436,7 @@ func _reposition_cinema_menus() -> void:
 			if menu.visible: _place_menu(menu, true)
 
 func _sync_cinema_screen() -> void:
+	if video: video.set_curve_modes_available(_curve_modes_available())
 	var beach_fixed: bool = _beach_active() and not photo_active and video != null and video.geometry==Geometry.Geometry.FLAT and not portrait_screen.active
 	# Portrait placement already captured the ordinary preferences and now owns
 	# the pose. Release only the beach's facing/material policy in that case.
@@ -5272,6 +5466,7 @@ func _sync_cinema_screen() -> void:
 		video.curve_radius = 0.0
 		for key in ["screen_distance", "screen_scale", "screen_rotation", "screen_curve", "screen_preset"]: video.set(key, saved[key])
 		for key in saved.cinema: video.cinema.set(key, saved.cinema[key])
+		video.set_curve_modes_available(_curve_modes_available())
 		view_follow.set_enabled(saved.follow)
 		video.flat_pose = saved.pose
 		video._apply_geometry()
@@ -5291,7 +5486,7 @@ func _sync_cinema_screen() -> void:
 		interface_move.cancel(); _grab.clear(); stick_controls.suspend()
 		view_follow.set_enabled(false)
 	if beach_fixed:
-		_beach_video.sync(beach_environment.beach, video, _cinema_picture_size())
+		_beach_video.sync(beach_environment.beach, video)
 		if cinema_screen_border: cinema_screen_border.update(Vector2.ZERO, 0.0)
 		return
 	var screen: Dictionary = cinema_environment.snapshot().get("screen", {})
@@ -5306,8 +5501,9 @@ func _sync_cinema_screen() -> void:
 	# A smaller picture settles a little below the screen centre: 30% of the freed
 	# height above it, 70% below, which is easier on the neck from the seats.
 	anchor.origin -= anchor.basis.y * (dimensions.y * (fit - scale) * CINEMA_PICTURE_DROP)
-	var curve := _cinema_curve()
-	var radius: float = CINEMA_CURVE_RADII.get(curve, 0.0)
+	var width := dimensions.x * scale
+	var curve := _cinema_curve(width)
+	var radius := maxf(CinemaPictureResize.MIN_RADIUS, width / deg_to_rad(curve)) if curve > 0.0 else 0.0
 	if not is_equal_approx(video.screen_scale, scale) or video.screen_curve != curve or video.curve_radius != radius or video.screen_rotation != 0:
 		video.screen_scale = scale; video.screen_curve = curve; video.curve_radius = radius; video.screen_rotation = 0.0
 		video._apply_geometry()
@@ -5335,14 +5531,43 @@ func _update_cinema_film_light(delta: float) -> void:
 	if cinema_film_light.update(delta, video, _cinema_scene_active() and not photo_active, fraction):
 		cinema_environment.set_film_light(cinema_film_light.colors)
 
-func _cinema_curve() -> float:
-	var value := float(settings.get_value("appearance", "cinema_curve", 0.0))
-	return value if CINEMA_CURVE_RADII.has(value) else 0.0
+func _cinema_curve_max(width: float = -1.0) -> float:
+	if width < 0.0: width = video._flat.size.x if video else 32.0
+	# Never bend more tightly than the old Full radius, even with a smaller picture.
+	return rad_to_deg(minf(maxf(width, 0.0), 32.0) / CinemaPictureResize.MIN_RADIUS)
 
-func _set_cinema_curve(value: float) -> void:
-	if _beach_active(): return
-	settings.set_value("appearance", "cinema_curve", value if CINEMA_CURVE_RADII.has(value) else 0.0)
-	settings.save(settings_path)
+func _cinema_curve_presets() -> Array:
+	var width: float = video._flat.size.x if video else 32.0
+	var limit := _cinema_curve_max(width)
+	return [0.0, minf(rad_to_deg(width / 50.0), limit), minf(rad_to_deg(width / 35.0), limit), limit]
+
+func _cinema_curve(width: float = -1.0) -> float:
+	if width < 0.0: width = video._flat.size.x if video else 32.0
+	if not settings.has_section_key("appearance", "cinema_curve_degrees"):
+		var legacy := float(settings.get_value("appearance", "cinema_curve", 0.0))
+		var radius: float = CINEMA_CURVE_RADII.get(legacy, 0.0)
+		settings.set_value("appearance", "cinema_curve_degrees", rad_to_deg(width / radius) if radius > 0.0 else 0.0)
+	var value := float(settings.get_value("appearance", "cinema_curve_degrees", 0.0))
+	return clampf(value, 0.0, _cinema_curve_max(width)) if is_finite(value) else 0.0
+
+var _beach_curve_pending := -1.0
+## Degrees of arc across the beach screen, as on the cinema slider.
+func _set_beach_curve(value: float) -> void:
+	_beach_curve_pending = clampf(value, 0.0, 120.0)
+	_apply_beach_curve()
+
+func _apply_beach_curve() -> void:
+	if _beach_curve_pending < 0.0 or not beach_environment or beach_environment.beach.screen_loading: return
+	var width: float = beach_environment.beach.screen_layout.half_size.x * 2.0
+	var degrees := _beach_curve_pending
+	_beach_curve_pending = -1.0
+	beach_environment.request_screen({"curve": 1.0 if degrees > .5 else 0.0, "curve_radius": width / deg_to_rad(degrees) if degrees > .5 else 0.0})
+
+func _set_cinema_curve(value: float, persist: bool = true) -> void:
+	if _beach_active() and is_finite(value): _set_beach_curve(value); return
+	if _beach_active() or not is_finite(value): return
+	settings.set_value("appearance", "cinema_curve_degrees", clampf(value, 0.0, _cinema_curve_max()))
+	if persist: settings.save(settings_path)
 	_sync_cinema_screen()
 	video.changed.emit()
 
@@ -5369,6 +5594,19 @@ func _show_cinema_gesture_hint(message: String) -> void:
 func _cinema_picture_key() -> String:
 	return "beach_picture_size" if cinema_environment==beach_environment and beach_environment else "cinema_picture_size"
 
+## True while a film is playing or just stopped: the hall dims and the beach turns to night.
+func _film_dark() -> bool:
+	if not video: return false
+	var now := Time.get_ticks_msec()
+	# Only an open file can be "loading": with nothing open, auto keeps the lights up.
+	var opening := not str(video.get("local_uri") if video.get("local_uri") != null else "").is_empty()
+	if opening and video.get("requested_play") == true and video.media.state not in ["paused", "ended", "error", "failed", "closed"]:
+		_cinema_lights_idle_since = -1
+	elif _cinema_lights_idle_since < 0:
+		_cinema_lights_idle_since = now
+	# Lights come up only once playback has really stopped for a moment.
+	return _cinema_lights_idle_since < 0 or now - _cinema_lights_idle_since < CINEMA_LIGHTS_UP_DELAY_MS
+
 func _sync_cinema_lights() -> void:
 	if not cinema_environment or not video: return
 	if cinema_environment==beach_environment: return
@@ -5379,15 +5617,7 @@ func _sync_cinema_lights() -> void:
 	cinema_environment.set_viewing_brightness(str(settings.get_value("appearance", "cinema_viewing_brightness", "low")), _cinema_viewing_preview)
 	# Requested playback keeps the house dark, including while a newly opened file
 	# is still loading; otherwise auto would flash the lights up between films.
-	var now := Time.get_ticks_msec()
-	# Only an open file can be "loading": with nothing open, auto keeps the lights up.
-	var opening := not str(video.get("local_uri") if video.get("local_uri") != null else "").is_empty()
-	if opening and video.get("requested_play") == true and video.media.state not in ["paused", "ended", "error", "failed", "closed"]:
-		_cinema_lights_idle_since = -1
-	elif _cinema_lights_idle_since < 0:
-		_cinema_lights_idle_since = now
-	# Lights come up only once playback has really stopped for a moment.
-	var dark := _cinema_lights_idle_since < 0 or now - _cinema_lights_idle_since < CINEMA_LIGHTS_UP_DELAY_MS
+	var dark := _film_dark()
 	cinema_environment.set_lighting(str(settings.get_value("appearance", "cinema_lights", "auto")), dark)
 
 func _sync_cinema_menu_overlays() -> void:
@@ -5579,8 +5809,11 @@ func _session_controls_state() -> Dictionary:
 		"passthrough_visible": _active_background() != null and (_active_background().choice != "passthrough" or _vr_video_present()) and display.supports_passthrough(),
 		"passthrough": _vr_passthrough_active() if _vr_video_present() and not _person_passthrough() else display.applied_passthrough, "alpha": _person_passthrough(),
 		"cinema_visible": _cinema_scene_active() and not photo_active, "cinema_moving": _cinema_interaction_owns(),
-		"cinema_light_tip": ("Day" if beach_environment.beach.night else "Night") if _beach_active() else _cinema_light_tip(),
-		"cinema_lights": ("off" if beach_environment.beach.night else "on") if _beach_active() else str(settings.get_value("appearance", "cinema_lights", "auto"))}
+		"cinema_light_tip": _beach_time_tip() if _beach_active() else _cinema_light_tip(),
+		"cinema_lights": {"auto": "auto", "day": "on", "night": "off"}[_beach_time_mode()] if _beach_active() else str(settings.get_value("appearance", "cinema_lights", "auto"))}
+
+func _beach_time_tip() -> String:
+	return {"auto": "Auto: night while a film plays, day when it stops", "day": "Day", "night": "Night"}[_beach_time_mode()]
 
 func _cinema_light_tip() -> String:
 	return {"auto":"Auto lights: off while a film plays, on when it stops", "on":"Lights on", "off":"Lights off"}.get(str(settings.get_value("appearance", "cinema_lights", "auto")), "Auto lights: off while a film plays, on when it stops")
@@ -5594,7 +5827,8 @@ func _on_session_control(operation: String) -> void:
 	if operation == "cinema_lights_cycle":
 		if not _cinema_scene_active() or photo_active: return
 		if _beach_active():
-			_on_setting_changed("beach_hours", 9.0 if beach_environment.beach.night else 21.0)
+			var cycle := ["auto", "day", "night"]
+			_on_setting_changed("beach_time_mode", cycle[(cycle.find(_beach_time_mode()) + 1) % cycle.size()])
 			_refresh_session_controls(); return
 		var modes := ["auto", "on", "off"]
 		var current := modes.find(str(settings.get_value("appearance", "cinema_lights", "auto")))
@@ -5948,6 +6182,11 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 		# The cinema screen itself stays fixed; this only scales the picture on it.
 		_set_cinema_picture_size(float(value) / 100.0)
 		return
+	if key == "screen_curve":
+		if photo_active or video.geometry != Geometry.Geometry.FLAT: return
+		if _cinema_video_locked(): _set_cinema_curve(float(value), false)
+		else: video.set_screen_curve(float(value))
+		return
 	if _cinema_video_locked() and key.begins_with("screen_"): return
 	if key.begins_with("narration_"):
 		video.narration.set_option(key, value)
@@ -6047,6 +6286,7 @@ func _save_playback_adjustments() -> void:
 	settings.set_value("video", "playback_speed", video.preferred_playback_speed)
 	settings.set_value("video", "depth_position", video.depth_position)
 	_remember_current_screen()
+	if not _cinema_video_locked() and not portrait_screen.active: _set_screen_preference("curve_degrees", video.screen_curve)
 	settings.set_value("subtitles", "size", video.subtitle_size)
 	settings.set_value("subtitles", "style", video.subtitle_style)
 	settings.set_value("subtitles", "pgs_tint", video.subtitle_pgs_tint)
@@ -6439,6 +6679,7 @@ func _notification(what: int) -> void:
 		puzzle_game.show_panel(true)
 	if what in [NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_APPLICATION_FOCUS_OUT]:
 		if is_instance_valid(recent_menu): recent_menu.checkpoint_browse()
+		if photo: photo.autoplay.reset()
 		if photo_menu: photo_menu.online.cancel()
 		_background_app_paused = true
 		if background_audio: _sync_background_audio()

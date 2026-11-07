@@ -40,25 +40,37 @@ float time_cloud_cover(vec3 d) {
 	float raw=sample_beach_panorama(cloud_coverage,ray).r;
 	return clamp((raw-(1.0-cloud_density))/max(cloud_density,.0001),0.0,1.0)*smoothstep(0.0,.2,cloud_density);
 }
+// The coverage comes from a photographed sky: its brightness is the clouds' own
+// light and shade. Thin edges stay translucent instead of a flat painted patch.
+vec2 time_cloud_layer(vec3 d) {
+	float cover=time_cloud_cover(d);
+	return vec2(smoothstep(0.0,.75,cover)*.85,smoothstep(.1,.95,cover));
+}
 vec3 time_sky_linear(vec3 d, bool bodies) {
 	float elevation=time_sun_direction.y;
 	float daylight=smoothstep(-.10,.22,elevation);
-	float h=pow(clamp(d.y,0.0,1.0),.45);
+	float h=sqrt(clamp(d.y,0.0,1.0));
 	float dusk=(1.0-smoothstep(.08,.35,abs(elevation)))*smoothstep(-.20,-.02,elevation);
-	float toward=pow(max(dot(normalize(vec3(d.x,.001,d.z)),normalize(vec3(time_sun_direction.x,.001,time_sun_direction.z))),0.0),4.0);
+	float toward=0.0;
+	if (dusk>0.0) {
+		toward=max(dot(normalize(vec3(d.x,.001,d.z)),normalize(vec3(time_sun_direction.x,.001,time_sun_direction.z))),0.0);
+		toward*=toward; toward*=toward;
+	}
 	vec3 night=mix(vec3(.005,.009,.020),vec3(.0008,.002,.007),h);
 	vec3 day=mix(vec3(.38,.53,.65),vec3(.055,.19,.43),h);
 	vec3 sky=mix(night,day,daylight);
 	vec3 warm=mix(vec3(.70,.23,.075),vec3(.48,.095,.035),smoothstep(0.0,.4,-time_sun_direction.x));
-	sky=mix(sky,warm,dusk*(.2+.8*toward)*pow(1.0-h,2.0)*.85);
+	sky=mix(sky,warm,dusk*(.2+.8*toward)*(1.0-h)*(1.0-h)*.85);
 	// Advect only the neutral cloud field; sky, stars and celestial discs stay
 	// in their own coordinates. Smooth bounded warping breaks rigid rotation.
-	float cloud=time_cloud_cover(d);
-	vec3 cloud_color=mix(vec3(.008,.012,.023),vec3(.72,.77,.81),daylight);
-	cloud_color=mix(cloud_color,vec3(.75,.26,.10),dusk*(.25+.75*toward)*.8);
-	sky=mix(sky,cloud_color,cloud*.90);
-	float star=time_stars(d);
-	sky+=vec3(star*.65*(1.0-daylight)*(1.0-cloud));
+	vec2 layer=time_cloud_layer(d);
+	float cloud=layer.x;
+	vec3 lit=mix(vec3(.008,.012,.023),vec3(.88,.89,.9),daylight);
+	vec3 shade=mix(vec3(.004,.006,.012),vec3(.42,.48,.57),daylight);
+	vec3 cloud_color=mix(shade,lit,layer.y);
+	cloud_color=mix(cloud_color,vec3(.75,.26,.10)*mix(.55,1.0,layer.y),dusk*(.25+.75*toward)*.8);
+	sky=mix(sky,cloud_color,cloud);
+	if (daylight<1.0 && d.y>.02 && cloud<.98) sky+=vec3(time_stars(d)*.65*(1.0-daylight)*(1.0-cloud));
 	if (bodies && time_bodies_enabled) {
 		// Distance in direction space avoids acos precision loss at small discs.
 		float sd=length(d-time_sun_direction),md=length(d-time_moon_direction);

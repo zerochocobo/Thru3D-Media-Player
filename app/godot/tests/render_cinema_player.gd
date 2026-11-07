@@ -106,7 +106,7 @@ func _run() -> void:
 	main.xr_camera.global_position = Vector3(0, 7.0, -2.5)
 	main.xr_camera.look_at(Vector3(0, 12, 25), Vector3.UP)
 	await _shot("01-GT-auditorium-reverse")
-	for level in [1.0, 0.35]:
+	for level in [main._cinema_curve_presets()[3], main._cinema_curve_presets()[1]]:
 		main._on_player_setting("screen_curve", level)
 		check(main.cinema_screen_border.visible, "Curved cinema picture shows its border", level)
 		main.xr_camera.global_position = Vector3(13, 14.0, 25.5)
@@ -128,9 +128,8 @@ func _run() -> void:
 		main._place_menu(main.player_menu, true)
 		check(main.player_menu._state.get("screen_scene_locked", false), "Scene-locked screen state reaches player menu " + language)
 		var targets: Array = main.player_menu._buttons.map(func(button): return button.target)
-		var curve_targets: Array = range(main.player_menu.SCREEN_CURVE, main.player_menu.SCREEN_CURVE + main.video.CURVES.size())
-		check(main.player_menu.CINEMA_PICTURE_SIZE in targets and curve_targets.all(func(target): return target in targets),
-			"Scene screen page exposes picture size and every curve level " + language)
+		check(main.player_menu.CINEMA_PICTURE_SIZE in targets and main.player_menu.SCREEN_CURVE_SLIDER in targets,
+			"Scene screen page exposes picture size and continuous curve slider " + language)
 		check(main.player_menu.FREE_MOVEMENT in targets and main.player_menu.CINEMA_LIGHTS in targets and targets.filter(func(target): return target >= 9102 and target <= 9107).is_empty(),
 			"Movement and lights stay in the footer, not repeated on the screen page " + language)
 		check(450 not in targets and 451 not in targets, "Scene screen page omits incompatible distance/size sliders " + language)

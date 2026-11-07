@@ -14,14 +14,17 @@ internal object WebBrowserMediaPolicy {
                     data.optString("page") == it.optString("frame") && Regex("[1-9][0-9]{0,19}").matches(data.optString("cid"))
                 } == true || it.optBoolean("tencent_enabled") && it.optBoolean("tencent_ready") && WebBrowserTencent.metadata(it,it.optString("frame")) != null ||
                 it.optBoolean("mango_enabled") && it.optBoolean("mango_ready") && WebBrowserMango.metadata(it,it.optString("frame")) != null ||
-                it.optBoolean("youku_enabled") && it.optBoolean("youku_ready") && WebBrowserYouku.metadata(it,it.optString("frame")) != null) }
+                it.optBoolean("niconico_enabled") && it.optBoolean("niconico_ready") && WebBrowserNiconico.metadata(it,it.optString("frame")) != null ||
+                it.optBoolean("youku_enabled") && it.optBoolean("youku_ready") && WebBrowserYouku.metadata(it,it.optString("frame")) != null ||
+                it.optBoolean("iqiyi_enabled") && it.optBoolean("iqiyi_ready") && WebBrowserIqiyi.metadata(it,it.optString("frame")) != null ||
+                it.optBoolean("douyin_enabled") && it.optBoolean("douyin_ready") && WebBrowserDouyin.metadata(it,it.optString("frame"),true) != null) }
 
     /** Prefer the adapter's current-part binding over a playing sidebar preview. */
     fun extractionCandidate(candidates: List<JSONObject>): JSONObject? = candidates.maxWithOrNull(
         compareBy<JSONObject> { !it.optBoolean("protected") &&
             (it.optBoolean("bilibili_enabled") && it.optJSONObject("bilibili") != null || it.optBoolean("douyin_enabled") && it.optJSONObject("douyin") != null ||
                 it.optBoolean("tencent_enabled") && it.optJSONObject("tencent") != null || it.optBoolean("mango_enabled") && it.optJSONObject("mango") != null ||
-                it.optBoolean("youku_enabled") && it.optJSONObject("youku") != null) }
+                it.optBoolean("niconico_enabled") && it.optJSONObject("niconico") != null || it.optBoolean("youku_enabled") && it.optJSONObject("youku") != null || it.optBoolean("iqiyi_enabled") && it.optJSONObject("iqiyi") != null) }
             .thenBy { it.optBoolean("fullscreen") }.thenBy { it.optBoolean("playing") }
             .thenBy { it.optLong("width") * it.optLong("height") })
     private val sites = listOf(

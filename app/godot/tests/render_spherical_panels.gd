@@ -52,7 +52,7 @@ func run() -> void:
 			if mode == "error": state.error = "The network connection was lost"; menu._failure_open = true
 			menu.refresh()
 			if mode == "screen":
-				check(menu._buttons.filter(func(item): return item.target >= Player.SCREEN_CURVE and item.target < Player.SCREEN_CURVE + Player.Surface.CURVES.size()).size() == Player.Surface.CURVES.size(), "Screen curves use the current inline options")
+				check(menu._adjust_rows.has(Player.SCREEN_CURVE_SLIDER) and menu._adjust_rows[Player.SCREEN_CURVE_SLIDER].ticks.size() == 5, "Screen curve uses one slider with reference ticks")
 			if mode == "playback-cycle":
 				var item: Dictionary = menu._buttons.filter(func(button): return button.target == Player.SETTINGS_TILE + Player.OPERATIONS[1].find("loop"))[0]
 				var before := str(state.get("playback_mode", "single"))

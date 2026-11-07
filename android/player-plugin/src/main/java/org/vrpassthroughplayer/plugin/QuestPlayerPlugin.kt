@@ -710,7 +710,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun media_clipboard_text(): String = runCatching {
         val host = activity ?: return@runCatching ""
         val clipboard = host.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-        clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()?.take(128) ?: ""
+        clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()?.take(4096) ?: ""
     }.getOrDefault("")
     @UsedByGodot fun media_file_management_enabled(enabled: Boolean) { if (!closed.get()) sources.setFileManagement(enabled) }
     @UsedByGodot fun media_file_delete(json: String): Int = if (closed.get()) -1 else sources.deleteFile(json)

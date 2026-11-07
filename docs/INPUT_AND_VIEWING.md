@@ -10,4 +10,8 @@ Controller seek steps are shared between hands and configurable; ray/trigger sel
 
 0.16.8 adds round-based video shuffle and grip-plus-stick radial photo/video distance adjustment relative to the headset, preserving explicit content rotation. Eligible flat DLNA casts can apply default 3D at format/first-frame readiness even if duration or seekability metadata is missing; native stereo, partial-source and manual-choice boundaries remain.
 
-0.17.0 remembers playback speed globally and applies last/fixed format preferences to external video opens. Hovering the lower-left flat-video corner reveals bidirectional rotation; release snaps to 90 degrees, other corners still resize. Cinema corners resize within limits. Current private-beach scaffolding is resource-gated and not an advertised public scenery.
+0.17.0 remembers playback speed globally and applies last/fixed format preferences to external video opens. Hovering the lower-left flat-video corner reveals bidirectional rotation; release snaps to 90 degrees, other corners still resize. Cinema corners resize within limits. Public Git retains beach integration without its separately supplied scenery assets.
+
+## 0.17.2 photos and curvature
+
+Photo autoplay uses3–30seconds(default5), starting when the final current image is presented rather than waiting for neighbour conversion. Continuous rotation/90-degree snapping and upright/ground layouts complement continuous video/photo curvature. Eligible ordinary videos with a panorama-image background offer horizontal, vertical and spherical curves; cinema configuration stays independent. Browser Back and playback-control dismissal remain separate.

@@ -113,8 +113,8 @@ func run() -> void:
 			var pixels := Vector2(host.Surface.pixels_for(dimensions, low))
 			var area := Rect2(0.17, 0.21, 0.37, 0.63)
 			var shown := Focus.fitted(dimensions, pixels, area)
-			var extent := (area.end * pixels).round() - (area.position * pixels).round()
-			check(absf(shown.x / shown.y - extent.x / extent.y) < 0.001, "Selection preserves pixel aspect at both tiers and window shapes")
+			var extent: Vector2 = area.size * dimensions
+			check(absf(shown.x / shown.y - extent.x / extent.y) < 0.001, "Focus preserves the selected visible aspect at both tiers and window shapes")
 	browser.data.merge({"loading": true, "progress": 30}, true); host._process(0)
 	check(host._progress.visible and is_equal_approx(host._progress_value, 0.3), "Real loading progress appears at the page edge")
 	browser.data.merge({"loading": false, "progress": 100}, true); host._process(0)

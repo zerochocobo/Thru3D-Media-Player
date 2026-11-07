@@ -97,7 +97,7 @@ func _run() -> void:
 	_check(_near(_layer(values, 0)[14], TAU), "360 spans the whole circle")
 	# All signs, both packed axes, swapped views, portrait/landscape and every layer
 	# shape. Reconstruct UV at the centre to verify cropping did not scale/flip offsets.
-	for projection in [[0, 0.0], [0, 1.0], [1, 0.0], [3, 0.0]]:
+	for projection in [[0, 0.0], [0, 180.0], [1, 0.0], [3, 0.0]]:
 		video.geometry = projection[0]; video.set_screen_curve(projection[1]); video.stereo_sbs = true
 		video._apply_geometry()
 		for tb in [false, true]:
@@ -141,7 +141,7 @@ func _run() -> void:
 	_check(_near(quad[2], local.x) and _near(quad[3], local.y) and _near(quad[4], local.z), "Pose is in the origin's (play) space")
 
 	# Curved: a cylinder centred on the viewer side of the screen, same arc width.
-	video.set_screen_curve(1.0)
+	video.set_screen_curve(180.0)
 	values = layer.layer_values(video, origin)
 	var cylinder := _layer(values, 0)
 	var radius: float = video._curve_radius()
@@ -159,7 +159,7 @@ func _run() -> void:
 		"Pair halves in picture pixels")
 	_check(_layer(values, 0)[17] == 1.0, "Godot's top-first pictures retain their GL upload correction")
 	# Fixing the PICO Surface must preserve poses, eye windows and GL picture orientation.
-	for projection in [[Geometry.Geometry.FLAT, 0.0], [Geometry.Geometry.FLAT, 1.0],
+	for projection in [[Geometry.Geometry.FLAT, 0.0], [Geometry.Geometry.FLAT, 180.0],
 			[Geometry.Geometry.HALF_EQUIRECT, 0.0], [Geometry.Geometry.EQUIRECT_360, 0.0]]:
 		video.geometry = projection[0]
 		video.set_screen_curve(projection[1])

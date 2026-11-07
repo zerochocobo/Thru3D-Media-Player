@@ -638,7 +638,7 @@ func _run() -> void:
 	check(is_equal_approx(video.screen_scale, video.SCALE_LIMITS.y), "Size is limited")
 	video.set_screen_scale(1.0)
 	video.set_corner_hover(-1)
-	video.set_screen_curve(1.0)
+	video.set_screen_curve(video.CURVES.back())
 	var bent: Vector3 = video.screen_corner(1)
 	check(video.panel.mesh is ArrayMesh and bent.z > 0.05 and bent.x < size.x * 0.5 and video.screen_corner(0).x == -bent.x,
 		"A curved screen bends its sides towards the viewer: %s" % bent)

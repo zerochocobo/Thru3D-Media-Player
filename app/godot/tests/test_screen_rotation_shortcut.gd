@@ -82,7 +82,7 @@ func run() -> void:
 		check(main._try_corner_resize("right_hand") and main._grab.has("resize"), "Other corner still begins resize instead of rotation")
 		main._on_pointer_release("trigger_click", "right_hand")
 	menu.dismiss()
-	for curve in [0.0, 0.7]:
+	for curve in [0.0, 60.0]:
 		for direction in [1, -1]:
 			video.set_screen_curve(curve); video.set_screen_rotation(0); aim(main, "right_hand")
 			var origin := Vector3(0, 1.6, 0)
@@ -114,7 +114,7 @@ func run() -> void:
 	check(is_equal_approx(video.screen_rotation, 102), "Intentional dragging takes over from hold repeat")
 	main._on_pointer_release("trigger_click", "right_hand")
 	for hand in ["left_hand", "right_hand"]:
-		for curve in [0.0, 0.7]:
+		for curve in [0.0, 60.0]:
 			video.set_screen_rotation(0); video.set_screen_curve(curve); aim(main, hand)
 			main._on_pointer_button("trigger_click", hand)
 			check(main._grab.has("rotate"), "Either pointer can capture rotation, including curved flat video")

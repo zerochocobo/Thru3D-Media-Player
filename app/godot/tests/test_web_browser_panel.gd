@@ -44,11 +44,13 @@ func _run() -> void:
 	menu.web_browser.tick()
 	check(menu.web_browser.active(), "Browser is active inside web section")
 	check(not menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 18), "Beta is hidden on unadapted sites")
+	check(menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 6 and button.enabled), "Foreign sites retain the original manual player action")
+	platform.browser.url = "https://www.bilibili.com/video/BV1xx411c7mD"
 	platform.browser.bilibili_beta_available = true
 	platform.browser.videos[0].bilibili_ready = true
 	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
 	var beta_buttons: Array = menu.web_browser.input_host()._buttons.filter(func(button): return button.target in [Browser.BASE + 6, Browser.BASE + 18])
-	check(beta_buttons.size() == 1 and beta_buttons[0].target == Browser.BASE + 18, "Adapted sites show Beta without the legacy target")
+	check(beta_buttons.size() == 1 and beta_buttons[0].target == Browser.BASE + 18, "Adapted Chinese sites show Beta without the legacy target")
 	menu.web_video.result = {"state": "ready", "uri": "stale-legacy-result"}
 	menu.web_browser.action(Browser.BASE + 18)
 	check(platform.beta_requests == 0 and menu.web_browser.handoff_waiting_pause and menu.web_video.pending == 0,
@@ -68,9 +70,27 @@ func _run() -> void:
 	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
 	menu.web_browser.action(Browser.BASE + 18)
 	check(platform.beta_requests == 1, "A stale Beta target cannot resolve an unavailable site")
+	# The presentation policy follows the page URL even when a new foreign
+	# adapter supplies the same availability/readiness contract as this fixture.
+	platform.browser.url = "https://www.nicovideo.jp/watch/sm9"
+	platform.browser.bilibili_beta_available = true
+	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
+	beta_buttons = menu.web_browser.input_host()._buttons.filter(func(button): return button.target in [Browser.BASE + 6, Browser.BASE + 18])
+	check(beta_buttons.size() == 2 and beta_buttons.all(func(button): return button.enabled), "Foreign Beta and the original player action coexist and remain usable")
+	check(beta_buttons.size() == 2 and not beta_buttons[0].rect.intersects(beta_buttons[1].rect), "The two player buttons have separate ray targets")
+	platform.browser.videos[0].bilibili_ready = false
+	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
+	check(menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 6 and button.enabled)
+		and menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 18 and not button.enabled),
+		"An unready foreign Beta does not disable or hide legacy playback")
+	menu.web_browser.action(Browser.BASE + 6)
+	check(platform.beta_requests == 1 and not menu.web_browser.handoff_beta and menu.web_video.pending > 0, "The visible foreign legacy action still uses its original resolver")
+	menu.web_browser.action(Browser.BASE + 6)
+	platform.browser.bilibili_beta_available = false
 	platform.browser.douyin_beta_available = true
 	platform.browser.videos[0].bilibili_ready = false
 	platform.browser.videos[0].douyin_ready = true
+	platform.browser.videos[0].selection = "douyin:main:current"
 	platform.browser.url = "https://www.douyin.com/video/6961737553342991651"
 	platform.browser.native_supported = false
 	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
@@ -174,6 +194,61 @@ func _run() -> void:
 	menu.web_browser.restore_playback(false,47000)
 	check(platform.browser_commands.back().action=="restore_youku" and platform.browser_commands.back().position_ms==47000,
 		"Returning Youku restores its selected timeline through the matching adapter")
+	platform.browser=previous
+	previous=platform.browser.duplicate(true)
+	platform.browser={"url":"https://www.iqiyi.com/v_current.html","tab_id":14,"navigation":1,"focused_window":1,"active":true,
+		"iqiyi_beta_available":true,"pause_confirmed":true,"beta_request":5,"beta_selection":"iqiyi:main:revision1",
+		"videos":[{"iqiyi_ready":true,"selection":"iqiyi:main:revision1","time":27.0},
+			{"width":3840,"height":2160,"playing":true,"time":3.0}]}
+	check(menu.web_browser.beta_site_available(platform.browser) and menu.web_browser.beta_media_ready(platform.browser),
+		"iQIYI exposes the bound main while a larger unrelated preview is playing")
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(menu.web_browser.handoff_waiting_pause,"iQIYI waits for the shared pause acknowledgement")
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(platform.selected_requests.back()==[platform.browser.url,"iqiyi:main:revision1"] and menu.web_browser.handoff_start_ms==27000,
+		"iQIYI starts from the selected programme timeline")
+	platform.browser.videos[0].selection="iqiyi:main:revision2"
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(not menu.web_browser.handoff,"Replacing iQIYI metadata cancels the stale selection")
+	menu.web_browser.playback_return={"tab":14,"window":1,"navigation":1,"origin":platform.browser.url,"selection":"iqiyi:main:revision1","iqiyi":true}
+	menu.web_browser.restore_playback(false,47000)
+	check(platform.browser_commands.back().action=="restore_iqiyi" and platform.browser_commands.back().position_ms==47000,
+		"Returning iQIYI restores its selected timeline through the matching adapter")
+	platform.browser={"url":"https://www.douyin.com/","tab_id":15,"navigation":1,"focused_window":1,"active":true,
+		"douyin_beta_available":true,"pause_confirmed":true,"beta_request":6,"beta_selection":"douyin:chosen:revision1",
+		"videos":[{"douyin_ready":true,"selection":"douyin:preload:revision1","width":3840,"height":2160,"playing":true,"time":2.0},
+			{"douyin_ready":true,"selection":"douyin:chosen:revision1","time":31.0}]}
+	check(menu.web_browser.beta_site_available(platform.browser) and menu.web_browser.beta_media_ready(platform.browser, "douyin:chosen:revision1"),
+		"Static-address Douyin can expose its explicitly selected card without a URL video ID")
+	check(not menu.web_browser.beta_media_ready(platform.browser),"Multiple decoded Douyin cards require an explicit selection")
+	menu.web_browser.next_poll=0;menu.web_browser.tick();menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(platform.selected_requests.back()==[platform.browser.url,"douyin:chosen:revision1"] and menu.web_browser.handoff_start_ms==31000,
+		"Douyin uses the clicked card instead of a larger decoded preload")
+	platform.browser.videos[1].selection="douyin:next:revision2"
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(not menu.web_browser.handoff,"Switching a static-address Douyin card cancels the old selection")
+	menu.web_browser.playback_return={"tab":15,"window":1,"navigation":1,"origin":platform.browser.url,"selection":"douyin:chosen:revision1","douyin":true}
+	menu.web_browser.restore_playback(false,73000)
+	check(platform.browser_commands.back().action=="restore_douyin" and platform.browser_commands.back().position_ms==73000,
+		"Douyin returns through its original selected card adapter without navigating")
+	platform.browser={"url":"https://www.nicovideo.jp/watch/sm9","tab_id":16,"navigation":1,"focused_window":1,"active":true,
+		"niconico_beta_available":true,"pause_confirmed":true,"beta_request":7,"beta_selection":"niconico:main:revision1",
+		"videos":[{"niconico_ready":true,"selection":"niconico:main:revision1","time":35.0},
+			{"width":640,"height":360,"playing":true,"time":3.0}]}
+	check(menu.web_browser.beta_site_available(platform.browser) and menu.web_browser.beta_media_ready(platform.browser),
+		"Niconico exposes only the declared main and does not select an unrelated advert")
+	var closed_niconico: Dictionary=platform.browser.duplicate(true);closed_niconico.niconico_beta_available=false
+	check(not menu.web_browser.beta_site_available(closed_niconico),"Unqualified Niconico source cannot expose the action")
+	menu.web_browser.next_poll=0;menu.web_browser.tick();menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(platform.selected_requests.back()==[platform.browser.url,"niconico:main:revision1"] and menu.web_browser.handoff_start_ms==35000,
+		"Niconico hands off only its explicit current selection and playhead")
+	platform.browser.videos[0].selection="niconico:next:revision2"
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(not menu.web_browser.handoff,"Changed Niconico metadata cancels the stale selection")
+	menu.web_browser.playback_return={"tab":16,"window":1,"navigation":1,"origin":platform.browser.url,"selection":"niconico:main:revision1","niconico":true}
+	menu.web_browser.restore_playback(false,109000)
+	check(platform.browser_commands.back().action=="restore_niconico" and platform.browser_commands.back().position_ms==109000,
+		"Niconico restores its original document through the bound adapter")
 	platform.browser=previous
 	platform.browser.native_supported = true
 	platform.browser.url = "https://www.youtube.com/watch?v=jNQXAC9IVRw"

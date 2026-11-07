@@ -7,6 +7,28 @@ import org.vrpassthroughplayer.plugin.MediaServerClientTest.Fixture
 import org.vrpassthroughplayer.plugin.MediaServerClientTest.Reply
 
 class WebVideoHlsTest {
+    @Test fun servesExplicitLocalByteRangesOverOneObservedGetThatIgnoresUpstreamRange() {
+        val received=java.util.concurrent.atomic.AtomicInteger();val exact="/current.ts?signature=EXACT&start=4&end=12"
+        Fixture { request,headers,_ ->
+            assertEquals(exact,request.split(' ')[1]);assertNull(headers["range"])
+            assertEquals("this-request=only",headers["cookie"]);received.incrementAndGet()
+            Reply(200,body="456789ab".toByteArray())
+        }.use { origin -> LocalStreamServer().use { local -> WebVideoHls(local).use { hls ->
+            val upstream=origin.url+exact
+            val body="#EXTM3U\n#EXT-X-VERSION:4\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\n#EXT-X-BYTERANGE:3@1\n$upstream\n#EXTINF:2,\n#EXT-X-BYTERANGE:4@4\n$upstream\n#EXT-X-ENDLIST\n"
+            val input=WebVideoTrack("observed",URI(origin.url+"/list.m3u8"),emptyMap(),"mp4","avc1","mp4a",1280,544,24.0,
+                transport="hls",browserManifest=body,browserHeaders=WebVideoRequestHeaders(mapOf(upstream to mapOf("cookie" to "this-request=only")),org.json.JSONArray()))
+            val url=hls.prepare(input);val text=read(url).toString(Charsets.UTF_8)
+            val resources=text.lines().filter { it.startsWith("http") }
+            for((i,range) in listOf("bytes=1-3","bytes=4-7").withIndex()) {
+                val connection=java.net.URL(resources[i]).openConnection() as java.net.HttpURLConnection
+                connection.setRequestProperty("Range",range)
+                try { assertEquals(206,connection.responseCode);assertEquals(if(i==0)"567" else "89ab",connection.inputStream.use { it.readBytes() }.toString(Charsets.UTF_8)) }
+                finally { connection.disconnect() }
+            }
+            assertEquals(1,received.get());hls.close();assertFalse(local.hasSource(url));resources.forEach { assertFalse(local.hasSource(it)) }
+        } } }
+    }
     private fun clearInit(protected: Boolean=false,width: Int=1920): ByteArray {
         fun box(type: String,data: ByteArray) = java.nio.ByteBuffer.allocate(8+data.size).putInt(8+data.size).put(type.toByteArray()).put(data).array()
         fun trak(video: Boolean): ByteArray {

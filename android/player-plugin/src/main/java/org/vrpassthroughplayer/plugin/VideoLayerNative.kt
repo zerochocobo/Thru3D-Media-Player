@@ -10,7 +10,7 @@ internal object VideoLayerNative {
     fun bindSession(instance: Long, session: Long, getProcAddr: Long, playSpace: Long) =
         loaded && runCatching { bind(instance, session, getProcAddr, playSpace) }.getOrDefault(false)
     @JvmStatic private external fun bind(instance: Long, session: Long, getProcAddr: Long, playSpace: Long): Boolean
-    /** Producer surface of a new swapchain; destroys the previous one. */
+    /** New producer; refuses replacement until the preceding decoder has released its Surface. */
     @JvmStatic external fun createSurface(width: Int, height: Int): Surface
     @JvmStatic external fun destroySurface()
     /** 28 floats per layer: see native/xr-layer/video_layer.cpp. Count 0 hides the video. */

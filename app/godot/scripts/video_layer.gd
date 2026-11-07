@@ -192,6 +192,9 @@ func supports(geometry: int, curved: bool) -> bool:
 			return _types.get("equirect", false)
 	return false
 
+func supports_surface(surface: Node3D, projection: int = -1) -> bool:
+	return surface.cylinder_layer_compatible() and supports(surface.geometry if projection < 0 else projection, surface.screen_curve > 0.0)
+
 ## Call every frame: binds the provider to the running session.
 func update_session() -> void:
 	if not _api or not _api.is_running():
@@ -248,6 +251,7 @@ func hide(owner: Object = null) -> void:
 ## processed: colour, sharpening, logical eyes and alignment are already baked into the picture.
 func show(surface: Node3D, origin: XROrigin3D, source: int = SURFACE, size := Vector2(SURFACE_SIZE, SURFACE_SIZE), stereo: int = -1,
 		inset := Vector2.ZERO, pano := Vector4(0, 0, 1, 1), blend := OPAQUE, extras: Array = [], processed := false) -> bool:
+	if not surface.cylinder_layer_compatible(): return false
 	var values := layer_values(surface, origin, source, size, stereo, inset, pano, blend, processed)
 	if values.size() / STRIDE > capacity(): return false
 	var orders := PackedInt32Array()
@@ -319,6 +323,7 @@ static func fisheye_span(fov_degrees: float) -> Vector2:
 ## soft edge drawn there); the layer shows the inner part of the screen and of each eye's picture.
 func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, image := Vector2(SURFACE_SIZE, SURFACE_SIZE),
 		stereo: int = -1, inset := Vector2.ZERO, pano := Vector4(0, 0, 1, 1), blend := OPAQUE, processed := false) -> PackedFloat32Array:
+	if not surface.cylinder_layer_compatible(): return PackedFloat32Array()
 	var sbs: bool = surface.stereo_sbs if stereo < 0 else stereo == 1
 	var top_bottom: bool = surface.top_bottom and stereo < 0
 	var viewing: int = int(surface.get("viewing_eye")) if not processed and surface.stereo_sbs and surface.get("viewing_eye") != null else 0

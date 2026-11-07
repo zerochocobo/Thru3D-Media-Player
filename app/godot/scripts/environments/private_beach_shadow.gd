@@ -14,6 +14,13 @@ var near_updates := 0
 var draw_updates := 0
 var caster_surfaces := 0
 var opaque: ShaderMaterial
+## Optional top-down bake of ground visibility around the focus (see sand_visibility.gdshader).
+const RECEIVER_SIZE := 1024
+var receiver_extent := 32.0
+var receiver: SubViewport
+var receiver_camera: Camera3D
+var receiver_materials: Array[ShaderMaterial]=[]
+var receiver_updates := 0
 
 func create(parent: Node,meshes: Array) -> void:
 	for index in range(2):
@@ -61,6 +68,37 @@ func replace_casters(previous: Array,meshes: Array) -> Array:
 	for source: MeshInstance3D in meshes: added.append(add_caster(source))
 	return added
 
+## The terrain drawn from above with a visibility material; the near cascade's
+## focus centres it. Receivers then read one texel instead of filtering the maps.
+func create_receiver(parent: Node,terrain: MeshInstance3D,material: ShaderMaterial) -> void:
+	receiver=SubViewport.new(); receiver.name="GroundVisibility"
+	receiver.size=Vector2i(RECEIVER_SIZE,RECEIVER_SIZE); receiver.mesh_lod_threshold=0.0
+	receiver.own_world_3d=true; receiver.render_target_update_mode=SubViewport.UPDATE_DISABLED
+	parent.add_child(receiver)
+	receiver_camera=Camera3D.new(); receiver.add_child(receiver_camera); receiver_camera.current=true
+	receiver_camera.projection=Camera3D.PROJECTION_ORTHOGONAL; receiver_camera.size=receiver_extent
+	receiver_camera.near=.1; receiver_camera.far=1000.0
+	var environment := Environment.new(); environment.background_mode=Environment.BG_COLOR
+	environment.background_color=Color.WHITE; receiver_camera.environment=environment
+	var proxy := MeshInstance3D.new(); proxy.name="Ground"; proxy.mesh=terrain.mesh
+	proxy.material_override=material; receiver.add_child(proxy); proxy.global_transform=terrain.global_transform
+
+func bind_receiver(material: ShaderMaterial) -> void:
+	receiver_materials.append(material)
+	material.set_shader_parameter("ground_visibility",receiver.get_texture())
+	_place_receiver()
+
+func _place_receiver() -> void:
+	if receiver==null: return
+	var texel := receiver_extent/RECEIVER_SIZE
+	var center := Vector3(snappedf(focus.x,texel),0,snappedf(focus.z,texel))
+	# Looking straight down with -Z up: image X follows world X, image rows follow world Z.
+	receiver_camera.global_transform=Transform3D(Basis(Vector3.RIGHT,Vector3.FORWARD,Vector3.UP),center+Vector3.UP*500.0)
+	var rect := Vector4(center.x-receiver_extent*.5,center.z-receiver_extent*.5,receiver_extent,receiver_extent)
+	for material in receiver_materials: material.set_shader_parameter("ground_visibility_rect",rect)
+	receiver.render_target_update_mode=SubViewport.UPDATE_ONCE
+	receiver_updates+=1
+
 func bind(material: ShaderMaterial) -> void:
 	materials.append(material)
 	material.set_shader_parameter("moving_shadow_near",views[0].get_texture())
@@ -80,6 +118,7 @@ func refresh_view(index: int,target: Vector3) -> void:
 		material.set_shader_parameter("moving_shadow_near_view" if index==0 else "moving_shadow_far_view",cameras[index].global_transform.affine_inverse())
 	views[index].render_target_update_mode=SubViewport.UPDATE_ONCE
 	if index==0: near_updates+=1
+	_place_receiver()
 
 func set_focus(position: Vector3) -> void:
 	# World-metre tiles keep small head movements from redrawing the map. The
@@ -94,6 +133,7 @@ func update(solar_direction: Vector3) -> void:
 	refresh_view(0,focus)
 	refresh_view(1,Vector3(0,2,4))
 	for item in casters:
+		if not is_instance_valid(item.source): continue
 		item.proxy.global_transform=item.source.global_transform
 		item.proxy.visible=item.source.is_visible_in_tree()
 	draw_updates+=1

@@ -7,6 +7,7 @@ const FOCUS := 986019
 const BOOST := 986023
 const OFF := 986024
 const CHROME := 986025
+const KEYBOARD := 986026
 const SLIDER_X := 0.15
 const ENTER_MS := 120
 const LEAVE_MS := 650
@@ -70,7 +71,7 @@ func sync(now: int = -1) -> void:
 		if last_near < 0 or now - last_near >= LEAVE_MS: _hide_controls()
 
 func _state() -> Array:
-	return [host.toolbar_shown,host.depth.enabled,host.depth.matte,host.selecting,host.is_focused(),boosted,strength_open,I18n.language] if host else []
+	return [host.toolbar_shown,host.depth.enabled,host.depth.matte,host.selecting,host.is_focused(),host.browser.keyboard_visible(host.window_id),boosted,strength_open,I18n.language] if host else []
 
 func set_strength_open(value: bool) -> void:
 	if strength_open == value: return
@@ -88,7 +89,7 @@ func observe_ray(hand: String, origin: Vector3, direction: Vector3, tracked: boo
 		near = uv != null and Rect2(0,0,1,1).has_point(uv)
 		var point: Variant = project_pointer(origin, direction, Transform3D.IDENTITY, false)
 		if point != null:
-			near = near or Rect2(-0.38,-0.065,0.61,0.13).has_point(Vector2(point.x,point.y))
+			near = near or Rect2(-0.38,-0.065,0.76,0.13).has_point(Vector2(point.x,point.y))
 			if host.depth.enabled and strength_open: near = near or strength_bounds().has_point(Vector2(point.x,point.y))
 	near_hands[hand] = near
 	sync(now)
@@ -114,6 +115,9 @@ func _draw() -> void:
 			busy_ring.set_meta("menu_eye_buffer",true) # shader-clock animation stays live
 			busy_ring.visible=depth_preparing()
 			_tips[DEPTH]=I18n.t("Starting 3D" if depth_preparing() else "2D to 3D effect")
+	var keyboard_shown: bool = host.browser.keyboard_visible(host.window_id)
+	_button(KEYBOARD,"",Vector2(0.30,0),Vector2.ONE*0.12,true,"keyboard_hide" if keyboard_shown else "keyboard",keyboard_shown)
+	_tips[KEYBOARD] = I18n.t("Close keyboard" if keyboard_shown else "Show keyboard")
 	if not host.depth.enabled or not strength_open: return
 	var before := get_children()
 	var top := RAIL.y + (BOOST_HEIGHT if boosted else 0.0)
@@ -188,7 +192,7 @@ func _refresh_strength() -> void:
 		boost_fill.material_override.set_shader_parameter("surface_size",boost_fill.mesh.size)
 
 func _activate(target: int) -> void:
-	if target in [CHROME,FOCUS,MATTE]: host._activate(target)
+	if target in [CHROME,FOCUS,MATTE,KEYBOARD]: host._activate(target)
 	elif target == DEPTH:
 		if host.depth.enabled: set_strength_open(not strength_open)
 		else: host._activate(DEPTH)

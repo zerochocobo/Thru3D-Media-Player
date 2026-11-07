@@ -2,8 +2,9 @@ extends RefCounted
 ## A fixed hall picture scales inside its envelope, including its curved corners
 ## and the size slider's downward centre bias. Pointer capture stays in main.
 const Border := preload("res://scripts/environments/cinema_screen_border.gd")
+const MIN_RADIUS := 24.0
 
-static func begin(surface: Node3D, corner: int, ray: Array, size: float, drop: float) -> Dictionary:
+static func begin(surface: Node3D, corner: int, ray: Array, size: float, drop: float, arc: float = -1.0) -> Dictionary:
 	var plane: Transform3D = surface.panel.global_transform
 	plane.origin -= plane.basis.y * surface._flat.size.y * drop
 	var inverse := plane.affine_inverse()
@@ -11,7 +12,7 @@ static func begin(surface: Node3D, corner: int, ray: Array, size: float, drop: f
 	var point: Variant = _plane_point(origin, inverse.basis * ray[1])
 	if point == null: return {}
 	var capture := {"plane": plane, "dimensions": surface._flat.size / size, "corner": corner,
-		"radius": surface._curve_radius() if surface.screen_curve > 0 else 0.0, "drop": drop, "size": size}
+		"arc": surface.screen_curve if arc < 0.0 else arc, "drop": drop, "size": size}
 	var projected: Variant = _project_corner(capture, size, origin)
 	if projected == null or projected.length_squared() < 0.0001: return {}
 	var axis: Vector2 = projected.normalized()
@@ -54,7 +55,8 @@ static func _project_corner(capture: Dictionary, size: float, origin: Vector3) -
 	var dimensions: Vector2 = capture.dimensions * size
 	var side := 1.0 if int(capture.corner) % 2 == 1 else -1.0
 	var height := dimensions.y * (0.5 if int(capture.corner) < 2 else -0.5)
-	var radius: float = capture.radius
+	# Match the production fixed-angle resize, including the hall's old tightest radius.
+	var radius: float = maxf(MIN_RADIUS, dimensions.x / deg_to_rad(float(capture.arc))) if capture.arc > 0.0 else 0.0
 	var corner := Border.at(radius, side * dimensions.x * 0.5 / radius, height) if radius > 0 else Vector3(side * dimensions.x * 0.5, height, 0)
 	corner.y += dimensions.y * float(capture.drop)
 	return _plane_point(origin, corner - origin)

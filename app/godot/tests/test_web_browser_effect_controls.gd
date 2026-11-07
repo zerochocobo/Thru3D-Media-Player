@@ -90,7 +90,7 @@ func fixture(low:bool)->void:
 	check(not footer.visible and not footer._buttons.any(func(b):return b.target==footer.STRENGTH),"Hiding the controls closes the strength popup")
 	check(host.depth.enabled==enabled and is_equal_approx(host.depth.strength,strength),"Auto-close keeps the effect and preferred strength")
 	footer.observe_ray("right",origin,direction,true,2000);footer.observe_ray("right",origin,direction,true,2125);capture.update()
-	check(footer.visible and footer._buttons.size()==4 and not footer._buttons.any(func(b):return b.target==footer.STRENGTH),"Returning to the page reveals just the four icons")
+	check(footer.visible and footer._buttons.size()==5 and not footer._buttons.any(func(b):return b.target==footer.STRENGTH),"Returning to the page reveals the five icons including the keyboard")
 	# Reopening the rail must not toggle an already enabled effect off.
 	var depth:Dictionary=footer._buttons.filter(func(b):return b.target==footer.DEPTH)[0]
 	var ray:Vector3=depth.node.global_position+footer.global_basis.z.normalized()*.2

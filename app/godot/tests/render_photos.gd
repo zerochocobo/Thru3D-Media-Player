@@ -143,7 +143,7 @@ func _run() -> void:
 	photo.inspect_ray(camera.global_position,Vector3(.4,.05,-1).normalized())
 	menu.refresh()
 	(await frame()).save_png(output.path_join("panorama-detail.png"))
-	photo.set_projection(0); photo.set_screen_curve(0.35); menu.refresh()
+	photo.set_projection(0); photo.set_screen_curve(30.0); menu.refresh()
 	(await frame()).save_png(output.path_join("flat.png"))
 	# Actual menu render of the shared strength popup over the flat fixture.
 	photo.platform = DepthHost.new()

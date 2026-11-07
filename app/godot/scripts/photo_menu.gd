@@ -13,6 +13,7 @@ const PHOTO_TRANSLATION := 986065
 const PHOTO_TRANSLATION_RETRY := 986066
 const ComicSettings := preload("res://scripts/comic_reading_settings.gd")
 const PHOTO_PREVIOUS := 400
+const PHOTO_AUTOPLAY := 438
 signal online_image_requested(item: Dictionary, spherical: bool)
 const PHOTO_ONLINE := 985002
 const PHOTO_SAVE := 985003
@@ -62,6 +63,8 @@ const PHOTO_NEXT := 401
 const PHOTO_ANIMATION := 433
 const PHOTO_CACHE_ONE := 435
 const PHOTO_CACHE_TWO := 436
+const PHOTO_GROUND_VERTICAL_ON := 437
+const PHOTO_GROUND_VERTICAL_OFF := 439
 const PHOTO_INSPECT := 402
 const PHOTO_RESET := 403
 const PHOTO_MINUS := 404
@@ -212,12 +215,21 @@ func refresh_values() -> void:
 	if online.opened: return
 	var latest: Dictionary = state_provider.call() if state_provider.is_valid() else {}
 	latest["bar_transparency"] = bar_transparency
+	if section == 1 and choices.capture.get("item", {}).get("key", "") == "autoplay_interval":
+		_state = latest; return
 	if _adjustment in ["comic_voice", "comic_translation"] and has_pointer_capture():
 		_state = latest
 		if is_instance_valid(_status): _status.text = _fitted_photo_status()
 		return
 	if _adjustment == "comic_voice" and _comic_preview_busy(latest) != _comic_preview_drawn_busy:
 		_state = latest; _draw(); return
+	if _adjustment == "photo_curve":
+		_state = latest
+		if not _state.get("has_image", false) or int(_state.get("geometry", 0)) != 0 or _state.get("portrait_requested", false):
+			_finish_adjustment(); _adjustment = ""; _draw()
+		else:
+			_refresh_adjustments(); _update_highlights()
+		return
 	if _adjustment == "photo_view":
 		var layout_changed: bool = latest.get("geometry", 0) != _state.get("geometry", 0) or latest.get("has_image", false) != _state.get("has_image", false) or latest.get("layout", 0) != _state.get("layout", 0) or (int(latest.get("gallery_focus", -1)) < 0) != (int(_state.get("gallery_focus", -1)) < 0) \
 			or latest.get("native_stereo", false) != _state.get("native_stereo", false) or latest.get("loading", false) != _state.get("loading", false) \
@@ -280,9 +292,13 @@ func _draw_bar() -> void:
 	var has: bool = _state.get("has_image", false) or _state.get("gallery_overview", false)
 	var portrait: bool = _state.get("portrait_requested",false)
 	var swapping: bool = _state.get("gallery_swapping", false)
-	if not _state.get("archive_mode", false): _glyph(PHOTO_GALLERY, "images", Vector2(-0.5, 0.025), 0.075, _state.get("count", 0) > 0, I18n.t("Images"))
-	_glyph(PHOTO_INSPECT, "zoom", Vector2(-0.39, 0.025), 0.075, has and not portrait, _inspect_tip())
-	_glyph(PHOTO_ADJUST, "adjust", Vector2(-0.28, 0.025), 0.075, has, I18n.t("Adjust image"))
+	if not _state.get("archive_mode", false): _glyph(PHOTO_GALLERY, "images", Vector2(-0.535, 0.025), 0.075, _state.get("count", 0) > 0, I18n.t("Images"))
+	_glyph(PHOTO_INSPECT, "zoom", Vector2(-0.43, 0.025), 0.075, has and not portrait, _inspect_tip())
+	_glyph(PHOTO_ADJUST, "adjust", Vector2(-0.325, 0.025), 0.075, has, I18n.t("Adjust image"))
+	var autoplay: bool = _state.get("autoplay_enabled", false)
+	_glyph(PHOTO_AUTOPLAY, "photo_autoplay", Vector2(-0.225, 0.025), 0.075,
+		autoplay or (int(_state.get("count", 0)) > 1 and not _state.get("gallery_overview", false) and (has or _state.get("loading", false))),
+		I18n.t("Stop image autoplay" if autoplay else "Start image autoplay"))
 	_glyph(PHOTO_PREVIOUS, "previous", Vector2(-0.14, 0.025), 0.085, _state.get("can_previous", false) and not swapping, I18n.t("Previous image"))
 	var start := maxi(0, int(_state.get("index", -1)) + 1)
 	var pages := int(_state.get("magazine_pages", 1))
@@ -403,6 +419,10 @@ func _settings_popup() -> bool:
 	return false
 
 func _slider_geometry() -> Dictionary:
+	if _adjustment == "photo_curve":
+		return {"title_x": -0.66, "title_size": TEXT_BODY, "value_x": -0.55, "value_size": TEXT_BODY,
+			"left": -0.47, "width": 1.02, "hit": 0.08, "height": 0.08, "thickness": 0.009,
+			"knob": 0.025, "reset_x": 0.66, "reset_size": 0.065}
 	return {"title_x": -0.66, "title_size": TEXT_BODY, "value_x": -0.06, "value_size": TEXT_BODY, "left": 0.03, "width": 0.6, "hit": 0.1,
 		"height": 0.08, "thickness": 0.009, "knob": 0.025, "reset_x": 0.715, "reset_size": 0.065}
 
@@ -420,6 +440,14 @@ func _adjustment_default(key: String) -> Variant:
 		"gallery_scale": 1.0, "inspect_magnification": Photo.DEFAULT_MAGNIFICATION, "edge_feather_strength": Photo.DEFAULT_EDGE_FEATHER}.get(key)
 
 func _draw_adjustments() -> void:
+	if _adjustment == "photo_curve":
+		_set_backdrop(Vector2(1.55, 0.40), Vector2(0, 0))
+		_button(PHOTO_ADJUST_BACK, "", Vector2(-0.66, 0.15), Vector2(0.09, 0.065), true, "up")
+		_button(CLOSE, "", Vector2(0.66, 0.15), Vector2(0.09, 0.065), true, "close")
+		_label(I18n.t("Screen curve"), Vector3(0, 0.15, 0.004), TEXT_PAGE_TITLE).font = ui_bold_font()
+		_draw_curve_slider(-0.015, "")
+		_refresh_adjustments()
+		return
 	if _adjustment == "comic_translation":
 		_draw_translation_settings(); return
 	if _adjustment == "comic_voice":
@@ -501,13 +529,11 @@ func _photo_background_button(target: int, caption: String, centre: Vector2, siz
 func _draw_panel() -> void:
 	var position_available: bool = _state.get("has_image", false) and int(_state.get("geometry", 0)) == 0 and not _state.get("native_stereo", false) and not _state.get("portrait_requested", false) and not _state.get("stereo", false)
 	var extra := 0.14 if position_available else 0.0
-	_set_backdrop(Vector2(1.16, 0.84 + extra), Vector2(0, -0.145 - extra / 2))
+	_set_backdrop(Vector2(1.16, 1.105 + extra), Vector2(0, -0.2775 - extra / 2))
 	_button(10, "", Vector2(-0.48, 0.2), Vector2(0.085, 0.065), true, "up")
 	_label(I18n.t("Images"), Vector3(0, 0.2, 0.004), 21)
 	_button(PHOTO_STRENGTH, I18n.t("3D depth") + "  " + _depth_caption(), Vector2(-0.26, 0.035), Vector2(0.49, 0.105), _can_depth(), "depth")
-	var names := ["Off", "Slight", "Medium", "Full"]
-	var curve := [0.0, 0.35, 0.7, 1.0].find(float(_state.get("screen_curve", 0)))
-	_button(PHOTO_CURVE, I18n.t("Screen curve") + "  " + I18n.t(names[maxi(0, curve)]), Vector2(0.26, 0.035), Vector2(0.49, 0.105), int(_state.get("geometry", 0)) == 0 and not _state.get("portrait_requested",false), "screen")
+	_button(PHOTO_CURVE, I18n.t("Screen curve") + "  " + _curve_caption(float(_state.get("screen_curve", 0))), Vector2(0.26, 0.035), Vector2(0.49, 0.105), int(_state.get("geometry", 0)) == 0 and not _state.get("portrait_requested",false), "screen")
 	if position_available:
 		var title := _label(I18n.t(DepthPosition.TITLE), Vector3(-0.50, -0.09, 0.004), TEXT_BODY)
 		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -523,9 +549,20 @@ func _draw_panel() -> void:
 		_button(target, I18n.t("1 each" if count == 1 else "2 each"), Vector2(0.08 + (count - 1) * 0.28, -0.405 - extra), Vector2(0.25, 0.075))
 		if int(_state.get("cache_each", 1)) == count: _buttons.back().base_color = SELECTED
 		_tips[target] = I18n.t("Upper limit per side. Actual 3D and portrait caching adapts to memory and rendering headroom.")
-	_status = _label(_photo_status(), Vector3(0, -0.49 - extra, 0.004), 15)
+	var vertical: bool = _state.get("ground_vertical", false)
+	_label(I18n.t("Vertical to ground"), Vector3(-0.29, -0.515 - extra, 0.004), TEXT_AUX)
+	for enabled in [true, false]:
+		var target := PHOTO_GROUND_VERTICAL_ON if enabled else PHOTO_GROUND_VERTICAL_OFF
+		_button(target, I18n.t("On" if enabled else "Off"), Vector2(0.08 if enabled else 0.36, -0.515 - extra), Vector2(0.25, 0.075))
+		if vertical == enabled: _buttons.back().base_color = SELECTED
+		_tips[target] = I18n.t("Image perpendicular to ground" if enabled else "Image plane perpendicular to view")
+	var interval_label := _label(I18n.t("Autoplay interval"), Vector3(-0.50, -0.635 - extra, 0.004), TEXT_BODY)
+	interval_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	choices.field(null, {"key":"autoplay_interval", "value":_state.get("autoplay_interval", 5.0), "slider":true,
+		"span":Vector3(3,30,1), "unit":"s", "decimals":0, "reset_value":5.0}, Vector2(0.18,-0.635-extra), 0.66, 0.055)
+	_status = _label(_photo_status(), Vector3(0, -0.755 - extra, 0.004), 15)
 	_status.modulate = MUTED
-	_place_device_status(Vector2(0, -0.60 - extra))
+	_place_device_status(Vector2(0, -0.865 - extra))
 	choices.finish()
 
 func _draw_gallery() -> void:
@@ -661,6 +698,9 @@ func _translation_status() -> String:
 	return I18n.t({"recognizing": "Reading page…", "no_dialogue": "No stable dialogue", "unsupported": "Flat images only", "unavailable": "Comic reading unavailable", "ready": "No translation needed"}.get(str(_state.get("comic_state", "")), "Reading page…"))
 
 func _activate(target: int) -> void:
+	if target == PHOTO_AUTOPLAY: action_requested.emit("photo_autoplay"); refresh(); return
+	if target in [PHOTO_GROUND_VERTICAL_ON, PHOTO_GROUND_VERTICAL_OFF]:
+		setting_requested.emit("ground_vertical", target == PHOTO_GROUND_VERTICAL_ON); refresh(); return
 	if target == PHOTO_TRANSLATION: _adjustment = "comic_translation"; refresh(); return
 	if target == PHOTO_TRANSLATION_RETRY: action_requested.emit("translation_retry"); return
 	if target == PHOTO_COMIC: action_requested.emit("comic_toggle"); return
@@ -698,6 +738,11 @@ func _activate(target: int) -> void:
 	if _activate_footer(target): return
 	if _activate_slider_reset(target): return
 	if _activate_depth_off(target): return
+	if _adjustment == "photo_curve":
+		_finish_adjustment()
+		if target == CLOSE: dismiss(); return
+		if target == PHOTO_ADJUST_BACK: _adjustment = ""
+		refresh(); return
 	if target == PHOTO_AUDIO:
 		action_requested.emit("music_open"); return
 	if target > PHOTO_WALL_ROWS and target <= PHOTO_WALL_ROWS + 3:
@@ -769,7 +814,7 @@ func _activate(target: int) -> void:
 		PHOTO_NEXT: action_requested.emit("photo_next")
 		PHOTO_INSPECT: action_requested.emit("photo_inspect")
 		PHOTO_RESET: action_requested.emit("photo_fit")
-		PHOTO_CURVE: action_requested.emit("screen_curve")
+		PHOTO_CURVE: _adjustment = "photo_curve"
 		PHOTO_PAGE_BACK: _gallery_start -= 5
 		PHOTO_PAGE_NEXT: _gallery_start += 5
 		PHOTO_BACKGROUND: action_requested.emit("photo_background")
@@ -844,6 +889,7 @@ func _update_highlights() -> void:
 	super._update_highlights()
 
 func _surface_color(button: Dictionary, color: Color) -> Color:
+	if button.target == PHOTO_AUTOPLAY and _state.get("autoplay_enabled", false): return SELECTED
 	if (button.target == PHOTO_INSPECT and _state.get("inspect", false)) or (button.target == PHOTO_DEPTH and (_state.get("depth_requested", false) or _state.get("native_stereo",false))):
 		return SELECTED
 	if button.target == PHOTO_PORTRAIT and button.enabled and _state.get("portrait_requested",false) and not _hover.values().has(button.target):

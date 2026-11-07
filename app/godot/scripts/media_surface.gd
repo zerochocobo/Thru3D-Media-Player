@@ -2,6 +2,7 @@ extends Node3D
 
 const SpatialCapture := preload("res://scripts/spatial_video_metadata.gd")
 const ImmersiveAdjustments := preload("res://scripts/immersive_adjustments.gd")
+const ScreenSphere := preload("res://scripts/screen_sphere.gd")
 ## Shared spatial surface only: decoding, playback clocks and photo queues live in their owners.
 signal mode_lock_changed(lock: Dictionary)
 
@@ -25,20 +26,27 @@ var _flat := QuadMesh.new()
 ## Where the flat screen stands (parent space); main places it in front of the viewer on open and recenter.
 var flat_pose := Transform3D(Basis(), Vector3(0, 1.5, -2))
 ## Flat screen set by the viewer: distance from the eyes, size (corner drag) and curvature.
-## A curve of 1 bends the screen round the eyes; smaller values bend it less.
+## Curvature is the total cylinder arc in degrees, independent of viewing distance.
 const SCREEN_DISTANCE := 2.0
 const DISTANCE_LIMITS := Vector2(0.1, 50.0)
 const SCALE_LIMITS := Vector2(0.05, 30.0)
-const CURVES := [0.0, 0.35, 0.7, 1.0]
+const MAX_CURVE := 180.0
+const CURVES := [0.0, 30.0, 60.0, 120.0]
+const CURVE_MODES := ["horizontal", "vertical", "spherical"]
 var screen_distance := SCREEN_DISTANCE
 var screen_scale := 1.0
 var screen_rotation := 0.0
 var screen_curve := 0.0
-## Fixed bend radius in metres (a wall-mounted cinema screen); 0 bends round the viewing distance.
+var screen_curve_mode := "horizontal"
+var curve_modes_available := false
+var _legacy_screen_curve := -1.0
+## Optional fixed radius in metres for a mounted screen; 0 derives it from arc and size.
 var curve_radius := 0.0
 var _screen_base := Vector2(1.9, 1.07)
 var _curved: ArrayMesh
 var _curved_key := Vector4.ZERO
+var _curved_rotation := 0.0
+var _curved_mode := ""
 ## Corner brackets shown while a ray points at a corner (or drags one to resize).
 var _handles: Array[MeshInstance3D] = []
 var hovered_corner := -1
@@ -156,28 +164,113 @@ func zoom_view(amount: float) -> void:
 	if geometry != Geometry.Geometry.FLAT:
 		_center_on_view()
 
-## The flat screen's mesh: the quad, or a cylinder section of radius distance / curve with the
-## same width along the arc (the video maps by UV, so the picture bends with it).
+## The flat screen's mesh: a quad, cylinder section, or finite spherical patch.
+## The video maps by UV, so the picture bends with its surface.
 func _shape_screen() -> void:
 	if geometry != Geometry.Geometry.FLAT:
 		_show_handles(-1)
 		return
+	_resolve_legacy_curve()
 	if screen_curve <= 0.0:
 		panel.mesh = _flat
 	else:
 		var key := Vector4(_flat.size.x, _flat.size.y, screen_curve, _curve_radius())
-		if not _curved or key != _curved_key:
+		var rotation := _curve_rotation()
+		var mode := effective_curve_mode()
+		if not _curved or key != _curved_key or mode != _curved_mode or not is_equal_approx(rotation, _curved_rotation):
 			_curved_key = key
-			_curved = _cylinder(_flat.size, _curve_radius())
+			_curved_rotation = rotation
+			_curved_mode = mode
+			_curved = ScreenSphere.mesh(_flat.size, _curve_radius()) if mode == "spherical" else _cylinder(_flat.size, _curve_radius(), 48, rotation)
 		panel.mesh = _curved
 	_show_handles(hovered_corner)
 
 func _curve_radius() -> float:
-	# At most ~140 degrees of arc, however wide the screen.
-	if curve_radius > 0.0 and screen_curve > 0.0: return maxf(curve_radius, _flat.size.x / 2.4)
-	return maxf(screen_distance / screen_curve, _flat.size.x / 2.4) if screen_curve > 0.0 else INF
+	if effective_curve_mode() == "spherical":
+		return _flat.size.length() / deg_to_rad(maxf(screen_curve, 0.001)) if screen_curve > 0.0 else INF
+	return curve_radius_for(_flat.size, _curve_rotation())
 
-static func _cylinder(size: Vector2, radius: float, columns: int = 48) -> ArrayMesh:
+static func normalize_curve_mode(value: String) -> String:
+	return value if value in CURVE_MODES else "horizontal"
+
+func effective_curve_mode() -> String:
+	return normalize_curve_mode(screen_curve_mode) if curve_modes_available else "horizontal"
+
+func set_screen_curve_mode(value: String) -> bool:
+	if value not in CURVE_MODES: return false
+	screen_curve_mode = value
+	if panel: _shape_screen()
+	return true
+
+func set_curve_modes_available(value: bool) -> void:
+	if curve_modes_available == value: return
+	curve_modes_available = value
+	if panel: _shape_screen()
+
+static func curve_span(size: Vector2, rotation: float) -> float:
+	return absf(cos(rotation)) * size.x + absf(sin(rotation)) * size.y
+
+func curve_radius_for(size: Vector2, rotation: float) -> float:
+	if screen_curve <= 0.0: return INF
+	var width := curve_span(size, rotation)
+	return maxf(curve_radius, width / PI) if curve_radius > 0.0 else width / deg_to_rad(clampf(screen_curve, 0.001, MAX_CURVE))
+
+## Old distance-relative settings are converted once, after the initial dimensions exist.
+func restore_screen_curve(settings: ConfigFile, section: String, legacy_default: float = 0.0) -> void:
+	_legacy_screen_curve = -1.0
+	screen_curve_mode = normalize_curve_mode(str(settings.get_value(section, "curve_mode", "horizontal")))
+	if settings.has_section_key(section, "curve_degrees"):
+		var value := float(settings.get_value(section, "curve_degrees"))
+		screen_curve = clampf(value, 0.0, MAX_CURVE) if is_finite(value) else 0.0
+	else:
+		var value := float(settings.get_value(section, "curve", legacy_default))
+		_legacy_screen_curve = clampf(value, 0.0, 1.0) if is_finite(value) else legacy_default
+		screen_curve = 0.0
+
+func _legacy_curve_radius(value: float) -> float:
+	return maxf(screen_distance / value, curve_span(_flat.size, _curve_rotation()) / 2.4)
+
+func _resolve_legacy_curve() -> void:
+	if _legacy_screen_curve < 0.0: return
+	var value := _legacy_screen_curve
+	_legacy_screen_curve = -1.0
+	screen_curve = rad_to_deg(curve_span(_flat.size, _curve_rotation()) / _legacy_curve_radius(value)) if value > 0.0 else 0.0
+
+## Rotate the content before bending, keeping the chosen axis in the placement frame.
+func _curve_rotation() -> float:
+	return deg_to_rad(screen_rotation) + (PI * 0.5 if effective_curve_mode() == "vertical" else 0.0)
+
+## A native cylinder cannot rotate its image independently of its bending axis.
+func cylinder_layer_compatible() -> bool:
+	return geometry != Geometry.Geometry.FLAT or screen_curve <= 0.0 or (effective_curve_mode() != "spherical" and absf(sin(_curve_rotation())) < 0.00001)
+
+static func _bend_point(point: Vector3, radius: float, rotation: float) -> Vector3:
+	var rotated := point.rotated(Vector3.FORWARD, rotation)
+	return Vector3(sin(rotated.x / radius) * radius, rotated.y, (1.0 - cos(rotated.x / radius)) * radius).rotated(Vector3.FORWARD, -rotation)
+
+func surface_point(point: Vector3) -> Vector3:
+	if screen_curve > 0.0 and effective_curve_mode() == "spherical": return ScreenSphere.point(point, _curve_radius())
+	return _bend_point(point, _curve_radius(), _curve_rotation()) if screen_curve > 0.0 else point
+
+func surface_tangent(point: Vector3, tangent: Vector3) -> Vector3:
+	if screen_curve <= 0.0: return tangent
+	if effective_curve_mode() == "spherical": return ScreenSphere.tangent(point, tangent, _curve_radius())
+	var rotation := _curve_rotation()
+	var angle := point.rotated(Vector3.FORWARD, rotation).x / _curve_radius()
+	var rotated := tangent.rotated(Vector3.FORWARD, rotation)
+	return Vector3(cos(angle) * rotated.x, rotated.y, sin(angle) * rotated.x).rotated(Vector3.FORWARD, -rotation)
+
+func surface_uv(point: Vector3) -> Vector2:
+	if screen_curve > 0.0:
+		if effective_curve_mode() == "spherical": point = ScreenSphere.unbend(point, _curve_radius())
+		else:
+			var rotation := _curve_rotation()
+			point = point.rotated(Vector3.FORWARD, rotation)
+			point = Vector3(atan2(point.x, _curve_radius() - point.z) * _curve_radius(), point.y, 0).rotated(Vector3.FORWARD, -rotation)
+	return Vector2(point.x / _flat.size.x + 0.5, 0.5 - point.y / _flat.size.y)
+
+static func _cylinder(size: Vector2, radius: float, columns: int = 48, rotation: float = 0.0) -> ArrayMesh:
+	if not is_zero_approx(rotation): return _rotated_cylinder(size, radius, columns, rotation)
 	var vertices := PackedVector3Array()
 	var uv := PackedVector2Array()
 	var indices := PackedInt32Array()
@@ -201,16 +294,35 @@ static func _cylinder(size: Vector2, radius: float, columns: int = 48) -> ArrayM
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
 
+static func _rotated_cylinder(size: Vector2, radius: float, segments: int, rotation: float) -> ArrayMesh:
+	# Subdivide only axes which cross the horizontal bend. At quarter turns this
+	# costs the same as the original strip; intermediate drags stay below 700 vertices.
+	var span := absf(cos(rotation)) * size.x + absf(sin(rotation)) * size.y
+	var columns := maxi(1, ceili(segments * absf(cos(rotation)) * size.x / span))
+	var rows := maxi(1, ceili(segments * absf(sin(rotation)) * size.y / span))
+	var vertices := PackedVector3Array()
+	var uv := PackedVector2Array()
+	var indices := PackedInt32Array()
+	for row in rows + 1:
+		for column in columns + 1:
+			var at := Vector2(float(column) / columns, float(row) / rows)
+			vertices.append(_bend_point(Vector3((at.x - 0.5) * size.x, (0.5 - at.y) * size.y, 0), radius, rotation))
+			uv.append(at)
+			if row < rows and column < columns:
+				var a := row * (columns + 1) + column
+				var b := a + columns + 1
+				indices.append_array(PackedInt32Array([a, a + 1, b, a + 1, b + 1, b]))
+	var arrays := []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices; arrays[Mesh.ARRAY_TEX_UV] = uv; arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new(); mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
 ## Corner [index] (0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right) in the screen's space,
 ## and the angle the screen surface turns there.
 func screen_corner(index: int) -> Vector3:
 	var side := 1.0 if index % 2 == 1 else -1.0
 	var y := _flat.size.y * 0.5 * (1.0 if index < 2 else -1.0)
-	if screen_curve <= 0.0:
-		return Vector3(side * _flat.size.x * 0.5, y, 0)
-	var radius := _curve_radius()
-	var angle := _flat.size.x * 0.5 / radius
-	return Vector3(side * sin(angle) * radius, y, (1.0 - cos(angle)) * radius)
+	return surface_point(Vector3(side * _flat.size.x * 0.5, y, 0))
 
 ## The flat screen corner a ray points at (within a few degrees), or -1.
 func corner_at(origin: Vector3, direction: Vector3) -> int:
@@ -244,6 +356,12 @@ func screen_hit(origin: Vector3, direction: Vector3) -> Variant:
 	var inverse := panel.global_transform.affine_inverse()
 	var start := inverse * origin
 	var ray := inverse.basis * direction
+	if effective_curve_mode() == "spherical":
+		var hit: Variant = ScreenSphere.hit(_flat.size, _curve_radius(), start, ray)
+		return panel.to_global(hit) if hit != null else null
+	var rotation := _curve_rotation()
+	start = start.rotated(Vector3.FORWARD, rotation)
+	ray = ray.rotated(Vector3.FORWARD, rotation)
 	var radius := _curve_radius()
 	var a := ray.x * ray.x + ray.z * ray.z
 	var b := start.x * ray.x + (start.z - radius) * ray.z
@@ -253,9 +371,10 @@ func screen_hit(origin: Vector3, direction: Vector3) -> Variant:
 	for distance in [(-b - sqrt(discriminant)) / a, (-b + sqrt(discriminant)) / a]:
 		if distance <= 0.0: continue
 		var point: Vector3 = start + ray * distance
-		var angle := atan2(point.x, radius - point.z)
-		if absf(angle) <= _flat.size.x * 0.5 / radius + 0.00001 and absf(point.y) <= _flat.size.y * 0.5 + 0.00001:
-			return panel.to_global(point)
+		var local := point.rotated(Vector3.FORWARD, -rotation)
+		var uv := surface_uv(local)
+		if uv.x >= -0.00001 and uv.x <= 1.00001 and uv.y >= -0.00001 and uv.y <= 1.00001:
+			return panel.to_global(local)
 	return null
 
 func set_screen_rotation(value: float) -> void:
@@ -283,14 +402,19 @@ func capture_fov_scale(fov: float, limits: Vector2) -> float:
 	return scale if scale >= limits.x and scale <= limits.y else -1.0
 
 func set_screen_curve(value: float) -> void:
-	screen_curve = clampf(value, 0.0, 1.0)
+	if not is_finite(value): return
+	_legacy_screen_curve = -1.0
+	screen_curve = clampf(value, 0.0, MAX_CURVE)
 	_shape_screen()
 
 func cycle_screen_curve() -> void:
-	var index := CURVES.find(screen_curve)
-	set_screen_curve(CURVES[(index + 1) % CURVES.size()])
+	for value in CURVES:
+		if value > screen_curve + 0.001:
+			set_screen_curve(value)
+			return
+	set_screen_curve(0.0)
 
-## Main moves the screen nearer or farther; a curved screen keeps bending round the eyes.
+## Moving the screen changes placement only; the chosen arc and radius stay unchanged.
 func set_screen_distance(value: float) -> void:
 	screen_distance = clampf(value, DISTANCE_LIMITS.x, DISTANCE_LIMITS.y)
 	_shape_screen()
@@ -316,11 +440,13 @@ func _show_handles(index: int) -> void:
 		var bracket := _handles[corner]
 		bracket.visible = corner == index and geometry == Geometry.Geometry.FLAT
 		if bracket.visible:
-			var turn := 0.0 if screen_curve <= 0.0 else _flat.size.x * 0.5 / _curve_radius() * (1.0 if corner % 2 == 1 else -1.0)
+			var point := Vector3(_flat.size.x * (0.5 if corner % 2 == 1 else -0.5), _flat.size.y * (0.5 if corner < 2 else -0.5), 0)
+			var u := surface_tangent(point, Vector3.RIGHT).normalized()
+			var v := surface_tangent(point, Vector3.UP).normalized()
+			var frame := Basis(u, v, u.cross(v).normalized())
 			var mirror := Vector3(1.0 if corner % 2 == 1 else -1.0, 1.0 if corner < 2 else -1.0, 1.0)
 			var distance := _corner_view_distance if _corner_view_distance > 0.0 else screen_distance
-			bracket.transform = Transform3D(Basis(Vector3.UP, -turn) * Basis.from_scale(mirror * distance / SCREEN_DISTANCE),
-				screen_corner(corner) + Vector3(0, 0, 0.01).rotated(Vector3.UP, -turn))
+			bracket.transform = Transform3D(frame * Basis.from_scale(mirror * distance / SCREEN_DISTANCE), screen_corner(corner) + frame.z * 0.01)
 
 ## An L outside a top-right corner (mirrored for the others).
 static func _bracket() -> ArrayMesh:

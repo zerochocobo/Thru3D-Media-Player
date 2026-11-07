@@ -244,6 +244,9 @@ var subtitle_line := 0:
 var subtitle_flat_position := 0.0:
 	set(value): subtitle_flat_position = clampf(value, 0.0, 1.0) if is_finite(value) else 0.0
 var _subtitle_surface: MeshInstance3D
+var _subtitle_curve_mesh: ArrayMesh
+var _subtitle_curve_key := Vector3.ZERO
+var _subtitle_curve_source: Mesh
 var _subtitle_patch: QuadMesh
 var _subtitle_material: ShaderMaterial
 var caption: Label3D
@@ -456,6 +459,17 @@ var debug_fisheye_density := 0.0
 ## kept Quest 3 near 80 of 120 frames) moves this session to the slower rates: once, never back.
 const FISHEYE_SLOW_RATIO := 0.9
 const FISHEYE_SLOW_SECONDS := 5
+## A decoder that rejects or cannot allocate the source falls back to CPU decoding,
+## a few frames a second at 4K and above. Name it once per file instead of a silent stutter.
+const SOFTWARE_DECODE_NOTICE_PIXELS := 6000000
+const SOFTWARE_DECODE_NOTICE_MS := 8000
+var _software_notice_uri := ""
+var _software_notice_until := 0
+const WEB_DECODER_RETRIES := 5
+const WEB_DECODER_RETRY_MS := 2000
+var _decoder_retry_uri := ""
+var _decoder_retries := 0
+var _decoder_retry_at := 0
 var fisheye_overloaded := false
 var _fisheye_overloaded_uri := ""
 var _fisheye_slow_seconds := 0
@@ -857,6 +871,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		video_aspect_preset = "original"
 		video_aspect_factor = 1.0
 	_web_handoff = bool(metadata.get("web_handoff", false))
+	if not mode_transition.reopening: _decoder_retry_uri = ""
 	_stream_projection = StreamProjection.read(platform, uri)
 	_stream_mesh = StreamProjection.mesh(_stream_projection)
 	_capture_layout_pending = restore_mode
@@ -1707,12 +1722,7 @@ func _poll_disc_menu(now_ms: int) -> void:
 func screen_uv(origin: Vector3, direction: Vector3) -> Variant:
 	var hit: Variant = screen_hit(origin, direction)
 	if hit == null: return null
-	var local: Vector3 = panel.to_local(hit)
-	var u := local.x / _flat.size.x + 0.5
-	if screen_curve > 0.0:
-		var radius := _curve_radius()
-		u = atan2(local.x, radius - local.z) * radius / _flat.size.x + 0.5
-	return Vector2(u, 0.5 - local.y / _flat.size.y)
+	return surface_uv(panel.to_local(hit))
 
 ## The menu's buttons occupy its plane's drawn area; elsewhere the screen keeps its usual input.
 func disc_menu_uv(origin: Vector3, direction: Vector3) -> Variant:
@@ -3026,6 +3036,9 @@ func _on_state(id: int, payload: String) -> void:
 			position_ms = int(int(pair.pts_us) / 1000)
 		control.observe(position_ms, int(float(details.get("duration_seconds", "-1")) * 1000))
 		media.decoder = str(details.get("codec", "")) + " / " + str(details.get("hwdec_current", ""))
+		if _software_notice_uri != local_uri and software_decode_limited():
+			_software_notice_uri = local_uri
+			_software_notice_until = Time.get_ticks_msec() + SOFTWARE_DECODE_NOTICE_MS
 	# A rejected software frame can reach END_FILE before the next display frame.
 	# Consume its Surface incompatibility before marking this session failed; the
 	# bridge may already have queued mpv_error, which must belong to the retired id.
@@ -3156,6 +3169,8 @@ func _on_released(id: int, _payload: String) -> void:
 func hud_caption() -> String:
 	var caption := loading_caption()
 	if not caption.is_empty(): return caption
+	if _software_notice_uri == local_uri and Time.get_ticks_msec() < _software_notice_until and software_decode_limited():
+		return I18n.t("Hardware decoding unavailable for %s · playback may stutter") % ("%d×%d" % [int(media.format.width), int(media.format.height)])
 	return listening.status_caption(listening.playback_position(control.display_position_ms() / 1000.0 - audio_delay))
 
 func loading_caption() -> String:
@@ -3404,6 +3419,13 @@ func _write_debug_report() -> void:
 		"scope": "Production MPV/RVM/Godot ownership trace; independent pixel, audio and performance validation pending"}
 	platform.save_mpv_player_report(_debug_request, JSON.stringify(report))
 
+## CPU decoding of a 4K-or-larger source; spatial MOV decodes in software by design.
+func software_decode_limited() -> bool:
+	var details: Dictionary = media.playback.get("details", {})
+	if str(details.get("codec", "")).is_empty() or str(details.get("hwdec_current", "")) != "no": return false
+	if bool(media.format.get("spatial_video", false)): return false
+	return int(media.format.get("width", 0)) * int(media.format.get("height", 0)) >= SOFTWARE_DECODE_NOTICE_PIXELS
+
 func _source_size() -> Vector2:
 	return Vector2(float(media.format.width), float(media.format.height))
 
@@ -3469,7 +3491,7 @@ func _sync_subtitle_surface() -> void:
 		and (material.get_shader_parameter("subtitle_enabled") == true or material.get_shader_parameter("bitmap_subtitle_enabled") == true)
 	if not _subtitle_surface.visible: return
 	if geometry == Geometry.Geometry.FLAT:
-		_subtitle_surface.mesh = _flat if portrait.active else panel.mesh
+		_subtitle_surface.mesh = _upright_subtitle_mesh()
 		_subtitle_surface.global_transform = subtitle_transform()
 	else:
 		# Each eye's ray through the sphere meets the caption plane where it would meet the plane
@@ -3488,6 +3510,28 @@ func _sync_subtitle_surface() -> void:
 		_subtitle_surface.global_transform = (to_patch as Transform3D).affine_inverse()
 	for key in ["subtitle_texture", "subtitle_enabled", "subtitle_world_to_patch", "subtitle_patch_half_extent", "bitmap_subtitle_texture", "bitmap_subtitle_enabled", "bitmap_subtitle_rect", "rotation_degrees"]:
 		_subtitle_material.set_shader_parameter(key, material.get_shader_parameter(key))
+
+func _upright_subtitle_mesh() -> Mesh:
+	if portrait.active or screen_curve <= 0.0: return _flat
+	var rotation := deg_to_rad(screen_rotation)
+	if absf(sin(rotation)) < 0.00001: return panel.mesh
+	# Reuse the exact movie surface in the unrolled caption frame. Only the bitmap
+	# UVs use its upright envelope; spherical/vertical geometry must not be replaced by a cylinder.
+	var key := Vector3(screen_rotation, _flat.size.x, _flat.size.y)
+	if not _subtitle_curve_mesh or _subtitle_curve_source != panel.mesh or not _subtitle_curve_key.is_equal_approx(key):
+		_subtitle_curve_key = key
+		_subtitle_curve_source = panel.mesh
+		var arrays := panel.mesh.surface_get_arrays(0)
+		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+		var size := Vector2(curve_span(_flat.size, rotation), curve_span(_flat.size, rotation + PI * 0.5))
+		for index in vertices.size():
+			vertices[index] = vertices[index].rotated(Vector3.FORWARD, rotation)
+			var at := Vector3((uv[index].x - 0.5) * _flat.size.x, (0.5 - uv[index].y) * _flat.size.y, 0).rotated(Vector3.FORWARD, rotation)
+			uv[index] = Vector2(at.x / size.x + 0.5, 0.5 - at.y / size.y)
+		arrays[Mesh.ARRAY_VERTEX] = vertices; arrays[Mesh.ARRAY_TEX_UV] = uv
+		_subtitle_curve_mesh = ArrayMesh.new(); _subtitle_curve_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return _subtitle_curve_mesh
 
 func _pixel_aspect() -> float:
 	return float(media.format.get("pixel_aspect", 1.0))
@@ -3916,7 +3960,7 @@ func _layer_presentation() -> bool:
 	return pip_ready and layer_enabled and video_layer != null and (not alpha_requested or _layer_alpha()) and not depth_requested and not packed_file \
 		and video_layer.capacity() >= (2 if stereo_sbs else 1) + 1 \
 		and (local_uri.is_empty() or local_uri != _layer_blocked_uri) \
-		and video_layer.grades(color_grade) and video_layer.supports(geometry, screen_curve > 0.0) \
+		and video_layer.grades(color_grade) and video_layer.supports_surface(self) \
 		and (int(media.format.get("source_rotation_degrees", 0)) == 0 or _layer_turns())
 
 ## Alpha may stay on the layer: allowed by the platform, and the runtime blends layers by the mask
@@ -3939,7 +3983,7 @@ func layer_block_reason() -> String:
 	if packed_file: return "packed"
 	if not local_uri.is_empty() and local_uri == _layer_blocked_uri: return "decoder"
 	if not video_layer.grades(color_grade): return "color"
-	if not video_layer.supports(geometry, screen_curve > 0.0): return "shape"
+	if not video_layer.supports_surface(self): return "shape"
 	return "wait"
 
 ## RGBA frames already have their file orientation baked by MPV. Keep manual rotation as an
@@ -3969,8 +4013,25 @@ func _recover_layer_output() -> bool:
 	if not (_layer_session or _layer_requested) or not media.accepts(media.session_id) \
 		or media.playback.get("layer_compatible", true) != false or local_uri.is_empty():
 		return false
+	if _await_web_decoder(): return true
 	_layer_blocked_uri = local_uri
 	_reopen_on_eye_buffer(-1) # Profile 5, software decode or rotation: MPV must normalize.
+	return true
+
+## The retained page's player keeps its MediaCodec for a few seconds after the pause, so an
+## 8K source finds the hardware decoder busy (OMX -12) right after a handoff although the
+## library plays the same file in hardware. Retry the layer before settling on CPU decoding.
+func _await_web_decoder() -> bool:
+	if not _web_handoff or bool(media.playback.get("details", {}).get("dolby_profile5", false)): return false
+	if _decoder_retry_uri != local_uri:
+		_decoder_retry_uri = local_uri; _decoder_retries = 0; _decoder_retry_at = 0
+	if _decoder_retries >= WEB_DECODER_RETRIES: return false
+	var now := Time.get_ticks_msec()
+	if _decoder_retry_at == 0: _decoder_retry_at = now + WEB_DECODER_RETRY_MS
+	if now < _decoder_retry_at: return true
+	_decoder_retry_at = 0; _decoder_retries += 1
+	Log.record("web_decoder_retry", {"attempt": _decoder_retries})
+	_reopen_at(-1, true)
 	return true
 
 ## Keep the layer, the hole and the subtitles in step with the video surface every frame.
@@ -4216,6 +4277,7 @@ func _check_subtitle_generation() -> void:
 ## Flat-screen PGS: the cue's rectangle of the subtitle surface (the screen, kept upright when it
 ## rolls) as its own layer. The eye-buffer surface covered the whole screen for a strip of text.
 func _bitmap_layer_extras(origin: XROrigin3D) -> Array:
+	if not cylinder_layer_compatible() or (screen_curve > 0.0 and effective_curve_mode() != "horizontal"): return []
 	var texture: ImageTexture = bitmap_subtitles.texture
 	var rect: Variant = material.get_shader_parameter("bitmap_subtitle_rect")
 	if not (_layer_session or _frame_picture or _processed_picture or _binding.warped) or _subtitle_layer_failed or texture == null or not rect is Vector4 \
@@ -4297,7 +4359,7 @@ func _copy_subtitle_canvas(canvas: SubViewport) -> bool:
 func _show_depth_picture(origin: XROrigin3D, extras: Array = []) -> bool:
 	var ticket := _binding.ticket
 	if not _binding.warped or geometry != Geometry.Geometry.FLAT or not video_layer.available() \
-		or not video_layer.supports(geometry, screen_curve > 0.0) or not video_layer.grades(color_grade) \
+		or not video_layer.supports_surface(self) or not video_layer.grades(color_grade) \
 		or not PlatformMethods.supports(platform, "copy_layer_texture"):
 		return false
 	var size := Vector2i(int(ticket.width) * 2, int(ticket.height))
@@ -4328,7 +4390,7 @@ func _frame_picture_wanted() -> bool:
 		and str(ticket.get("color_target", "")) != "external" and int(ticket.get("color_texture_id", 0)) > 0 \
 		and not local_uri.is_empty() and local_uri == _layer_blocked_uri \
 		and layer_enabled and video_layer.available() and not alpha_requested and not depth_requested and not packed_file \
-		and video_layer.grades(color_grade) and video_layer.supports(geometry, screen_curve > 0.0) \
+		and video_layer.grades(color_grade) and video_layer.supports_surface(self) \
 		and PlatformMethods.supports(platform, "copy_layer_texture")
 
 func _show_frame_picture(origin: XROrigin3D, extras: Array) -> bool:

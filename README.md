@@ -4,11 +4,15 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.17.1** (Android versionCode **77**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.17.2** (Android versionCode **79**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
 ## Features
+
+- Photo autoplay from the final displayed image, continuous photo rotation/upright layouts and continuous screen curvature, including eligible horizontal/vertical/spherical video modes.
+- Compatible iQIYI, Douyin and Niconico Play Beta; foreign sites retain the legacy manual button alongside Beta. Site/content/device limits apply.
+- Beach-cinema integration with day/night, sun/moon and handheld-firework controls. Public Git excludes scenery/model/media payloads; see [scenery preparation](docs/SCENERY.md).
 
 - Pure-page browser view with preserved page interaction, browser fullscreen without automatic native handoff, and compatible Youku Play Beta. Existing media-server manual buttons retain original-page return.
 - Optional globally remembered AirPlay password requirement; pairing without a user-entered code is the default. See [AirPlay scope](docs/AIRPLAY.md).

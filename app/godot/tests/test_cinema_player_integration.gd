@@ -474,7 +474,7 @@ func _picture_size_routes(full_screen: Transform3D, preferences: Dictionary) -> 
 
 func _picture_gesture_routes(full_screen: Transform3D, preferences: Dictionary) -> void:
 	var head: Transform3D = main._head_pose()
-	for level in [0.0, 0.35, 0.7, 1.0]:
+	for level in main._cinema_curve_presets():
 		main._set_cinema_curve(level)
 		for corner in 4:
 			_close_menus()
@@ -551,11 +551,13 @@ func _curve_routes(full_screen: Transform3D, preferences: Dictionary) -> void:
 	var ordinary_curve: float = main._cinema_screen_saved.screen_curve
 	var manifest: Dictionary = main.cinema_environment._manifest
 	var wall_z := float(manifest.screen.position[2])
-	for level in [0.35, 0.7, 1.0]:
+	var presets: Array = main._cinema_curve_presets()
+	for index in range(1, presets.size()):
+		var level: float = presets[index]
 		main._on_player_setting("screen_curve", level)
 		var edge: Vector3 = main.video.panel.global_transform * main.video.screen_corner(2)
-		check(is_equal_approx(main.video.screen_curve, level) and is_equal_approx(main.video.curve_radius, main.CINEMA_CURVE_RADII[level]),
-			"Cinema curve level uses its fixed radius", level)
+		check(is_equal_approx(main.video.screen_curve, level) and is_equal_approx(main.video._curve_radius(), [0.0, 50.0, 35.0, 24.0][index]),
+			"Cinema shortcuts preserve the old radii", level)
 		check((main.video.global_transform * main.video.flat_pose).is_equal_approx(full_screen) and edge.z > wall_z + 0.5 and edge.z < wall_z + 5.3
 			and edge.z < float(manifest.design.stair_start_z) - 1.0, "Curved cinema edges come forward clear of the stairs", edge)
 		check(is_equal_approx(float(main._menu_state().get("screen_curve", -1)), level), "Menu state reports the cinema curve", level)
@@ -565,19 +567,37 @@ func _curve_routes(full_screen: Transform3D, preferences: Dictionary) -> void:
 		var outer_edge: Vector3 = border.at(main.video._curve_radius(), (main.video._flat.size.x * 0.5 + width) / main.video._curve_radius(), 0) if border else Vector3.ZERO
 		check(border and border.visible and border.get_parent() == main.video.panel and is_equal_approx(bounds.size.y, main.video._flat.size.y + width * 2.0)
 			and is_equal_approx(bounds.end.z, outer_edge.z) and bounds.position.z >= -0.0001, "Curved picture gets a border bent to the same arc", bounds)
-	check(is_equal_approx(float(main.settings.get_value("appearance", "cinema_curve")), 1.0) and _screen_preferences() == preferences
+	check(is_equal_approx(float(main.settings.get_value("appearance", "cinema_curve_degrees")), presets.back()) and _screen_preferences() == preferences
 		and is_equal_approx(main._cinema_screen_saved.screen_curve, ordinary_curve), "Cinema curve is stored apart from the ordinary screen curve")
 	main._on_menu_action("screen_curve")
 	check(main.video.screen_curve == 0.0 and main.video.curve_radius == 0.0, "Curve shortcut cycles cinema levels back to flat")
 	check(not main.cinema_screen_border.visible, "A flat cinema picture keeps the baked wall frame only")
-	main._on_player_setting("screen_curve", 0.7)
+	main._on_player_setting("screen_curve", presets[2])
 	main.background.select("dark"); main._update_background()
 	check(is_equal_approx(main.video.screen_curve, ordinary_curve) and main.video.curve_radius == 0.0 and not main.cinema_screen_border.visible,
 		"Leaving cinema restores the ordinary curve and drops the border")
 	main.background.select("cinema"); main._update_background()
-	check(is_equal_approx(main.video.screen_curve, 0.7) and is_equal_approx(main.video.curve_radius, 35.0) and main.cinema_screen_border.visible,
+	check(is_equal_approx(main.video.screen_curve, presets[2]) and is_equal_approx(main.video._curve_radius(), 35.0) and main.cinema_screen_border.visible,
 		"Returning to cinema restores its own curve and border")
+	main._on_playback_adjustment("screen_curve", 180)
+	check(is_equal_approx(main.video._curve_radius(), 24.0) and main.video.screen_curve <= rad_to_deg(32.0 / 24.0), "Continuous cinema preview cannot exceed the old Full curve")
+	main.player_menu.visible = true; main.player_menu._adjustment = "screen"; main.player_menu.refresh()
+	var curve_row: Dictionary = main.player_menu._adjust_rows[main.player_menu.SCREEN_CURVE_SLIDER]
+	var curve_knob: Object = curve_row.knob
+	main._set_cinema_picture_size(0.4)
+	main.player_menu.refresh_values()
+	check(main.video._curve_radius() >= 24.0 and main.video.screen_curve <= rad_to_deg(main.video._flat.size.x / 24.0) + 0.0001,
+		"Shrinking cinema picture keeps the old minimum radius")
+	check(main.player_menu._adjust_rows[main.player_menu.SCREEN_CURVE_SLIDER].knob == curve_knob
+		and is_equal_approx(curve_row.span.y, main._cinema_curve_max())
+		and is_equal_approx(curve_row.ticks.back().marker.position.x, curve_row.left + curve_row.width),
+		"Cinema slider limit and reference ticks update without replacing the slider")
+	main._on_player_setting("screen_curve", 20)
+	main._set_cinema_picture_size(0.8)
+	check(is_equal_approx(main.video.screen_curve, 20), "Cinema resizing preserves custom arc when within the radius limit")
+	main._set_cinema_picture_size(1)
 	main._on_player_setting("screen_curve", 0.0)
+	main.player_menu.dismiss()
 
 func _close_menus() -> void:
 	if main.scenery_menu and main.scenery_menu.visible: main.scenery_menu.dismiss()
@@ -587,7 +607,7 @@ func _close_menus() -> void:
 
 func _screen_preferences() -> Dictionary:
 	var result := {}
-	for key in ["distance", "scale", "curve", "cinema", "default_view", "default_cinema"]:
+	for key in ["distance", "scale", "curve", "curve_degrees", "cinema", "default_view", "default_cinema"]:
 		result[key] = main.settings.get_value("screen", key) if main.settings.has_section_key("screen", key) else null
 	return result
 

@@ -26,12 +26,12 @@ const FEATURED := [
 
 # Positive sample evidence, not a promise for every video/account/quality on a site.
 # See docs/WEB_VIDEO_SITES_20261028_CN.md and the 2026-10-28/29 handovers.
-# iQIYI remains unverified; Douyin uses the separate Play Beta button.
+# Beta compatibility follows the current decoded stream; protected content stays in the page.
 const NATIVE_PLAYBACK := ["Bilibili", "YouTube", "Weibo", "Tencent Video", "Mango TV", "Youku",
-	"Twitch", "TikTok", "Instagram Reels", "TED", "Niconico"]
-const BETA_PLAYBACK := ["Bilibili", "Weibo", "Tencent Video", "Mango TV", "Youku"]
+	"Twitch", "TikTok", "Instagram Reels", "TED", "Niconico", "iQIYI", "Douyin"]
+const BETA_PLAYBACK := ["Bilibili", "Weibo", "Tencent Video", "Mango TV", "Youku", "iQIYI", "Douyin", "Niconico"]
 const BETA_ICON := "play" # Same triangle as the page's Play Beta action.
-static var _beta_site := RegEx.create_from_string("(?i)^https://(?:(?:www\\.)?bilibili\\.com|(?:www\\.)?weibo\\.com|v\\.qq\\.com|(?:www\\.|w\\.)?mgtv\\.com|(?:www\\.|v\\.)?youku\\.com)(?::443)?(?:[/?#]|$)")
+static var _beta_site := RegEx.create_from_string("(?i)^https://(?:(?:www\\.)?bilibili\\.com|(?:www\\.)?weibo\\.com|v\\.qq\\.com|(?:www\\.|w\\.)?mgtv\\.com|(?:www\\.|v\\.)?youku\\.com|www\\.iqiyi\\.com|www\\.douyin\\.com|www\\.nicovideo\\.jp)(?::443)?(?:[/?#]|$)")
 
 static func supports_beta(site: Dictionary) -> bool:
 	return str(site.get("name", "")) in BETA_PLAYBACK
@@ -39,6 +39,13 @@ static func supports_beta(site: Dictionary) -> bool:
 ## Presentation only: the native current-video checks still decide whether Beta is enabled.
 static func supports_beta_url(url: String) -> bool:
 	return _beta_site.search(url) != null
+
+# Only these Chinese sites replace the legacy action. Adding a foreign Beta
+# adapter must leave its existing manual player action available.
+static var _beta_replaces_legacy := RegEx.create_from_string("(?i)^https://(?:(?:www\\.)?bilibili\\.com|(?:www\\.)?weibo\\.com|v\\.qq\\.com|(?:www\\.|w\\.)?mgtv\\.com|(?:www\\.|v\\.)?youku\\.com|www\\.iqiyi\\.com|www\\.douyin\\.com)(?::443)?(?:[/?#]|$)")
+
+static func beta_replaces_legacy_url(url: String) -> bool:
+	return _beta_replaces_legacy.search(url) != null
 
 static func supports_native(site: Dictionary) -> bool:
 	return str(site.get("name", "")) in NATIVE_PLAYBACK

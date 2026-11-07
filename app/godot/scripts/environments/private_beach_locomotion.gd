@@ -24,13 +24,15 @@ func restore_view(view: Dictionary) -> bool:
 	selected_seat=""; _has_position=true; suspend()
 	return true
 
-func adopt_view(previous: RefCounted) -> bool:
+func adopt_view(previous: RefCounted,seated := false) -> bool:
 	# Called only after a replacement navigation graph is complete. Preserve the
 	# latest user position and mode; a screen edit must never teleport the viewer.
+	# A lounger holds a seated viewer inside its own collider, so only standing is checked.
 	var eye: Vector3 = previous.eye_position
 	var floor := Vector3(eye.x,terrain.ground(eye.x,eye.z),eye.z)
-	if not _standing_at(floor,MAX_STEP_HEIGHT).is_finite(): return false
-	if _body_blocked(floor,floor.y+.03,maxf(eye.y,floor.y+EYE_HEIGHT)+HEAD_CLEARANCE): return false
+	if not seated:
+		if not _standing_at(floor,MAX_STEP_HEIGHT).is_finite(): return false
+		if _body_blocked(floor,floor.y+.03,maxf(eye.y,floor.y+EYE_HEIGHT)+HEAD_CLEARANCE): return false
 	eye_position=eye; yaw=previous.yaw; mode=previous.mode
 	selected_seat=previous.selected_seat; movement_speed=previous.movement_speed; _has_position=true
 	suspend()

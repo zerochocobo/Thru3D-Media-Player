@@ -17,11 +17,13 @@ internal class WebVideoHls(private val server: LocalStreamServer, private val st
     private var browserHeaders: WebVideoRequestHeaders? = null
     private var initialManifest: Pair<URI, ByteArray>? = null
     private var selectedTrack: WebVideoTrack? = null
+    private var iqiyiResources: WebVideoIqiyiResources? = null
 
     fun prepare(track: WebVideoTrack): String {
         selectedTrack = track
         browserHeaders = track.browserHeaders
         initialManifest = track.browserManifest?.let { track.url to it.toByteArray(Charsets.UTF_8) }
+        iqiyiResources=track.browserIqiyi?.let { WebVideoIqiyiResources(it,track.browserManifest ?: error("Missing selected timeline")) }
         return manifest(track.url, track.headers, 0)
     }
 
@@ -48,6 +50,17 @@ internal class WebVideoHls(private val server: LocalStreamServer, private val st
     }
 
     private fun fetchOnce(uri: URI, headers: Map<String, String>, limit: Int): Pair<URI, ByteArray> {
+        val resources=iqiyiResources
+        if(resources!=null) {
+            val scoped: (URI)->Map<String,String> = { target -> headersFor(uri,target,headers) }
+            val target=resources.target(uri,scoped) { endpoint,requestHeaders,_ -> fetchResource(endpoint,requestHeaders,128*1024) }
+            val result=fetchResource(target,scoped(target),limit)
+            require(result.second.size.toLong()==resources.expected(uri)) { "Incomplete selected resource" }
+            return result
+        }
+        return fetchResource(uri,headers,limit)
+    }
+    private fun fetchResource(uri: URI,headers: Map<String,String>,limit: Int): Pair<URI,ByteArray> {
         check(!closed)
         // Complete bounded resources: dynamic playlist endpoints may implement Range incorrectly.
         val c = http.open(uri, "", headers)
@@ -214,6 +227,7 @@ internal class WebVideoHls(private val server: LocalStreamServer, private val st
         }
     }
     override fun close() {
+        iqiyiResources?.close();iqiyiResources=null
         selectedTrack = null
         initialManifest = null
         val leases = synchronized(this) { closed = true; published.toList().also { published.clear() } }

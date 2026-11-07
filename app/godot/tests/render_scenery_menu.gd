@@ -16,14 +16,21 @@ func _run() -> void:
 	viewport.render_target_update_mode=SubViewport.UPDATE_ALWAYS; root.add_child(viewport)
 	var camera:=Camera3D.new(); camera.current=true; viewport.add_child(camera)
 	var library:=Library.new(); library.directory=output.path_join("library-"+str(Time.get_ticks_usec())); viewport.add_child(library)
-	library.import_source({"path":ProjectSettings.globalize_path("res://backgrounds/belfast_sunset_puresky.jpg"),"geometry":3},"暮色全景")
-	library.import_source({"path":ProjectSettings.globalize_path("res://backgrounds/kloppenheim_06_puresky.jpg"),"geometry":3},"晨光全景")
-	while library.busy: await process_frame
-	var first_id:=str(library.assets.keys()[0])
-	library.bind("image",first_id)
 	var menu:=Menu.new(); menu.library=library
-	menu.state_provider=func(mode): return {"selected":"cinema" if mode=="global" else first_id,"choice":"cinema" if mode=="global" else "custom","status":"","busy":library.busy,"import_progress":library.import_progress}
+	var first_id:=""
+	menu.state_provider=func(mode): return {"selected":"cinema" if mode=="global" or first_id.is_empty() else first_id,"choice":"cinema" if mode=="global" or first_id.is_empty() else "custom","status":"","busy":library.busy,"import_progress":library.import_progress}
 	viewport.add_child(menu); menu.open("global")
+	# The add card trails the backgrounds: alone at the left, then after the first one.
+	for step in [["scene-empty.png","",""],["scene-one.png","res://backgrounds/belfast_sunset_puresky.jpg","暮色全景"],["","res://backgrounds/kloppenheim_06_puresky.jpg","晨光全景"]]:
+		if not step[1].is_empty():
+			library.import_source({"path":ProjectSettings.globalize_path(step[1]),"geometry":3},step[2])
+			while library.busy: await process_frame
+		if step[0].is_empty(): continue
+		menu.refresh()
+		await create_timer(.15).timeout; await RenderingServer.frame_post_draw
+		save_frame(viewport,camera,menu,output.path_join(step[0]))
+	first_id=str(library.assets.keys()[0])
+	library.bind("image",first_id)
 	for view in ["scene","manage","adjust"]:
 		menu.view=view; menu.refresh()
 		await create_timer(.15).timeout; await RenderingServer.frame_post_draw

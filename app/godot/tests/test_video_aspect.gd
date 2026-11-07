@@ -87,7 +87,7 @@ func _run() -> void:
 		video.media.format = {"width":item[0],"height":item[1],"pixel_aspect":item[2]}
 		video.stereo_sbs = item[3] != 0; video.top_bottom = item[3] in [2,4]; video.stereo_half = item[3] in [3,4]
 		var format: Dictionary = video.media.format.duplicate(true)
-		for curve in [0.0, 0.7]:
+		for curve in [0.0, 120.0]:
 			video.screen_curve = curve
 			for preset in Aspect.PRESETS:
 				check(video.set_video_aspect("video_aspect_preset", preset), "Preset accepted on a flat/curved video")

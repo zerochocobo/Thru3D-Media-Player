@@ -56,7 +56,7 @@ func _run() -> void:
 		video.depth_requested = mode in ["depth", "warped_depth"]
 		video.depth_enabled = video.depth_requested
 		video._binding.warped = mode == "warped_depth"
-		for curve in [0.0, 0.7]:
+		for curve in [0.0, 60.0]:
 			video.screen_curve = curve
 			video.screen_distance = 2.0
 			video.screen_scale = 1.0
@@ -64,6 +64,7 @@ func _run() -> void:
 			video._apply_geometry()
 			video.panel.visible = true
 			var size: Vector2 = video._flat.size
+			var bend: Vector3 = video.screen_corner(1)
 			menu.toggle() if not menu.visible else menu.refresh()
 			main.test_ray = [eye, Vector3.FORWARD]
 			main._on_pointer_button("trigger_click", "right_hand")
@@ -74,6 +75,7 @@ func _run() -> void:
 			check(video.screen_scale == 1.0 and is_equal_approx(video.screen_distance, 2.6), "%s shared held-pointer distance helper pushes away without scaling" % mode)
 			video._apply_geometry() # Next native frame must retain the new mesh and pose.
 			check(video._flat.size.is_equal_approx(size) and is_equal_approx(video.panel.global_position.distance_to(eye), 2.6), "%s presented frame preserves size and changed distance" % mode)
+			check(video.screen_corner(1).is_equal_approx(bend), "Held-pointer movement preserves the curved screen shape")
 			main._update_flat_grab_stick(Vector2.ZERO, Vector2(0, -1), 0.4)
 			check(is_equal_approx(video.screen_scale, 1) and is_equal_approx(video.screen_distance, 2), "%s down pulls closer symmetrically" % mode)
 			main._on_pointer_release("trigger_click", "right_hand")
@@ -123,6 +125,16 @@ func _run() -> void:
 			menu.press_pointer("right_hand", menu.to_global(Vector3(Menu.SLIDER_LEFT + Menu.SLIDER_WIDTH * Menu.ScreenPresets.slider_fraction(2.0, menu._adjust_rows[450].span), distance_y, 1)), -menu.global_basis.z, true)
 			menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
 			check(is_equal_approx(video.screen_distance, 2), "2m slider restores default distance")
+			var curve_row: Dictionary = menu._adjust_rows[Menu.SCREEN_CURVE_SLIDER]
+			var curve_y: float = curve_row.knob.position.y
+			var curve_knob: Object = curve_row.knob
+			menu.press_pointer("right_hand", menu.to_global(Vector3(curve_row.left + curve_row.width * 0.5, curve_y, 1)), -menu.global_basis.z, true)
+			menu.refresh_values()
+			check(menu.has_pointer_capture() and menu._adjust_rows[Menu.SCREEN_CURVE_SLIDER].knob == curve_knob and is_equal_approx(video.screen_curve, 90), "Curve previews without rebuilding the active slider: capture=%s same=%s angle=%s" % [menu.has_pointer_capture(), menu._adjust_rows[Menu.SCREEN_CURVE_SLIDER].knob == curve_knob, video.screen_curve])
+			menu.update_pointer("right_hand", menu.to_global(Vector3(curve_row.left + curve_row.width, curve_y, 1)), -menu.global_basis.z, true)
+			check(video.screen_curve == 180 and not menu.allows_playback_sticks(), "Curve slider reaches 180 degrees and captures playback sticks")
+			menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
+			check(saved.load(main.settings_path) == OK and saved.get_value("screen", "curve_degrees") == 180, "Arc degrees save on slider release")
 			menu.dismiss()
 	main._grab = {"hand": "right_hand", "moved": false}
 	main._update_flat_grab_stick(Vector2.ZERO, Vector2(0, 1), 100)

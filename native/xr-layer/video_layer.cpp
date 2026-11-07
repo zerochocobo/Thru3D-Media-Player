@@ -305,7 +305,11 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_createSurface(JNIEnv* env, 
     std::lock_guard<std::mutex> lock(mutex);
     if (!state.create_surface || state.session == XR_NULL_HANDLE) { fail(env, "Video layer is not bound to an OpenXR session"); return nullptr; }
     if (width <= 0 || height <= 0 || width > 16384 || height > 16384) { fail(env, "Video layer surface size invalid"); return nullptr; }
-    destroy(env);
+    // Decoder shutdown is asynchronous. Only its acknowledged owner may release
+    // this Surface; a new source must wait instead of destroying a live producer.
+    if (state.swapchain != XR_NULL_HANDLE || state.surface) {
+        fail(env, "Previous video Surface has not been released"); return nullptr;
+    }
     XrSwapchainCreateInfo info{};
     info.type = XR_TYPE_SWAPCHAIN_CREATE_INFO;
     // The producer defines the buffers: format, sample/face/array/mip counts must be zero (as Godot's own

@@ -126,6 +126,7 @@ internal class WebVideoTrack(
     val bitrate: Double = 0.0, val chunkBytes: Long = 0, val projectionHint: String = "", val transport: String = "file", val pageLayout: String = "", val sourcePreference: Double = 0.0,
     val browserHeaders: WebVideoRequestHeaders? = null,
     val browserManifest: String? = null,
+    val browserIqiyi: JSONObject? = null,
 ) {
     val headers: Map<String, String> = java.util.Collections.unmodifiableMap(LinkedHashMap(headers))
     val hasVideo get() = videoCodec.isNotBlank() && videoCodec != "none"
@@ -134,6 +135,8 @@ internal class WebVideoTrack(
         require(transport in setOf("file", "hls"))
         require(browserManifest == null || transport == "hls" && browserHeaders != null &&
             browserManifest.startsWith("#EXTM3U") && browserManifest.toByteArray(Charsets.UTF_8).size <= 160 * 1024) { "Invalid observed manifest" }
+        require(browserIqiyi==null || transport=="hls" && browserManifest!=null && browserHeaders!=null &&
+            runCatching { WebVideoIqiyiResources(requireNotNull(browserIqiyi),requireNotNull(browserManifest)).use { } }.isSuccess) { "Invalid selected resource plan" }
         require(url.scheme in setOf("http", "https") && !url.host.isNullOrBlank() && url.rawUserInfo == null && url.fragment == null) { "Invalid media address" }
         require(formatId.length in 1..256 && extension in setOf("mp4", "m4a", "webm", "mkv", "mov")) { "Unsupported media format" }
         require(width in 0..16384 && height in 0..16384 && fps.isFinite() && fps in 0.0..240.0 && bitrate.isFinite()) { "Invalid media dimensions" }
@@ -209,6 +212,7 @@ internal object WebVideoFormats {
             f.optString("format_note").lowercase(Locale.ROOT).let { note ->
                 when { Regex("\\bmesh\\b").containsMatchIn(note) -> "mesh"; "equirectangular" in note -> "equirectangular"; else -> "" }
             }, if (hls) "hls" else "file", f.optString("web_layout"), f.optDouble("quality", 0.0).takeIf { it.isFinite() } ?: 0.0,
-            WebVideoRequestHeaders.parse(f), if (f.isNull("browser_manifest")) null else f.getString("browser_manifest"))
+            WebVideoRequestHeaders.parse(f), if (f.isNull("browser_manifest")) null else f.getString("browser_manifest"),
+            f.optJSONObject("browser_iqiyi"))
     }
 }

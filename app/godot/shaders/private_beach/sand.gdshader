@@ -13,9 +13,6 @@ uniform vec3 screen_right = vec3(1.0,0.0,0.0);
 uniform vec3 screen_up = vec3(0.0,1.0,0.0);
 uniform vec3 screen_normal = vec3(0.0,0.0,1.0);
 uniform vec2 screen_half_size = vec2(5.0,2.8125);
-uniform float screen_curve_radius = 0.0;
-uniform vec3 screen_emitters[3];
-uniform vec3 screen_emitter_normals[3];
 uniform vec3 film_color = vec3(0.10,0.16,0.25);
 uniform vec3 lamp_position = vec3(5.2,0.8,8.0);
 uniform vec2 coast[32];
@@ -80,33 +77,8 @@ float shore_z(float x) {
 	}
 	return coast[coast_count-1].y;
 }
-float curve_shadow_hit(float t,vec3 origin,vec3 direction,float circle_coverage) {
-	if (t<=0.0) return 0.0;
-	vec3 hit=origin+t*direction;
-	float angle=atan(hit.x,screen_curve_radius-hit.z);
-	vec2 edge=screen_half_size-vec2(abs(angle*screen_curve_radius),abs(hit.y));
-	float soft=.08+t*.006;
-	return circle_coverage*smoothstep(-soft,soft,min(edge.x,edge.y));
-}
 float sun_visibility(vec3 p) {
 	if (!screen_shadow_enabled || moving_light_direction.y<=0.0) return 1.0;
-	if (screen_curve_radius>0.0) {
-		vec3 delta=p-screen_origin;
-		vec3 o=vec3(dot(delta,screen_right),dot(delta,screen_up),dot(delta,screen_normal));
-		vec3 d=vec3(dot(moving_light_direction,screen_right),dot(moving_light_direction,screen_up),dot(moving_light_direction,screen_normal));
-		float a=dot(d.xz,d.xz);
-		float b=o.x*d.x+(o.z-screen_curve_radius)*d.z;
-		// Expanded form avoids subtracting r*r for nearly flat curves.
-		float c=o.x*o.x+o.z*o.z-2.0*screen_curve_radius*o.z;
-		float disc=b*b-a*c;
-		float aa=max(fwidth(disc)*1.5,.000001);
-		float circle_coverage=smoothstep(-aa,aa,disc);
-		if (a<.000001 || disc < -aa) return 1.0;
-		float q=-b-(b>=0.0 ? 1.0 : -1.0)*sqrt(max(disc,0.0));
-		float t0=q/a;
-		float t1=abs(q)>.000001 ? c/q : -b/a;
-		return 1.0-max(curve_shadow_hit(t0,o,d,circle_coverage),curve_shadow_hit(t1,o,d,circle_coverage));
-	}
 	float denominator = dot(moving_light_direction,screen_normal);
 	if (abs(denominator)<0.02 || moving_light_direction.y<=0.0) return 1.0;
 	float t = dot(screen_origin-p,screen_normal)/denominator;
@@ -197,26 +169,19 @@ vec3 ambient_irradiance(vec3 normal) {
 	vec3 ground=sky*vec3(.28,.25,.20);
 	return mix(ground,sky,clamp(.5+.5*normal.y,0.0,1.0));
 }
-vec3 screen_light_sample(vec3 p,vec3 n,vec3 emitter,vec3 facing_normal,float area) {
-	vec3 delta=emitter-p;
-	float distance2=dot(delta,delta);
-	vec3 direction=normalize(delta);
-	float facing=max(dot(n,direction),0.0)*max(dot(facing_normal,-direction),0.0);
-	return film_color*facing*min(1.8,area/(distance2+1.0));
-}
+uniform vec3 fire_position = vec3(0.0,-100.0,0.0);
+uniform vec3 fire_light = vec3(0.0);
 vec3 local_light(vec3 p,vec3 n) {
 	vec3 delta = screen_origin-p;
 	float distance2 = dot(delta,delta);
 	vec3 direction = normalize(delta);
 	float facing = max(dot(n,direction),0.0)*max(dot(screen_normal,-direction),0.0);
 	vec3 film = film_color*facing*min(1.8,screen_half_size.x*screen_half_size.y/(distance2+1.0));
-	if (screen_curve_radius>0.0) {
-		film=vec3(0.0);
-		for (int i=0;i<3;i++) film+=screen_light_sample(p,n,screen_emitters[i],screen_emitter_normals[i],screen_half_size.x*screen_half_size.y/3.0);
-	}
 	vec3 lamp_delta = lamp_position-p;
 	float lamp = max(dot(n,normalize(lamp_delta)),0.0)/(1.0+dot(lamp_delta,lamp_delta)*2.0);
-	return (film+vec3(0.9,0.32,0.065)*lamp)*(1.0-day_mix);
+	vec3 fire_delta = fire_position-p;
+	float fire = max(dot(n,normalize(fire_delta))*.75+.25,0.0)/(1.0+dot(fire_delta,fire_delta)*.45);
+	return (film+vec3(0.9,0.32,0.065)*lamp)*(1.0-day_mix)+fire_light*fire;
 }
 
 #include "res://shaders/private_beach/ground_cover.gdshaderinc"
@@ -228,12 +193,12 @@ uniform sampler2D grill_ground_contact : hint_default_white,filter_linear_mipmap
 uniform vec4 grill_contact_world;
 uniform bool grill_receiver_baked = true;
 uniform bool grill_receiver_enabled = true;
-uniform sampler2D micro_color : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D micro_normal : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D macro_color : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D cliff_color : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D cliff_normal : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D sand_surface : filter_linear_mipmap_anisotropic, repeat_disable;
+uniform sampler2D micro_color : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D micro_normal : hint_normal, filter_linear_mipmap, repeat_enable;
+uniform sampler2D macro_color : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D cliff_color : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D cliff_normal : hint_normal, filter_linear_mipmap, repeat_enable;
+uniform sampler2D sand_surface : filter_linear_mipmap, repeat_disable;
 uniform vec4 sand_surface_world = vec4(-12.0,-8.0,24.0,24.0);
 uniform float sand_slope_range = .3;
 uniform float sand_compaction_range = .25;
@@ -245,9 +210,15 @@ uniform bool rock_weather_enabled = true;
 uniform float micro_tile = 2.0;
 uniform float macro_tile = 30.0;
 #include "res://shaders/private_beach/moving_shadow.gdshaderinc"
+uniform sampler2D ground_visibility : hint_default_white, filter_linear, repeat_disable;
+uniform vec4 ground_visibility_rect = vec4(0.0);
 varying vec3 world_position;
 varying vec3 world_normal;
 varying vec3 rock_weather;
+varying float sand_inland;
+varying float sand_broad;
+varying float eye_range;
+varying vec3 sand_local;
 vec3 rock_base_color(vec3 p,vec3 dx,vec3 dy,vec3 weights,BeachPatch patch) {
 	vec3 color=beach_rock_surface(cliff_color,p.zy,dx.zy,dy.zy,patch,false,rock_weather_enabled)*weights.x
 		+beach_rock_surface(cliff_color,p.xz,dx.xz,dy.xz,patch,false,rock_weather_enabled)*weights.y
@@ -265,6 +236,13 @@ void vertex() {
 	float soil=foam_noise(p.xz*.055+vec2(17.1,3.7));
 	float cap=smoothstep(2.0,5.0,p.y)*smoothstep(.72,.94,world_normal.y)*smoothstep(.35,.65,soil);
 	rock_weather=vec3(exposure,runoff,cap);
+	sand_inland=p.z-shore_z(p.x);
+	vec3 broad=textureLod(macro_color,p.xz/macro_tile,3.0).rgb;
+	if (OUTPUT_IS_SRGB) broad=decode_srgb(broad);
+	sand_broad=mix(1.15,1.65,clamp(dot(broad,vec3(.2126,.7152,.0722))*2.5,0.0,1.0));
+	eye_range=distance(CAMERA_POSITION_WORLD,p);
+	// Screen, lamp and fire light vary over metres: per vertex is enough on this grid.
+	sand_local=day_mix<1.0 ? local_light(p,world_normal) : vec3(0.0);
 }
 void fragment() {
 	vec2 uv = world_position.xz/micro_tile;
@@ -272,21 +250,21 @@ void fragment() {
 	// Evaluate derivatives before distance/coverage branches, then rotate and
 	// scale them with each projection for stable mip selection at transitions.
 	vec3 rock_dx=dFdx(world_position)/cliff_tile,rock_dy=dFdy(world_position)/cliff_tile;
-	BeachPatch patch=beach_patch(vec3(world_position.x,world_position.y*rock,world_position.z));
+	BeachPatch patch;
+	if (rock>.001) patch=beach_patch(vec3(world_position.x,world_position.y*rock,world_position.z));
+	else { patch.first=vec2(0.0); patch.second=vec2(0.0); patch.blend=0.0; }
 	vec3 albedo=vec3(0.0);
 	vec3 normal_map=vec3(0.0);
-	float distance_fade = 1.0-smoothstep(5.0,22.0,distance(CAMERA_POSITION_WORLD,world_position));
+	float distance_fade = 1.0-smoothstep(3.0,12.0,eye_range);
 	if (rock<.999) {
-		vec3 fine=beach_surface(micro_color,uv,patch);
-		vec3 broad=texture(macro_color,world_position.xz/macro_tile).rgb;
-		if (OUTPUT_IS_SRGB) { fine=decode_srgb(fine); broad=decode_srgb(broad); }
-		float broad_luma=dot(broad,vec3(.2126,.7152,.0722));
-		albedo=fine*mix(1.15,1.65,clamp(broad_luma*2.5,0.0,1.0));
-		if (distance_fade>0.0) normal_map=beach_surface(micro_normal,uv,patch)*2.0-1.0;
+		vec3 fine=texture(micro_color,uv).rgb;
+		if (OUTPUT_IS_SRGB) fine=decode_srgb(fine);
+		albedo=fine*sand_broad;
+		if (distance_fade>0.0) normal_map=texture(micro_normal,uv).rgb*2.0-1.0;
 	}
 	vec2 detail_uv=(world_position.xz-sand_surface_world.xy)/sand_surface_world.zw;
 	vec2 slope=vec2(0.0); float compaction=0.0;
-	if (sand_surface_enabled && rock<.999 && all(greaterThan(detail_uv,vec2(0.0))) && all(lessThan(detail_uv,vec2(1.0)))) {
+	if (sand_surface_enabled && rock<.999 && eye_range<14.0 && all(greaterThan(detail_uv,vec2(0.0))) && all(lessThan(detail_uv,vec2(1.0)))) {
 		vec3 detail=texture(sand_surface,detail_uv).rgb;
 		float resolved=1.0-smoothstep(.08,.25,length(fwidth(world_position.xz)));
 		slope=(detail.rg*255.0-128.0)/128.0*sand_slope_range*resolved;
@@ -338,17 +316,27 @@ void fragment() {
 		bump-=geometric_normal*dot(bump,geometric_normal);
 		n=normalize(mix(n,normalize(geometric_normal+bump*.55*rock_fade),rock));
 	}
-	float inland = world_position.z-shore_z(world_position.x);
-	float wet_front=swash_wet_front(world_position.x);
-	float wet = 1.0-smoothstep(wet_front-.12,wet_front+.32,inland);
+	float inland = sand_inland;
+	float wet=0.0;
+	if (inland<uprush_offset+.4) {
+		float wet_front=swash_wet_front(world_position.x);
+		wet = 1.0-smoothstep(wet_front-.12,wet_front+.32,inland);
+	}
 	// Shore distance alone would paint a dark stripe several metres up a steep
 	// headland. Wetting also has to remain within the actual swash elevation.
 	wet*=1.0-smoothstep(sea_level+uprush_offset*land_slope+.06,sea_level+.5,world_position.y);
-	coastal_groundcover(world_position,geometric_normal,rock,distance(CAMERA_POSITION_WORLD,world_position),albedo,n);
+	if (rock>.001) coastal_groundcover(world_position,geometric_normal,rock,eye_range,albedo,n);
 albedo *= mix(1.0,.46,wet);
 	vec3 ambient = ambient_irradiance(n);
 	// The atlas resolves nearby contacts; vertex visibility covers distant rock.
-	vec2 fixed_visibility=static_ground_visibility(world_position,COLOR.gb);
+	vec2 baked_uv=(world_position.xz-ground_visibility_rect.xy)/max(ground_visibility_rect.zw,vec2(.001));
+	bool baked=ground_visibility_rect.z>0.0 && rock<.001 && min(min(baked_uv.x,baked_uv.y),min(1.0-baked_uv.x,1.0-baked_uv.y))>.01;
+	vec2 fixed_visibility;
+	float baked_sun=1.0;
+	if (baked) {
+		vec2 stored=textureLod(ground_visibility,baked_uv,0.0).rg;
+		fixed_visibility=vec2(stored.r,1.0); baked_sun=stored.g;
+	} else fixed_visibility=static_ground_visibility(world_position,COLOR.gb);
 	vec2 contact_uv=(world_position.xz-vegetation_contact_rect.xy)/vegetation_contact_rect.zw;
 if (all(greaterThan(contact_uv,vec2(0))) && all(lessThan(contact_uv,vec2(1)))) fixed_visibility*=texture(vegetation_contact,contact_uv).rg;
 
@@ -370,15 +358,16 @@ if (all(greaterThan(contact_uv,vec2(0))) && all(lessThan(contact_uv,vec2(1)))) f
 		fixed_visibility.g*=1.0-.85*shadow;
 	}
 	ambient*=fixed_visibility.r;
-	float sun = max(dot(n,moving_light_direction),0.0)*sun_visibility(world_position)*moving_visibility(world_position,normalize(world_normal))*moving_direct_mix;
-	vec3 color = albedo*(ambient+beach_day_sun()*sun+local_light(world_position,n));
-	vec3 view_dir = normalize(CAMERA_POSITION_WORLD-world_position);
-	vec3 half_dir = normalize(moving_light_direction+view_dir);
-	float shine = pow(max(dot(n,half_dir),0.0),70.0)*wet*.15*sun;
-	color += vec3(1.0,.92,.77)*moving_specular_tint*shine;
+	float sun = max(dot(n,moving_light_direction),0.0)*sun_visibility(world_position)*(baked ? baked_sun : moving_visibility(world_position,normalize(world_normal)))*moving_direct_mix;
+	vec3 color = albedo*(ambient+beach_day_sun()*sun);
+	color+=albedo*sand_local;
+	if (wet>.001) {
+		vec3 view_dir = normalize(CAMERA_POSITION_WORLD-world_position);
+		vec3 half_dir = normalize(moving_light_direction+view_dir);
+		float shine = pow(max(dot(n,half_dir),0.0),70.0)*wet*.15*sun;
+		color += vec3(1.0,.92,.77)*moving_specular_tint*shine;
+	}
 	if (debug_base_color) color=albedo;
 	ALBEDO = debug_shadow_mask ? vec3(sun_visibility(world_position)) : (OUTPUT_IS_SRGB ? encode_srgb(color) : color);
 
-if (moving_shadow_debug) ALBEDO=vec3(moving_visibility(world_position,normalize(world_normal)));
-if (moving_shadow_sample_debug) { vec3 q=(moving_shadow_near_view*vec4(moving_shadow_probe,1)).xyz; float stored=moving_decode(textureLod(moving_shadow_near,vec2(q.x,-q.y)/moving_shadow_extent.x+.5,0.0).rgb); ALBEDO=vec3(clamp((stored+q.z+2.0)/4.0,0.0,1.0),moving_visibility(moving_shadow_probe,vec3(0,1,0)),-q.z/1000.0); }
 }

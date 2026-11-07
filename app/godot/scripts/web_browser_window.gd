@@ -10,6 +10,9 @@ const PLAY_Y := 0.50
 const NAV_Y := 0.632
 const TABS_Y := 0.764
 var toolbar_shown := true
+var _fullscreen_context := Vector2i(-1, -1)
+var _fullscreen_active := false
+var _fullscreen_restore: Variant = null
 const MOVE := 986030
 const WEB := 986020
 const RESIZE := 986031
@@ -93,6 +96,26 @@ func _ready() -> void:
 	effect_controls.composition_layout_changed.connect(func(): composition_layout_changed.emit())
 func page_input_blocked() -> bool: return depth.matte and not selecting
 func chrome_hidden() -> bool: return not toolbar_shown or page_input_blocked()
+
+func set_toolbar_shown(shown: bool) -> void:
+	if toolbar_shown == shown: return
+	toolbar_shown = shown; depth_settings = false; depth_choices.reset()
+	if not shown and depth.auto_3d_hidden and not depth.enabled:
+		depth.enabled = true; depth.error = ""; depth.state = "preparing"
+		if depth.strength <= 0.0: depth.strength = depth.Strength.VIDEO_DEFAULT
+	end_drag(); clear_pointer_visuals(); browser.tabs_open = false
+	refresh(); effect_controls.sync()
+
+func sync_fullscreen(current: Dictionary) -> void:
+	var context := Vector2i(int(current.get("tab_id", 0)), int(current.get("navigation", 0)))
+	var fullscreen: bool = current.get("fullscreen", false)
+	if context != _fullscreen_context or (not fullscreen and _fullscreen_active):
+		if _fullscreen_restore != null: set_toolbar_shown(bool(_fullscreen_restore))
+		_fullscreen_restore = null; _fullscreen_active = false; _fullscreen_context = context
+	if fullscreen and not _fullscreen_active:
+		_fullscreen_restore = toolbar_shown
+		set_toolbar_shown(false)
+	_fullscreen_active = fullscreen
 func head() -> Transform3D:
 	var provider: Callable = browser.menu.layout_head_provider
 	var value: Variant = provider.call() if provider.is_valid() else null
@@ -452,9 +475,10 @@ func _activate(target: int) -> void:
 	browser.focus_window(window_id)
 	if depth_choices.action(target): return
 	if target == effect_controls.CHROME:
-		toolbar_shown = not toolbar_shown; depth_settings = false; depth_choices.reset()
-		end_drag(); clear_pointer_visuals(); browser.tabs_open = false
-		refresh(); effect_controls.sync(); return
+		_fullscreen_restore = null
+		set_toolbar_shown(not toolbar_shown); return
+	if target == effect_controls.KEYBOARD:
+		browser.toggle_keyboard(window_id); effect_controls.sync(); return
 	if target == browser.BASE + 21:
 		depth.matte = not depth.matte; depth.error = ""; depth.state = "preparing"; depth_settings = false
 		refresh(); browser.effects_changed.emit(); return
@@ -474,29 +498,41 @@ func _depth_preview(key: String, value: Variant) -> void:
 
 func _depth_changed(key: String, value: Variant) -> void:
 	depth.change(key, float(value) / 100.0 if key == "strength" else value)
+	if key == "auto_3d_hidden":
+		for peer in browser.windows.values():
+			peer.depth.auto_3d_hidden = depth.auto_3d_hidden
+			if peer != self and peer.depth_settings: peer.refresh()
 	if key == "matte": depth.error = ""; depth.state = "preparing"
 	if key == "strength" and depth.strength <= 0.0: depth.enabled = false
 	refresh()
 	browser.effects_changed.emit()
 
 func _draw_depth_settings() -> void:
-	var panel := _quad(Vector2(1.20, 0.43), Vector3(0.13, 0.16, 0.028), PANEL, 30)
+	var panel := _quad(Vector2(0.98, 0.56), Vector3(0.13, 0.095, 0.028), PANEL, 30)
 	add_child(panel); _decorations.append(panel); _pointer_panels.append(panel)
-	var title := _label(I18n.t("Browser effects"), Vector3(-0.39, 0.325, 0.04), 24)
+	var title := _label(I18n.t("Browser effects"), Vector3(-0.30, 0.325, 0.04), 24)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; title.render_priority = 32
-	_button(browser.BASE + 17, "", Vector2(0.65, 0.325), Vector2(0.08, 0.08), true, "close")
+	_button(browser.BASE + 17, "", Vector2(0.54, 0.325), Vector2(0.08, 0.08), true, "close")
 	_buttons.back().node.position.z = 0.04
 	_depth_overlay_priority(_buttons.back().node)
 	var rows: Array = depth.rows()
 	for index in 2:
 		var y := 0.21 - index * 0.13
-		var label := _label(I18n.t([depth.Position.TITLE, "3D rendering"][index]), Vector3(-0.39, y, 0.04), 20)
+		var label := _label(I18n.t([depth.Position.TITLE, "3D rendering"][index]), Vector3(-0.30, y, 0.04), 20)
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.render_priority = 32
 		var first := _buttons.size()
-		depth_choices.field(null, rows[index + 1], Vector2(0.32, y), 0.60, 0.055)
+		depth_choices.field(null, rows[index + 1], Vector2(0.30, y), 0.48, 0.055)
 		for button in _buttons.slice(first):
 			button.node.position.z += 0.038
 			_depth_overlay_priority(button.node)
+	var auto_title := _label(I18n.t("3D when menus hide"), Vector3(-0.30, -0.05, 0.04), 20)
+	auto_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; auto_title.render_priority = 32
+	var auto_first := _buttons.size()
+	depth_choices.field(null, {"key":"auto_3d_hidden", "value":depth.auto_3d_hidden, "switch":true,
+		"choices":[{"value":false,"label":"Off"},{"value":true,"label":"On"}],
+		"hint":"Automatically enable 2D to 3D when browser menus are hidden."}, Vector2(0.50, -0.05), 0.09, 0.055)
+	for button in _buttons.slice(auto_first):
+		button.node.position.z += 0.038; _depth_overlay_priority(button.node)
 	var popup_buttons := _buttons.size()
 	var popup_panels := _decorations.size()
 	var popup_labels := _labels.size()

@@ -106,6 +106,21 @@ func _run() -> void:
 	check(video.opens[-1].position == 2000 and video.screen_rotation == 0.0,
 		"Cover handoff keeps the shown position without adding manual rotation")
 	check(not video.video_layer._surface_flip, "Cover handoff retains the corrected Surface orientation")
+	var manual := ReopenProbe.new(); root.add_child(manual); manual.set_process(false)
+	manual.platform = Backend.new(); manual.video_layer = Layers.new(null)
+	manual.local_uri = "file:///manual-curved-rotation.mp4"
+	manual.media.begin(1)
+	manual.media.frame_counter = 1
+	manual.media.last_pair = {"pts_us": 4200000}
+	manual.control.observed_position_ms = 4200
+	manual.playback_speed = 1.25
+	manual.set_screen_curve(120); manual.set_screen_rotation(90)
+	manual._layer_session = true
+	manual._update_layer()
+	check(manual.opens.size() == 1 and manual.opens[0].eye_buffer, "Manually rotated curved video leaves the incompatible native cylinder")
+	check(manual.opens.size() == 1 and manual.opens[0].position == 4200 and manual.screen_rotation == 90 and manual.playback_speed == 1.25,
+		"Curved rotation fallback preserves the shown position, content angle and playback speed")
+	manual.video_layer = null; manual.free()
 	video.video_layer = null
 	video.free()
 	for failure in failures: push_error(failure)

@@ -40,7 +40,7 @@ func _run() -> void:
 	var widths: Array[int] = []
 	for step in ["flat", "curved"]:
 		if step == "curved":
-			video.set_screen_curve(1.0)
+			video.set_screen_curve(60.0)
 			video.set_corner_hover(1)
 		await process_frame
 		await RenderingServer.frame_post_draw

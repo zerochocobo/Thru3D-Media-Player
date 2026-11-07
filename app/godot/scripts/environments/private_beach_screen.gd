@@ -6,18 +6,22 @@ extends RefCounted
 ## merge the section-aware support setback when runtime integration resumes.
 const MediaSurface=preload("res://scripts/media_surface.gd")
 const CURVE_COLUMNS := 48
+const MIN_WIDTH := 1.0
+const MAX_BOTTOM_CLEARANCE := 3.0
 ## Returns a complete candidate; invalid input never mutates the current scene.
 
 static func solve(config: Dictionary,ground: Callable,changes: Dictionary) -> Dictionary:
 	var s: Dictionary = config.screen.duplicate(true)
 	for key in changes:
-		if key not in ["width","center_x","center_z","yaw_degrees","pitch_degrees","curve","curve_radius"]:
+		if key not in ["width","center_x","center_z","yaw_degrees","pitch_degrees","curve","curve_radius","bottom_clearance","aspect"]:
 			return {"error":"Unknown screen parameter: "+str(key)}
 		if not (changes[key] is float or changes[key] is int) or not is_finite(float(changes[key])):
 			return {"error":"Screen parameters must be finite numbers"}
 		s[key]=float(changes[key])
-	if s.width<3 or s.width>20 or absf(s.pitch_degrees)>s.max_pitch_degrees:
-		return {"error":"Study support range: width 3–20 m, pitch ±15°"}
+	if s.width<MIN_WIDTH or s.width>20 or absf(s.pitch_degrees)>s.max_pitch_degrees:
+		return {"error":"Study support range: width 1–20 m, pitch ±15°"}
+	if s.bottom_clearance<.1 or s.bottom_clearance>MAX_BOTTOM_CLEARANCE or s.aspect<.3 or s.aspect>4:
+		return {"error":"Screen height or shape out of range"}
 	s["curve"]=float(s.get("curve",0.0))
 	s["curve_radius"]=float(s.get("curve_radius",0.0))
 	if s.curve<0 or s.curve>1 or s.curve_radius<0: return {"error":"Curve must be 0..1 and radius nonnegative"}
@@ -29,13 +33,19 @@ static func solve(config: Dictionary,ground: Callable,changes: Dictionary) -> Di
 	var right := Vector3(cos(yaw),0,-sin(yaw))
 	var up := Vector3(sin(yaw)*sin(pitch),cos(pitch),cos(yaw)*sin(pitch))
 	var normal := right.cross(up).normalized()
-	var w := float(s.width); var h := w/float(s.aspect)
+	# "width" is the long side, so a portrait picture keeps its chosen size.
+	var w := float(s.width) if s.aspect>=1 else float(s.width)*float(s.aspect)
+	var h := w/float(s.aspect)
 	var center := Vector3(s.center_x,ground.call(s.center_x,s.center_z)+s.bottom_clearance+h/2,s.center_z)
 	var basis := Basis(right,up,normal)
 	var corners := PackedVector3Array([center+basis*arc_at(-w/2,-h/2,radius),center+basis*arc_at(w/2,-h/2,radius),
 		center+basis*arc_at(w/2,h/2,radius),center+basis*arc_at(-w/2,h/2,radius)])
 	var profile := Vector3.ZERO
 	var profiles: Array = s.support_profiles
+	if w<float(profiles[0][0]):
+		# Below the modeled range a TV-sized panel stands on a slimmer version of the same legs.
+		var slim := clampf(w/float(profiles[0][0]),.4,1.0)
+		profile=Vector3(profiles[0][1],profiles[0][2],profiles[0][3])*slim
 	for i in range(profiles.size()-1):
 		var a: Array = profiles[i]; var b: Array = profiles[i+1]
 		if w>=a[0] and w<=b[0]:

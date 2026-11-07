@@ -28,6 +28,9 @@ func poll() -> void:
 func beta_enabled() -> bool:
 	return menu.web_browser.input_host()._buttons.any(func(button): return button.target == menu.web_browser.BASE + 18 and button.enabled)
 func start(playing: bool = true, ready: bool = true) -> void:
+	# Each case starts another source; a previous successful retained handoff
+	# otherwise remains in its intentionally protected native-opening phase.
+	menu.web_browser.playback_selected("file:///next-test-source.mp4")
 	menu.visible = true; menu.section = Menu.Section.WEB
 	platform.browser.merge({"url": "https://www.bilibili.com/video/BV11rHV6MENj/", "tab_id": 4,
 		"navigation": 10, "focused_window": 1, "active": true, "playing": playing,
@@ -140,8 +143,8 @@ func run() -> void:
 	start()
 	check(menu.web_browser.handoff_status() == menu.web_browser.I18n.t("Pausing web video…"), "Pause acknowledgement wait is named in the toolbar")
 	paused(); finish("ready")
-	check(platform.browser_commands.back().action == "resume_tab" and not platform.browser_commands.back().was_playing,
-		"Successful handoff releases its hold without restarting the page")
+	check(platform.browser_commands.back().action == "retain_page" and menu.web_browser.playback_return.get("retained", false) and not platform.browser.playing,
+		"Successful handoff retains the acknowledged pause and original page while native playback opens")
 	start(); paused(); menu.web_browser.close()
 	check(not menu.web_browser.handoff and menu.web_video.pending == 0 and platform.browser_commands.back().action == "resume_tab",
 		"Closing the browser also releases a pending hold before hibernation")

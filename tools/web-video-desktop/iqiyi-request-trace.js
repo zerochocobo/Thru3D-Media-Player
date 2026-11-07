@@ -1,7 +1,7 @@
 /* Anonymous research only: forward original bytes, retain bounded schema, never replay requests. */
 const Thru3DIqiyiRequestTrace = (() => {
   'use strict';
-  const requests=new Map(),responses=[],unattributed=[];
+  const requests=new Map(),responses=[],unattributed=[],unattributedMedia=new Map();
   const page=value=>{try{const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&u.hostname==='www.iqiyi.com'&&/^\/([vw]_[A-Za-z0-9]+)\.html$/.exec(u.pathname)?.[1]||null;}catch(_){return null;}};
   const owner=d=>({tab:d.tabId,frame:d.frameId,document:d.documentId,page:d.documentUrl});
   const keys=value=>value&&typeof value==='object'?Object.keys(value).filter(k=>/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(k)).slice(0,48):[];
@@ -44,6 +44,12 @@ const Thru3DIqiyiRequestTrace = (() => {
       extension=/\.(m3u8|mp4|m4a|m4s|ts|f4v)$/i.exec(u.pathname)?.[1]?.toLowerCase();
     if(!page(d.documentUrl)){
       const origin=value=>{try{return new URL(value).origin==='https://www.iqiyi.com';}catch(_){return false;}};
+      if(extension&&(origin(d.documentUrl)||origin(d.originUrl))){
+        unattributedMedia.set(d.requestId,{tab:d.tabId,frame:d.frameId,type:d.type,kind:extension,status:0,
+          document_kind:page(d.documentUrl)?'detail':String(d.documentUrl||'').startsWith('blob:')?'blob':origin(d.documentUrl)?'site':'other',
+          origin_kind:page(d.originUrl)?'detail':String(d.originUrl||'').startsWith('blob:')?'blob':origin(d.originUrl)?'site':'other',document_id:!!d.documentId});
+        while(unattributedMedia.size>32)unattributedMedia.delete(unattributedMedia.keys().next().value);
+      }
       if(dash&&(origin(d.documentUrl)||origin(d.originUrl))){
         unattributed.push({tab:d.tabId,frame:d.frameId,document_present:!!d.documentUrl,document_id:!!d.documentId,
           origin_page:!!page(d.originUrl),document_origin:origin(d.documentUrl)});
@@ -54,6 +60,11 @@ const Thru3DIqiyiRequestTrace = (() => {
     if(!dash&&!accelerator&&!extension&&!['xmlhttprequest','media'].includes(d.type))return;
     const record={...owner(d),kind:dash?'dash':accelerator?'accelerator':extension||'api',type:d.type,status:0,state:'requested',
       query_keys:[...new Set(u.searchParams.keys())].filter(k=>/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(k)).slice(0,40)};
+    if(extension&&(d.frameId<0||d.tabId<0)){
+      unattributedMedia.set(d.requestId,{tab:d.tabId,frame:d.frameId,type:d.type,kind:extension,status:0,
+        document_kind:'detail',origin_kind:page(d.originUrl)?'detail':String(d.originUrl||'').startsWith('blob:')?'blob':'other',document_id:!!d.documentId});
+      while(unattributedMedia.size>32)unattributedMedia.delete(unattributedMedia.keys().next().value);
+    }
     requests.set(d.requestId,record);while(requests.size>96)requests.delete(requests.keys().next().value);
     if(!dash&&!accelerator)return;
     let stream;try{stream=browser.webRequest.filterResponseData(d.requestId);}catch(_){record.filter='unavailable';return;}
@@ -73,6 +84,7 @@ const Thru3DIqiyiRequestTrace = (() => {
     };
   },filter,['blocking']);
   browser.webRequest.onHeadersReceived.addListener(d=>{
+    const worker=unattributedMedia.get(d.requestId);if(worker)worker.status=d.statusCode;
     const r=requests.get(d.requestId);if(!r)return;r.status=d.statusCode;r.state='headers';
     const mime=(d.responseHeaders||[]).find(h=>h.name.toLowerCase()==='content-type')?.value||'';
     r.mime=/mpegurl/i.test(mime)?'hls':/json/i.test(mime)?'json':/^video\//i.test(mime)?'video':/^audio\//i.test(mime)?'audio':'other';
@@ -84,6 +96,7 @@ const Thru3DIqiyiRequestTrace = (() => {
       (!r.document||!sender.documentId||r.document===sender.documentId);
     const safe=r=>Object.fromEntries(Object.entries(r).filter(([k])=>!['tab','frame','document','page'].includes(k)));
     return {requests:[...requests.values()].filter(matches).map(safe),responses:responses.filter(matches).map(safe),
-      unattributed_dash:unattributed.filter(r=>r.tab===sender.tab?.id).map(safe)};
+      unattributed_dash:unattributed.filter(r=>r.tab===sender.tab?.id).map(safe),
+      unattributed_media:[...unattributedMedia.values()].filter(r=>r.tab===sender.tab?.id||r.tab===-1).map(r=>({frame:r.frame,type:r.type,kind:r.kind,status:r.status,document_kind:r.document_kind,origin_kind:r.origin_kind,document_id:r.document_id,unscoped_worker:r.tab===-1}))};
   }};
 })();

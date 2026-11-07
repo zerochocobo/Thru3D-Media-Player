@@ -118,16 +118,13 @@ func check_flat(video: Node3D, head: Transform3D) -> void:
 			first.restore_video(); pip.sync()
 			check((first.picture.get_shader_parameter("pip_right") as Vector3).y > 0, "Returning to flat video uses its latest rotation")
 			# Straight and curved screens draw selection with the same rotated UVs.
-			for curve in [0.0, 0.7]:
+			for curve in [0.0, 120.0]:
 				video.screen_curve = curve; video._apply_geometry(); pip.sync()
 				pip.selecting = 1; pip.candidate = {"center": Vector2(0.5, 0.5)}
 				pip._draw_selection(); pip.sync()
 				var arrays: Array = pip._outline.mesh.surface_get_arrays(0)
 				var local: Vector3 = video.panel.to_local(pip._outline.to_global(arrays[Mesh.ARRAY_VERTEX][0]))
-				if curve > 0:
-					var radius: float = video._curve_radius()
-					local.x = atan2(local.x, radius - (local.z - 0.004)) * radius
-				var uv := Vector2(local.x / video._flat.size.x + 0.5, 0.5 - local.y / video._flat.size.y)
+				var uv: Vector2 = video.surface_uv(local - Vector3.BACK * 0.004)
 				var span: Vector2 = first.picture.get_shader_parameter("pip_span")
 				var right: Vector3 = first.picture.get_shader_parameter("pip_right")
 				var down: Vector3 = first.picture.get_shader_parameter("pip_up")

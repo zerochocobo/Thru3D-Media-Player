@@ -50,6 +50,7 @@
         id:state.mangoMeta?.id||'',duration:state.mangoMeta?.duration||0,declared_dispatches:state.mangoDeclared?.length||0,manifests:state.mangoManifests?.size||0,
         declared_files:state.mangoFiles?.length||0,
         bound_hls:[...state.items.values()].filter(r=>r.kind==='hls'&&(state.mangoManifests?.has(r.url)||state.mangoManifests?.has(r.original_url))).length},
+      niconico:[...(state.niconicoData?.values()||[])],niconico_capture:{status:state.niconicoStatus||'idle',metadata:!!state.niconicoMeta,master:!!state.niconicoMaster,leaves:state.niconicoLeaves?.size||0,bound:state.niconicoData?.size||0},
       youku:[...(state.youkuData?.values()||[])],youku_capture:{status:state.youkuStatus||'idle',metadata:!!state.youkuMeta,
         id:state.youkuMeta?.id||'',duration:state.youkuMeta?.duration||0,declared_streams:state.youkuMeta?.streams.length||0,
         bound_hls:[...(state.youkuData?.values()||[])].reduce((n,d)=>n+d.manifests.length,0)},
@@ -69,6 +70,8 @@
       tencent: typeof Thru3DTencent !== 'undefined' && !!Thru3DTencent.page(s.url),
       mango: typeof Thru3DMango !== 'undefined' && !!Thru3DMango.page(s.url),
       youku: typeof Thru3DYouku !== 'undefined' && !!Thru3DYouku.page(s.url),
+      niconico: typeof Thru3DNiconico !== 'undefined' && !!Thru3DNiconico.page(s.url),
+      iqiyi: typeof Thru3DIqiyi !== 'undefined' && !!Thru3DIqiyi.page(s.url),
       privateContext: s.tab.incognito === true, cookieStore: typeof s.tab.cookieStoreId === 'string' ? s.tab.cookieStoreId : '',
       items: new Map(), timer: null };
     const old = frames.get(id);
@@ -77,6 +80,7 @@
     if(state.tencent)tencentResponses?.attach(state);
     if(state.mango)mangoResponses?.attach(state);
     if(state.youku)youkuResponses?.attach(state);
+    if(state.niconico)niconicoResponses?.attach(state);
     if(state.douyin)douyinResponses?.restore(state);
     while (frames.size > 64) { const oldest = frames.keys().next().value; frames.get(oldest).port.disconnect(); frames.delete(oldest); }
     port.onMessage.addListener(message => {
@@ -88,7 +92,9 @@
       const tencent = message.tencent === true && typeof Thru3DTencent !== 'undefined' && !!Thru3DTencent.page(message.page);
       const mango = message.mango === true && typeof Thru3DMango !== 'undefined' && !!Thru3DMango.page(message.page);
       const youku = message.youku === true && typeof Thru3DYouku !== 'undefined' && !!Thru3DYouku.page(message.page);
-      if (message.page !== state.page || message.reset === true || (message.enabled === true) !== state.enabled || bili !== state.bilibili || douyin !== state.douyin || weibo !== state.weibo || tencent !== state.tencent || mango !== state.mango || youku !== state.youku) {
+      const niconico = message.niconico === true && typeof Thru3DNiconico !== 'undefined' && !!Thru3DNiconico.page(message.page);
+      const iqiyi = message.iqiyi === true && typeof Thru3DIqiyi !== 'undefined' && !!Thru3DIqiyi.page(message.page);
+      if (message.page !== state.page || message.reset === true || (message.enabled === true) !== state.enabled || bili !== state.bilibili || douyin !== state.douyin || weibo !== state.weibo || tencent !== state.tencent || mango !== state.mango || youku !== state.youku || iqiyi !== state.iqiyi || niconico !== state.niconico) {
         // Bilibili can preload the next part before pushState. Retain only this document's
         // bounded observations; the content script must bind CID to the current part map.
         const sameBili = bili && state.bilibili && Thru3DBilibili.sameDocumentPage(message.page, state.page);
@@ -96,20 +102,23 @@
         const sameTencent = tencent && state.tencent;
         const sameMango = mango && state.mango && Thru3DMango.page(message.page)?.id===Thru3DMango.page(state.page)?.id;
         const sameYouku = youku && state.youku && Thru3DYouku.page(message.page)?.id===Thru3DYouku.page(state.page)?.id;
+        const sameNiconico=niconico&&state.niconico&&Thru3DNiconico.page(message.page)===Thru3DNiconico.page(state.page);
+        const sameIqiyi = iqiyi && state.iqiyi && Thru3DIqiyi.page(message.page)?.id===Thru3DIqiyi.page(state.page)?.id;
         if (!sameBili) { responses?.cancel(state); state.biliStatus = 'idle'; state.biliResponses = new Map(); state.biliRequests = new Map(); state.biliViews = new Map(); }
         if (!sameDouyin) { douyinResponses?.cancel(state); state.douyinData = new Map(); state.douyinApiPaths = new Set(); }
         if (!sameTencent) { tencentResponses?.cancel(state); state.tencentData = new Map();state.tencentEnvelopes=new Map(); }
         if (!sameMango) mangoResponses?.cancel(state);
         if (!sameYouku) youkuResponses?.cancel(state);
-        if (!sameBili && !sameDouyin && !sameTencent && !sameMango && !sameYouku) state.items.clear();
+        if (!sameNiconico) niconicoResponses?.cancel(state);
+        if (!sameBili && !sameDouyin && !sameTencent && !sameMango && !sameYouku && !sameIqiyi && !sameNiconico) state.items.clear();
         state.bilibili = bili;
         state.douyin = douyin;
         state.weibo = weibo;
         state.tencent = tencent;
         state.mango = mango;
-        state.youku = youku;
+        state.youku = youku;state.iqiyi=iqiyi;state.niconico=niconico;
         state.page = message.page; state.enabled = message.enabled === true;
-        if (!sameBili && !sameDouyin && !sameTencent && !sameMango && !sameYouku) for (const [request, value] of pending) if (value.state === state) pending.delete(request);
+        if (!sameBili && !sameDouyin && !sameTencent && !sameMango && !sameYouku && !sameIqiyi && !sameNiconico) for (const [request, value] of pending) if (value.state === state) pending.delete(request);
         publish(state);
       }
     });
@@ -119,6 +128,7 @@
       tencentResponses?.cancel(state);
       mangoResponses?.cancel(state);
       youkuResponses?.cancel(state);
+      niconicoResponses?.cancel(state);
       clearTimeout(state.timer);
       if (frames.get(id) === state) frames.delete(id);
       for (const [request, value] of pending) if (value.state === state) pending.delete(request);
@@ -141,14 +151,19 @@
       (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
     const sameYouku = state?.youku && typeof Thru3DYouku !== 'undefined' && !!Thru3DYouku.page(d.documentUrl) &&
       (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
-    if (!state || !(state.enabled || state.bilibili || state.douyin || state.weibo || state.tencent || state.mango || state.youku || plex) || d.tabId < 0 || (d.documentId && state.document && d.documentId !== state.document) ||
-        (d.documentUrl && d.documentUrl.split('#')[0] !== state.page.split('#')[0] && !sameBili && !sameDouyin && !sameWeibo && !sameTencent && !sameMango && !sameYouku)) return null;
+    const sameNiconico=state?.niconico&&typeof Thru3DNiconico!=='undefined'&&!!Thru3DNiconico.page(d.documentUrl)&&
+      (d.documentId&&state.document||d.documentUrl?.split('#')[0]===state.documentPage.split('#')[0]);
+    const sameIqiyi = state?.iqiyi && typeof Thru3DIqiyi !== 'undefined' && !!Thru3DIqiyi.page(d.documentUrl) &&
+      (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
+    if (!state || !(state.enabled || state.bilibili || state.douyin || state.weibo || state.tencent || state.mango || state.youku || state.iqiyi || state.niconico || plex) || d.tabId < 0 || (d.documentId && state.document && d.documentId !== state.document) ||
+        (d.documentUrl && d.documentUrl.split('#')[0] !== state.page.split('#')[0] && !sameBili && !sameDouyin && !sameWeibo && !sameTencent && !sameMango && !sameYouku && !sameIqiyi && !sameNiconico)) return null;
     return state;
   };
   const responses = typeof Thru3DBilibiliResponses === 'undefined' ? null : Thru3DBilibiliResponses(stateFor, publish);
   const tencentResponses = typeof Thru3DTencentResponses === 'undefined' ? null : Thru3DTencentResponses(stateFor,publish,d=>frames.has(key(d)));
   const mangoResponses = typeof Thru3DMangoResponses === 'undefined' ? null : Thru3DMangoResponses(stateFor,publish,d=>frames.has(key(d)));
   const youkuResponses = typeof Thru3DYoukuResponses === 'undefined' ? null : Thru3DYoukuResponses(stateFor,publish,d=>frames.has(key(d)));
+  const niconicoResponses=typeof Thru3DNiconicoResponses==='undefined'?null:Thru3DNiconicoResponses(stateFor,publish,d=>frames.has(key(d)));
   // Metadata is only a hint; it never supplies request credentials. Gecko can
   // attribute the site's prefetch/worker API to frame -1 or to the original SPA
   // document URL. Keep file-request ownership on the strict stateFor path above.
@@ -183,6 +198,7 @@
     tencentResponses?.navigate(d);
     mangoResponses?.navigate(d);
     youkuResponses?.navigate(d);
+    niconicoResponses?.navigate(d);
     for (const [id, state] of frames) if (id === key(d) || d.type === "main_frame" && id.startsWith(`${d.tabId}:`)) {
       state.port.disconnect(); frames.delete(id);
     }
@@ -215,18 +231,19 @@
     const state = stateFor(d), u = url(d.url), request = pending.get(d.requestId);
     if (!state || !u || d.method !== "GET" || ![200, 206].includes(d.statusCode)) return;
     const mime = header(d.responseHeaders, "content-type").split(";")[0].trim().toLowerCase();
-    const type = kind(u, mime, d, state.bilibili);
-    if (!type || type === "segment" && !state.tencent) return;
+    const type = kind(u, mime, d, state.bilibili) || (state.niconico&&niconicoResponses?.resource(state,d.url)?"segment":"");
+    if (!type || type === "segment" && !(state.tencent || state.iqiyi || state.niconico)) return;
+    if(state.niconico&&type!=="hls"&&!niconicoResponses?.resource(state,d.url))return;
     // Bilibili's paused cover can load a cached alternate audio URL without any
     // onSendHeaders event. It cannot replace a replayable request with empty headers:
     // the CDN rejects that native request (403). Keep the earlier exact observation;
     // never borrow headers from another URL, or extend its lifetime from a cache hit.
-    if ((state.bilibili || state.douyin || state.weibo || state.tencent || state.mango || state.youku) && !(request?.state === state && request.url === d.url && request.sent === true)) return;
+    if ((state.bilibili || state.douyin || state.weibo || state.tencent || state.mango || state.youku || state.iqiyi || state.niconico) && !(request?.state === state && request.url === d.url && request.sent === true)) return;
     // A cached response can have no onSendHeaders. Do not invent Cookie/Authorization.
     const safe = request?.state === state && request.url === d.url ? request.headers : {};
     // Plex Web sends its token in a request header. With generic capture disabled,
     // retain only a successful, authenticated library request from this exact frame.
-    if (!(state.enabled || state.bilibili || state.douyin || state.weibo || state.tencent || state.mango || state.youku) &&
+    if (!(state.enabled || state.bilibili || state.douyin || state.weibo || state.tencent || state.mango || state.youku || state.iqiyi || state.niconico) &&
         !(typeof Thru3DPlex !== 'undefined' && Thru3DPlex.source(d.url, state.page, safe))) return;
     const c = { url: d.url, kind: type, mime, headers: safe, at: Date.now(), cookies: [],
       original_url: request?.state === state ? request.original : d.url,
@@ -237,6 +254,7 @@
     state.items.delete(d.url); state.items.set(d.url, c);
     mangoResponses?.observeMedia(state,c);
     if(state.youku&&c.kind==='hls')youkuResponses?.observeMedia(state,c);
+    if(state.niconico)niconicoResponses?.observeMedia(state,c);
     while (state.items.size > MAX || JSON.stringify([...state.items.values()]).length > 192 * 1024)
       state.items.delete(state.items.keys().next().value);
     // Range traffic often repeats several times a second. Report changed credentials/resources,

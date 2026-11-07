@@ -334,12 +334,7 @@ func source_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	if owner.geometry == 0:
 		var world: Variant = owner.screen_hit(origin, direction)
 		if world == null: return {}
-		var local: Vector3 = owner.panel.to_local(world)
-		var x := local.x
-		if owner.screen_curve > 0:
-			var radius: float = owner._curve_radius()
-			x = atan2(local.x, radius - local.z) * radius
-		return {"center": Vector2(x / owner._flat.size.x + 0.5, 0.5 - local.y / owner._flat.size.y), "point": world}
+		return {"center": owner.surface_uv(owner.panel.to_local(world)), "point": world}
 	var start: Vector3 = owner.panel.to_local(origin)
 	var ray: Vector3 = (owner.panel.global_basis.inverse() * direction).normalized()
 	var b := start.dot(ray)
@@ -377,10 +372,7 @@ func _draw_selection() -> void:
 			if owner.geometry == 0:
 				var delta: Vector2 = (uv - Vector2.ONE * 0.5) * (flat.span as Vector2)
 				uv = flat.center + flat.right * delta.x + flat.down * delta.y
-				p = Vector3((uv.x - 0.5) * owner._flat.size.x, (0.5 - uv.y) * owner._flat.size.y, 0.004)
-				if owner.screen_curve > 0:
-					var radius: float = owner._curve_radius()
-					p = Vector3(sin(p.x / radius) * radius, p.y, (1 - cos(p.x / radius)) * radius + 0.004)
+				p = owner.surface_point(Vector3((uv.x - 0.5) * owner._flat.size.x, (0.5 - uv.y) * owner._flat.size.y, 0)) + Vector3.BACK * 0.004
 			else:
 				var tangent: Vector2 = window.tangent()
 				var d: Vector3 = sampling * Vector3((uv.x - 0.5) * 2 * tangent.x, (0.5 - uv.y) * 2 * tangent.y, -1)

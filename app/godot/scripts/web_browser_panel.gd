@@ -17,6 +17,23 @@ var _chinese_mode := -1
 var _keyboard_seen := 0
 var _keyboard_target := {}
 
+func keyboard_visible(id: int) -> bool:
+	if id != focused_window: return false
+	if ChineseInput.enabled():
+		return ChineseInput.active() and ChineseInput.popup.owner_id == "browser" and int(_keyboard_target.get("window", 0)) == id
+	return bool(window_state(id).get("keyboard_visible", false))
+
+func toggle_keyboard(id: int) -> void:
+	focus_window(id)
+	if not Methods.supports(menu.platform, "web_browser_input"): return
+	_sync_chinese_mode()
+	var shown := keyboard_visible(id)
+	if shown:
+		ChineseInput.close("browser", true); _keyboard_target.clear()
+	var current := window_state(id)
+	menu.platform.web_browser_input("close" if shown else "show", JSON.stringify({"window":id,
+		"tab":int(current.get("tab_id",0)),"navigation":int(current.get("navigation",0))}))
+
 func _sync_chinese_mode() -> void:
 	var mode := int(ChineseInput.enabled())
 	if mode == _chinese_mode or not is_instance_valid(menu.platform) or not Methods.supports(menu.platform, "web_browser_command"): return
@@ -46,6 +63,7 @@ const Distribution := preload("res://scripts/distribution_channel.gd")
 const I18n := preload("res://scripts/i18n.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
 const BASE := 986000
+const PASTE := BASE + 27
 const WEB := BASE + 20
 const KEY := BASE + 100
 const KEY_CONTROL := BASE + 40
@@ -101,7 +119,20 @@ var library := preload("res://scripts/web_browser_library_panel.gd").new(self)
 var start_page := preload("res://scripts/web_browser_start_page.gd").new(self)
 var focus_regions := {} # Session-local, follows a tab when moved to another window.
 
-func _init(owner: Node) -> void: menu = owner
+func _init(owner: Node) -> void:
+	menu = owner
+	menu.tree_exited.connect(_owner_left_tree)
+
+func _owner_left_tree() -> void:
+	# Reparenting the resource library under the playback controls briefly exits
+	# the tree too. Independent browser windows outlive that layout operation.
+	_release_orphan_windows.call_deferred()
+
+func _release_orphan_windows() -> void:
+	if is_instance_valid(menu) and menu.is_inside_tree(): return
+	for item in windows.values():
+		if is_instance_valid(item): item.queue_free()
+	windows.clear()
 func configure_quality(value: bool) -> void:
 	low_end = value
 	if OS.get_name() != "Android": return
@@ -205,6 +236,8 @@ func tick() -> void:
 		if (created and windows.values().any(func(item): return item.window_id != id and item.visible and item.on_screen())) or force_floating_on_open:
 			windows[id].set_mode("floating")
 	if not opening: force_floating_on_open = false
+	for id in ids:
+		windows[id].sync_fullscreen(window_state(id))
 	sync_effects()
 	if handoff and (str(data.get("url", "")) != handoff_uri or int(data.get("tab_id", 0)) != handoff_tab or int(data.get("navigation", 0)) != handoff_navigation):
 		_cancel_handoff()
@@ -271,7 +304,7 @@ func _poll_beta_button() -> void:
 	if not selection.is_empty() and not selected_beta_target(data, selection).is_empty(): _begin_handoff(true, selection)
 
 func selected_beta_target(current: Dictionary, selection: String) -> Dictionary:
-	var candidates: Array = current.get("videos", []).filter(func(item): return (item.get("weibo_ready", false) or item.get("bilibili_ready", false) or item.get("tencent_ready", false) or item.get("mango_ready", false) or item.get("youku_ready", false)) and not item.get("protected", false) and str(item.get("selection", "")) == selection)
+	var candidates: Array = current.get("videos", []).filter(func(item): return (item.get("weibo_ready", false) or item.get("bilibili_ready", false) or item.get("douyin_ready", false) or item.get("tencent_ready", false) or item.get("mango_ready", false) or item.get("youku_ready", false) or item.get("iqiyi_ready", false) or item.get("niconico_ready", false)) and not item.get("protected", false) and str(item.get("selection", "")) == selection)
 	return candidates[0] if not selection.is_empty() and candidates.size() == 1 else {}
 
 func weibo_target(current: Dictionary, selection: String = "") -> Dictionary:
@@ -293,6 +326,18 @@ func mango_target(current: Dictionary, selection: String = "") -> Dictionary:
 
 func youku_target(current: Dictionary, selection: String = "") -> Dictionary:
 	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("youku_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
+	return candidates[0] if candidates.size() == 1 else {}
+
+func niconico_target(current: Dictionary, selection: String = "") -> Dictionary:
+	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("niconico_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
+	return candidates[0] if candidates.size() == 1 else {}
+
+func iqiyi_target(current: Dictionary, selection: String = "") -> Dictionary:
+	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("iqiyi_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
+	return candidates[0] if candidates.size() == 1 else {}
+
+func douyin_target(current: Dictionary, selection: String = "") -> Dictionary:
+	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("douyin_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
 	return candidates[0] if candidates.size() == 1 else {}
 
 func _begin_handoff(beta: bool = false, selection: String = "") -> void:
@@ -321,6 +366,18 @@ func _begin_handoff(beta: bool = false, selection: String = "") -> void:
 			var target := youku_target(fresh, selection)
 			if target.is_empty(): return
 			selection = str(target.selection)
+		if fresh.get("niconico_beta_available", false):
+			var target := niconico_target(fresh, selection)
+			if target.is_empty(): return
+			selection = str(target.selection)
+		if fresh.get("iqiyi_beta_available", false):
+			var target := iqiyi_target(fresh, selection)
+			if target.is_empty(): return
+			selection = str(target.selection)
+		if fresh.get("douyin_beta_available", false):
+			var target := douyin_target(fresh, selection)
+			if target.is_empty(): return
+			selection = str(target.selection)
 		data = fresh; _status_raw = ""
 	if handoff: _cancel_handoff()
 	handoff_error.clear()
@@ -330,7 +387,7 @@ func _begin_handoff(beta: bool = false, selection: String = "") -> void:
 	handoff_uri = str(data.get("url", ""))
 	handoff_tab = int(data.get("tab_id", 0)); handoff_navigation = int(data.get("navigation", 0))
 	handoff_context = {"tab": handoff_tab, "window": focused_window, "navigation": handoff_navigation,
-		"youku": data.get("youku_beta_available", false), "mango": data.get("mango_beta_available", false), "origin": handoff_uri, "request": int(data.get("fullscreen_request", 0)), "selection": selection,
+		"douyin": data.get("douyin_beta_available", false), "iqiyi": data.get("iqiyi_beta_available", false), "youku": data.get("youku_beta_available", false), "niconico": data.get("niconico_beta_available", false), "mango": data.get("mango_beta_available", false), "origin": handoff_uri, "request": int(data.get("fullscreen_request", 0)), "selection": selection,
 		"was_playing": data.get("videos", []).any(func(item): return (selection.is_empty() or str(item.get("selection", "")) == selection) and item.get("playing", false))}
 	handoff_context.position_ms = _playhead()
 	menu.web_video.address = handoff_uri
@@ -346,10 +403,10 @@ func _begin_handoff(beta: bool = false, selection: String = "") -> void:
 
 func beta_media_ready(current: Dictionary, selection: String = "") -> bool:
 	if not selection.is_empty(): return not selected_beta_target(current, selection).is_empty()
-	return not weibo_target(current).is_empty() or not tencent_target(current).is_empty() or not mango_target(current).is_empty() or not youku_target(current).is_empty() or current.get("videos", []).any(func(item): return (item.get("bilibili_ready", false) or item.get("douyin_ready", false)) and not item.get("protected", false))
+	return not douyin_target(current).is_empty() or not weibo_target(current).is_empty() or not tencent_target(current).is_empty() or not mango_target(current).is_empty() or not youku_target(current).is_empty() or not iqiyi_target(current).is_empty() or not niconico_target(current).is_empty() or current.get("videos", []).any(func(item): return item.get("bilibili_ready", false) and not item.get("protected", false))
 
 func beta_site_available(current: Dictionary) -> bool:
-	return current.get("bilibili_beta_available", false) or current.get("douyin_beta_available", false) or current.get("weibo_beta_available", false) or current.get("tencent_beta_available", false) or current.get("mango_beta_available", false) or current.get("youku_beta_available", false)
+	return current.get("bilibili_beta_available", false) or current.get("douyin_beta_available", false) or current.get("weibo_beta_available", false) or current.get("tencent_beta_available", false) or current.get("mango_beta_available", false) or current.get("youku_beta_available", false) or current.get("iqiyi_beta_available", false) or current.get("niconico_beta_available", false)
 
 func handoff_status() -> String:
 	if handoff_waiting_pause: return I18n.t("Pausing web video…")
@@ -421,7 +478,7 @@ func restore_playback(failed: bool, position_ms: int = -1) -> void:
 		# The button can hand off without a fullscreen video capture. Restore the
 		# original tab/window without navigating again or addressing stale media.
 		if not context.get("retained", false): _video_command("select", context)
-		if not str(context.get("selection", "")).is_empty(): _video_command("restore_youku" if context.get("youku", false) else "restore_mango" if context.get("mango", false) else "restore_weibo", context)
+		if not str(context.get("selection", "")).is_empty(): _video_command("restore_douyin" if context.get("douyin", false) else "restore_iqiyi" if context.get("iqiyi", false) else "restore_niconico" if context.get("niconico", false) else "restore_youku" if context.get("youku", false) else "restore_mango" if context.get("mango", false) else "restore_weibo", context)
 	menu.web_video.result = {}; next_poll = 0
 
 func live_window_ids() -> Array:
@@ -446,7 +503,6 @@ func ensure_window(id: int, show: bool = true) -> void:
 		var item := preload("res://scripts/web_browser_window.gd").new()
 		item.configure(self, id); menu.get_tree().root.add_child(item); windows[id] = item
 		if window_created.is_valid(): window_created.call(item)
-		menu.tree_exiting.connect(item.queue_free, CONNECT_ONE_SHOT)
 	if show and not windows[id].visible: windows[id].show_window()
 func refresh_windows() -> void:
 	for item in windows.values():
@@ -509,8 +565,10 @@ func draw_window(host: Node) -> void:
 			"invalid_address": "Invalid address", "bookmark_limit": "Bookmark limit reached", "storage_failed": "Unable to save changes"}
 		status = I18n.t(messages.get(issue, "Unable to open page"))
 	var caption: String = status if not status.is_empty() else address if not address.is_empty() else I18n.t("Enter URL")
-	host._button(BASE + 3, host._fit_title(caption, "", 0.76, 22), Vector2(0.194, host.NAV_Y), Vector2(0.80, host.TOOL_SIZE.y))
+	host._button(BASE + 3, host._fit_title(caption, "", 0.662, 22), Vector2(0.145, host.NAV_Y), Vector2(0.702, host.TOOL_SIZE.y))
 	host._tips[BASE + 3] = (status + "\n" if not status.is_empty() else "") + (title + "\n" if not title.is_empty() else "") + address
+	host._button(PASTE, "", Vector2(0.549, host.NAV_Y), Vector2(0.09, host.TOOL_SIZE.y), true, "paste")
+	host._tips[PASTE] = I18n.t("Paste")
 	# Native canonicalisation matches storage (e.g. Emby's #!/home route), not the URL draft.
 	var bookmark_url := str(current.get("bookmark_url", str(current.get("url", "")).split("#", true, 1)[0]))
 	for spec in [[4, 0.662, "star_filled" if saved.get("bookmarks", []).any(func(entry): return str(entry.url) == bookmark_url) else "star", "Bookmark"],
@@ -589,27 +647,30 @@ func draw_toolbar_tools(host: Node, current: Dictionary) -> void:
 
 func draw_play_button(host: Node) -> void:
 	var own: bool = handoff and owns_handoff(host, handoff_context)
-	var beta := beta_available(window_state(host.window_id))
+	var current := window_state(host.window_id)
+	var beta := beta_available(current)
 	var cancel_old: bool = own and not handoff_beta
 	var ready: bool = cancel_old or (not handoff and data.get("native_supported", false) and focused_window == host.window_id)
 	var label := I18n.t("Cancel" if cancel_old else "Play in player")
-	var space := 1.44 - toolbar_tools(host, window_state(host.window_id)).size() * 0.128
-	if (beta or (own and handoff_beta)) and not cancel_old:
+	var space := 1.44 - toolbar_tools(host, current).size() * 0.128
+	var show_beta: bool = (beta or (own and handoff_beta)) and not cancel_old
+	var show_legacy: bool = not show_beta or not Sites.beta_replaces_legacy_url(str(current.get("url", "")))
+	var width := (space - 0.016) / 2 if show_beta and show_legacy else space
+	if show_beta:
 		var cancel_beta: bool = own and handoff_beta
-		var current := window_state(host.window_id)
 		var media_ready: bool = beta_site_available(current) and beta_media_ready(current)
 		var beta_ready: bool = cancel_beta or (not handoff and focused_window == host.window_id and media_ready)
 		var beta_label := I18n.t("Cancel" if cancel_beta else "Play (Beta)")
-		host._button(BASE + 18, "", Vector2(-0.59 + space / 2, host.PLAY_Y), Vector2(space, host.TOOL_SIZE.y), beta_ready, "", beta_ready)
+		var left := -0.59 + (width + 0.016 if show_legacy else 0.0)
+		host._button(BASE + 18, "", Vector2(left + width / 2, host.PLAY_Y), Vector2(width, host.TOOL_SIZE.y), beta_ready, "", beta_ready)
 		var button: Node3D = host._buttons.back().node
 		button.material_override.set_shader_parameter("corner_radius", 0.035)
 		var ink: Color = host._buttons.back().foreground if beta_ready else host.MUTED
-		host._icon("stop" if cancel_beta else Sites.BETA_ICON, Vector3(-space / 2 + 0.045, 0, 0.004), 0.05, ink, button)
-		var text: Label3D = host._label(host._fit_title(beta_label, "", space - 0.10, 22), Vector3(0.025, 0, 0.004), 22, button)
+		host._icon("stop" if cancel_beta else Sites.BETA_ICON, Vector3(-width / 2 + 0.045, 0, 0.004), 0.05, ink, button)
+		var text: Label3D = host._label(host._fit_title(beta_label, "", width - 0.10, 22), Vector3(0.025, 0, 0.004), 22, button)
 		text.modulate = ink
 		host._tips[BASE + 18] = I18n.t("Cancel" if cancel_beta else ("Play in player (Beta)" if media_ready else "Video not ready"))
-		return
-	var width := space
+		if not show_legacy: return
 	host._button(BASE + 6, "", Vector2(-0.59 + width / 2, host.PLAY_Y), Vector2(width, host.TOOL_SIZE.y), ready, "", ready)
 	var node: Node3D = host._buttons.back().node
 	node.material_override.set_shader_parameter("corner_radius", 0.035)
@@ -706,6 +767,12 @@ func action(target: int) -> bool:
 	if not Distribution.web_browser_enabled(): return false
 	if library.action(target): return true
 	if start_page.action(target): return true
+	if active() and target == PASTE:
+		var text := clipboard_address()
+		if not text.is_empty():
+			if menu.system_text_input.active("web_browser"): menu.system_text_input.set_text("web_browser", text)
+			else: _edit_address(text)
+		return true
 	if active() and target >= WINDOW_TARGET and target <= WINDOW_TARGET + 4:
 		if window_action.is_empty(): return true
 		var destination := target - WINDOW_TARGET
@@ -731,10 +798,7 @@ func action(target: int) -> bool:
 		1: menu.platform.web_browser_action("forward"); refresh_windows()
 		2: menu.platform.web_browser_action("reload"); refresh_windows()
 		3:
-			refresh_windows()
-			ChineseInput.close("browser"); _keyboard_target.clear()
-			menu.platform.web_browser_action("blur")
-			menu.system_text_input.begin("web_browser", draft, 4096, _edited, _navigate)
+			_edit_address(draft)
 		4: menu.platform.web_browser_action("bookmark"); saved_poll = 0; refresh_windows()
 		5: tab_command("close_window")
 		7:
@@ -792,6 +856,18 @@ func _playhead() -> int:
 		if candidate > score: score = candidate; best = item
 	var seconds := float(best.get("time", 0.0))
 	return int(clampf(seconds, 0.0, 604800.0) * 1000.0) if is_finite(seconds) else 0
+
+func clipboard_address() -> String:
+	# Read only on the explicit paste action, including clipboard changes since the last draw.
+	var text: String = menu.platform.media_clipboard_text() if Methods.supports(menu.platform, "media_clipboard_text") else DisplayServer.clipboard_get()
+	return menu.SystemTextInput.clean(text, 4096).strip_edges()
+
+func _edit_address(value: String) -> void:
+	ChineseInput.close("browser"); _keyboard_target.clear()
+	menu.platform.web_browser_action("blur")
+	draft = value
+	menu.system_text_input.begin("web_browser", draft, 4096, _edited, _navigate)
+	refresh_windows()
 
 func _edited(text: String) -> void: draft = text; menu.refresh()
 func _navigate(text: String) -> void:

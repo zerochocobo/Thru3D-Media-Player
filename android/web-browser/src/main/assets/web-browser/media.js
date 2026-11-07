@@ -11,6 +11,33 @@
   let handoff = null;
   let pauseLease = null, lastPauseToken = 0;
   const resuming = new WeakMap();
+  let iqiyiReturnPause = null;
+  let niconicoReturnPause = null;
+  const keepNiconicoReturnPaused=video=>{
+    const saved=niconicoReturnPause;if(!saved)return false;
+    const age=Date.now()-saved.at;
+    if(age<0||age>30000||saved.page!==location.href||!saved.video.isConnected||saved.video.currentSrc!==saved.source||mediaEpoch.get(saved.video)?.id!==saved.epoch||Thru3DNiconico.page(location.href)!==saved.owner){niconicoReturnPause=null;return false;}
+    return video===saved.video;
+  };
+  let douyinReturnPause = null;
+  const keepDouyinReturnPaused = video => {
+    const saved=douyinReturnPause;if(!saved)return false;
+    const age=Date.now()-saved.at,owner=typeof Thru3DDouyinCurrent!=='undefined'&&Thru3DDouyinCurrent.owner(saved.video,location.href);
+    if(age<0||age>30000||saved.page!==location.href||!saved.video.isConnected||saved.video.currentSrc!==saved.source||mediaEpoch.get(saved.video)?.id!==saved.epoch||owner?.id!==saved.owner){douyinReturnPause=null;return false;}
+    return video===saved.video;
+  };
+  const keepIqiyiReturnPaused = video => {
+    const saved=iqiyiReturnPause;
+    if(!saved)return false;
+    const age=Date.now()-saved.at;
+    if(age<0||age>30000||saved.page!==location.href||!saved.video.isConnected||saved.video.currentSrc!==saved.source||mediaEpoch.get(saved.video)?.id!==saved.epoch){iqiyiReturnPause=null;return false;}
+    return video===saved.video;
+  };
+  // The site's seek completion can call play again after we restored a paused
+  // position. Preserve that return intent through buffering, until a real gesture.
+  for(const name of ['pointerdown','mousedown','touchstart','keydown'])addEventListener(name,event=>{
+    if(event.isTrusted){iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;}
+  },true);
   const holdPaused = video => {
     if (pauseLease && pauseLease.page !== location.href) pauseLease = null;
     if (!pauseLease || !video.isConnected) return;
@@ -136,6 +163,117 @@
     Object.assign(youkuButton.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
     youkuButton.host.hidden=!Thru3DPlayButton.visible(target.video);youkuButton.enabled(true);
   };
+  let niconicoEnabled = typeof Thru3DNiconico !== 'undefined' && !!Thru3DNiconico.page(location.href), niconicoActionEnabled=false, niconicoData=[], niconicoCapture={};
+  let niconicoButton = null, niconicoChoice = null, niconicoClick = 0;
+  const niconicoActionEvent = event => event.isTrusted && niconicoButton && (event.composedPath?.() || []).includes(niconicoButton.host);
+  // Reserve only our own action events before site gesture handlers. Reserve only events on
+  // our own shadow action, before those handlers can capture or cancel the click.
+  for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
+    if(niconicoActionEvent(event))event.stopImmediatePropagation();
+  },true);
+  addEventListener('click',event=>{
+    if(!niconicoActionEvent(event))return;
+    event.preventDefault();event.stopImmediatePropagation();niconicoButton.activate();
+  },true);
+  const syncNiconicoButton = target => {
+    if (typeof Thru3DPlayButton === 'undefined') return;
+    // Keep the action outside Niconico player's managed child tree and event root.
+    const box = target?.video;
+    const mount=document.fullscreenElement||document.body;
+    if (!niconicoEnabled || !niconicoActionEnabled || !target?.video.isConnected || !box || !mount) {niconicoButton?.dispose();niconicoButton=null;return;}
+    const old=niconicoButton?.target;
+    if (!old || niconicoButton.host.isConnected===false || niconicoButton.overlay.parentElement!==mount || old.video!==target.video || old.key!==target.key || old.source!==target.source || old.epoch!==target.epoch || niconicoButton.box!==box) {
+      niconicoButton?.dispose();
+      const overlay=document.createElement('span');overlay.dataset.thru3dPlayOverlay='niconico';
+      overlay.style.cssText='position:fixed;pointer-events:none;z-index:2147482990;';mount.append(overlay);
+      const activate=()=>{
+        const current=niconicoButton?.target;
+        if(closed||suspended||pauseLease||!current||!niconicoEnabled||!niconicoActionEnabled||current.video.currentSrc!==current.source||mediaEpoch.get(current.video)?.id!==current.epoch)return;
+        niconicoChoice={...current,at:Date.now(),request:++niconicoClick};changed();
+      };
+      const control=Thru3DPlayButton.create(document,overlay,'niconico',activate);
+      control.host.dataset.thru3dNiconico='beta';control.host.dataset.thru3dNiconicoPage=target.page;
+      niconicoButton={...control,box,overlay,target,activate,dispose(){control.dispose();overlay.remove();}};
+    } else niconicoButton.target=target;
+    const rect=box.getBoundingClientRect();
+    Object.assign(niconicoButton.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
+    niconicoButton.host.hidden=!Thru3DPlayButton.visible(target.video);niconicoButton.enabled(true);
+  };
+  let iqiyiEnabled = typeof Thru3DIqiyi !== 'undefined' && !!Thru3DIqiyi.page(location.href), iqiyiActionEnabled=false;
+  let iqiyiButton = null, iqiyiChoice = null, iqiyiClick = 0;
+  const iqiyiActionEvent = event => event.isTrusted && iqiyiButton && (event.composedPath?.() || []).includes(iqiyiButton.host);
+  // Iqiyi player installs document-wide gesture handlers. Reserve only events on
+  // our own shadow action, before those handlers can capture or cancel the click.
+  for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
+    if(iqiyiActionEvent(event))event.stopImmediatePropagation();
+  },true);
+  addEventListener('click',event=>{
+    if(!iqiyiActionEvent(event))return;
+    event.preventDefault();event.stopImmediatePropagation();iqiyiButton.activate();
+  },true);
+  const syncIqiyiButton = target => {
+    if (typeof Thru3DPlayButton === 'undefined') return;
+    // Keep the action outside Iqiyi player's managed child tree and event root.
+    const box = target?.video.closest?.('#outlayer');
+    const mount=document.fullscreenElement||document.body;
+    if (!iqiyiEnabled || !iqiyiActionEnabled || !target?.video.isConnected || !box || !mount) {iqiyiButton?.dispose();iqiyiButton=null;return;}
+    const old=iqiyiButton?.target;
+    if (!old || iqiyiButton.host.isConnected===false || iqiyiButton.overlay.parentElement!==mount || old.video!==target.video || old.key!==target.key || old.source!==target.source || old.epoch!==target.epoch || iqiyiButton.box!==box) {
+      iqiyiButton?.dispose();
+      const overlay=document.createElement('span');overlay.dataset.thru3dPlayOverlay='iqiyi';
+      overlay.style.cssText='position:fixed;pointer-events:none;z-index:2147482990;';mount.append(overlay);
+      const activate=()=>{
+        const current=iqiyiButton?.target;
+        if(closed||suspended||pauseLease||!current||!iqiyiEnabled||!iqiyiActionEnabled||current.video.currentSrc!==current.source||mediaEpoch.get(current.video)?.id!==current.epoch)return;
+        iqiyiReturnPause=null;iqiyiChoice={...current,at:Date.now(),request:++iqiyiClick};changed();
+      };
+      const control=Thru3DPlayButton.create(document,overlay,'iqiyi',activate);
+      control.host.dataset.thru3dIqiyi='beta';control.host.dataset.thru3dIqiyiPage=target.page;
+      iqiyiButton={...control,box,overlay,target,activate,dispose(){control.dispose();overlay.remove();}};
+    } else iqiyiButton.target=target;
+    const rect=box.getBoundingClientRect();
+    Object.assign(iqiyiButton.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
+    iqiyiButton.host.hidden=!Thru3DPlayButton.visible(target.video);iqiyiButton.enabled(true);
+  };
+  const douyinButtons = new Map();let douyinChoice=null,douyinClick=0,douyinActionEnabled=false;
+  const douyinActionEvent=event=>event.isTrusted&&[...douyinButtons.values()].find(b=>(event.composedPath?.()||[]).includes(b.host));
+  for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
+    if(douyinActionEvent(event))event.stopImmediatePropagation();
+  },true);
+  addEventListener('click',event=>{
+    const control=douyinActionEvent(event);if(!control)return;
+    event.preventDefault();event.stopImmediatePropagation();control.activate();
+  },true);
+  const syncDouyinButtons=targets=>{
+    if(typeof Thru3DPlayButton==='undefined')return;
+    const eligible=douyinEnabled&&douyinActionEnabled?targets.filter(t=>t.video.isConnected&&Thru3DPlayButton.visible(t.video)):[];
+    const active=eligible.filter(t=>t.active),current=active.length?active:eligible,keep=new Set(current.map(t=>t.video));
+    for(const [v,b] of douyinButtons)if(!keep.has(v)){b.dispose();douyinButtons.delete(v);}
+    const mount=document.fullscreenElement||document.body;if(!mount)return;
+    for(const target of current){
+      let control=douyinButtons.get(target.video),old=control?.target;
+      if(!old||!control.host.isConnected||control.overlay.parentElement!==mount||old.key!==target.key||old.source!==target.source||old.epoch!==target.epoch){
+        control?.dispose();
+        const overlay=document.createElement('span');overlay.dataset.thru3dPlayOverlay='douyin';
+        overlay.style.cssText='position:fixed;pointer-events:none;z-index:2147482990;';mount.append(overlay);
+        const activate=()=>{
+          const selected=douyinButtons.get(target.video)?.target;
+          if(closed||suspended||pauseLease||!douyinActionEnabled||!selected||selected.video.currentSrc!==selected.source||mediaEpoch.get(selected.video)?.id!==selected.epoch)return;
+          const fresh=Thru3DDouyinCurrent.capture(selected.video,location.href,network);
+          if(!fresh||fresh.id+':'+fresh.revision!==selected.key)return;
+          douyinReturnPause=null;douyinChoice={...selected,at:Date.now(),request:++douyinClick};changed();
+        };
+        const button=Thru3DPlayButton.create(document,overlay,'douyin',activate);
+        button.host.dataset.thru3dDouyin='beta';button.host.dataset.thru3dDouyinId=target.owner;
+        button.host.dataset.thru3dDouyinPage=target.page;
+        button.host.dataset.thru3dDouyinVideo=String(videos.get(target.video));
+        control={...button,overlay,target,activate,dispose(){button.dispose();overlay.remove();}};douyinButtons.set(target.video,control);
+      }else control.target=target;
+      const rect=target.video.getBoundingClientRect();
+      Object.assign(control.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
+      control.host.hidden=false;control.enabled(true);
+    }
+  };
   let bilibiliEnabled = false, bilibiliData = [];
   let bilibiliButton = null, bilibiliChoice = null, bilibiliClick = 0;
   const biliKey = data => [data.id,data.cid,data.part,data.ep || ''].join(':');
@@ -211,13 +349,13 @@
   let bilibiliInitial = null, bilibiliInitialPage = '', bilibiliScanAt = 0;
   let bilibiliOwner = null;
   const networkContext = (reset = false) => {
-    try { networkPort?.postMessage({ type: "context", page: location.href, enabled: networkEnabled, bilibili: bilibiliEnabled, douyin: douyinEnabled, weibo: weiboEnabled, tencent:tencentEnabled, mango:mangoEnabled, youku:youkuEnabled, reset }); } catch (_) {}
+    try { networkPort?.postMessage({ type: "context", page: location.href, enabled: networkEnabled, bilibili: bilibiliEnabled, douyin: douyinEnabled, weibo: weiboEnabled, tencent:tencentEnabled, mango:mangoEnabled, youku:youkuEnabled, iqiyi:iqiyiEnabled, niconico:niconicoEnabled, reset }); } catch (_) {}
   };
   const mediaEpoch = new WeakMap();
   const connectNetwork = () => {
     network = [];
     tencentData = [];mangoData=[];mangoCapture={};
-    youkuData=[];youkuCapture={};
+    youkuData=[];youkuCapture={};niconicoData=[];niconicoCapture={};
     tencentCapture = {};tencentShape=[];tencentEnvelopes=[];
     douyinData = [];
     bilibiliData = []; bilibiliViews = [];
@@ -233,6 +371,7 @@
       bilibiliViews = Array.isArray(message.bilibili_views) ? message.bilibili_views.slice(0, 4) : [];
       mangoData = Array.isArray(message.mango)?message.mango.slice(0,8):[];mangoCapture=message.mango_capture||{};
       youkuData = Array.isArray(message.youku)?message.youku.slice(0,8):[];youkuCapture=message.youku_capture||{};
+      niconicoData=Array.isArray(message.niconico)?message.niconico.slice(0,8):[];niconicoCapture=message.niconico_capture||{};
       tencentData = Array.isArray(message.tencent) ? message.tencent.slice(0,8) : [];
       tencentStatus = message.tencent_status || 'idle';
       tencentCapture = message.tencent_capture || {};
@@ -241,7 +380,7 @@
       bilibiliStatus = message.bilibili_status || 'idle'; bilibiliResponseApi = message.bilibili_response_api === true;
       changed();
     });
-    networkPort.onDisconnect.addListener(() => { if (connection === networkPort) { network = []; mangoData=[];mangoCapture={};youkuData=[];youkuCapture={};tencentData = [];tencentCapture={};tencentShape=[];tencentEnvelopes=[]; douyinData = []; bilibiliData = []; bilibiliViews = []; bilibiliInitial = null; changed(); } });
+    networkPort.onDisconnect.addListener(() => { if (connection === networkPort) { network = []; mangoData=[];mangoCapture={};youkuData=[];youkuCapture={};niconicoData=[];niconicoCapture={};tencentData = [];tencentCapture={};tencentShape=[];tencentEnvelopes=[]; douyinData = []; bilibiliData = []; bilibiliViews = []; bilibiliInitial = null; changed(); } });
     networkContext();
   };
   // Both clients put the access token and selected media version on their video URL.
@@ -292,7 +431,7 @@
     if (networkPage !== location.href) {
       if (pauseLease?.page !== location.href) pauseLease = null;
       networkPage = location.href; network = []; mangoChoice=null;mangoData=[];mangoCapture={};weiboChoice = null;tencentChoice=null;tencentData=[];tencentCapture={};tencentShape=[];tencentEnvelopes=[];
-      youkuChoice=null;youkuData=[];youkuCapture={};
+      youkuChoice=null;youkuData=[];youkuCapture={};niconicoChoice=null;niconicoData=[];niconicoCapture={};
       bilibiliData = []; bilibiliInitial = null;
       networkContext(true);
     }
@@ -309,7 +448,8 @@
     const currentTencentShape=[{path:'diagnostic.page_state.code',kind:'number',sample:pageTencent.status},
       {path:'diagnostic.observed_envelopes.code',kind:'number',sample:tencentEnvelopes.length},...pageTencent.shape,...tencentShape];
     let bilibiliTarget = null;
-    const tencentTargets = [],mangoTargets=[],youkuTargets=[];
+    const tencentTargets = [],mangoTargets=[],youkuTargets=[],niconicoTargets=[],iqiyiTargets=[],douyinTargets=[];
+    const pageIqiyi=iqiyiEnabled?Thru3DIqiyi.capture(document.defaultView?.wrappedJSObject,location.href,document):null;
     const live = [...videos.keys()].filter(v => v.isConnected && !v.ended && (v.currentSrc || v.readyState > 0));
     const ordered = [...videos].filter(([v])=>{if (v.isConnected) return true; videos.delete(v); return false;});
     if (weiboEnabled) {
@@ -335,6 +475,12 @@
       const serverPlay = !!server?.intent && !!resource && !protectedMedia && video.readyState >= 2 && !video.seeking;
       if (serverPlay) server.offset = Number.isFinite(resource.offset) ? resource.offset : 0;
       const currentSource = video.currentSrc || '';
+      const douyinOwner=douyinEnabled&&typeof Thru3DDouyinCurrent!=='undefined'?Thru3DDouyinCurrent.owner(video,location.href):null;
+      if(douyinEnabled){
+        const identity=[location.href,douyinOwner?.id||'',currentSource].join('|');
+        if(epoch.douyinIdentity!==undefined&&epoch.douyinIdentity!==identity){epoch.id=++nextId;epoch.since=Date.now();videos.set(video,nextId);}
+        epoch.douyinIdentity=identity;
+      }
       const retained = bilibiliOwner?.video === video && bilibiliOwner.page === location.href &&
         bilibiliOwner.source === currentSource && bilibiliOwner.epoch === epoch.id ? bilibiliOwner : null;
       let biliIdentity = typeof Thru3DBilibili !== 'undefined' && Thru3DBilibili.viewIdentity(bilibiliViews, location.href) || bilibiliInitial?.identity || retained?.data;
@@ -356,17 +502,19 @@
       const remembered = matching.find(v => bilibiliOwner?.video === v && bilibiliOwner.page === location.href &&
         bilibiliOwner.cid === biliCid && bilibiliOwner.source === v.currentSrc && bilibiliOwner.epoch === mediaEpoch.get(v)?.id);
       const primary = remembered || (matching.length === 1 ? matching[0] : null);
-      const douyinPrimary = douyinEnabled && typeof Thru3DDouyin !== 'undefined'
-        ? Thru3DDouyin.owner(douyinData, location.href, live.filter(v=>!encrypted.has(v))) : null;
       const mangoPrimary=mangoEnabled?Thru3DMango.owner(mangoData,location.href,live.filter(v=>!encrypted.has(v))):null;
+      const niconicoPrimary=niconicoEnabled?Thru3DNiconico.owner(niconicoData,location.href,live.filter(v=>!encrypted.has(v))):null;
       const youkuPrimary=youkuEnabled?Thru3DYouku.owner(youkuData,location.href,live.filter(v=>!encrypted.has(v))):null;
       // Generic MSE capture still requires a single player. Site-bound owners can
       // use exact declared files even when MSE fetches before its loadstart event.
-      let requests = protectedMedia || !(networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled || youkuEnabled) ? [] : network.filter(c => c.url === currentSource || c.original_url === currentSource ||
+      let requests = protectedMedia || !(networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled || youkuEnabled || niconicoEnabled) ? [] : network.filter(c => c.url === currentSource || c.original_url === currentSource ||
         currentSource.startsWith('blob:') && (bilibiliEnabled ? primary === video :
-          douyinEnabled ? douyinPrimary === video : youkuEnabled ? youkuPrimary===video : mangoEnabled ? mangoPrimary===video&&c.at>=epoch.since : tencentEnabled ? !!video.closest?.('#main-player .txp_videos_container') && c.at >= epoch.since : !weiboEnabled && live.length === 1 && c.at >= epoch.since));
+          douyinEnabled ? !!douyinOwner : niconicoEnabled ? niconicoPrimary===video : youkuEnabled ? youkuPrimary===video : mangoEnabled ? mangoPrimary===video&&c.at>=epoch.since : tencentEnabled ? !!video.closest?.('#main-player .txp_videos_container') && c.at >= epoch.since : !weiboEnabled && live.length === 1 && c.at >= epoch.since));
       if(youkuEnabled)requests=requests.filter(c=>c.kind==='hls'&&youkuData.some(d=>d.id===Thru3DYouku.page(location.href)?.id&&d.streams.some(t=>
         Thru3DYouku.sameManifest(t.url,c.url)||Thru3DYouku.sameManifest(t.url,c.original_url))));
+      if(niconicoEnabled&&!protectedMedia)requests=network.filter(c=>niconicoPrimary===video&&niconicoData.some(d=>d.id===Thru3DNiconico.page(location.href)&&
+        (c.url===d.root||d.variants.some(t=>c.url===t.video||c.url===t.audio||t.resources.includes(c.url)))));
+      if(iqiyiEnabled&&pageIqiyi?.ready&&pageIqiyi.src===currentSource)requests=network.filter(c=>Thru3DIqiyi.matches(pageIqiyi,c));
       let weibo = null;
       if (weiboEnabled && !protectedMedia && !currentSource.startsWith('blob:')) {
         const retained = weiboEvidence.get(video);
@@ -407,10 +555,10 @@
       if (biliMatched) bilibiliTarget={video,source:currentSource,epoch:epoch.id,key:biliKey(biliMatched),ready:biliReady};
       const biliClicked = biliReady && bilibiliChoice?.video === video && bilibiliChoice.key === biliKey(biliMatched) &&
         bilibiliChoice.source === currentSource && bilibiliChoice.epoch === epoch.id && Date.now() - bilibiliChoice.at < 15000;
-      const douyin = douyinEnabled && !protectedMedia && typeof Thru3DDouyin !== 'undefined' &&
-        (douyinData.map(d=>Thru3DDouyin.binding(d,location.href,video,requests)).find(Boolean) ||
-          Thru3DDouyin.direct(douyinData,location.href,video,requests,douyinObservation));
-      const douyinReady = !!douyin && (!currentSource.startsWith('blob:') || !douyin.data.audio?.length || !!douyin.data.observed_audio || douyin.data.observed_muxed === true);
+      const douyin=douyinEnabled&&!protectedMedia&&typeof Thru3DDouyinCurrent!=='undefined'?Thru3DDouyinCurrent.capture(video,location.href,requests):null;
+      const douyinReady=!!douyin;
+      if(douyin)douyinTargets.push({video,source:currentSource,epoch:epoch.id,key:douyin.id+':'+douyin.revision,page:douyin.page,owner:douyin.id,active:douyinOwner?.active===true});
+      const douyinClicked=!!douyin&&douyinChoice?.video===video&&douyinChoice.source===currentSource&&douyinChoice.epoch===epoch.id&&douyinChoice.key===douyin.id+':'+douyin.revision&&Date.now()-douyinChoice.at<15000;
       const tencent = tencentEnabled && !protectedMedia && typeof Thru3DTencent !== 'undefined' ? Thru3DTencent.binding(video,tencentRecords,requests,location.href) : null;
       if(tencent)tencentTargets.push({video,source:currentSource,epoch:epoch.id,key:tencent.id+':'+tencent.revision,page:tencent.page});
       const tencentClicked=!!tencent&&tencentChoice?.video===video&&tencentChoice.source===currentSource&&tencentChoice.epoch===epoch.id&&
@@ -423,6 +571,14 @@
       if(youku)youkuTargets.push({video,source:currentSource,epoch:epoch.id,key:youku.id+':'+youku.revision,page:youku.page});
       const youkuClicked=!!youku&&youkuChoice?.video===video&&youkuChoice.source===currentSource&&youkuChoice.epoch===epoch.id&&
         youkuChoice.key===youku.id+':'+youku.revision&&Date.now()-youkuChoice.at<15000;
+      const niconico=niconicoEnabled&&!protectedMedia?Thru3DNiconico.binding(video,niconicoData,requests,location.href,live.filter(v=>!encrypted.has(v))):null;
+      if(niconico)niconicoTargets.push({video,source:currentSource,epoch:epoch.id,key:niconico.id+':'+niconico.revision,page:niconico.page});
+      const niconicoClicked=!!niconico&&niconicoChoice?.video===video&&niconicoChoice.source===currentSource&&niconicoChoice.epoch===epoch.id&&
+        niconicoChoice.key===niconico.id+':'+niconico.revision&&Date.now()-niconicoChoice.at<15000;
+      const iqiyi=iqiyiEnabled&&!protectedMedia?Thru3DIqiyi.binding(video,pageIqiyi):null;
+      if(iqiyi)iqiyiTargets.push({video,source:currentSource,epoch:epoch.id,key:iqiyi.id+':'+iqiyi.revision,page:iqiyi.page});
+      const iqiyiClicked=!!iqiyi&&iqiyiChoice?.video===video&&iqiyiChoice.source===currentSource&&iqiyiChoice.epoch===epoch.id&&
+        iqiyiChoice.key===iqiyi.id+':'+iqiyi.revision&&Date.now()-iqiyiChoice.at<15000;
       items.push({ id: videos.get(video), width: video.videoWidth, height: video.videoHeight,
         fullscreen: fullscreen(video) || !!owner && fullscreen(owner),
         source: !protectedMedia ? (resource ? resource.source : /^https?:\/\//i.test(video.currentSrc || '') ? video.currentSrc : '') : '',
@@ -435,16 +591,18 @@
         bilibili_request: biliClicked ? bilibiliChoice.request : 0,
         mango,mango_ready:!!mango,mango_request:mangoClicked?mangoChoice.request:0,
         youku,youku_ready:!!youku,youku_request:youkuClicked?youkuChoice.request:0,
+        niconico,niconico_source:niconico?currentSource:undefined,niconico_ready:!!niconico,niconico_request:niconicoClicked?niconicoChoice.request:0,
+        iqiyi,iqiyi_source:iqiyi?currentSource:undefined,iqiyi_ready:!!iqiyi,iqiyi_request:iqiyiClicked?iqiyiChoice.request:0,
         tencent,tencent_ready:!!tencent,tencent_status:pageTencent.data?'normalized':tencentStatus,tencent_request:tencentClicked?tencentChoice.request:0,
         ...(tencentEnabled ? {tencent_shape:currentTencentShape} : {}),
         ...(tencentEnabled ? {tencent_capture:{...tencentCapture,...pageTencent.capture,metadata:tencentRecords.length,requests:network.length,
           ...Thru3DTencent.diagnostics(performance.getEntriesByType?.('resource') || [],tencentPolicyAt)}} : {}),
-        douyin: douyin ? {...douyin.data,page:location.href} : null,
-        douyin_ready: douyinReady,
+        douyin,douyin_source:douyin?currentSource:undefined,
+        douyin_ready: douyinReady,douyin_request:douyinClicked?douyinChoice.request:0,
         weibo, weibo_ready: !!weibo, weibo_selected: weiboSelected,
         weibo_request: weiboSelected && Date.now() - weiboChoice.at < 15000 ? weiboChoice.request : 0,
         douyin_diagnostics: douyinDiagnostics && douyinEnabled && typeof Thru3DDouyin !== 'undefined'
-          ? {...Thru3DDouyin.diagnostics(douyinData,location.href,video,requests),bound_chars:douyin?JSON.stringify({...douyin.data,page:location.href}).length:0} : null,
+          ? {...Thru3DDouyin.diagnostics(douyinData,location.href,video,requests),bound_chars:douyin?JSON.stringify(douyin).length:0} : null,
         douyin_observation: douyinDiagnostics && douyinEnabled ? douyinObservation : null,
         douyin_api_paths: douyinDiagnostics && douyinEnabled ? douyinApiPaths : [],
         douyin_dom: douyinDiagnostics && douyinEnabled ? douyinDomCounts() : null,
@@ -460,6 +618,9 @@
     syncTencentButton(tencentTargets.length===1?tencentTargets[0]:null);
     syncMangoButton(mangoTargets.length===1?mangoTargets[0]:null);
     syncYoukuButton(youkuTargets.length===1?youkuTargets[0]:null);
+    syncNiconicoButton(niconicoTargets.length===1?niconicoTargets[0]:null);
+    syncIqiyiButton(iqiyiTargets.length===1?iqiyiTargets[0]:null);
+    syncDouyinButtons(douyinTargets);
     // A declarative VR player may keep its actual <video> in a closed shadow tree.
     // Read only the same public source the player declares; its media session still
     // acknowledges pause before the native handoff.
@@ -477,6 +638,7 @@
     try { port.postMessage({ type: "media", videos: items,
       ...(mangoEnabled?{mango_capture:mangoCapture}:{}),
       ...(youkuEnabled?{youku_capture:youkuCapture}:{}),
+      ...(niconicoEnabled?{niconico_capture:niconicoCapture}:{}),
       ...(tencentEnabled ? {tencent_capture:{...tencentCapture,...pageTencent.capture,status:pageTencent.data?'normalized':tencentStatus,metadata:tencentRecords.length,requests:network.length}} : {}),
       suspended, pause_token: pauseLease?.token || 0,
       pause_has_media: controlled.length > 0, pause_held: !!pauseLease && controlled.every(v => v.paused || v.ended) }); }
@@ -518,7 +680,8 @@
       video.addEventListener("encrypted", () => { encrypted.add(video); changed(); });
       for (const event of ["loadedmetadata", "resize", "durationchange", "play", "playing", "seeked", "pause", "emptied", "ended", "timeupdate"])
         video.addEventListener(event, changed);
-      video.addEventListener("play", () => { if (suspended) video.pause(); else holdPaused(video); });
+      video.addEventListener("play", () => { if (suspended||keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)) video.pause(); else holdPaused(video); });
+      for(const event of ['loadeddata','playing','seeked'])video.addEventListener(event,()=>{if(keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video))video.pause();});
       holdPaused(video);
     }
     // Feeds and comments mutate constantly; only a new <video> changes the report.
@@ -558,6 +721,7 @@
       changed();
       douyinDiagnostics = message.diagnostics === true;
       const douyin = message.douyin === true;
+      douyinActionEnabled=douyin;
       if (douyin !== douyinEnabled) { douyinEnabled = douyin; douyinData = []; network = []; networkContext(true); changed(); }
       const bili = message.bilibili === true;
       if (bili !== bilibiliEnabled) {
@@ -574,6 +738,12 @@
       const youku=message.youku===true&&typeof Thru3DYouku!=='undefined'&&!!Thru3DYouku.page(location.href);
       youkuActionEnabled=youku;
       if(youku!==youkuEnabled){youkuEnabled=youku;youkuData=[];youkuCapture={};network=[];networkContext(true);changed();}
+      const niconico=message.niconico===true&&typeof Thru3DNiconico!=='undefined'&&!!Thru3DNiconico.page(location.href);
+      niconicoActionEnabled=niconico;
+      if(niconico!==niconicoEnabled){niconicoEnabled=niconico;niconicoData=[];niconicoCapture={};network=[];networkContext(true);changed();}
+      const iqiyi=message.iqiyi===true&&typeof Thru3DIqiyi!=='undefined'&&!!Thru3DIqiyi.page(location.href);
+      iqiyiActionEnabled=iqiyi;
+      if(iqiyi!==iqiyiEnabled){iqiyiEnabled=iqiyi;networkContext(true);changed();}
       const weibo = message.weibo === true;
       if (weibo !== weiboEnabled) { weiboEnabled = weibo; weiboChoice = null; network = []; networkContext(true); changed(); }
       if (enabled !== networkEnabled) { networkEnabled = enabled; network = []; networkContext(true); changed(); }
@@ -586,6 +756,11 @@
       // the native snapshot of this port's original playing IDs, not the new pause.
       const ids = Array.isArray(message.playing_ids) ? message.playing_ids.slice(0,16).map(String) : [];
       pauseLease = {token, page:location.href, videos:new Map(), playingIds:new Set(ids)};
+      if(niconicoEnabled&&typeof Thru3DNiconicoPlayer!=='undefined'){
+        const live=[...videos.keys()].filter(v=>!encrypted.has(v)),main=Thru3DNiconico.owner(niconicoData,location.href,live);
+        const target=main&&Thru3DNiconico.binding(main,niconicoData,network,location.href,live);
+        if(target)Thru3DNiconicoPlayer.pause(main,target,document);
+      }
       for (const video of videos.keys()) holdPaused(video);
       send();
     } else if (message?.action === "release_pause_media") {
@@ -602,6 +777,7 @@
       }
       send();
     } else if (message?.action === "suspend") {
+      iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;
       // A retained native handoff keeps the exact original playing-state lease.
       // Ordinary tab/background suspension still releases its temporary hold.
       if(message.keep_pause!==true||message.pause_token!==pauseLease?.token)pauseLease = null;
@@ -651,6 +827,40 @@
       if(message.play===true){try{Promise.resolve(video.play()).catch(()=>{});}catch(_){}}
       else video.pause();
       send();
+    } else if (message?.action === "restore_niconico") {
+      const video=[...videos].find(([,id])=>String(id)===message.id)?.[0],epoch=video&&mediaEpoch.get(video);
+      const target=video&&epoch?.id===message.epoch&&Thru3DNiconico.binding(video,niconicoData,network,location.href,[...videos.keys()].filter(v=>!encrypted.has(v)));
+      if(!target||target.page!==message.page||target.revision!==message.revision)return;
+      if(!Number.isFinite(message.time)||message.time<0)return;
+      suspended=false;
+      niconicoReturnPause=message.play===true?null:{video,source:video.currentSrc,epoch:epoch.id,page:location.href,owner:target.id,at:Date.now()};
+      if(typeof Thru3DNiconicoPlayer!=='undefined'){
+        if(!Thru3DNiconicoPlayer.restore(video,target,document,Math.min(message.time,video.duration),message.play===true))niconicoReturnPause=null;
+        send();return;
+      }
+      if(Number.isFinite(message.time)&&message.time>=0){try{video.currentTime=Math.min(message.time,video.duration);}catch(_){}}
+      if(message.play===true){try{Promise.resolve(video.play()).catch(()=>{});}catch(_){}}
+      else video.pause();
+      send();
+    } else if (message?.action === "restore_douyin") {
+      const video=[...videos].find(([,id])=>String(id)===message.id)?.[0],epoch=video&&mediaEpoch.get(video);
+      const target=video&&epoch?.id===message.epoch&&Thru3DDouyinCurrent.capture(video,location.href,network);
+      if(!target||target.page!==message.page||target.revision!==message.revision||!Number.isFinite(message.time)||message.time<0)return;
+      suspended=false;
+      douyinReturnPause=message.play===true?null:{video,source:video.currentSrc,epoch:epoch.id,page:location.href,owner:target.id,at:Date.now()};
+      try{video.currentTime=Math.min(message.time,video.duration);}catch(_){douyinReturnPause=null;return;}
+      if(message.play===true){try{Promise.resolve(video.play()).catch(()=>{});}catch(_){}}
+      else video.pause();
+      send();
+    } else if (message?.action === "restore_iqiyi") {
+      const video=[...videos].find(([,id])=>String(id)===message.id)?.[0],epoch=video&&mediaEpoch.get(video);
+      const target=video&&epoch?.id===message.epoch&&Thru3DIqiyi.binding(video,Thru3DIqiyi.capture(document.defaultView?.wrappedJSObject,location.href,document));
+      if(!target||target.page!==message.page||target.revision!==message.revision)return;
+      suspended=false;
+      iqiyiReturnPause=message.play===true?null:{video,source:video.currentSrc,epoch:epoch.id,page:location.href,at:Date.now()};
+      if(!Thru3DIqiyi.restore(document.defaultView?.wrappedJSObject,video,target,Math.min(message.time,video.duration),message.play===true))return;
+      if(message.play!==true)video.pause();
+      send();
     } else if (message?.action === "restore_mango") {
       const video=[...videos].find(([,id])=>String(id)===message.id)?.[0],epoch=video&&mediaEpoch.get(video);
       const target=video&&epoch?.id===message.epoch&&Thru3DMango.binding(video,mangoData,network.filter(c=>c.at>=epoch.since),location.href,[...videos.keys()].filter(v=>!encrypted.has(v)));
@@ -679,6 +889,10 @@
       closed = true; pauseLease = null; weiboChoice = null; bilibiliChoice=null;mangoChoice=null;
       mangoButton?.dispose();mangoButton=null;
       youkuButton?.dispose();youkuButton=null;youkuChoice=null;
+      niconicoButton?.dispose();niconicoButton=null;niconicoChoice=null;niconicoReturnPause=null;
+      iqiyiButton?.dispose();iqiyiButton=null;iqiyiChoice=null;
+      iqiyiReturnPause=null;
+      douyinReturnPause=null;douyinChoice=null;for(const b of douyinButtons.values())b.dispose();douyinButtons.clear();
       bilibiliButton?.dispose();bilibiliButton=null;
       tencentButton?.dispose();tencentButton=null;tencentChoice=null;
     } });

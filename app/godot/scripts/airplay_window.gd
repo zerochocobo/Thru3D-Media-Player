@@ -30,6 +30,8 @@ var _presenting := true
 var _display_attached := false
 var _display_stopping := false
 var _attached_at := 0
+var _display_diagnostic_key := ""
+var _display_diagnostic_at := 0
 
 func bind(owner_node: Node, bridge: Object) -> void:
 	host = owner_node; platform = bridge
@@ -82,18 +84,7 @@ func tick() -> void:
 		window.set_compositor(layer != null); window.frame.visible = false; window.refresh()
 	if epoch > 0 and pip.windows.has(1):
 		var window: Node3D = pip.windows[1]
-		var target := _target_size(data)
-		fit_source(window, target.x, target.y)
-		window.frame.visible = int(data.get("frames", 0)) > 0 and str(data.get("error", "")).is_empty()
-		if layer:
-			window.frame.visible = _sync_layer(data) and window.frame.visible \
-				and Vector2i(int(data.get("width", 0)), int(data.get("height", 0))) == target
-			if window.frame.visible:
-				layer.sort_order = _layer_order(window)
-				window.frame.visible = layer.resize_decoder_producer(Vector2i(int(data.get("width", 1920)), int(data.get("height", 1080)))) \
-					and layer.present(window.global_transform, window.size, Rect2(0, 0, 1, 1))
-				if not window.frame.visible: layer.hide()
-			else: layer.hide()
+		_present_window(window, data)
 		if window.source_muted != bool(data.get("muted", false)):
 			window.source_muted = bool(data.get("muted", false)); window.refresh()
 		var values: Array = data.get("transform", [])
@@ -109,6 +100,44 @@ func tick() -> void:
 	var key := str([data.get("state", ""), pairing_code, data.get("receiver_error", ""), data.get("error", ""), data.get("audio_error", "")])
 	if key != _state_key:
 		_state_key = key; host.cast_session.refresh()
+
+func _present_window(window: Node3D, data: Dictionary) -> void:
+	var target := _target_size(data)
+	var output := Vector2i(int(data.get("width", 0)), int(data.get("height", 0)))
+	fit_source(window, target.x, target.y)
+	var reason := "visible"
+	if layer:
+		var synced := _sync_layer(data)
+		if not str(data.get("error", "")).is_empty(): reason = "decoder_error"
+		elif not synced: reason = "producer_pending"
+		elif output != target: reason = "size_mismatch"
+		# Rendered notifications are diagnostic timing samples. Waiting for one before
+		# submitting the XR layer can leave the Surface consumer and this window waiting.
+		elif int(data.get("submitted_frames", 0)) <= 0: reason = "waiting_decoder_output"
+		else:
+			layer.sort_order = _layer_order(window)
+			if not layer.resize_decoder_producer(output): reason = "producer_resize_failed"
+			elif not layer.present(window.global_transform, window.size, Rect2(0, 0, 1, 1)): reason = "layer_present_failed"
+		if reason != "visible": layer.hide()
+	else:
+		if not str(data.get("error", "")).is_empty(): reason = "decoder_error"
+		elif int(data.get("frames", 0)) <= 0: reason = "waiting_texture_frame"
+	window.frame.visible = reason == "visible"
+	_diagnose_display(data, reason)
+
+func _diagnose_display(data: Dictionary, reason: String) -> void:
+	var slot := int(data.get("layer_slot", 0))
+	var expected := int(layer.id) if layer else 0
+	var pending := int(pending_layer.id) if pending_layer else 0
+	var output := Vector2i(int(data.get("width", 0)), int(data.get("height", 0)))
+	var key := str([epoch, reason, _target_size(data), output, slot, expected, pending])
+	var now := Time.get_ticks_msec()
+	if key == _display_diagnostic_key and now < _display_diagnostic_at: return
+	_display_diagnostic_key = key; _display_diagnostic_at = now + 5000
+	# Numeric stream state and fixed reason codes only; no sender identity or payload.
+	print("AirPlay display epoch=%d reason=%s target=%s output=%s slot=%d expected_slot=%d pending_slot=%d submitted_frames=%d frames=%d" % [
+		epoch, reason, _target_size(data), output, slot, expected, pending,
+		int(data.get("submitted_frames", 0)), int(data.get("frames", 0))])
 
 func _attach_layer(data: Dictionary) -> bool:
 	if not Methods.supports(platform, "airplay_receiver_attach_layer") or not Methods.supports(platform, "airplay_receiver_detach_layer"): return false

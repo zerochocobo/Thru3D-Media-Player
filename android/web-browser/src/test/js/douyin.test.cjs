@@ -132,7 +132,8 @@ test('reject DRM, ads, image albums, invalid durations and unbounded track data'
 });
 test('content bridge exports readiness only for the bound video and invalidates SPA changes',()=>{
  const timers=[],ports=[],signal=()=>({listeners:[],addListener(fn){this.listeners.push(fn)},emit(m){this.listeners.forEach(fn=>fn(m))}});
- const main={...player(),currentSrc:'blob:page',isConnected:true,readyState:4,currentTime:3,paused:false,ended:false,addEventListener(){},pause(){this.paused=true},play(){this.paused=false}};
+ const owner={parentElement:null,getAttribute:k=>k==='data-e2e-vid'?id:null,'__reactProps$fixture':{awemeInfo:raw()}};
+ const main={...player(),getAttribute:()=>null,parentElement:owner,currentSrc:'blob:https://www.douyin.com/synthetic',isConnected:true,readyState:4,currentTime:3,paused:false,ended:false,addEventListener(){},pause(){this.paused=true},play(){this.paused=false}};
  const splash={...main,duration:2.6,videoWidth:1080,videoHeight:1920,currentSrc:'https://static.test/splash.mp4'};
  const context={URL,location:{href:page},navigator:{userAgent:'fixture'},setTimeout(fn){timers.push(fn)},addEventListener(){},
   performance:{now(){return 0},getEntriesByType(){return [
@@ -145,6 +146,7 @@ test('content bridge exports readiness only for the bound video and invalidates 
   browser:{runtime:{connect(){const p={onMessage:signal(),onDisconnect:signal(),postMessage(){},disconnect(){}};ports.push(p);return p},
    connectNative(){const p={onMessage:signal(),onDisconnect:signal(),messages:[],postMessage(m){this.messages.push(m)},disconnect(){}};ports.push(p);return p}}}};
  vm.createContext(context);vm.runInContext(fs.readFileSync(path.join(root,'douyin.js'),'utf8'),context);
+ vm.runInContext(fs.readFileSync(path.join(root,'douyin-current.js'),'utf8'),context);
  vm.runInContext(fs.readFileSync(path.join(root,'media.js'),'utf8'),context);
  const flush=()=>{let n=0;while(timers.length){assert.ok(++n<100);timers.shift()()}};flush();
  const native=ports.find(p=>p.messages),network=ports.find(p=>!p.messages);
@@ -158,6 +160,7 @@ test('content bridge exports readiness only for the bound video and invalidates 
  network.onMessage.emit({type:'network',page,candidates:[request()],douyin:[api.normalize(raw())]});flush();
  assert.equal(native.messages.at(-1).videos[0].douyin_ready,false);assert.equal(native.messages.at(-1).videos[1].douyin_ready,true);
  const shared=raw();shared.video.bit_rate_audio=[{audio_meta:{file_id:'shared-file',url_list:{main_url:url}}}];
+ owner['__reactProps$fixture'].awemeInfo=shared;
  network.onMessage.emit({type:'network',page,candidates:[request()],douyin:[api.normalize(shared)]});flush();
  assert.equal(native.messages.at(-1).videos[1].douyin.observed_muxed,true);
  assert.equal(native.messages.at(-1).videos[1].douyin_ready,true);

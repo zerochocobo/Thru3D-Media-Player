@@ -37,6 +37,26 @@ class WebVideoDouyinCaptureTest {
         val d=WebVideoFormats.select(page,info!!){true}
         assertTrue(d.video.hasAudio);assertNull(d.audio);assertFalse(d.publicJson().toString().contains("synthetic"))
     }
+    @Test fun renderedFeedKeepsItsOriginalDocumentAndRejectsStaleOwners() {
+        val frame="https://www.douyin.com/"
+        val m=media().put("frame",frame).put("blob",true).put("source","")
+        val blob="blob:https://www.douyin.com/synthetic"
+        m.put("douyin_source",blob).put("capture_identity","rendered-selection").put("network_epoch",9)
+        m.getJSONObject("douyin").put("page",frame).put("binding","rendered_card").put("active_id",page.id).put("observed_file",source)
+            .put("src",blob).put("revision","1234abcd").put("width",m.getInt("width")).put("height",m.getInt("height"))
+        assertEquals(page,WebVideoDouyinCapture.selectedPage(m))
+        assertNotNull(WebVideoDouyinCapture.candidate(page,m))
+        val network=WebVideoNetworkCapture({uri,_,_->uri to mp4(true)},{true})
+        assertNotNull(WebVideoDouyinCapture.resolve(page,m,network))
+        assertEquals(page,WebVideoDouyinCapture.page(frame,m))
+        assertTrue(WebVideoDouyinCapture.keeps(page,m,JSONObject(m.toString())))
+        val changed=JSONObject(m.toString());changed.getJSONObject("douyin").put("revision","1234abce")
+        assertFalse(WebVideoDouyinCapture.keeps(page,m,changed))
+        m.getJSONObject("douyin").put("active_id","7674225615168824549")
+        assertNull(WebVideoDouyinCapture.selectedPage(m));assertNull(WebVideoDouyinCapture.candidate(page,m))
+        m.getJSONObject("douyin").put("page",page.url).put("active_id",page.id)
+        assertNull(WebVideoDouyinCapture.selectedPage(m))
+    }
     @Test fun silentFileNeverPassesAsPlayable() {
         val network=WebVideoNetworkCapture({uri,_,_->uri to mp4(false)},{true})
         assertNull(WebVideoDouyinCapture.resolve(page,media(),network))

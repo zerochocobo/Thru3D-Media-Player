@@ -50,6 +50,8 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
     private var baseNs = 0L
     private var wallNs = 0L
     private var frames = 0L
+    private var submittedFrames = 0L
+    private var videoInputs = 0L
     private var revision = 0L
     private var decodedWidth = 0
     private var decodedHeight = 0
@@ -135,7 +137,7 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
                 if (replacing) { stopVideo(); waitingVideo = null; packets.restartVideo() }
                 synchronized(lock) {
                     surface = producer; direct = true; surfaceWidth = w; surfaceHeight = h
-                    frames = 0; decodedWidth = 0; decodedHeight = 0; outputWidth = 0; outputHeight = 0
+                    frames = 0; submittedFrames = 0; videoInputs = 0; decodedWidth = 0; decodedHeight = 0; outputWidth = 0; outputHeight = 0
                     layerSlot = slot // Publish only after the previous codec has stopped writing.
                     attached = true; error = ""
                 }
@@ -153,7 +155,7 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
         if (id > 0 && now >= nextDiagnosticMs) {
             nextDiagnosticMs = now + 5000
             // Numeric pipeline state only; no sender identity, PIN, keys or media payload.
-            Log.i("Thru3D-Airplay", "Mirror pipeline epoch=$id target=${width}x$height video_packets=${receivedVideo.get()} audio_packets=${receivedAudio.get()} config_bytes=${packets.config.size} ready=${packets.videoReady()} attached=$attached output=${decodedWidth}x$decodedHeight frames=$frames audio_bytes=$audioBytes suspended=$suspended")
+            Log.i("Thru3D-Airplay", "Mirror pipeline epoch=$id target=${width}x$height video_packets=${receivedVideo.get()} audio_packets=${receivedAudio.get()} config_bytes=${packets.config.size} ready=${packets.videoReady()} attached=$attached output=${decodedWidth}x$decodedHeight frames=$frames video_inputs=$videoInputs submitted_frames=$submittedFrames slot=$layerSlot direct=$direct video_error=${error.isNotEmpty()} audio_bytes=$audioBytes suspended=$suspended")
         }
         if (attached && !direct && scheduled.compareAndSet(false, true)) render(Runnable {
             try {
@@ -167,7 +169,8 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
         })
         return synchronized(lock) { val completed = org.json.JSONArray(); while (released.isNotEmpty()) completed.put(released.removeFirst())
             JSONObject().put("epoch", epoch).put("width", if (decodedWidth > 0) decodedWidth else width).put("height", if (decodedHeight > 0) decodedHeight else height)
-            .put("frames", frames).put("revision", revision).put("released", completed).put("muted", muted).put("error", error)
+            .put("frames", frames).put("submitted_frames", submittedFrames).put("video_inputs", videoInputs)
+            .put("revision", revision).put("released", completed).put("muted", muted).put("error", error)
             .put("target_width", width).put("target_height", height).put("layer_slot", layerSlot)
             .put("video_ready", packets.videoReady()).put("on_layer", direct).put("suspended", suspended).put("audio_error", audioError).put("audio_bytes", audioBytes)
             .put("transform", org.json.JSONArray(matrix.map { it.toDouble() })) }
@@ -199,7 +202,7 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
             Log.i("Thru3D-Airplay", "Video decoder started ${width}x$height path=${if (direct) "layer" else "texture"}")
             videoConfig = config
         }
-        return feed(video!!, p)
+        return feed(video!!, p).also { if (it) synchronized(lock) { videoInputs++ } }
     }
     private fun feedAudio(p: AirplayPackets.Packet): Boolean {
         if (muted || audioError.isNotEmpty() || baseNs == 0L || p.ns < baseNs - 100_000_000) return true
@@ -236,6 +239,9 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
             } else if (index >= 0) {
                 val target = wallNs + info.presentationTimeUs*1000
                 codec.releaseOutputBuffer(index, target.coerceIn(System.nanoTime(), System.nanoTime()+200_000_000))
+                // Queueing to a Surface precedes its consumer's rendered notification. An XR
+                // layer must be submitted before that notification can be used as evidence.
+                if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) synchronized(lock) { submittedFrames++ }
             } else return
         }
     }
@@ -320,7 +326,7 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
         val old = video; video = null
         old?.let { runCatching { it.stop() }; runCatching { it.release() } }
         videoConfig = ByteArray(0)
-        synchronized(lock) { frames = 0; decodedWidth = 0; decodedHeight = 0; outputWidth = 0; outputHeight = 0 }
+        synchronized(lock) { frames = 0; submittedFrames = 0; videoInputs = 0; decodedWidth = 0; decodedHeight = 0; outputWidth = 0; outputHeight = 0 }
     }
     fun close() { detach(epoch); worker.post { thread.quitSafely() } }
     private fun <T> preserveOes(action: () -> T): T {
