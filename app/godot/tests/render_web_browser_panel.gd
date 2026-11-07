@@ -108,6 +108,8 @@ func _run() -> void:
 	if "--matte" in OS.get_cmdline_user_args():
 		menu.web_browser.windows[1].depth.matte = true
 		menu.web_browser.windows[1].refresh()
+	if "--pure-page" in OS.get_cmdline_user_args():
+		menu.web_browser.windows[1]._activate(menu.web_browser.windows[1].effect_controls.CHROME)
 	if "--effect-controls" in OS.get_cmdline_user_args():
 		var host: Node3D = menu.web_browser.windows[1]
 		if "--depth-boost" in OS.get_cmdline_user_args(): host.depth.strength=1.5
@@ -131,6 +133,7 @@ func _run() -> void:
 	if "--depth-settings" in OS.get_cmdline_user_args(): suffix += "-depth-settings"
 	elif "--depth" in OS.get_cmdline_user_args(): suffix += "-depth"
 	if "--matte" in OS.get_cmdline_user_args(): suffix += "-matte"
+	if "--pure-page" in OS.get_cmdline_user_args(): suffix += "-pure-page"
 	if "--effect-controls" in OS.get_cmdline_user_args(): suffix += "-effect-controls"
 	if "--depth-boost" in OS.get_cmdline_user_args(): suffix += "-boost"
 	if "--depth-startup" in OS.get_cmdline_user_args(): suffix += "-startup"

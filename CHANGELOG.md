@@ -4,6 +4,14 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.17.1 — 2026-11-07
+
+- Add a pure-page browser view that hides menus, borders and resize handles while keeping page clicks, scrolling and region focus available; toggle again to restore chrome. Keep the 3D strength popup above the lower frame so it remains visible and usable.
+- Leave webpage fullscreen and media-server playback events in the browser, including browser 3D. Remove automatic native handoff and its speculative background pre-resolution; only explicit playback actions enter the player. Retain existing Emby/Jellyfin/Plex manual buttons and original-document return, without adding the withdrawn server Beta experiment.
+- Add compatible Youku Play Beta with observed current-media binding and retained-page/playhead return. Account, source, entitlement and site verification limits remain; local acceptance does not bypass a headset verification challenge. iQIYI adaptation remains work in progress and is not advertised as available Beta.
+- Default AirPlay reception to pairing without a user-entered code, with a persistent global “require password” option that displays a fresh verification code when enabled. Keep encrypted pairing in both modes. Preserve decoder parameter sets across configuration/frame timestamps to improve first-connect picture/audio readiness, including affected iPad sessions; not a universal phone/OS acceptance claim.
+- Exclude private-beach resources from all Release and default Debug builds, hide the entry and fall back saved selections to the cinema. The explicit include option is Debug-only and rejected for Release; retained runtime/shader scaffolding is not a published usable scenery. Model/media payloads, keys, passwords, profiles/backups, private settings and internal development/promotion remain excluded. Douyin and 3D text protection remain unavailable.
+
 ## 0.17.0 — 2026-11-07
 
 - Add experimental browser-page/focused-region 2D-to-3D and person passthrough, separately or combined, with depth strength/position/render controls. Improve focused picking, lower-page control placement, sharpness, cold-start feedback and automatic collapse of idle strength popups. Device, page, protection and performance limits apply.

@@ -12,7 +12,7 @@ SPEC = importlib.util.spec_from_file_location("prepare_airplay", ROOT / "tools/e
 PREPARE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PREPARE)
 SOURCE = json.loads((ROOT / "third_party/airplay/sources.json").read_text("utf-8"))["sources"][0]
-PATCH = "native/airplay/patches/0008-fix-pin-pairing-proof-length.patch"
+PATCHES = ["native/airplay/patches/" + name for name in SOURCE["patches"]]
 
 
 class AirplayPreparationTest(unittest.TestCase):
@@ -29,9 +29,10 @@ class AirplayPreparationTest(unittest.TestCase):
         manifest = self.root / "third_party/airplay/sources.json"
         manifest.parent.mkdir(parents=True)
         manifest.write_text(json.dumps({"sources": [SOURCE]}), encoding="utf-8")
-        patch = self.root / PATCH
-        patch.parent.mkdir(parents=True)
-        patch.write_bytes((ROOT / PATCH).read_bytes().replace(b"\r\n", b"\n"))
+        for name in PATCHES:
+            patch = self.root / name
+            patch.parent.mkdir(parents=True, exist_ok=True)
+            patch.write_bytes((ROOT / name).read_bytes().replace(b"\r\n", b"\n"))
         self.old_root, self.old_build = PREPARE.ROOT, PREPARE.BUILD
         PREPARE.ROOT, PREPARE.BUILD = self.root, self.build
         self.destination = self.build / "deps/uxplay"
@@ -42,7 +43,8 @@ class AirplayPreparationTest(unittest.TestCase):
         self.temp.cleanup()
 
     def assert_patched(self):
-        self.assertEqual(PREPARE.digest(self.header), SOURCE["patched_files"]["lib/raop_handlers.h"])
+        for name, expected in SOURCE["patched_files"].items():
+            self.assertEqual(PREPARE.digest(self.destination / name), expected)
 
     def test_patch_applied_in_nested_worktree(self):
         PREPARE.main()
@@ -65,11 +67,19 @@ class AirplayPreparationTest(unittest.TestCase):
         self.assert_patched()
 
     def test_unexpected_patch_output_is_rejected(self):
-        patch = self.root / PATCH
+        patch = self.root / PATCHES[0]
         patch.write_bytes(patch.read_bytes().replace(b"proof[20]", b"proof[21]"))
         with self.assertRaisesRegex(RuntimeError, "patched source digest differs"):
             PREPARE.main()
         self.assertFalse((self.destination / ".thru3d-source").exists())
+
+    def test_stale_success_marker_repairs_unpatched_mirror_transport(self):
+        PREPARE.main()
+        name = "lib/raop_rtp_mirror.c"
+        original = self.build / "extract" / SOURCE["sha256"] / SOURCE["root"] / name
+        (self.destination / name).write_bytes(original.read_bytes().replace(b"\r\n", b"\n"))
+        PREPARE.main()
+        self.assert_patched()
 
 
 if __name__ == "__main__":

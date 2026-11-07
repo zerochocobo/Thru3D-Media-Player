@@ -35,8 +35,8 @@ def main():
                 raise RuntimeError(f"AirPlay download digest differs: {source['id']}")
             shutil.copyfile(download, archive)
         destination = BUILD / ("sources" if source["id"] == "openssl" else "deps") / (source["root"] if source["id"] == "openssl" else source["id"])
-        patch = ROOT / "native/airplay/patches/0008-fix-pin-pairing-proof-length.patch"
-        expected = source["sha256"] + (":" + digest(patch) if source["id"] == "uxplay" else "")
+        patches = [ROOT / "native/airplay/patches" / name for name in source.get("patches", [])]
+        expected = source["sha256"] + "".join(":" + digest(patch) for patch in patches)
         marker = destination / ".thru3d-source"
         if marker.is_file() and marker.read_text("ascii") == expected and patched_files_valid(destination, source):
             continue
@@ -47,13 +47,15 @@ def main():
         # These are reproducible sources under build/, never credentials or a user backup.
         shutil.copytree(extraction / source["root"], destination, dirs_exist_ok=True)
         if source["id"] == "uxplay":
-            header = destination / "lib/raop_handlers.h"
-            header.write_bytes(header.read_bytes().replace(b"\r\n", b"\n"))
+            for name in source.get("patched_files", {}):
+                target = destination / name
+                target.write_bytes(target.read_bytes().replace(b"\r\n", b"\n"))
             # git apply in a repository subdirectory silently skips paths outside that prefix.
             # Apply from the workspace root with an explicit destination, then verify its output.
-            subprocess.run(["git", "apply", "--whitespace=nowarn",
-                            "--directory=" + destination.relative_to(ROOT).as_posix(), str(patch)],
-                           cwd=ROOT, check=True)
+            for patch in patches:
+                subprocess.run(["git", "apply", "--whitespace=nowarn",
+                                "--directory=" + destination.relative_to(ROOT).as_posix(), str(patch)],
+                               cwd=ROOT, check=True)
         if not patched_files_valid(destination, source):
             raise RuntimeError(f"AirPlay patched source digest differs: {source['id']}")
         marker.write_text(expected, "ascii")

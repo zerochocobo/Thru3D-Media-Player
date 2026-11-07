@@ -8,6 +8,7 @@ const ScreenEdit := preload("res://scripts/environments/private_beach_screen_edi
 const BeachMovement := preload("res://scripts/environments/private_beach_locomotion.gd")
 signal screen_committed(parameters: Dictionary)
 signal view_committed(view: Dictionary)
+signal hours_committed(hours: float)
 var saved_screen := {}
 var saved_view := {}
 var view_restore_failed := false
@@ -23,6 +24,10 @@ var _view_stable_time := 0.0
 var _view_unsaved_time := 0.0
 var beach: Node3D
 var _view_floor_y := INF
+## Sun, moon and firework-button gestures work in both watch and free movement.
+var _scene_hand := ""
+var _scene_kind := ""
+var _scene_hover := {}
 
 func _ready() -> void:
 	# Refresh the tracked viewer before the child host may commit a screen edit.
@@ -139,7 +144,9 @@ func _remember_view(delta: float,force := false,accept_fallback := false) -> voi
 
 func _update_active() -> void:
 	active=selected and _presented and is_ready and is_instance_valid(_rig) and is_instance_valid(_camera)
-	if beach: beach.set_presented(active)
+	if beach:
+		beach.set_presented(active)
+		if beach.fireworks!=null: beach.fireworks.audio.listener=_camera
 	if not active:
 		suspend(); _restore_original_rig(); set_process(false); return
 	if not _has_original_rig:
@@ -241,6 +248,59 @@ func recenter_view() -> bool:
 	if applied: _sync_tracking(); _remember_view(0,true,true)
 	return applied
 
+func scene_press(hand: String,origin: Vector3,direction: Vector3) -> bool:
+	if not active or not _position_applied or not _tracking_ready() or not _scene_hand.is_empty() or not _capture_hand.is_empty(): return false
+	if beach.firework_hit(origin,direction):
+		beach.press_firework(hand); _scene_kind="firework"
+	elif beach.begin_drag(direction): _scene_kind="drag"
+	else: return false
+	_scene_hand=hand
+	return true
+
+func scene_held(hand: String) -> bool:
+	return _scene_hand==hand
+
+func scene_release(hand: String) -> bool:
+	if hand.is_empty() or _scene_hand!=hand: return false
+	var kind := _scene_kind
+	_scene_hand=""; _scene_kind=""
+	if kind=="firework": beach.release_firework(hand)
+	else:
+		beach.end_drag()
+		hours_committed.emit(beach.hours)
+	_sync_scene_highlight()
+	return true
+
+## Returns true when this hand has just come onto a target, for haptic feedback.
+func scene_hover(hand: String,origin: Vector3,direction: Vector3,valid: bool) -> bool:
+	var target := ""
+	if valid and active and _position_applied:
+		if beach.firework_hit(origin,direction): target="firework"
+		elif beach.celestial_hit(direction): target="body"
+	var entered: bool=not target.is_empty() and target!=_scene_hover.get(hand,"")
+	if _scene_hover.get(hand,"")!=target:
+		_scene_hover[hand]=target
+		_sync_scene_highlight()
+	return entered
+
+func _sync_scene_highlight() -> void:
+	if beach: beach.set_scene_highlight(_scene_kind=="drag" or _scene_hover.values().has("body"),_scene_hover.values().has("firework"))
+
+func suspend() -> void:
+	if not _scene_hand.is_empty(): scene_release(_scene_hand)
+	super.suspend()
+
+func update_pointer(hand: String,origin: Vector3,direction: Vector3,valid: bool = true) -> void:
+	if hand==_scene_hand and not hand.is_empty():
+		if not valid: scene_release(hand)
+		elif _scene_kind=="drag": beach.drag_to(direction)
+		return
+	super.update_pointer(hand,origin,direction,valid)
+
+func cancel_pointer(hand: String) -> void:
+	scene_release(hand)
+	super.cancel_pointer(hand)
+
 func pointer_press(hand: String,origin: Vector3,direction: Vector3) -> bool:
 	if not _position_applied or not _tracking_ready(): return false
 	return super.pointer_press(hand,origin,direction)
@@ -300,6 +360,12 @@ func request_screen(changes: Dictionary) -> bool:
 
 func set_night(enabled: bool) -> void:
 	if beach: beach.set_night(enabled)
+
+func set_hours(value: float) -> void:
+	if beach: beach.set_hours(value)
+
+func set_screen_light(strength: float) -> void:
+	if beach: beach.set_screen_light(strength)
 
 func set_film_light(colors: Array) -> void:
 	if not beach or colors.size()!=3: return

@@ -61,105 +61,58 @@ func run() -> void:
 	menu.web_browser.open(platform.browser.url); poll()
 	menu.chosen.connect(func(uri, title): selected.append([uri, title]))
 	platform.browser.fullscreen = true; poll()
-	check(menu.web_video.pending == 0, "A page fullscreen event alone does not take over non-video content")
-	fullscreen(1)
-	check(menu.web_browser.handoff and menu.web_browser.handoff_auto, "Video fullscreen automatically starts the existing asynchronous resolver")
-	var first := platform.web_id; poll(); poll()
-	check(platform.web_id == first and not platform.actions.has("pause"), "Polling does not duplicate extraction or stop web playback while resolving")
-	platform.web_state = {"id": menu.web_video.pending, "state": "error"}
-	menu.web_video.next_poll = 0; menu.web_video.tick(); poll()
-	check(not menu.web_browser.handoff and menu.web_video.result.is_empty() and platform.browser.playing, "Extraction failure leaves web playback uninterrupted")
-	poll(); check(platform.web_id == first, "A failed fullscreen entry is attempted once")
-	fullscreen(2); resolve_ready()
-	check(platform.commands[-2].action == "capture_video" and platform.commands[-2].request == 2, "Return target is captured before pausing the source tab")
-	check(platform.commands.back().action == "pause_tab" and selected.is_empty(), "Native playback waits for the source tab audio acknowledgement")
-	check(menu.web_browser.handoff_start_ms == 43250, "Fullscreen video position wins over a larger playing advertisement")
-	acknowledge_pause()
-	check(selected.size() == 1 and not menu.visible, "Acknowledged fullscreen handoff starts native playback")
-	check(menu.collections.selected_entry.get("web_fullscreen", false), "Native open receives the format-driven fullscreen marker")
-	check(not menu.web_browser.playback_return.is_empty(), "Closing the browser UI retains its exact return context")
-	var origin: String = platform.browser.url
+	check(menu.web_video.pending == 0, "Page fullscreen stays in the browser")
+	var origins := ["https://www.youtube.com/watch?v=jNQXAC9IVRw", "https://www.bilibili.com/video/BV1xx411c7mD/",
+		"https://weibo.com/123456/POST1", "https://v.qq.com/x/page/q326831cny0.html",
+		"https://www.mgtv.com/b/822501/24773688.html", "https://v.youku.com/v_show/id_XOTUxMzg4NDMy.html"]
+	for index in origins.size():
+		platform.browser.url = origins[index]
+		fullscreen(index + 1); poll()
+		check(not menu.web_browser.handoff and menu.web_video.pending == 0 and selected.is_empty(),
+			"Video fullscreen never starts native resolution: " + str(index))
+		check(menu.web_browser.active() and platform.browser.playing and not platform.commands.any(func(command): return command.action in ["pause_tab", "capture_video", "retain_page"]),
+			"Fullscreen keeps web audio, document and UI active: " + str(index))
+	platform.browser.fullscreen_video = false; poll()
+	await create_timer(3.1).timeout; poll()
+	check(platform.web_id == 0 and menu.web_video.result.is_empty(), "Ordinary playback no longer runs background extraction")
+	fullscreen(20)
+	var host: Node3D = menu.web_browser.windows[1]
+	host.depth.config_path = "user://web_fullscreen_depth_%d.cfg" % OS.get_process_id()
+	host.depth.enabled = false; host._activate(menu.web_browser.BASE + 16); poll()
+	check(host.depth.enabled and menu.web_browser.active() and not menu.web_browser.handoff and platform.browser.fullscreen_video,
+		"Fullscreen webpage conversion stays in the same browser window")
+	host.depth.enabled = false
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(host.depth.config_path))
+	platform.browser.url = "https://www.bilibili.com/video/BV1xx411c7mD/"
+	platform.browser.bilibili_beta_available = true; platform.browser.videos[0].bilibili_ready = true; poll()
+	menu.web_browser.action(menu.web_browser.BASE + 18)
+	check(menu.web_browser.handoff and menu.web_browser.handoff_waiting_pause and menu.web_video.pending == 0,
+		"Explicit Beta still pauses before resolving while the website is fullscreen")
+	platform.browser.playing = false; platform.browser.videos[0].playing = false; poll()
+	check(platform.beta_requests == 1 and menu.web_video.pending > 0, "Only the clicked Beta starts its native resolver")
+	menu.web_browser._cancel_handoff(); platform.browser.bilibili_beta_available = false
 	var main := ProbeMain.new(); var video := ReturnVideo.new()
 	main.recent_menu = menu; main.video = video
-	video.local_uri = origin; video.media.begin(7)
-	main._on_video_playback_failed(); await process_frame
-	check(main.restored == 1 and video.closed == 1, "Native startup failure closes native playback and reopens the browser once")
-	var returned: Dictionary = platform.commands.back()
-	check(returned.action == "restore_video" and returned.origin == origin and returned.navigation == 5 and returned.tab == 1,
-		"Recovery addresses the original tab and document without navigating a URL")
-	check(returned.play and returned.position_ms == 43250 and not returned.exit_fullscreen, "Startup failure resumes the original web position in fullscreen")
-	poll(); check(platform.web_id == first + 1, "Failure return does not immediately trigger another native takeover")
-	fullscreen(3); resolve_ready(); acknowledge_pause()
-	video.local_uri = origin; video.media.begin(8); video.media.frame_counter = 1; video.control.observe(67000, 120000)
-	main.playback_mode = "repeat_one"
-	main._close_current_media()
-	returned = platform.commands.back()
-	check(main.restored == 2 and returned.position_ms == 67000, "User exit returns the native playback progress to the same page")
-	check(not returned.play and returned.exit_fullscreen, "User exit leaves the web video paused and exits its fullscreen")
-	check(menu.web_browser.playback_return.is_empty(), "Return context is consumed exactly once")
-	check(video.loop_enabled, "Returning from fullscreen restores the ordinary playback loop preference")
-	fullscreen(4); resolve_ready(); acknowledge_pause()
-	video.local_uri = origin; video.media.begin(9); video.media.frame_counter = 1; video.control.observe(120000, 120000)
-	main._on_video_completed(); await process_frame
-	check(main.restored == 3 and not platform.commands.back().play, "Natural completion returns to the web page without replaying it")
-	fullscreen(5); resolve_ready()
-	menu.web_browser.handoff_started_ms = Time.get_ticks_msec() - 90001
-	poll()
-	check(not menu.web_browser.handoff and platform.commands.back().action == "restore_video" and platform.commands.back().play,
-		"Missing web pause acknowledgement falls back to web playback")
-	fullscreen(6)
-	platform.browser.navigation = 6; poll()
-	check(not menu.web_browser.handoff and menu.web_video.pending == 0, "A new document cancels extraction bound to the old page")
-	fullscreen(7)
-	platform.browser.videos[0].protected = true
-	menu.web_browser._cancel_handoff(); menu.web_browser.fullscreen_seen.erase(1); poll()
-	check(not menu.web_browser.handoff, "Protected fullscreen video stays with the website")
-	platform.acknowledge_capture = false
-	fullscreen(8); resolve_ready()
-	check(menu.web_browser.pause_started == 0, "Web playback is not paused before the return target is acknowledged")
-	menu.web_browser.capture_started_ms = -10000; poll()
-	check(not menu.web_browser.handoff and platform.browser.playing, "Missing capture acknowledgement falls back without interrupting the page")
-	platform.acknowledge_capture = true
-	fullscreen(9); resolve_ready()
-	platform.browser.navigation = 6; platform.browser.active = false; poll()
-	check(not menu.web_browser.handoff and platform.commands.back().action == "resume_tab", "A document change cancels only the addressed pause without resuming peer windows")
-	menu.web_browser.playback_return = {"native_uri": origin}
-	menu.web_browser.playback_selected("file:///different.mp4")
-	check(menu.web_browser.playback_return.is_empty(), "Choosing another source discards the old web return")
-	prefetch_checks()
 	await manual_return_checks(main, video)
-	server_play_checks()
-	video.free(); main.free(); menu.free(); platform.free()
-	await process_frame
+	await server_play_checks()
+	video.free(); main.free(); menu.free(); platform.free(); await process_frame
 	await format_checks()
-	print("Web fullscreen handoff: %d checks, %d failures" % [checks, failures.size()])
+	print("Web fullscreen remains in browser: %d checks, %d failures" % [checks, failures.size()])
 	for failure in failures: push_error(failure)
 	quit(0 if failures.is_empty() else 1)
 
 func server_play_checks() -> void:
 	var origins := ["http://192.168.1.20:8096/web/index.html#!/videoosd", "http://192.168.1.20:8096/jellyfin/web/#/video",
 		"http://192.168.1.20:32400/web/index.html#!/server/local/details?key=%2Flibrary%2Fmetadata%2F4"]
-	for index in origins.size(): server_play_check(origins[index], index)
-
-func server_play_check(origin: String, index: int) -> void:
-	var browser: RefCounted = menu.web_browser
 	menu.visible = true; menu.section = Menu.Section.WEB
-	platform.browser.merge({"url": origin, "tab_id": 1, "navigation": 50 + index, "focused_window": 1,
-		"fullscreen": false, "fullscreen_video": true, "fullscreen_request": 90 + index, "active": true, "playing": true,
-		"videos": [{"id": str(1 + index), "server_media": true, "server_play": true, "fullscreen": true, "playing": true, "time": 31.0, "width": 8192, "height": 4096}]}, true)
-	browser.open()
-	browser.prefetch_uri = origin; browser.prefetch_ms = Time.get_ticks_msec()
-	browser.prefetch_result = {"state": "ready", "uri": "old-server-version"}
-	poll()
-	check(browser.handoff and browser.handoff_auto and menu.web_video.pending > 0, "Server play starts native resolution without a DOM fullscreen request")
-	check(menu.web_video.result.is_empty(), "A new server play cannot reuse another episode/version cached on the same page")
-	var native_uri := origin.get_slice("#", 0) + ("#thru3d-plex=plex:4:1:0" if index == 2 else "#thru3d-video=21&MediaSourceId=version_2")
-	platform.web_state = {"id": menu.web_video.pending, "state": "ready", "uri": native_uri, "title": "Server movie"}
-	menu.web_video.next_poll = 0; menu.web_video.tick(); poll(); poll(); acknowledge_pause()
-	check(browser.has_playback_return(native_uri), "Credential-free server identity retains its original webpage return")
-	browser.restore_playback(false, 67000)
-	check(platform.commands.back().action == "restore_video" and platform.commands.back().origin == origin and platform.commands.back().position_ms == 67000,
-		"Server playback returns to the captured page at native progress")
+	for index in origins.size():
+		platform.browser.merge({"url": origins[index], "tab_id": 1, "navigation": 50 + index, "focused_window": 1,
+			"fullscreen_video": true, "fullscreen_request": 90 + index, "active": true, "playing": true,
+			"videos": [{"id": str(index + 1), "server_media": true, "server_play": true, "fullscreen": true,
+				"playing": true, "time": 31.0, "width": 8192, "height": 4096}]}, true)
+		menu.web_browser.open(); poll(); poll()
+		check(not menu.web_browser.handoff and menu.web_video.pending == 0 and menu.web_browser.active() and platform.browser.playing,
+			"Media-server play/fullscreen stays with its webpage: " + str(index))
 
 func manual_return_checks(main: ProbeMain, video: ReturnVideo) -> void:
 	var restores := main.restored
@@ -187,70 +140,16 @@ func manual_return_checks(main: ProbeMain, video: ReturnVideo) -> void:
 		restores += 1
 		check(main.restored == restores and menu.web_browser.active(), "Manual playback returns to the browser: " + exit_mode)
 		var returned: Dictionary = platform.commands.back()
-		check(returned.action == "select" and returned.tab == 3 and returned.window == 2,
-			"Manual return selects the original tab and window without reloading its URL")
+		check(platform.commands[-2].action == "resume_retained_page" and returned.action == "resume_tab" and returned.tab == 3 and returned.window == 2,
+			"Manual return rebinds the retained tab and releases its pause without reloading")
+		check(returned.restore_paused == (exit_mode == "failure") and not returned.was_playing,
+			"Manual return restores the original playing state only after native failure")
 		check(menu.web_browser.playback_return.is_empty(), "Manual return is consumed exactly once")
 		main._return_to_web_video(false, origin)
 		check(main.restored == restores, "A late completion cannot reopen the returned browser")
 	menu.web_browser.playback_return = {"native_uri": origin}
 	menu.web_browser.playback_selected(origin)
 	check(menu.web_browser.playback_return.is_empty(), "Opening the same URL outside the browser drops the old return context")
-
-func watch(url: String, navigation: int) -> void:
-	menu.web_browser._cancel_handoff()
-	platform.browser.merge({"url": url, "tab_id": 1, "navigation": navigation, "active": true, "playing": true,
-		"native_supported": true, "fullscreen_video": false, "videos": [{"id": "1", "width": 1920, "height": 1080, "playing": true, "time": 5.0}]}, true)
-	poll(); menu.web_browser.playing_since = Time.get_ticks_msec() - 3001; poll()
-func finish_resolve(state: String) -> void:
-	platform.web_state = {"id": menu.web_video.pending, "state": state, "uri": platform.browser.url, "title": "Video", "height": 1080}
-	menu.web_video.next_poll = 0; menu.web_video.tick(); poll()
-
-func prefetch_checks() -> void:
-	menu.visible = true; menu.section = Menu.Section.WEB; menu.web_browser.opened = true
-	var before: int = platform.web_id
-	watch("https://www.bilibili.com/video/BV1xx411c7mD/", 20)
-	check(platform.web_id == before + 1 and menu.web_video.pending > 0 and not menu.web_browser.handoff, "A steadily playing supported video is resolved in the background")
-	finish_resolve("error")
-	check(menu.web_video.result.is_empty() and menu.web_browser.prefetch_id == 0, "A background failure is never shown on the page")
-	menu.web_browser.playing_since = Time.get_ticks_msec() - 3001; poll()
-	check(platform.web_id == before + 1, "A failed background attempt is not repeated for the same page")
-	watch("https://www.bilibili.com/video/BV1yy411c7mD/", 21)
-	finish_resolve("ready")
-	check(menu.web_video.result.is_empty() and menu.web_browser.prefetch_result.get("state", "") == "ready", "A finished background result is kept silently")
-	var resolved: int = platform.web_id
-	fullscreen(30)
-	check(menu.web_browser.handoff and platform.web_id == resolved, "Fullscreen reuses the finished result without another extraction")
-	poll()
-	check(platform.commands[-2].action == "capture_video" and platform.commands[-2].request == 30, "The reused result captures the return before its tab pause")
-	watch("https://www.bilibili.com/video/BV1zz411c7mD/", 22)
-	var inflight: int = menu.web_video.pending
-	check(inflight > 0, "Another page starts its own background resolution")
-	fullscreen(31)
-	check(menu.web_browser.handoff and menu.web_video.pending == inflight and platform.web_id == resolved + 1, "Fullscreen adopts the running extraction instead of restarting it")
-	resolve_ready()
-	check(platform.commands.back().action == "pause_tab", "The adopted result pauses only the source tab")
-	watch("https://www.bilibili.com/video/BV1ww411c7mD/", 23)
-	check(menu.web_video.pending > 0, "Background resolution starts for the next page")
-	platform.browser.url = "https://www.bilibili.com/"; poll()
-	check(menu.web_video.pending == 0 and menu.web_browser.prefetch_id == 0, "Leaving the page cancels its background resolution")
-	watch("https://www.bilibili.com/video/BV1xx411c7mD/", 24)
-	platform.browser.videos[0].media_epoch = "frame:video:1"
-	poll()
-	check(menu.web_video.pending == 0, "A changed media epoch cancels a stale in-flight resolution")
-	menu.web_browser.playing_since = Time.get_ticks_msec() - 3001; poll(); finish_resolve("ready")
-	check(not menu.web_browser.prefetch_result.is_empty(), "The current media epoch can cache its own resolution")
-	platform.browser.videos[0].network_media = true; poll()
-	check(menu.web_browser.prefetch_result.is_empty(), "Newly observed network media supersedes a cached extractor result")
-	menu.web_browser.playing_since = Time.get_ticks_msec() - 3001; poll(); finish_resolve("ready")
-	platform.browser.videos[0].width = 640; platform.browser.videos[0].height = 360; poll()
-	check(menu.web_browser.prefetch_result.is_empty(), "Newly known browser dimensions invalidate an unchecked cached representation")
-	menu.web_browser.playing_since = Time.get_ticks_msec() - 3001; poll(); finish_resolve("ready")
-	platform.browser.videos[0].width = 3840; platform.browser.videos[0].height = 2160; poll()
-	check(menu.web_browser.prefetch_result.is_empty(), "Switching to member 4K at the same URL and media epoch invalidates the lower quality cache")
-	menu.web_browser.playing_since = Time.get_ticks_msec() - 3001; poll(); finish_resolve("ready")
-	platform.browser.videos[0].media_epoch = "frame:video:2"; poll()
-	check(menu.web_browser.prefetch_result.is_empty(), "SPA replacement at the same URL cannot reuse the previous movie")
-	menu.web_browser._cancel_handoff()
 
 func format_checks() -> void:
 	var host := ProjectionHost.new(); var player := Video.new(); root.add_child(player); player.set_process(false)

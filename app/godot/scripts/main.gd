@@ -619,7 +619,9 @@ func _ready() -> void:
 		if saved_beach_view is Dictionary: beach_environment.saved_view=saved_beach_view.duplicate(true)
 		else: beach_environment.view_restore_failed=true
 		beach_environment.configure(xr_origin, xr_camera)
-		beach_environment.set_night(bool(settings.get_value("private_beach", "night", false)))
+		beach_environment.set_hours(_beach_hours())
+		beach_environment.set_screen_light(float(settings.get_value("private_beach", "screen_light", 1.0)))
+		beach_environment.hours_committed.connect(func(hours: float) -> void: _on_setting_changed("beach_hours", hours))
 		beach_environment.view_relocated.connect(_on_cinema_view_relocated)
 		beach_environment.changed.connect(_on_cinema_environment_changed)
 		beach_environment.screen_committed.connect(_save_beach_screen)
@@ -657,6 +659,7 @@ func _ready() -> void:
 	report_timer.wait_time = REPORT_INTERVAL
 	report_timer.timeout.connect(_on_report_timer)
 	cast_session.bind(self, video.platform)
+	_sync_airplay_password()
 	airplay_session = preload("res://scripts/airplay_window.gd").new()
 	add_child(airplay_session)
 	airplay_session.bind(self, video.platform)
@@ -825,6 +828,7 @@ func _on_controller_release(action: String, hand: String = "") -> void:
 	var consumed_key := hand + "/" + action
 	var consumed: bool = _controller_consumed.has(consumed_key)
 	_controller_consumed.erase(consumed_key)
+	if action == "trigger_click" and beach_environment and beach_environment.scene_release(hand): stick_controls.suspend(); return
 	if is_instance_valid(airplay_session) and airplay_session.pip.release(hand, action): stick_controls.suspend(); return
 	if video and video.get("pip") and video.pip.release(hand, action): stick_controls.suspend(); return
 	if not interface_move.capture.is_empty() and interface_move.capture.hand == hand and interface_move.capture.input == action:
@@ -949,6 +953,8 @@ func _on_controller_button(action: String, hand: String = "") -> void:
 		return
 	if action == "ax_button" and hand == "right_hand" and _cinema_interaction_owns():
 		return
+	if action == "trigger_click" and first_press and _beach_scene_press(hand):
+		_controller_consumed[hand + "/" + action] = true; return
 	if action == "trigger_click" and first_press and _cinema_interaction_owns() and not _cinema_input_blocked():
 		cinema_environment.suspend(); _show_player_menu()
 		_controller_consumed[hand + "/" + action] = true; return
@@ -2262,7 +2268,10 @@ func _update_controller_feedback(delta: float) -> void:
 		# Optical photo aim does not require a physical controller grip pose.
 		if photo_active and pose == null and ray != null: pose = Transform3D(Basis.IDENTITY, ray[0])
 		if cinema_environment:
-			var valid_cinema_ray: bool = ray != null and focused and _cinema_interaction_owns() and not _cinema_input_blocked()
+			var scene_held: bool = cinema_environment == beach_environment and beach_environment.scene_held(hand)
+			var valid_cinema_ray: bool = ray != null and focused and (_cinema_interaction_owns() or scene_held) and not _cinema_input_blocked()
+			if _beach_active() and beach_environment.scene_hover(hand, ray[0] if ray != null else Vector3.ZERO, ray[1] if ray != null else Vector3.FORWARD, ray != null and focused and menu == null and not _cinema_input_blocked()):
+				_scene_target_pulse(hand)
 			cinema_environment.update_pointer(hand, ray[0] if ray != null else Vector3.ZERO, ray[1] if ray != null else Vector3.FORWARD, valid_cinema_ray)
 		var engaged: bool = not controller_bindings.down[hand].is_empty() \
 			or interface_move.capture.get("hand", "") == hand or _grab.get("hand", "") == hand \
@@ -4127,6 +4136,7 @@ func _library_settings() -> Dictionary:
 		"refresh_cap": Quality.load_refresh_cap(settings, low_end_gpu), "low_end_gpu": low_end_gpu,
 		"history": video.history_enabled, "privacy_mode": Privacy.mode, "file_settings_memory": Privacy.file_settings, "favorites_lock_level": favorites.lock_level if favorites else "relaxed",
 		"library_restore_position": bool(settings.get_value("library", "restore_position", true)),
+		"airplay_require_password": bool(settings.get_value("casting", "airplay_require_password", false)),
 		"seek_mode": video.SeekPolicy.normalize(video.seek_mode),
 		SeekStep.KEY: SeekStep.seconds(settings),
 		"depth_render": _depth_render_mode(),
@@ -4157,12 +4167,17 @@ func _library_settings() -> Dictionary:
 		"cinema_error": cinema_environment.error if cinema_environment else "",
 		"cinema_interaction": cinema_environment.interaction if cinema_environment else "watch",
 		"cinema_seat": str(cinema_environment.snapshot().get("seat", "")) if cinema_environment else "",
-		"beach_night": bool(settings.get_value("private_beach", "night", false)),
+		"beach_hours": _beach_hours(),
+		"beach_screen_light": float(settings.get_value("private_beach", "screen_light", 1.0)),
 		"beach_screen": _beach_screen_values(),
 		"beach_screen_default": _beach_screen_values(true),
 		"beach_screen_loading": beach_environment.beach.screen_loading if beach_environment else false,
 		"beach_screen_error": beach_environment.beach.screen_error if beach_environment else "",
 		"version": str(ProjectSettings.get_setting("application/config/version", ""))}
+
+func _sync_airplay_password() -> void:
+	if PlatformMethods.supports(platform_plugin, "airplay_receiver_require_password"):
+		platform_plugin.airplay_receiver_require_password(bool(settings.get_value("casting", "airplay_require_password", false)))
 
 func _on_setting_changed(key: String, value: Variant) -> void:
 	if key == UiTheme.CUSTOM_KEY:
@@ -4190,6 +4205,10 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 		settings.set_value("library", "cloud_page_sizes", sizes); settings.save(settings_path)
 		recent_menu.refresh(); return
 	match key:
+		"airplay_require_password":
+			if not value is bool: return
+			settings.set_value("casting", key, value); settings.save(settings_path)
+			_sync_airplay_password()
 		"watch_color":
 			settings.set_value("watch", "color", WristWatch.Palette.normalize(value))
 			settings.save(settings_path)
@@ -4295,9 +4314,13 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 				_sync_cinema_lights()
 		"cinema_interaction":
 			_cinema_request_interaction(str(value))
-		"beach_night":
-			settings.set_value("private_beach", "night", bool(value)); settings.save(settings_path)
-			if beach_environment: beach_environment.set_night(bool(value))
+		"beach_hours":
+			settings.set_value("private_beach", "hours", float(value)); settings.save(settings_path)
+			if beach_environment: beach_environment.set_hours(float(value))
+		"beach_screen_light":
+			settings.set_value("private_beach", "screen_light", float(value)); settings.save(settings_path)
+			if beach_environment: beach_environment.set_screen_light(float(value))
+			_update_cinema_film_light(0.0)
 			_update_background()
 		"cinema_screen_light":
 			settings.set_value("appearance", "cinema_screen_light", bool(value)); settings.save(settings_path)
@@ -5065,6 +5088,11 @@ func _cinema_scene_active() -> bool:
 func environment_for_background(id: String) -> Node3D:
 	return beach_environment if id=="private_beach" else grand_cinema_environment if id=="cinema" else null
 
+func _beach_hours() -> float:
+	# Earlier versions stored only a day/night choice.
+	var legacy_night: bool = settings.get_value("private_beach", "night", false)
+	return float(settings.get_value("private_beach", "hours", 21.0 if legacy_night else 9.0))
+
 func _beach_active() -> bool:
 	return beach_environment != null and cinema_environment==beach_environment and beach_environment.active
 
@@ -5120,6 +5148,19 @@ func _cinema_pointer_press(hand: String) -> bool:
 	_cinema_move_hands[hand] = true
 	cinema_environment.pointer_press(hand, ray[0], ray[1])
 	return true
+
+func _beach_scene_press(hand: String) -> bool:
+	if not _beach_active() or _cinema_input_blocked(): return false
+	var ray: Variant = _ray(hand)
+	if ray == null or not beach_environment.scene_press(hand, ray[0], ray[1]): return false
+	_video_control_tap.clear(); stick_controls.suspend()
+	_scene_target_pulse(hand)
+	return true
+
+func _scene_target_pulse(hand: String) -> void:
+	var controller := left_controller if hand == "left_hand" else right_controller
+	if controller is XRController3D and _controller_allowed(hand) and controller.get_is_active() and controller.get_has_tracking_data():
+		controller.trigger_haptic_pulse("haptic", 0.0, .10, .018, 0.0)
 
 func _on_cinema_seat_hovered(hand: String) -> void:
 	if not _cinema_interaction_owns() or _cinema_input_blocked() or hand not in ["left_hand", "right_hand"]: return
@@ -5281,7 +5322,8 @@ func _update_cinema_film_light(delta: float) -> void:
 	if not cinema_environment or not cinema_environment.active or not video: return
 	if not cinema_film_light:
 		cinema_film_light = CinemaFilmLight.new(); cinema_film_light.name = "CinemaFilmLight"; add_child(cinema_film_light)
-	if cinema_film_light.set_enabled(bool(settings.get_value("appearance", "cinema_screen_light", true))):
+	var wanted: bool = float(settings.get_value("private_beach", "screen_light", 1.0))>0.0 if _beach_active() else bool(settings.get_value("appearance", "cinema_screen_light", true))
+	if cinema_film_light.set_enabled(wanted):
 		cinema_environment.set_film_light(cinema_film_light.colors)
 	if not cinema_film_light.enabled: return
 	var screen: Dictionary = cinema_environment._manifest.get("screen", {})
@@ -5552,7 +5594,7 @@ func _on_session_control(operation: String) -> void:
 	if operation == "cinema_lights_cycle":
 		if not _cinema_scene_active() or photo_active: return
 		if _beach_active():
-			_on_setting_changed("beach_night", not beach_environment.beach.night)
+			_on_setting_changed("beach_hours", 9.0 if beach_environment.beach.night else 21.0)
 			_refresh_session_controls(); return
 		var modes := ["auto", "on", "off"]
 		var current := modes.find(str(settings.get_value("appearance", "cinema_lights", "auto")))

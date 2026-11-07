@@ -548,6 +548,13 @@ func _assign(slot: Dictionary, group: Dictionary, root: Transform3D, bit: int) -
 		var owner: Object = instance_from_id(id)
 		return is_instance_valid(owner) and owner.get("scene_overlay") == true)
 	slot.hole.material_override.shader = OVERLAY_HOLE_SHADER if overlay else HOLE_SHADER
+	# An HD popup crossing live eye-buffer chrome must clear that chrome after
+	# it draws. Opt in per surface; ordinary menu holes keep their existing order.
+	# Always reset reused slots so closing a popup cannot raise another menu's hole.
+	var hole_priority := HOLE_PRIORITY
+	for item in group.nodes:
+		hole_priority = maxi(hole_priority,int(item.node.get_meta("menu_hole_priority",HOLE_PRIORITY)))
+	slot.hole.material_override.render_priority = hole_priority
 	slot["companion"] = group.owners.keys().any(func(id):
 		var node: Object = instance_from_id(id)
 		return is_instance_valid(node) and node.get_meta("menu_companion", false))

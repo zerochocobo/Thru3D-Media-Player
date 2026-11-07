@@ -6,6 +6,7 @@ const STRENGTH := 986022
 const FOCUS := 986019
 const BOOST := 986023
 const OFF := 986024
+const CHROME := 986025
 const SLIDER_X := 0.15
 const ENTER_MS := 120
 const LEAVE_MS := 650
@@ -42,7 +43,7 @@ func _ready() -> void:
 	super(); _backdrop.visible = false; refresh()
 
 func sync(now: int = -1) -> void:
-	if not host or not host.visible or (host.browser.start_page.active(host.window_id) and not host.depth.enabled and not host.depth.matte):
+	if not host or not host.visible or (host.browser.start_page.active(host.window_id) and host.toolbar_shown and not host.depth.enabled and not host.depth.matte):
 		finish_drag(); _hide_controls(); near_hands.clear(); entered = -1; last_near = -1; return
 	var layout: Dictionary = host.full_page_layout()
 	var factor: float = float(layout.size.x) / host.page_size.x
@@ -69,7 +70,7 @@ func sync(now: int = -1) -> void:
 		if last_near < 0 or now - last_near >= LEAVE_MS: _hide_controls()
 
 func _state() -> Array:
-	return [host.depth.enabled,host.depth.matte,host.selecting,host.is_focused(),boosted,strength_open,I18n.language] if host else []
+	return [host.toolbar_shown,host.depth.enabled,host.depth.matte,host.selecting,host.is_focused(),boosted,strength_open,I18n.language] if host else []
 
 func set_strength_open(value: bool) -> void:
 	if strength_open == value: return
@@ -87,7 +88,7 @@ func observe_ray(hand: String, origin: Vector3, direction: Vector3, tracked: boo
 		near = uv != null and Rect2(0,0,1,1).has_point(uv)
 		var point: Variant = project_pointer(origin, direction, Transform3D.IDENTITY, false)
 		if point != null:
-			near = near or Rect2(-0.23,-0.065,0.46,0.13).has_point(Vector2(point.x,point.y))
+			near = near or Rect2(-0.38,-0.065,0.61,0.13).has_point(Vector2(point.x,point.y))
 			if host.depth.enabled and strength_open: near = near or strength_bounds().has_point(Vector2(point.x,point.y))
 	near_hands[hand] = near
 	sync(now)
@@ -105,8 +106,8 @@ func _draw() -> void:
 	if not host: return
 	var focus_icon := "close" if host.selecting else "expand" if host.is_focused() else "region_focus"
 	var focus_tip := "Cancel selection" if host.selecting else "Exit focus" if host.is_focused() else "Focus region"
-	for item in [[FOCUS,focus_icon,-0.15,host.selecting or host.is_focused(),focus_tip],[MATTE,"alpha",0.0,host.depth.matte,"Person passthrough"],[DEPTH,"depth",0.15,host.depth.enabled,"2D to 3D effect"]]:
-		_button(item[0],"",Vector2(item[2],0),Vector2.ONE*0.12,not host.chrome_hidden() if item[0]==FOCUS else true,item[1],item[3])
+	for item in [[CHROME,"browser_frame",-0.30,not host.toolbar_shown,"Hide browser frame" if host.toolbar_shown else "Show browser frame"],[FOCUS,focus_icon,-0.15,host.selecting or host.is_focused(),focus_tip],[MATTE,"alpha",0.0,host.depth.matte,"Person passthrough"],[DEPTH,"depth",0.15,host.depth.enabled,"2D to 3D effect"]]:
+		_button(item[0],"",Vector2(item[2],0),Vector2.ONE*0.12,not host.page_input_blocked() if item[0]==FOCUS else true,item[1],item[3])
 		_tips[item[0]] = I18n.t(item[4])
 		if item[0]==DEPTH:
 			busy_ring=preload("res://scripts/ui_busy_ring.gd").create(_buttons.back().node,0.12,ACCENT)
@@ -162,6 +163,9 @@ func strength_bounds() -> Rect2:
 	return Rect2(SLIDER_X-0.065,bottom,0.13,top-bottom)
 
 func _raise_rail(node: Node) -> void:
+	# The independent XR texture is behind the eye buffer. Its coverage mask
+	# must also clear the browser frame (10), page hole (25) and near chrome (26).
+	node.set_meta("menu_hole_priority",29)
 	if node is MeshInstance3D and node.material_override: node.material_override.render_priority += 20
 	elif node is Label3D: node.render_priority += 20
 	for child in node.get_children(): _raise_rail(child)
@@ -184,7 +188,7 @@ func _refresh_strength() -> void:
 		boost_fill.material_override.set_shader_parameter("surface_size",boost_fill.mesh.size)
 
 func _activate(target: int) -> void:
-	if target in [FOCUS,MATTE]: host._activate(target)
+	if target in [CHROME,FOCUS,MATTE]: host._activate(target)
 	elif target == DEPTH:
 		if host.depth.enabled: set_strength_open(not strength_open)
 		else: host._activate(DEPTH)

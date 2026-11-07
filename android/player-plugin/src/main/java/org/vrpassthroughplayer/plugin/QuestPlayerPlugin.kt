@@ -56,6 +56,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun airplay_receiver_suspend(epoch: Long): Boolean = airplayReceiver.suspend(epoch)
     @UsedByGodot fun airplay_receiver_disconnect(epoch: Long) { airplayReceiver.disconnect(epoch) }
     @UsedByGodot fun airplay_receiver_muted(value: Boolean) { airplayReceiver.muted(value) }
+    @UsedByGodot fun airplay_receiver_require_password(value: Boolean) { if (!closed.get()) airplayReceiver.requirePassword(value) }
     @UsedByGodot @Synchronized fun dlna_receiver_enable(enabled: Boolean): Boolean {
         airplayReceiver.enable(enabled && !closed.get())
         stopDlnaNetwork(); dlnaRenderer?.detach(); dlnaRenderer = null; dlnaPort = 0

@@ -8,6 +8,31 @@ import java.net.URI
 import java.nio.ByteBuffer
 
 class WebVideoNetworkCaptureTest {
+    @Test fun youkuUsesTheDeclaredObservedHlsAndRejectsAdsProtectionAndWrongRepresentations() {
+        val root="https://new-cdn.test/current/list.m3u8?signature=exact"
+        val init="https://new-cdn.test/current/init.mp4"
+        val other="https://ad-cdn.test/large.mp4"
+        val document="https://v.youku.com/v_show/id_XOTUxMzg4NDMy.html"
+        val body="#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:10,\nchunk.m4s\n#EXT-X-ENDLIST\n"
+        val m=media(candidate(other),candidate(root,"hls",JSONObject().put("Authorization","root-only")))
+            .put("frame",document).put("blob",true).put("youku_enabled",true).put("youku_ready",true).put("capture_identity","chosen")
+            .put("youku",JSONObject().put("id","XOTUxMzg4NDMy").put("page",document).put("revision","a1").put("declared_drm","default")
+                .put("width",1920).put("height",1080).put("duration",10.0).put("expected_duration",10.0).put("manifests",JSONArray().put(root))
+                .put("declarations",JSONArray().put(JSONObject().put("url",root.replace("https:","http:")).put("width",1920).put("height",1080).put("duration",10.0))))
+        val p=WebVideoYoukuCapture.page(document,m)!!
+        val reads=mutableListOf<Pair<URI,Map<String,String>>>()
+        val data=mapOf(root to body.toByteArray(),init to mp4())
+        val info=WebVideoYoukuCapture.resolve(p,m,resolver(data,reads))!!
+        val selected=WebVideoFormats.select(p,info){true}
+        assertEquals(root,selected.video.url.toString());assertEquals(listOf(URI(root),URI(init)),reads.map{it.first})
+        assertEquals("root-only",reads.first().second["authorization"]);assertFalse(reads.last().second.containsKey("authorization"))
+        assertTrue(WebVideoYoukuCapture.keeps(p,m,m,selected.video))
+        for(bad in listOf(mp4(width=1280,height=720),mp4(audio=false),mp4(protected=true)))
+            assertNull(WebVideoYoukuCapture.resolve(p,m,resolver(data+(init to bad))))
+        assertNull(WebVideoYoukuCapture.resolve(p,m,resolver(data+(root to body.replace("#EXTINF", "#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"key\"\n#EXTINF").toByteArray()))))
+        val changed=JSONObject(m.toString());changed.getJSONObject("youku").put("revision","b2")
+        assertFalse(WebVideoYoukuCapture.keeps(p,m,changed,selected.video))
+    }
     @Test fun inlineHlsKeepsObservedBodyAndPerSegmentHeadersWithoutFetchingTheRoot() {
         val base = URI("https://new-cdn.test/play/current.m3u8?decision=synthetic")
         val init = "https://new-cdn.test/play/init.mp4"

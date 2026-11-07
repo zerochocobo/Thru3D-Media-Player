@@ -7,6 +7,6 @@ internal object AirplayNative {
         fun event(kind: String, value: String)
         fun packet(video: Boolean, bytes: ByteArray, ns: Long, codec: Int)
     }
-    external fun start(listener: Listener, name: String, address: ByteArray, keyFile: String): Long
+    external fun start(listener: Listener, name: String, address: ByteArray, keyFile: String, requirePassword: Boolean): Long
     external fun stop(handle: Long)
 }

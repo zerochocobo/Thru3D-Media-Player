@@ -84,25 +84,12 @@ var handoff_uri := ""
 var pause_started := 0
 var last_pause_token := 0
 var handoff_start_ms := 0
-var handoff_auto := false
 var handoff_beta := false
 var beta_button_seen := {}
 var handoff_waiting_pause := false
 var handoff_started_ms := 0
-var capture_started_ms := 0
 var handoff_context := {}
 var handoff_error := {}
-# Background resolution of the video already playing on a supported page, so a later
-# fullscreen hands off immediately instead of starting extraction from zero.
-const PREFETCH_DELAY_MS := 3000
-const PREFETCH_FRESH_MS := 600000
-var prefetch_uri := ""
-var prefetch_id := 0
-var prefetch_result := {}
-var prefetch_ms := 0
-var prefetch_media_key := ""
-var playing_since := 0
-var fullscreen_seen := {}
 var playback_return := {}
 var _signature := ""
 var list_mode := ""
@@ -156,13 +143,11 @@ func close(force_release: bool = false) -> void:
 	cancel()
 	if handoff: _cancel_handoff()
 	library.reset()
-	if handoff or (prefetch_id > 0 and menu.web_video.pending == prefetch_id): menu.web_video.close()
-	prefetch_id = 0; playing_since = 0
 	menu.system_text_input.cancel("web_browser")
 	if (opened or force_release) and supported() and not retaining: menu.platform.web_browser_action("hibernate")
 	opened = false; handoff = false; handoff_waiting_pause = false; pause_started = 0
 	opening = false; window_action.clear()
-	handoff_auto = false; handoff_context.clear()
+	handoff_context.clear()
 	for item in windows.values(): item.save_layout(); item.dismiss()
 	tabs_open = false
 
@@ -228,8 +213,6 @@ func tick() -> void:
 	if not menu.system_text_input.active("web_browser"):
 		draft = "" if data.get("url", "") == "about:blank" else str(data.get("url", ""))
 	_poll_beta_button()
-	_poll_prefetch()
-	_poll_fullscreen()
 	if handoff and Time.get_ticks_msec() - handoff_started_ms > (30000 if handoff_beta else 90000):
 		menu.web_video.result = {"error_code": "timeout"}
 		_handoff_failed()
@@ -246,31 +229,23 @@ func tick() -> void:
 	if handoff and not handoff_waiting_pause and menu.web_video.pending == 0:
 		if menu.web_video.result.get("state", "") == "ready":
 			if pause_started == 0:
-				if not handoff_auto or _capture_ready():
-					handoff_start_ms = _playhead()
-					if handoff_auto: handoff_context.position_ms = handoff_start_ms
-					pause_started = Time.get_ticks_msec()
-					handoff_context.pause_token = _next_pause_token()
-					_video_command("pause_tab", handoff_context)
+				handoff_start_ms = _playhead()
+				pause_started = Time.get_ticks_msec()
+				handoff_context.pause_token = _next_pause_token()
+				_video_command("pause_tab", handoff_context)
 			elif _pause_confirmed():
-				var automatic := handoff_auto
-				if not handoff_beta: _keep_prefetch(handoff_uri, menu.web_video.result)
 				_discard_playback_return()
 				playback_return = handoff_context.duplicate(true)
 				playback_return.native_uri = str(menu.web_video.result.get("uri", ""))
-				playback_return.retained = handoff_beta
+				playback_return.retained = true
 				var keep_browser := live_window_ids().size() > 1
-				if handoff_beta:
-					# Arm before choose() dismisses the menu. Dismiss and the main
-					# player may both call close(); neither may unload this document.
-					playback_return.opening = true
-					_video_command("retain_page", playback_return.merged({"hide": not keep_browser}, true))
-				else:
-					# Legacy transfers complete their temporary pause before choosing.
-					_video_command("resume_tab", handoff_context.merged({"was_playing": false}, true))
+				# Every browser handoff keeps its acknowledged pause and live document,
+				# including explicit legacy media-server buttons.
+				# Arm before choose(): menu dismissal and the main player both close.
+				playback_return.opening = true
+				_video_command("retain_page", playback_return.merged({"hide": not keep_browser}, true))
 				handoff = false; pause_started = 0
-				handoff_auto = false
-				menu.web_video.choose({"web_video": "play", "start_ms": handoff_start_ms, "web_fullscreen": automatic, "keep_browser": keep_browser}); return
+				menu.web_video.choose({"web_video": "play", "start_ms": handoff_start_ms, "keep_browser": keep_browser}); return
 			elif Time.get_ticks_msec() - pause_started > 5000:
 				menu.web_video.result = {"error_code": "browser_pause_timeout"}
 				_handoff_failed()
@@ -287,33 +262,16 @@ func tick() -> void:
 		_signature = signature
 		menu.refresh()
 
-func _poll_fullscreen() -> void:
-	if handoff:
-		if handoff_auto and pause_started == 0 and (not data.get("fullscreen_video", false) or int(data.get("fullscreen_request", 0)) != int(handoff_context.get("request", 0))): _handoff_failed()
-		return
-	if not data.get("fullscreen_video", false) or not data.get("active", false): return
-	if not Methods.supports(menu.platform, "web_browser_command"): return
-	var id := int(data.get("tab_id", 0))
-	var request := int(data.get("fullscreen_request", 0))
-	if id <= 0 or request <= 0 or int(fullscreen_seen.get(id, 0)) == request: return
-	fullscreen_seen[id] = request
-	# Browsing beside an existing cinema presentation must not replace it automatically.
-	# The explicit Play in player action remains available.
-	if cinema_video_active() or (paired_layout and windows.values().any(func(item): return item.visible and item.on_screen())): return
-	# Encrypted video stays in the website-owned playback path.
-	if data.get("videos", []).any(func(item): return item.get("fullscreen", false) and item.get("protected", false)): return
-	_begin_handoff(true)
-
 func _poll_beta_button() -> void:
 	var serial := int(data.get("beta_request", data.get("weibo_request", 0)))
 	var tab := int(data.get("tab_id", 0))
 	if serial <= int(beta_button_seen.get(tab, 0)) or not data.get("active", false): return
 	beta_button_seen[tab] = serial
 	var selection := str(data.get("beta_selection", data.get("weibo_selection", "")))
-	if not selection.is_empty() and not selected_beta_target(data, selection).is_empty(): _begin_handoff(false, true, selection)
+	if not selection.is_empty() and not selected_beta_target(data, selection).is_empty(): _begin_handoff(true, selection)
 
 func selected_beta_target(current: Dictionary, selection: String) -> Dictionary:
-	var candidates: Array = current.get("videos", []).filter(func(item): return (item.get("weibo_ready", false) or item.get("bilibili_ready", false) or item.get("tencent_ready", false) or item.get("mango_ready", false)) and not item.get("protected", false) and str(item.get("selection", "")) == selection)
+	var candidates: Array = current.get("videos", []).filter(func(item): return (item.get("weibo_ready", false) or item.get("bilibili_ready", false) or item.get("tencent_ready", false) or item.get("mango_ready", false) or item.get("youku_ready", false)) and not item.get("protected", false) and str(item.get("selection", "")) == selection)
 	return candidates[0] if not selection.is_empty() and candidates.size() == 1 else {}
 
 func weibo_target(current: Dictionary, selection: String = "") -> Dictionary:
@@ -333,7 +291,11 @@ func mango_target(current: Dictionary, selection: String = "") -> Dictionary:
 	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("mango_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
 	return candidates[0] if candidates.size() == 1 else {}
 
-func _begin_handoff(automatic: bool = false, beta: bool = false, selection: String = "") -> void:
+func youku_target(current: Dictionary, selection: String = "") -> Dictionary:
+	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("youku_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
+	return candidates[0] if candidates.size() == 1 else {}
+
+func _begin_handoff(beta: bool = false, selection: String = "") -> void:
 	if beta:
 		# The button snapshot can be one poll behind a sidebar navigation or media change.
 		# Revalidate before pausing or disturbing an existing resolver.
@@ -355,104 +317,39 @@ func _begin_handoff(automatic: bool = false, beta: bool = false, selection: Stri
 			var target := mango_target(fresh, selection)
 			if target.is_empty(): return
 			selection = str(target.selection)
+		if fresh.get("youku_beta_available", false):
+			var target := youku_target(fresh, selection)
+			if target.is_empty(): return
+			selection = str(target.selection)
 		data = fresh; _status_raw = ""
 	if handoff: _cancel_handoff()
 	handoff_error.clear()
-	handoff_auto = automatic
 	handoff_beta = beta
 	handoff_waiting_pause = false
-	handoff_started_ms = Time.get_ticks_msec(); pause_started = 0; capture_started_ms = 0
+	handoff_started_ms = Time.get_ticks_msec(); pause_started = 0
 	handoff_uri = str(data.get("url", ""))
 	handoff_tab = int(data.get("tab_id", 0)); handoff_navigation = int(data.get("navigation", 0))
 	handoff_context = {"tab": handoff_tab, "window": focused_window, "navigation": handoff_navigation,
-		"fullscreen": automatic,
-		"mango": data.get("mango_beta_available", false), "origin": handoff_uri, "request": int(data.get("fullscreen_request", 0)), "selection": selection,
-		"was_playing": data.get("videos", []).any(func(item): return (selection.is_empty() or str(item.get("selection", "")) == selection) and (not automatic or item.get("fullscreen", false)) and item.get("playing", false))}
+		"youku": data.get("youku_beta_available", false), "mango": data.get("mango_beta_available", false), "origin": handoff_uri, "request": int(data.get("fullscreen_request", 0)), "selection": selection,
+		"was_playing": data.get("videos", []).any(func(item): return (selection.is_empty() or str(item.get("selection", "")) == selection) and item.get("playing", false))}
 	handoff_context.position_ms = _playhead()
 	menu.web_video.address = handoff_uri
-	_refresh_media_key()
 	if beta:
-		# Never adopt an extractor result or pending legacy prefetch for the Beta button.
+		# The Beta button always resolves its current, explicitly selected source.
 		if menu.web_video.pending > 0: menu.web_video.close()
 		menu.web_video.result = {}
-		prefetch_uri = ""; prefetch_result = {}; prefetch_id = 0; playing_since = 0
 		handoff = true
 		_begin_beta_pause()
 		return
-	# Media servers can advance episodes/versions without changing the page URL.
-	if data.get("videos", []).any(func(item): return item.get("server_media", false) or item.get("server_play", false)):
-		prefetch_uri = ""; prefetch_result = {}; prefetch_id = 0
-	if prefetch_uri == handoff_uri and prefetch_id > 0 and menu.web_video.pending == prefetch_id:
-		handoff = true # Adopt the extraction that is already running for this page.
-		return
-	if prefetch_uri == handoff_uri and not prefetch_result.is_empty() and Time.get_ticks_msec() - prefetch_ms < PREFETCH_FRESH_MS:
-		if menu.web_video.pending > 0: menu.web_video.close()
-		menu.web_video.result = prefetch_result.duplicate(true); handoff = true
-		return
 	menu.web_video.resolve(); handoff = menu.web_video.pending > 0
-	prefetch_uri = handoff_uri; prefetch_id = 0; prefetch_result = {}
 	if not handoff: _handoff_failed()
-
-func _poll_prefetch() -> void:
-	_refresh_media_key()
-	if cinema_video_active(): return
-	if data.get("videos", []).any(func(item): return item.get("server_media", false) or item.get("server_play", false)): return
-	var uri := str(data.get("url", ""))
-	if prefetch_id > 0:
-		if menu.web_video.pending == prefetch_id:
-			if uri != prefetch_uri and not handoff: menu.web_video.close(); prefetch_id = 0
-			return
-		var finished: Dictionary = menu.web_video.result
-		if menu.web_video.pending == 0 and int(finished.get("id", 0)) == prefetch_id:
-			_keep_prefetch(prefetch_uri, finished)
-			# A background attempt never shows its result or error in the browser.
-			if not handoff: menu.web_video.result = {}
-		prefetch_id = 0
-		return
-	var playing: bool = data.get("videos", []).any(func(item): return item.get("playing", false) and not item.get("protected", false))
-	var fresh: bool = uri == prefetch_uri and (prefetch_result.is_empty() or Time.get_ticks_msec() - prefetch_ms < PREFETCH_FRESH_MS)
-	if handoff or fresh or not playing or menu.web_video.pending > 0 or not data.get("active", false) or not data.get("native_supported", false) or data.get("memory_tight", false):
-		playing_since = 0; return
-	if playing_since == 0: playing_since = Time.get_ticks_msec(); return
-	if Time.get_ticks_msec() - playing_since < PREFETCH_DELAY_MS: return
-	playing_since = 0
-	menu.web_video.address = uri; menu.web_video.resolve()
-	prefetch_uri = uri; prefetch_result = {}; prefetch_id = menu.web_video.pending
-
-func _refresh_media_key() -> void:
-	# Feeds and SPA players can replace a video without changing the address. Never reuse
-	# their previous representation; new network media or a quality change also invalidate it.
-	var keys: Array[String] = []
-	for item in data.get("videos", []):
-		if item.has("media_epoch"):
-			keys.append(str(item.media_epoch) + ":%dx%d" % [int(item.get("width", 0)), int(item.get("height", 0))] + (":network" if item.get("network_media", false) else ""))
-	keys.sort()
-	var key := "|".join(keys) + (":capture" if data.get("network_capture_enabled", false) else "")
-	if key == prefetch_media_key: return
-	prefetch_media_key = key
-	if prefetch_id > 0 and menu.web_video.pending == prefetch_id: menu.web_video.close()
-	prefetch_uri = ""; prefetch_result = {}; prefetch_id = 0; playing_since = 0
-
-func _keep_prefetch(uri: String, result: Dictionary) -> void:
-	prefetch_uri = uri
-	prefetch_result = result.duplicate(true) if result.get("state", "") == "ready" else {}
-	prefetch_ms = Time.get_ticks_msec()
-
-func _capture_ready() -> bool:
-	if int(data.get("captured_fullscreen_request", 0)) == int(handoff_context.request): return true
-	if capture_started_ms == 0:
-		capture_started_ms = Time.get_ticks_msec()
-		handoff_context.was_playing = data.get("videos", []).any(func(item): return item.get("fullscreen", false) and item.get("playing", false))
-		_video_command("capture_video", handoff_context)
-	elif Time.get_ticks_msec() - capture_started_ms > 1500: _handoff_failed()
-	return false
 
 func beta_media_ready(current: Dictionary, selection: String = "") -> bool:
 	if not selection.is_empty(): return not selected_beta_target(current, selection).is_empty()
-	return not weibo_target(current).is_empty() or not tencent_target(current).is_empty() or not mango_target(current).is_empty() or current.get("videos", []).any(func(item): return (item.get("bilibili_ready", false) or item.get("douyin_ready", false)) and not item.get("protected", false))
+	return not weibo_target(current).is_empty() or not tencent_target(current).is_empty() or not mango_target(current).is_empty() or not youku_target(current).is_empty() or current.get("videos", []).any(func(item): return (item.get("bilibili_ready", false) or item.get("douyin_ready", false)) and not item.get("protected", false))
 
 func beta_site_available(current: Dictionary) -> bool:
-	return current.get("bilibili_beta_available", false) or current.get("douyin_beta_available", false) or current.get("weibo_beta_available", false) or current.get("tencent_beta_available", false) or current.get("mango_beta_available", false)
+	return current.get("bilibili_beta_available", false) or current.get("douyin_beta_available", false) or current.get("weibo_beta_available", false) or current.get("tencent_beta_available", false) or current.get("mango_beta_available", false) or current.get("youku_beta_available", false)
 
 func handoff_status() -> String:
 	if handoff_waiting_pause: return I18n.t("Pausing web video…")
@@ -475,20 +372,12 @@ func _pause_confirmed() -> bool:
 func _cancel_handoff() -> void:
 	menu.web_video.close()
 	if pause_started > 0: _video_command("resume_tab", handoff_context.merged({"restore_paused": true}, true))
-	handoff = false; handoff_auto = false; handoff_waiting_pause = false; pause_started = 0; handoff_context = {}
+	handoff = false; handoff_waiting_pause = false; pause_started = 0; handoff_context = {}
 
 func _handoff_failed() -> void:
-	var automatic := handoff_auto
-	var paused := pause_started > 0
-	var context := handoff_context.duplicate(true)
-	if not automatic: handoff_error = context.merged({"message": menu.web_video.error_hint()})
+	handoff_error = handoff_context.merged({"message": menu.web_video.error_hint()})
 	_cancel_handoff()
 	menu.web_video.result = {}
-	if automatic:
-		menu.web_video.result = {}
-		if paused:
-			context.play = bool(context.get("was_playing", false)); context.exit_fullscreen = false
-			_video_command("restore_video", context)
 
 func owns_handoff(host: Node, context: Dictionary) -> bool:
 	var current := window_state(host.window_id)
@@ -532,7 +421,7 @@ func restore_playback(failed: bool, position_ms: int = -1) -> void:
 		# The button can hand off without a fullscreen video capture. Restore the
 		# original tab/window without navigating again or addressing stale media.
 		if not context.get("retained", false): _video_command("select", context)
-		if not str(context.get("selection", "")).is_empty(): _video_command("restore_mango" if context.get("mango", false) else "restore_weibo", context)
+		if not str(context.get("selection", "")).is_empty(): _video_command("restore_youku" if context.get("youku", false) else "restore_mango" if context.get("mango", false) else "restore_weibo", context)
 	menu.web_video.result = {}; next_poll = 0
 
 func live_window_ids() -> Array:
@@ -594,6 +483,10 @@ func draw_window(host: Node) -> void:
 	var address: String = draft if focused_window == host.window_id else str(current.get("url", ""))
 	var on_screen: bool = host.on_screen()
 	var bounds: Rect2 = host.page_rect()
+	if host.chrome_hidden():
+		host._backdrop.visible = false
+		draw_page_content(host,bounds)
+		return
 	host._set_backdrop(host.HEADER.size if on_screen else bounds.size + Vector2(0.02, host.HEADER.size.y + 0.02), host.HEADER.get_center() if on_screen else Vector2(bounds.get_center().x, bounds.get_center().y + (host.HEADER.size.y - 0.02) / 2))
 	if tabs_open and focused_window == host.window_id:
 		host._backdrop.visible = true; draw_tabs(host); return
@@ -640,7 +533,11 @@ func draw_window(host: Node) -> void:
 		for label in host._labels: label.position.x += offset
 		for decoration in host._decorations:
 			if not host._pointer_panels.has(decoration): decoration.position.x += offset
-	if home: start_page.draw(host)
+	draw_page_content(host,bounds)
+	if not on_screen: host.draw_resize_handles()
+
+func draw_page_content(host: Node, bounds: Rect2) -> void:
+	if start_page.active(host.window_id): start_page.draw(host)
 	else:
 		host._button(WEB, "", bounds.get_center(), bounds.size)
 		host._buttons.back().node.set_meta("menu_eye_buffer", true)
@@ -649,7 +546,6 @@ func draw_window(host: Node) -> void:
 		host._buttons.back().node.global_transform = page.pose
 		host._buttons.back().node.mesh.size = page.size
 		host._buttons.back().rect.size = page.size
-	if not on_screen: host.draw_resize_handles()
 
 ## The native handoff is the browser's main action: an accent pill with icon and words,
 ## muted on pages the player cannot take over.
@@ -867,7 +763,6 @@ func action(target: int) -> bool:
 			_cancel_handoff()
 			if menu.web_video.pending > 0: menu.web_video.close()
 			menu.web_video.result = {}
-			prefetch_uri = ""; prefetch_result = {}; prefetch_id = 0; playing_since = 0
 			menu.platform.web_browser_command(JSON.stringify({"action": "network_capture", "window": focused_window, "enabled": not data.get("network_capture_enabled", false)}))
 			next_poll = 0
 		6:
@@ -884,7 +779,7 @@ func action(target: int) -> bool:
 				if not handoff_beta: return true
 				_handoff_failed(); menu.refresh()
 			else:
-				_begin_handoff(false, true); menu.refresh()
+				_begin_handoff(true); menu.refresh()
 	return true
 
 func _playhead() -> int:

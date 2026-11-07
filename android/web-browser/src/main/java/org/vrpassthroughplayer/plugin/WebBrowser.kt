@@ -100,6 +100,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         val bilibiliClicks = mutableMapOf<WebExtension.Port, Long>()
         val tencentClicks = mutableMapOf<WebExtension.Port, Long>()
         val mangoClicks = mutableMapOf<WebExtension.Port, Long>()
+        val youkuClicks = mutableMapOf<WebExtension.Port, Long>()
         var betaRequest = 0L
         var betaSelection = ""
         var fullScreen = false
@@ -340,7 +341,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     }
     private fun sendNetworkPolicy(tab: Tab) {
         val message = JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
-            .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url))
+            .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url)).put("youku",WebBrowserYouku.enabled(tab.url))
             .put("bilibili", bilibiliEnabled(tab)).put("douyin", douyinEnabled(tab)).put("weibo", WebBrowserWeibo.document(tab.url)).put("diagnostics", mediaDiagnosticsEnabled())
         tab.ports.keys.forEach { runCatching { it.postMessage(message) } }
     }
@@ -554,7 +555,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 tab.navigation++; tab.pauseToken = 0; tab.pauseReports.clear()
                 tab.weiboRequest = 0; tab.weiboSelection = ""; tab.weiboClicks.clear()
                 tab.betaRequest = 0; tab.betaSelection = ""; tab.bilibiliClicks.clear()
-                tab.tencentClicks.clear();tab.mangoClicks.clear()
+                tab.tencentClicks.clear();tab.mangoClicks.clear();tab.youkuClicks.clear()
                 tab.media.clear(); tab.sources.clear(); tab.fullScreen = false; tab.editor = null; tab.editing = false
                 tab.error = ""; tab.progress = 0; publish()
 
@@ -658,7 +659,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val weiboEnabled = WebBrowserWeibo.document(tab.url)
                             val tencentEnabled = WebBrowserTencent.enabled(tab.url)
                             val mangoEnabled = WebBrowserMango.enabled(tab.url)
-                            val network = if (networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled) WebBrowserNetworkMedia.candidates(item,includeSegments=tencentEnabled) else JSONArray()
+                            val youkuEnabled = WebBrowserYouku.enabled(tab.url)
+                            val network = if (networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled || youkuEnabled) WebBrowserNetworkMedia.candidates(item,includeSegments=tencentEnabled) else JSONArray()
                             val bilibili = item.optJSONObject("bilibili")?.takeIf { bilibiliEnabled &&
                                 !item.optBoolean("protected") && it.toString().length <= 96 * 1024 && it.optString("page") == tab.url }
                             val serverHeaders = item.optJSONObject("server_headers")?.let { data ->
@@ -669,10 +671,12 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val weibo = WebBrowserWeibo.metadata(item, tab.url)
                             val tencent = if(tencentEnabled) WebBrowserTencent.metadata(item,tab.url) else null
                             val mango = if(mangoEnabled) WebBrowserMango.metadata(item,tab.url) else null
+                            val youku = if(youkuEnabled) WebBrowserYouku.metadata(item,tab.url) else null
                             val biliIdentity = bilibili?.let { "${it.optString("id")}:${it.optString("cid")}:${it.optInt("part")}:${it.optString("ep")}" }.orEmpty()
                             val captureIdentity = "${tab.id}:${tab.navigation}:${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}:${tab.bilibiliProbe}:${tab.douyinCaptureEnabled}:${weibo?.optString("page").orEmpty()}:$biliIdentity" +
                                 (tencent?.let { ":tencent:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
-                                (mango?.let { ":mango:${it.optString("id")}:${it.optString("revision")}" } ?: "")
+                                (mango?.let { ":mango:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
+                                (youku?.let { ":youku:${it.optString("id")}:${it.optString("revision")}" } ?: "")
                             safe.put(JSONObject().put("width", item.optInt("width").coerceIn(0, 32768))
                                 .put("id", id).put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play"))
                                 .put("server_play", server && item.optBoolean("server_play"))
@@ -685,10 +689,12 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                 .put("tencent_ready",tencent != null && item.optBoolean("tencent_ready"))
                                 .put("tencent_page",tencent?.optString("page").orEmpty())
                                 .put("mango_ready",mango != null && item.optBoolean("mango_ready"))
+                                .put("youku_ready",youku != null && item.optBoolean("youku_ready"))
+                                .put("youku_page",youku?.let { "https://v.youku.com/v_show/id_${it.optString("id")}.html" }.orEmpty())
                                 .put("mango_capture", if (mangoEnabled) WebBrowserMango.captureDiagnostics(data)
                                     .put("frame_matches", item.optString("frame") == tab.url).put("binding_valid", mango != null) else null)
                                 .put("mango_page",mango?.let { "https://www.mgtv.com/b/${it.optString("id")}.html" }.orEmpty())
-                                .put("selection", if (weibo != null || bilibili != null || tencent != null || mango != null) captureIdentity else "")
+                                .put("selection", if (weibo != null || bilibili != null || tencent != null || mango != null || youku != null) captureIdentity else "")
                                 .put("network_media", networkEnabled && (network.length() > 0 || !item.optBoolean("protected") && WebBrowserNetworkMedia.address(item.optString("source")) != null))
                                 .put("media_epoch", "${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}")
                                 .put("protected", item.optBoolean("protected"))
@@ -706,6 +712,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                     .put("weibo_enabled", weiboEnabled).put("weibo", weibo)
                                     .put("tencent_enabled",tencentEnabled).put("tencent",tencent)
                                     .put("mango_enabled",mangoEnabled).put("mango",mango)
+                                    .put("youku_enabled",youkuEnabled).put("youku",youku)
                                     .put("douyin_boundary", if (mediaDiagnosticsEnabled()) WebBrowserDouyin.metadataDiagnostics(item,tab.url,douyinEnabled,douyin != null) else null)
                                     .put("bilibili_probe", tab.bilibiliProbe)
                                     .put("diagnostic_max_height", if (tab.bilibiliProbe == "uncapped" && bilibiliEligible(tab)) 2160 else 1080)
@@ -736,6 +743,12 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                     tab.mangoClicks[port] = mangoClick
                                     tab.betaRequest = ++nextBetaRequest; tab.betaSelection = captureIdentity
                                 }
+                                val youkuClick = item.optLong("youku_request")
+                                if (youku != null && item.optBoolean("youku_ready") && youkuClick > (tab.youkuClicks[port] ?: 0) &&
+                                    youkuClick in 1..Int.MAX_VALUE.toLong() && active && current() === tab && tab.pauseToken == 0L) {
+                                    tab.youkuClicks[port] = youkuClick
+                                    tab.betaRequest = ++nextBetaRequest; tab.betaSelection = captureIdentity
+                                }
                             }
                         }
                         tab.media[port] = safe
@@ -746,13 +759,13 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     override fun onDisconnect(port: WebExtension.Port) {
                         tab.ports.remove(port); tab.media.remove(port); tab.sources.remove(port); tab.pauseReports.remove(port); tab.weiboClicks.remove(port)
                         tab.bilibiliClicks.remove(port)
-                        tab.tencentClicks.remove(port);tab.mangoClicks.remove(port)
+                        tab.tencentClicks.remove(port);tab.mangoClicks.remove(port);tab.youkuClicks.remove(port)
                         updateFullscreen(tab); publish()
                     }
                 })
                 port.postMessage(JSONObject().put("action", if (displayed(tab)) "resume" else "suspend"))
                 port.postMessage(JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
-                    .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url))
+                    .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url)).put("youku",WebBrowserYouku.enabled(tab.url))
                     .put("bilibili", bilibiliEnabled(tab)).put("douyin", douyinEnabled(tab)).put("weibo", WebBrowserWeibo.document(tab.url)).put("diagnostics", mediaDiagnosticsEnabled()))
                 if (tab.pauseToken > 0) port.postMessage(JSONObject().put("action", "pause_media").put("token", tab.pauseToken))
             }
@@ -1216,12 +1229,12 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     }
                 }
             }
-            "restore_weibo", "restore_mango" -> {
+            "restore_weibo", "restore_mango", "restore_youku" -> {
                 val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id } ?: return@dispatch
                 if (!tab.awake || window(id).tab != tab.id || tab.navigation != request.optLong("navigation", -1) ||
                     tab.url != request.optString("origin")) return@dispatch
                 val selection = request.optString("selection")
-                val kind=if(request.optString("action")=="restore_mango") "mango" else "weibo"
+                val kind=when(request.optString("action")) { "restore_mango" -> "mango"; "restore_youku" -> "youku"; else -> "weibo" }
                 for ((port,list) in tab.sources) for (index in 0 until list.length()) {
                     val item = list.getJSONObject(index)
                     val data=item.optJSONObject(kind) ?: continue
@@ -1523,6 +1536,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             .put("weibo_beta_available", tab != null && WebBrowserWeibo.document(tab.url))
             .put("tencent_beta_available",tab != null && WebBrowserTencent.enabled(tab.url))
             .put("mango_beta_available",tab != null && WebBrowserMango.enabled(tab.url))
+            .put("youku_beta_available",tab != null && WebBrowserYouku.enabled(tab.url))
             .put("weibo_request", tab?.weiboRequest ?: 0).put("weibo_selection", tab?.weiboSelection.orEmpty())
             .put("beta_request", tab?.betaRequest ?: 0).put("beta_selection", tab?.betaSelection.orEmpty())
             .put("fullscreen_request", tab?.fullscreen?.request ?: 0).put("fullscreen_video", tab?.fullscreen?.active == true)

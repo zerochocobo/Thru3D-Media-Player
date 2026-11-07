@@ -49,6 +49,9 @@ func run() -> void:
 	check(selected.size() == 1 and menu.visible and browser.active(), "One source acknowledgement starts one player transfer while leaving peer browsing visible")
 	check(menu.collections.selected_entry.get("keep_browser", false) and menu.collections.selected_entry.start_ms == 42500, "The native open receives the selected page progress and peer-preservation intent")
 	check(second.visible and second.global_transform.is_equal_approx(peer_pose) and not platform.actions.has("hibernate"), "The peer remains at its original pose without session unloading")
+	check(platform.browser_commands.back().action == "retain_page" and not platform.browser_commands.back().hide and browser.playback_return.get("retained", false),
+		"Legacy peer transfer retains its source pause while other windows remain usable")
+	check(not platform.browser_commands.any(func(item): return item.action == "resume_tab"), "Legacy native startup never releases its acknowledged source pause")
 	check(platform.web_id == 2, "The retry still performs one extraction per user action")
 	menu.free(); platform.free(); await process_frame
 	print("Browser transfer: %d checks, %d failures" % [checks, failures.size()])

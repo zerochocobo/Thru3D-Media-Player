@@ -1,6 +1,11 @@
 extends SceneTree
 const Menu := preload("res://scripts/library_menu.gd")
 const Fixture := preload("res://tests/test_web_browser_panel.gd")
+class Platform extends Fixture.Platform:
+	func web_browser_command(value: String) -> void:
+		super.web_browser_command(value)
+		var command: Dictionary = JSON.parse_string(value)
+		if command.action == "capture_video": browser.captured_fullscreen_request = command.request
 var checks := 0
 var failures: Array[String] = []
 var keep_peers := false
@@ -26,7 +31,7 @@ func run() -> void:
 		if not keep_peers: browser.close(true)
 		browser.playback_return.opening = false)
 	browser.open(); poll(browser)
-	browser._begin_handoff(false,true,"chosen-card")
+	browser._begin_handoff(true,"chosen-card")
 	platform.browser.playing = false; platform.browser.videos[0].playing = false
 	poll(browser)
 	check(menu.web_video.pending > 0,"Beta starts resolution after the exact pause acknowledgement")
@@ -61,7 +66,7 @@ func run() -> void:
 	var peer := {"id":2,"tab_id":22,"navigation":1,"url":"https://example.com/notes","title":"Notes","playing":false,"videos":[]}
 	platform.browser.windows=[source,peer]
 	platform.browser.playing=true;platform.browser.videos[0].playing=true
-	browser.open();poll(browser);browser._begin_handoff(false,true,"chosen-card")
+	browser.open();poll(browser);browser._begin_handoff(true,"chosen-card")
 	platform.browser.playing=false;platform.browser.videos[0].playing=false
 	source.playing=false;source.pause_token=platform.browser.pause_token;source.pause_confirmed=true
 	poll(browser)
@@ -73,6 +78,66 @@ func run() -> void:
 	browser.playback_selected("file:///another.mp4");browser.close()
 	check(platform.actions.back()=="hibernate","Ordinary browser close still follows its normal resource policy")
 	menu.free();platform.free();await process_frame
+	await legacy_server_checks()
 	print("Web Beta retention: %d checks, %d failures" % [checks,failures.size()])
 	for failure in failures: push_error(failure)
 	quit(0 if failures.is_empty() else 1)
+
+func legacy_server_checks() -> void:
+	var origins := ["http://server.test:8096/web/index.html#!/videoosd",
+		"http://server.test:8096/jellyfin/web/#/video",
+		"http://server.test:32400/web/index.html#!/server/local/details?key=%2Flibrary%2Fmetadata%2F4"]
+	for index in origins.size():
+		for outcome in ["return", "failure", "replace", "auto"]:
+			var platform := Platform.new()
+			var menu := Menu.new(); root.add_child(menu); menu.attach_platform(platform); menu.toggle()
+			menu._activate(Menu.NAV_BASE + Menu.Section.WEB)
+			var browser: RefCounted = menu.web_browser
+			var origin: String = origins[index]
+			var native_uri := origin.get_slice("#", 0) + ("#thru3d-plex=plex:4:1:0" if index == 2 else "#thru3d-video=21&MediaSourceId=version_2")
+			platform.browser = {"url": origin, "tab_id": 11, "navigation": 3, "focused_window": 1,
+				"active": true, "playing": true, "native_supported": true,
+				"videos": [{"id": "1", "server_media": true, "playing": true, "time": 26.0}]}
+			if outcome == "auto":
+				platform.browser.merge({"fullscreen_video": true, "fullscreen_request": 1}, true)
+				platform.browser.videos[0].merge({"server_play": true, "fullscreen": true}, true)
+			var chosen: Array = []
+			menu.chosen.connect(func(uri, _title):
+				chosen.append(uri)
+				browser.close(true) # main's second close after the real menu dismissal
+				browser.playback_return.opening = false)
+			browser.open(); poll(browser)
+			if outcome == "auto":
+				check(not browser.handoff and menu.web_video.pending == 0 and chosen.is_empty(),
+					"Server playback/fullscreen leaves its website running until an explicit button")
+			browser.action(browser.BASE + 6)
+			check(not browser.handoff_beta and platform.beta_requests == 0 and menu.web_video.pending > 0,
+				"Media-server button keeps the legacy resolver: %d %s" % [index, outcome])
+			platform.web_state = {"id": menu.web_video.pending, "state": "ready", "uri": native_uri, "title": "Server movie"}
+			menu.web_video.next_poll = 0; menu.web_video.tick(); poll(browser); poll(browser)
+			check(chosen.is_empty() and platform.browser_commands.back().action == "pause_tab",
+				"Media-server native playback waits for the source pause acknowledgement")
+			platform.browser.playing = false; platform.browser.videos[0].playing = false
+			poll(browser)
+			check(chosen == [native_uri] and not menu.visible and not browser.opened and not platform.actions.has("hibernate"),
+				"Both native-open closes preserve the media-server document")
+			check(browser.playback_return.get("retained", false) and platform.browser_commands.back().action == "retain_page" and platform.browser_commands.back().hide,
+				"Legacy media-server playback suspends and retains its original page")
+			check(not platform.browser_commands.any(func(command): return command.action == "resume_tab"),
+				"The server's pause lease survives native startup")
+			var resumes := platform.actions.count("resume")
+			if outcome == "replace":
+				browser.playback_selected("file:///other.mp4")
+				check(platform.browser_commands.back().action == "release_retained_page" and browser.playback_return.is_empty(),
+					"Switching sources releases the media-server document and pause lease")
+			else:
+				browser.restore_playback(outcome == "failure", 67000)
+				var commands: Array = platform.browser_commands.slice(-2)
+				var actions := ["resume_retained_page", "resume_tab"]
+				check(commands.map(func(command): return command.action) == actions and commands[0].origin == origin and commands[0].tab == 11 and commands[0].navigation == 3,
+					"Legacy server return rebinds only the original live document")
+				check(not commands[1].was_playing and commands[1].restore_paused == (outcome == "failure"),
+					"Ordinary server return stays paused; native failure restores the pre-handoff state")
+				check(platform.actions.count("resume") == resumes and browser.playback_return.is_empty(),
+					"Server return consumes the context once without waking a replacement session")
+			menu.free(); platform.free(); await process_frame

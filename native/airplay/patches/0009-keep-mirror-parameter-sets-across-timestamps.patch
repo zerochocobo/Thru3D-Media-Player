@@ -1,0 +1,37 @@
+--- a/lib/raop_rtp_mirror.c
++++ b/lib/raop_rtp_mirror.c
+@@ -190,7 +190,6 @@
+     unsigned char* payload = NULL;
+     unsigned int readstart = 0;
+     bool conn_reset = false;
+-    uint64_t ntp_timestamp_nal = 0;
+     uint64_t ntp_timestamp_raw = 0;
+     uint64_t ntp_timestamp_remote = 0;
+     uint64_t ntp_timestamp_local  = 0;
+@@ -427,15 +426,9 @@
+                  * that has not yet been sent.   This will trigger prepending it to the current NAL, and the prepend_sps_pps 
+                  * flag will be set to false after it has been prepended.  */
+ 
+-                if (prepend_sps_pps & (ntp_timestamp_raw != ntp_timestamp_nal)) {
+-                        logger_log(raop_rtp_mirror->logger, LOGGER_DEBUG,
+-                                   "raop_rtp_mirror: prepended sps_pps timestamp does not match timestamp of "
+-                                   "video payload\n%llu\n%llu , discarding", ntp_timestamp_raw, ntp_timestamp_nal);
+-                        free (sps_pps);
+-                        sps_pps = NULL;
+-                        prepend_sps_pps = false;
+-                }
+-		
++                /* Parameter sets belong to the current stream, not one presentation
++                 * timestamp. Keep the latest set until the next access unit: newer
++                 * clients can timestamp codec configuration and video differently. */
+                 if (prepend_sps_pps) {
+                     assert(sps_pps);
+                     payload_out = (unsigned char*) malloc(payload_size + sps_pps_len);
+@@ -593,7 +586,6 @@
+                 }
+ 
+                 assert (raop_rtp_mirror->callbacks.video_set_codec);
+-                ntp_timestamp_nal = ntp_timestamp_raw;
+ 
+                 /* these "floats" are in fact integers that fit into unsigned shorts */
+                 float width_0 = byteutils_get_float(packet, 16);  

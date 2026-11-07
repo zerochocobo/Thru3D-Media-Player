@@ -2009,6 +2009,10 @@ func _rebuild_rows() -> void:
 					rows.append({"title": I18n.t("Confirm clearing network history" if _confirm == str(["privacy_clear", "network"]) else "Clear network history"), "icon": "check" if _confirm == str(["privacy_clear", "network"]) else "trash", "selected": _confirm == str(["privacy_clear", "network"]), "setting": ["privacy_clear", "network"]})
 					rows.append({"title": I18n.t("Confirm clearing file settings" if _confirm == str(["file_settings_clear", "all"]) else "Clear file settings"), "icon": "check" if _confirm == str(["file_settings_clear", "all"]) else "trash", "selected": _confirm == str(["file_settings_clear", "all"]), "setting": ["file_settings_clear", "all"]})
 					rows.append({"title": I18n.t("Confirm clearing network file settings" if _confirm == str(["file_settings_clear", "network"]) else "Clear network file settings"), "icon": "check" if _confirm == str(["file_settings_clear", "network"]) else "trash", "selected": _confirm == str(["file_settings_clear", "network"]), "setting": ["file_settings_clear", "network"]})
+				var airplay_password_hint := "Require the four-digit code shown in the headset for each AirPlay connection. Changing this setting disconnects the current AirPlay session."
+				rows.append(_choice_row("Require AirPlay password", "airplay_require_password", bool(settings.get("airplay_require_password", false)),
+					[{"value": true, "label": "On", "hint": airplay_password_hint}, {"value": false, "label": "Off", "hint": airplay_password_hint}]))
+				rows.back().info = airplay_password_hint
 				rows.append_array(_diagnostic_rows(settings.get("diagnostic_log", {})))
 			elif tab == DISPLAY_TAB:
 				var theme_row := UiTheme.row(settings.get(UiTheme.KEY, UiTheme.current))

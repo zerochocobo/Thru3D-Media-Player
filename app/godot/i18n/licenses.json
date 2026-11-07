@@ -10,6 +10,15 @@
     "credit": "Poly Haven · CC0 1.0 · Dimitrios Savva / Greg Zaal / Jarod Guest"
   },
   {
+    "id": "private-beach-media",
+    "name": "Private beach firework audio and moon map",
+    "license": "CC-BY-4.0 / CC0-1.0 / Public domain",
+    "assets": [
+      "player-licenses/private-beach-media-notice.txt"
+    ],
+    "credit": "Kolezan (CC BY 4.0), soundmary, 16FThumaF (CC0), NASA SVS"
+  },
+  {
     "id": "godot",
     "name": "Godot 4.7.2",
     "license": "MIT",

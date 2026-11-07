@@ -91,7 +91,8 @@ func _ready() -> void:
 	effect_controls.configure(self); add_child(effect_controls)
 	effect_controls.composition_changed.connect(func(): composition_changed.emit())
 	effect_controls.composition_layout_changed.connect(func(): composition_layout_changed.emit())
-func chrome_hidden() -> bool: return depth.matte and not selecting
+func page_input_blocked() -> bool: return depth.matte and not selecting
+func chrome_hidden() -> bool: return not toolbar_shown or page_input_blocked()
 func head() -> Transform3D:
 	var provider: Callable = browser.menu.layout_head_provider
 	var value: Variant = provider.call() if provider.is_valid() else null
@@ -321,7 +322,7 @@ func _feedback_rect(mesh: MeshInstance3D, rect: Rect2, z: float = 0.003) -> void
 	mesh.position = Vector3(rect.get_center().x, rect.get_center().y, z)
 func _update_feedback() -> void:
 	_create_feedback()
-	_feedback.visible = visible and not chrome_hidden() and not browser.start_page.active(window_id) and not (browser.tabs_open and browser.focused_window == window_id)
+	_feedback.visible = visible and not page_input_blocked() and not browser.start_page.active(window_id) and not (browser.tabs_open and browser.focused_window == window_id)
 	if not _feedback.visible: return
 	var frame := full_page_layout()
 	_feedback.global_transform = frame.pose
@@ -329,7 +330,7 @@ func _update_feedback() -> void:
 	var page: Vector2 = page_layout().size
 	var backing: MeshInstance3D = _feedback.get_node("background")
 	_feedback_rect(backing, Rect2(-size / 2, size), -0.001)
-	backing.visible = is_focused()
+	backing.visible = is_focused() and toolbar_shown
 	var state: Dictionary = browser.window_state(window_id)
 	var now := Time.get_ticks_msec()
 	if _feedback_page != focus_tab():
@@ -345,7 +346,7 @@ func _update_feedback() -> void:
 	_was_loading = loading; _feedback_error = error
 	_feedback_rect(_progress, Rect2(-size.x / 2, -size.y / 2 - 0.004, size.x * _progress_value, 0.004))
 	_progress.material_override.set_shader_parameter("surface_color", UiTheme.color("browser_error") if not error.is_empty() else ACCENT)
-	_progress.visible = loading or now < _progress_until
+	_progress.visible = toolbar_shown and (loading or now < _progress_until)
 	var press: MeshInstance3D = _feedback.get_node("press")
 	var remaining := clampf(float(_press_until - now) / 280.0, 0, 1)
 	var diameter := minf(page.x, page.y) * (0.018 + 0.018 * (1.0 - remaining))
@@ -411,20 +412,20 @@ func _draw() -> void:
 	_clear_layout()
 	_sync_presentation()
 	_backdrop.visible = not chrome_hidden()
-	if browser and not chrome_hidden(): browser.draw_window(self)
+	if browser and not page_input_blocked(): browser.draw_window(self)
 	depth_choices.begin("browser_depth_" + str(window_id))
 	if depth_settings and not chrome_hidden(): _draw_depth_settings()
 	if browser:
 		_create_feedback()
 		_pointer_panels.append(_feedback.get_node("background"))
-	if chrome_hidden():
+	if page_input_blocked():
 		_feedback.visible = false; _pointer_panels.clear(); _ray_blockers.clear()
 	# Disabled controls still occlude other windows and the header drag surface.
 	for button in _buttons: button.hover_disabled = true
 	# Above the distant page's alpha hole (25) yet below MenuComposition.POPUP_PRIORITY (30):
 	# popup-classed chrome was squeezed into a 0.93 m popup slot and blurred.
 	_backdrop.material_override.render_priority = 26 if on_screen() else 10
-	if on_screen():
+	if on_screen() and not chrome_hidden():
 		if not browser.start_page.active(window_id) and not (browser.tabs_open and browser.focused_window == window_id):
 			# The near bar uses the same empty-header drag surface as floating windows.
 			_ray_blockers.append({"target": MOVE, "rect": Rect2(-_backdrop.mesh.size / 2, _backdrop.mesh.size), "enabled": true, "node": _backdrop, "radius": 0.025})
@@ -450,6 +451,10 @@ func _raise_chrome(node: Node) -> void:
 func _activate(target: int) -> void:
 	browser.focus_window(window_id)
 	if depth_choices.action(target): return
+	if target == effect_controls.CHROME:
+		toolbar_shown = not toolbar_shown; depth_settings = false; depth_choices.reset()
+		end_drag(); clear_pointer_visuals(); browser.tabs_open = false
+		refresh(); effect_controls.sync(); return
 	if target == browser.BASE + 21:
 		depth.matte = not depth.matte; depth.error = ""; depth.state = "preparing"; depth_settings = false
 		refresh(); browser.effects_changed.emit(); return
@@ -522,7 +527,7 @@ func _activate_hit(hit: Dictionary) -> void:
 func local_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	# Include the whole visible frame before choosing the nearest window. Otherwise
 	# the secondary's empty chrome is invisible to both the ray and trigger routing.
-	var hit := {} if chrome_hidden() else _pointer_hit_over(origin, direction, super.ray_hit(origin, direction))
+	var hit := {} if page_input_blocked() else _pointer_hit_over(origin, direction, super.ray_hit(origin, direction))
 	if effect_controls:
 		var footer: Dictionary = effect_controls.ray_hit(origin,direction)
 		if not footer.is_empty() and (hit.is_empty() or footer.distance < hit.distance):
@@ -697,7 +702,7 @@ func cancel_pointer(hand: String) -> void:
 	if browser.hand == hand: browser.cancel()
 	super(hand)
 func stick_scroll(amount: float, delta: float) -> void:
-	if chrome_hidden() or has_pointer_capture(): return
+	if page_input_blocked() or has_pointer_capture(): return
 	for peer in browser.windows.values():
 		if not peer.drag.is_empty(): return
 	browser.scroll(amount, delta)

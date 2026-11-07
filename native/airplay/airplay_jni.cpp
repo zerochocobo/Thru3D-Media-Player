@@ -20,6 +20,7 @@ namespace {
 struct Server {
     JavaVM* vm{}; jobject listener{}; jmethodID event{}, packet{};
     raop_t* raop{}; dnssd_t* dns{}; std::atomic<bool> closing{false};
+    bool password_required = false;
     std::mutex clients_mutex; std::vector<std::string> clients;
 };
 struct Env {
@@ -69,6 +70,9 @@ void protocolLog(void*, int level, const char* message) {
     if (level <= LOGGER_ERR && message) __android_log_write(ANDROID_LOG_ERROR, "Thru3D-Airplay", message);
 }
 double initialVolume(void*) { return 0.0; }
+const char* password(void* cls, int* length) {
+    return airplay_access_password(static_cast<Server*>(cls)->password_required, length);
+}
 int codec(void*, video_codec_t c) { return c == VIDEO_CODEC_H264 ? 0 : -1; }
 void admit(void*, char*, char*, char*, bool* allowed) { *allowed = true; }
 void registered(void* cls, const char*, const char* key, const char*) {
@@ -93,9 +97,10 @@ void destroy(Server* s, JNIEnv* env) {
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_org_vrpassthroughplayer_plugin_AirplayNative_start(JNIEnv* env, jobject, jobject listener, jstring name, jbyteArray mac, jstring keyfile) {
+Java_org_vrpassthroughplayer_plugin_AirplayNative_start(JNIEnv* env, jobject, jobject listener, jstring name, jbyteArray mac, jstring keyfile, jboolean require_password) {
     if (!listener || !mac || env->GetArrayLength(mac) != 6) return 0;
     auto s = std::make_unique<Server>(); env->GetJavaVM(&s->vm); s->listener = env->NewGlobalRef(listener);
+    s->password_required = require_password;
     auto cls = env->GetObjectClass(listener);
     s->event = env->GetMethodID(cls, "event", "(Ljava/lang/String;Ljava/lang/String;)V");
     s->packet = env->GetMethodID(cls, "packet", "(Z[BJI)V"); env->DeleteLocalRef(cls);
@@ -106,6 +111,7 @@ Java_org_vrpassthroughplayer_plugin_AirplayNative_start(JNIEnv* env, jobject, jo
     cb.conn_feedback = nop; cb.video_reset = videoReset;
     cb.audio_flush = nop; cb.video_flush = nop; cb.audio_stop_coverart_rendering = nop;
     cb.audio_set_volume = volume; cb.audio_set_client_volume = initialVolume;
+    cb.passwd = password;
     cb.display_pin = pin; cb.report_client_request = admit; cb.register_client = registered; cb.check_register = known;
     cb.video_set_codec = codec;
     s->raop = raop_init(&cb);
@@ -117,11 +123,9 @@ Java_org_vrpassthroughplayer_plugin_AirplayNative_start(JNIEnv* env, jobject, jo
     char id[18]; snprintf(id, sizeof(id), "%02X:%02X:%02X:%02X:%02X:%02X", static_cast<unsigned char>(address[0]), static_cast<unsigned char>(address[1]), static_cast<unsigned char>(address[2]), static_cast<unsigned char>(address[3]), static_cast<unsigned char>(address[4]), static_cast<unsigned char>(address[5]));
     auto path = env->GetStringUTFChars(keyfile, nullptr); int result = raop_init2(s->raop, 0, id, path); env->ReleaseStringUTFChars(keyfile, path);
     if (result < 0) { destroy(s.release(), env); return 0; }
-    const int code = random_pin();
-    if (code < 0) { destroy(s.release(), env); return 0; }
-    raop_set_plist(s->raop, "pin", code + 10000);
+    // Do not set the "pin" plist item, even to zero: that enables use_pin in UxPlay.
     auto title = env->GetStringUTFChars(name, nullptr); int dnsError{};
-    s->dns = dnssd_init(title, static_cast<int>(strlen(title)), address, 6, &dnsError, 1); env->ReleaseStringUTFChars(name, title);
+    s->dns = dnssd_init(title, static_cast<int>(strlen(title)), address, 6, &dnsError, airplay_access_mode(s->password_required)); env->ReleaseStringUTFChars(name, title);
     if (!s->dns) { destroy(s.release(), env); return 0; }
     airplay_configure_profile(s->raop, s->dns);
     raop_set_dnssd(s->raop, s->dns);

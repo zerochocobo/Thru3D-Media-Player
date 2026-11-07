@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $presetText = [IO.File]::ReadAllText($PresetsPath)
 $filterPattern = '(?m)^exclude_filter="([^"]*)"'
 if (-not [regex]::IsMatch($presetText, $filterPattern)) { throw 'Export presets have no exclusion filters.' }
+# Applies to every build except an explicit beach Debug; the name predates Release exclusion.
 # Godot can convert GDScript and emit its remap before our export plugin's
 # skip() callback. Exclude the source directory before resource conversion too.
 $modelPresets = [regex]::Replace($presetText, $filterPattern, [Text.RegularExpressions.MatchEvaluator]{

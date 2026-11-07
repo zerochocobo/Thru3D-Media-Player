@@ -9,39 +9,39 @@ try {
     $prefix = if ([IO.Path]::GetExtension($ArchivePath) -ieq '.apk') { 'assets/' } else { '' }
     $exclusionMarker = $zip.GetEntry($prefix + 'environments/private_beach_debug_excluded.txt')
     # A running Build-Player may have parsed the older call before this policy
-    # changed. Its Debug export still records the new exclusion policy here.
+    # changed. Its export still records the new exclusion policy here.
     if (-not $PSBoundParameters.ContainsKey('ExpectExcluded') -and $exclusionMarker) { $ExpectExcluded = $true }
     if ($ExpectExcluded) {
-        if (-not $exclusionMarker) { throw 'Debug package is missing the beach exclusion marker.' }
+        if (-not $exclusionMarker) { throw 'Package is missing the beach exclusion marker.' }
         $markerReader = [IO.StreamReader]::new($exclusionMarker.Open())
         try { if ($markerReader.ReadToEnd() -cne "private_beach_models_excluded_v1`n") { throw 'Invalid beach exclusion marker.' } }
         finally { $markerReader.Dispose() }
         # No local modeling manifest or current model hashes are required by
-        # Debug builds. Imported file hashes identify their original res path.
+        # excluding builds. Imported file hashes identify their original res path.
         $md5 = [Security.Cryptography.MD5]::Create()
         try {
             foreach ($entry in $zip.Entries) {
                 if (-not $entry.FullName.StartsWith($prefix, [StringComparison]::Ordinal)) { continue }
                 $relative = $entry.FullName.Substring($prefix.Length)
                 if ($relative.StartsWith($directory, [StringComparison]::Ordinal)) {
-                    throw "Debug package contains beach modeling resource: $relative"
+                    throw "Package contains beach modeling resource: $relative"
                 }
                 $mapping = [regex]::Match($relative, '^\.godot/imported/(.+)-([0-9a-f]{32})\.')
                 if ($mapping.Success) {
                     $sourcePath = 'res://' + $directory + $mapping.Groups[1].Value
                     $hash = [BitConverter]::ToString($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($sourcePath))).Replace('-', '').ToLowerInvariant()
                     if ($hash -ceq $mapping.Groups[2].Value) {
-                        throw "Debug package contains imported beach modeling resource: $relative"
+                        throw "Package contains imported beach modeling resource: $relative"
                     }
                 }
             }
         } finally { $md5.Dispose() }
-        Write-Output 'Private beach modeling resources excluded from Debug package.'
+        Write-Output 'Private beach modeling resources excluded from package.'
         return
     }
-    if ($exclusionMarker) { throw 'Release package unexpectedly excludes beach modeling resources.' }
+    if ($exclusionMarker) { throw 'Explicit beach package unexpectedly excludes beach modeling resources.' }
     $manifest = Get-Content -LiteralPath (Join-Path $project ($directory + 'build_manifest.json')) -Raw | ConvertFrom-Json
-    if ($manifest.schema_version -ne 1 -or $manifest.scene_id -ne 'private_beach') { throw 'Unsupported beach staging manifest.' }
+    if ($manifest.schema_version -ne 2 -or $manifest.scene_id -ne 'private_beach') { throw 'Unsupported beach staging manifest.' }
     function Require-Entry([string]$Relative) {
         $entry = $zip.GetEntry($prefix + $Relative)
         if (-not $entry -or $entry.Length -le 0) { throw "Beach package is missing: $Relative" }
@@ -66,7 +66,7 @@ try {
     # dependencies. The offline staging JSON is deliberately not a runtime file.
     $bundle = $directory + 'beach_bundle.res'
     Assert-EntryMatchesFile $bundle (Join-Path $project $bundle)
-    foreach ($name in @('terrain.glb', 'props.glb')) {
+    foreach ($name in @('terrain.glb', 'props.glb', 'vegetation.glb', 'grill.glb')) {
         $mapping = Read-EntryText ($directory + $name + '.import')
         $match = [regex]::Match($mapping, '(?m)^path="res://([^"]+\.scn)"')
         if (-not $match.Success) { throw "Beach model has no exported scene mapping: $name" }
@@ -75,7 +75,7 @@ try {
         if (-not $expected.Success -or $match.Groups[1].Value -cne $expected.Groups[1].Value) { throw "Beach model mapping differs: $name" }
         Assert-EntryMatchesFile $match.Groups[1].Value (Join-Path $project $match.Groups[1].Value)
     }
-    $keys = @('micro_color', 'micro_normal', 'macro_color', 'wood_color', 'rock_color', 'rock_normal', 'rock_arm', 'static_mask', 'cliff_color', 'cliff_normal', 'day_sky', 'day_reflection', 'sand_surface')
+    $keys = @('micro_color', 'micro_normal', 'macro_color', 'wood_color', 'rock_color', 'rock_normal', 'rock_arm', 'static_mask', 'cliff_color', 'cliff_normal', 'sand_surface', 'wave_slopes', 'vegetation_contact', 'grill_contact', 'cloud_coverage', 'moon_albedo', 'groundcover_color', 'groundcover_normal', 'near_leaf_color', 'near_leaf_alpha', 'near_leaf_normal')
     foreach ($key in $keys) {
         $name = [string]$manifest.textures.$key
         if ([string]::IsNullOrEmpty($name)) { throw "Beach texture is absent from staging manifest: $key" }
@@ -88,15 +88,21 @@ try {
         if (-not $expected.Success -or $relative -cne $expected.Groups[1].Value) { throw "Beach texture mapping differs: $name" }
         Assert-EntryMatchesFile $relative (Join-Path $project $relative)
     }
-    foreach ($name in @('common.gdshaderinc', 'sky_common.gdshaderinc', 'sky_texture.gdshaderinc', 'sand.gdshader', 'props.gdshader', 'water.gdshader', 'sky.gdshader', 'sky_backdrop.gdshader')) {
+    foreach ($name in $manifest.study.firework_streams) {
+        $mapping = Read-EntryText ($directory + $name + '.import')
+        $match = [regex]::Match($mapping, '(?m)^path="res://([^"]+\.sample)"')
+        if (-not $match.Success) { throw "Beach firework audio has no exported mapping: $name" }
+        Assert-EntryMatchesFile $match.Groups[1].Value (Join-Path $project $match.Groups[1].Value)
+    }
+    foreach ($name in @('firework_spark.gdshader', 'body_halo.gdshader', 'sky_texture.gdshaderinc', 'time_sky_common.gdshaderinc', 'moon_surface.gdshaderinc', 'moving_shadow.gdshaderinc', 'ground_cover.gdshaderinc', 'sand.gdshader', 'rock.gdshader', 'props.gdshader', 'water.gdshader', 'foliage.gdshader', 'grill.gdshader', 'moving_shadow_depth.gdshader', 'time_sky.gdshader', 'time_backdrop.gdshader')) {
         $relative = 'shaders/private_beach/' + $name
         if ((Read-EntryText $relative) -cne [IO.File]::ReadAllText((Join-Path $project $relative))) { throw "Packaged beach shader differs: $name" }
     }
-    foreach ($name in @('bundle', 'environment', 'interaction', 'locomotion', 'navigation', 'screen', 'screen_edit', 'video')) {
+    foreach ($name in @('bundle', 'environment', 'interaction', 'locomotion', 'navigation', 'screen', 'screen_edit', 'video', 'water', 'time', 'clouds', 'shadow', 'fireworks', 'firework_audio', 'fireworks_control', 'drag')) {
         $mapping = Read-EntryText "scripts/environments/private_beach_$name.gd.remap"
         $match = [regex]::Match($mapping, 'path="res://([^"]+\.gdc)"')
         if (-not $match.Success) { throw "Beach runtime script has no compiled mapping: $name" }
         $null = Require-Entry $match.Groups[1].Value
     }
-    Write-Output 'Private beach package verified: layout/navigation bundle, 2 scenes, 13 ETC2 textures, 8 shaders/includes and 8 runtime scripts.'
+    Write-Output 'Private beach package verified: layout/navigation bundle, 4 scenes, 21 ETC2 textures, firework audio, 16 shaders/includes and 16 runtime scripts.'
 } finally { $zip.Dispose() }

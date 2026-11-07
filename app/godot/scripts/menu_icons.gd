@@ -15,6 +15,7 @@ const PATHS := {
 	"keyboard_backspace": '<path d="M8 3H22V21H8L1 12Z" stroke-width="2.5"/><path d="M11 8L18 16M18 8L11 16" stroke-width="2.5"/>',
 	"photo_rotate": '<path d="M5 8A8 8 0 0 1 20 8M20 3V8H15"/><rect x="5" y="12" width="10" height="8" rx="1"/><path d="M20 12A8 8 0 0 1 18 18"/>',
 	"region_focus": '<path d="M3 8V3H8M16 3H21V8M21 16V21H16M8 21H3V16"/><rect x="7" y="7" width="10" height="10" rx="1"/>',
+	"browser_frame": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9H21M6 6.5H6.1M9 6.5H9.1"/><path d="M7 12V16H11M17 17V13H13"/>',
 	"phone": '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M10 18H14"/>',
 	"desktop": '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M12 17V22M7 22H17"/>',
 	"cinema_screen": '<path d="M2 3Q12 5 22 3V13Q12 11 2 13ZM3 19V16H7V19M10 19V16H14V19M17 19V16H21V19M2 22V19H8V22M9 22V19H15V22M16 22V19H22V22"/>',

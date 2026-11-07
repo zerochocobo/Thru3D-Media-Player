@@ -38,9 +38,12 @@ object WebVideoCnDesktopProbe {
             val weibo = media.optBoolean("weibo_enabled")
             val tencent = media.optBoolean("tencent_ready") && media.optJSONObject("tencent") != null
             val mango = media.optBoolean("mango_ready") && media.optJSONObject("mango") != null
+            val youku = media.optBoolean("youku_ready") && media.optJSONObject("youku") != null
+            if (youku) media.put("youku_enabled",true).put("capture_identity","desktop-selected")
             if (mango) media.put("mango_enabled",true).put("capture_identity","desktop-selected")
             if (tencent) media.put("tencent_enabled",true).put("capture_identity","desktop-selected")
             val page = if (weibo) WebVideoWeiboCapture.page(media.getString("frame"),media) ?: error("Weibo identity unavailable")
+                else if (youku) WebVideoYoukuCapture.page(media.getString("frame"),media) ?: error("Youku identity unavailable")
                 else if (mango) WebVideoMangoCapture.page(media.getString("frame"),media) ?: error("Mango identity unavailable")
                 else if (tencent) WebVideoTencentCapture.page(media.getString("frame"),media) ?: error("Tencent identity unavailable")
                 else WebVideoPage.parse(media.getString("frame"))
@@ -50,6 +53,8 @@ object WebVideoCnDesktopProbe {
             if (tencent) { result.put("bridge_metadata",WebBrowserTencent.metadata(media,media.getString("frame"))!=null);check(result.getBoolean("bridge_metadata")) }
             if (mango) { result.put("entry_enabled",WebBrowserMango.enabled(media.getString("frame")))
                 result.put("bridge_metadata",WebBrowserMango.metadata(media,media.getString("frame"))!=null);check(result.getBoolean("bridge_metadata")) }
+            if (youku) { result.put("entry_enabled",WebBrowserYouku.enabled(media.getString("frame")))
+                result.put("bridge_metadata",WebBrowserYouku.metadata(media,media.getString("frame"))!=null);check(result.getBoolean("bridge_metadata")) }
             val deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(40)
             val reads=JSONArray();result.put("network_reads",reads)
             val capture=WebVideoNetworkCapture({uri,headers,prefix ->
@@ -91,7 +96,7 @@ object WebVideoCnDesktopProbe {
                     .put("content_duration",data.optDouble("content_duration"))
                     .put("playlist_duration",data.optString("playlist").lineSequence().filter { it.startsWith("#EXTINF:") }.sumOf { it.substringAfter(':').substringBefore(',').toDouble() }))
             }
-            val info=(if(weibo) WebVideoWeiboCapture.resolve(page,media,capture) else if(tencent) WebVideoTencentCapture.resolve(page,media,capture) else if(mango) WebVideoMangoCapture.resolve(page,media,capture) else capture.resolveCurrent(page,media)) ?: error("Current stream not bound")
+            val info=(if(weibo) WebVideoWeiboCapture.resolve(page,media,capture) else if(tencent) WebVideoTencentCapture.resolve(page,media,capture) else if(mango) WebVideoMangoCapture.resolve(page,media,capture) else if(youku) WebVideoYoukuCapture.resolve(page,media,capture) else capture.resolveCurrent(page,media)) ?: error("Current stream not bound")
             val selected=WebVideoFormats.select(page,info){true}
             result.put("site",page.site).put("width",selected.video.width).put("height",selected.video.height)
                 .put("video_codec",selected.video.videoCodec).put("audio_codec",selected.audio?.audioCodec ?: selected.video.audioCodec)

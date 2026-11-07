@@ -8,9 +8,12 @@ uniform vec3 screen_right = vec3(1.0,0.0,0.0);
 uniform vec3 screen_up = vec3(0.0,1.0,0.0);
 uniform vec3 screen_normal = vec3(0.0,0.0,1.0);
 uniform vec2 screen_half_size = vec2(5.0,2.8125);
+uniform float screen_curve_radius = 0.0;
+uniform vec3 screen_emitters[3];
+uniform vec3 screen_emitter_normals[3];
 uniform vec3 film_color = vec3(0.10,0.16,0.25);
 uniform vec3 lamp_position = vec3(5.2,0.8,8.0);
-uniform vec2 coast[16];
+uniform vec2 coast[32];
 uniform int coast_count = 7;
 uniform float sea_level = -0.35;
 uniform float land_slope = 0.05;
@@ -20,23 +23,31 @@ uniform bool debug_shadow_mask = false;
 uniform bool debug_base_color = false;
 uniform bool use_static_mask = false;
 uniform sampler2D static_mask : hint_default_white, filter_linear_mipmap, repeat_disable;
-uniform vec4 mask_world[4];
-uniform vec4 mask_atlas[4];
+uniform int mask_count = 4;
+uniform vec4 mask_world[6];
+uniform vec4 mask_atlas[6];
 
-vec2 sample_mask(int tile,vec2 xz) {
+vec2 sample_mask(int tile,vec2 xz,vec2 dx,vec2 dy) {
 	vec2 local=(xz-mask_world[tile].xy)/mask_world[tile].zw;
 	vec2 uv=mask_atlas[tile].xy+local*mask_atlas[tile].zw;
-	return texture(static_mask,vec2(uv.x,1.0-uv.y)).rg;
+	// Avoid bilinear reads into another tile; feathering handles its world edge.
+	vec2 inset=vec2(.5/1024.0);
+	uv=clamp(uv,mask_atlas[tile].xy+inset,mask_atlas[tile].xy+mask_atlas[tile].zw-inset);
+	vec2 scale=mask_atlas[tile].zw/mask_world[tile].zw*vec2(1.0,-1.0);
+	return textureGrad(static_mask,vec2(uv.x,1.0-uv.y),dx*scale,dy*scale).rg;
 }
 vec2 static_ground_visibility(vec3 p,vec2 fallback) {
 	if (!use_static_mask) return fallback;
+	// Derivatives precede the per-pixel tile branches, including shore edges.
+	vec2 dx=dFdx(p.xz),dy=dFdy(p.xz);
 	vec2 base_uv=(p.xz-mask_world[0].xy)/mask_world[0].zw;
 	if (any(lessThan(base_uv,vec2(0.0))) || any(greaterThan(base_uv,vec2(1.0)))) return fallback;
-	vec2 result=sample_mask(0,p.xz);
-	for (int i=1; i<4; i++) {
+	vec2 result=sample_mask(0,p.xz,dx,dy);
+	for (int i=1; i<6; i++) {
+		if (i>=mask_count) break;
 		vec2 local=(p.xz-mask_world[i].xy)/mask_world[i].zw;
 		float edge=min(min(local.x,local.y),min(1.0-local.x,1.0-local.y));
-		if (edge>0.0) result=mix(result,sample_mask(i,p.xz),smoothstep(0.0,.08,edge));
+		if (edge>0.0) result=mix(result,sample_mask(i,p.xz,dx,dy),smoothstep(0.0,.08,edge));
 	}
 	float edge=min(min(base_uv.x,base_uv.y),min(1.0-base_uv.x,1.0-base_uv.y));
 	return mix(fallback,result,smoothstep(0.0,.04,edge));
@@ -54,16 +65,43 @@ vec3 encode_srgb(vec3 v) {
 	return mix(v * 12.92, curve, step(vec3(0.0031308), v));
 }
 float shore_z(float x) {
-	float z = coast[0].y;
-	for (int i=0; i<15; i++) {
+	if (x<=coast[0].x) return coast[0].y;
+	for (int i=0; i<31; i++) {
 		if (i>=coast_count-1) break;
-		float t = clamp((x-coast[i].x)/(coast[i+1].x-coast[i].x),0.0,1.0);
-		z += (coast[i+1].y-coast[i].y)*t;
+		if (x<=coast[i+1].x) {
+			float t = (x-coast[i].x)/(coast[i+1].x-coast[i].x);
+			return mix(coast[i].y,coast[i+1].y,t);
+		}
 	}
-	return z;
+	return coast[coast_count-1].y;
+}
+float curve_shadow_hit(float t,vec3 origin,vec3 direction,float circle_coverage) {
+	if (t<=0.0) return 0.0;
+	vec3 hit=origin+t*direction;
+	float angle=atan(hit.x,screen_curve_radius-hit.z);
+	vec2 edge=screen_half_size-vec2(abs(angle*screen_curve_radius),abs(hit.y));
+	float soft=.08+t*.006;
+	return circle_coverage*smoothstep(-soft,soft,min(edge.x,edge.y));
 }
 float sun_visibility(vec3 p) {
-	if (!screen_shadow_enabled) return 1.0;
+	if (!screen_shadow_enabled || sun_direction.y<=0.0) return 1.0;
+	if (screen_curve_radius>0.0) {
+		vec3 delta=p-screen_origin;
+		vec3 o=vec3(dot(delta,screen_right),dot(delta,screen_up),dot(delta,screen_normal));
+		vec3 d=vec3(dot(sun_direction,screen_right),dot(sun_direction,screen_up),dot(sun_direction,screen_normal));
+		float a=dot(d.xz,d.xz);
+		float b=o.x*d.x+(o.z-screen_curve_radius)*d.z;
+		// Expanded form avoids subtracting r*r for nearly flat curves.
+		float c=o.x*o.x+o.z*o.z-2.0*screen_curve_radius*o.z;
+		float disc=b*b-a*c;
+		float aa=max(fwidth(disc)*1.5,.000001);
+		float circle_coverage=smoothstep(-aa,aa,disc);
+		if (a<.000001 || disc < -aa) return 1.0;
+		float q=-b-(b>=0.0 ? 1.0 : -1.0)*sqrt(max(disc,0.0));
+		float t0=q/a;
+		float t1=abs(q)>.000001 ? c/q : -b/a;
+		return 1.0-max(curve_shadow_hit(t0,o,d,circle_coverage),curve_shadow_hit(t1,o,d,circle_coverage));
+	}
 	float denominator = dot(sun_direction,screen_normal);
 	if (abs(denominator)<0.02 || sun_direction.y<=0.0) return 1.0;
 	float t = dot(screen_origin-p,screen_normal)/denominator;
@@ -73,9 +111,17 @@ float sun_visibility(vec3 p) {
 	float soft = 0.08+t*0.006;
 	return 1.0-smoothstep(-soft,soft,min(edge.x,edge.y));
 }
+float swash_phase(float x) {
+	return study_time*.52+x*.10+sin(x*.21)*.55+sin(study_time*.13+x*.07)*.18;
+}
 float swash_front(float x) {
-	float phase=study_time*.55+sin(x*.19)*.30+sin(study_time*.117+x*.07)*.12;
-	return (.5+.5*sin(phase))*uprush_offset;
+	return (.5+.5*sin(swash_phase(x)))*uprush_offset;
+}
+float swash_wet_front(float x) {
+	float phase=swash_phase(x);
+	// Retreat leaves a short-lived darker film; the rising wet edge never
+	// leads the water. This is a local recovery approximation, not a tide sim.
+	return (.5+.5*max(sin(phase),sin(phase-.9)))*uprush_offset;
 }
 float foam_noise(vec2 p) {
 	vec2 cell=floor(p),f=fract(p);
@@ -110,13 +156,46 @@ vec3 beach_surface(sampler2D source,vec2 uv,BeachPatch patch) {
 	return mix(textureGrad(source,uv+patch.first,dx,dy).rgb,
 		textureGrad(source,uv+patch.second,dx,dy).rgb,patch.blend);
 }
+mat2 rock_patch_rotation(vec2 offset) {
+	float turn=floor(offset.x*4.0);
+	vec2 axis=turn<1.0 ? vec2(1,0) : (turn<2.0 ? vec2(0,1) : (turn<3.0 ? vec2(-1,0) : vec2(0,-1)));
+	return mat2(axis,vec2(-axis.y,axis.x));
+}
+vec3 beach_rock_surface(sampler2D source,vec2 uv,vec2 dx,vec2 dy,BeachPatch patch,bool normal_map,bool vary) {
+	if (!beach_texture_variation) return textureGrad(source,uv,dx,dy).rgb;
+	if (!vary) return mix(textureGrad(source,uv+patch.first,dx,dy).rgb,
+		textureGrad(source,uv+patch.second,dx,dy).rgb,patch.blend);
+	mat2 a=rock_patch_rotation(patch.first),b=rock_patch_rotation(patch.second);
+	vec3 first=textureGrad(source,a*uv+patch.first,a*dx,a*dy).rgb;
+	vec3 second=textureGrad(source,b*uv+patch.second,b*dx,b*dy).rgb;
+	if (normal_map) {
+		// Bring sampled slopes back to the original projection axes before
+		// triplanar blending; rotating colour alone would detach the relief.
+		first=first*2.0-1.0; second=second*2.0-1.0;
+		first.xy=transpose(a)*first.xy; second.xy=transpose(b)*second.xy;
+		return mix(first,second,patch.blend)*.5+.5;
+	}
+	return mix(first,second,patch.blend);
+}
+uniform bool legacy_day_lighting = false;
+vec3 beach_day_sun() {
+	return legacy_day_lighting ? vec3(1.35,1.25,1.05) : vec3(1.85,1.68,1.40);
+}
 vec3 ambient_irradiance(vec3 normal) {
 	// Upper sky plus weaker, warm ground bounce. A constant ambient term
 	// erased bevels at night; this hemisphere approximation needs no texture
-	// or dynamic light and keeps upward-facing sand at the original exposure.
-	vec3 sky=mix(vec3(.10,.14,.22),vec3(.34,.40,.46),day_mix);
+	// or dynamic light. Night coefficients retain the previous exposure.
+	vec3 day_sky=legacy_day_lighting ? vec3(.34,.40,.46) : vec3(.24,.32,.43);
+	vec3 sky=mix(vec3(.10,.14,.22),day_sky,day_mix);
 	vec3 ground=sky*vec3(.28,.25,.20);
 	return mix(ground,sky,clamp(.5+.5*normal.y,0.0,1.0));
+}
+vec3 screen_light_sample(vec3 p,vec3 n,vec3 emitter,vec3 facing_normal,float area) {
+	vec3 delta=emitter-p;
+	float distance2=dot(delta,delta);
+	vec3 direction=normalize(delta);
+	float facing=max(dot(n,direction),0.0)*max(dot(facing_normal,-direction),0.0);
+	return film_color*facing*min(1.8,area/(distance2+1.0));
 }
 vec3 local_light(vec3 p,vec3 n) {
 	vec3 delta = screen_origin-p;
@@ -124,6 +203,10 @@ vec3 local_light(vec3 p,vec3 n) {
 	vec3 direction = normalize(delta);
 	float facing = max(dot(n,direction),0.0)*max(dot(screen_normal,-direction),0.0);
 	vec3 film = film_color*facing*min(1.8,screen_half_size.x*screen_half_size.y/(distance2+1.0));
+	if (screen_curve_radius>0.0) {
+		film=vec3(0.0);
+		for (int i=0;i<3;i++) film+=screen_light_sample(p,n,screen_emitters[i],screen_emitter_normals[i],screen_half_size.x*screen_half_size.y/3.0);
+	}
 	vec3 lamp_delta = lamp_position-p;
 	float lamp = max(dot(n,normalize(lamp_delta)),0.0)/(1.0+dot(lamp_delta,lamp_delta)*2.0);
 	return (film+vec3(0.9,0.32,0.065)*lamp)*(1.0-day_mix);

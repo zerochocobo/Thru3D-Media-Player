@@ -4,6 +4,14 @@
 #include "raop.h"
 #include "android_dnssd_shim.h"
 
+/* Password mode displays a fresh four-digit code for each connection (UxPlay -pw).
+   Open mode keeps encrypted pairing, without requiring a user-entered code. */
+static inline unsigned char airplay_access_mode(int required) { return required ? 3 : 0; }
+static inline const char *airplay_access_password(int required, int *length) {
+    *length = required ? -1 : 0;
+    return NULL;
+}
+
 static inline void airplay_configure_profile(raop_t *raop, dnssd_t *dns) {
     /* A square limit preserves a 1920-pixel long edge for portrait as well as landscape. */
     raop_set_plist(raop, "width", 1920);

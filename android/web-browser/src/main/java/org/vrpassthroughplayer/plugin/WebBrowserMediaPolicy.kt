@@ -13,13 +13,15 @@ internal object WebBrowserMediaPolicy {
                 it.optBoolean("bilibili_enabled") && it.optBoolean("bilibili_ready") && it.optJSONObject("bilibili")?.let { data ->
                     data.optString("page") == it.optString("frame") && Regex("[1-9][0-9]{0,19}").matches(data.optString("cid"))
                 } == true || it.optBoolean("tencent_enabled") && it.optBoolean("tencent_ready") && WebBrowserTencent.metadata(it,it.optString("frame")) != null ||
-                it.optBoolean("mango_enabled") && it.optBoolean("mango_ready") && WebBrowserMango.metadata(it,it.optString("frame")) != null) }
+                it.optBoolean("mango_enabled") && it.optBoolean("mango_ready") && WebBrowserMango.metadata(it,it.optString("frame")) != null ||
+                it.optBoolean("youku_enabled") && it.optBoolean("youku_ready") && WebBrowserYouku.metadata(it,it.optString("frame")) != null) }
 
     /** Prefer the adapter's current-part binding over a playing sidebar preview. */
     fun extractionCandidate(candidates: List<JSONObject>): JSONObject? = candidates.maxWithOrNull(
         compareBy<JSONObject> { !it.optBoolean("protected") &&
             (it.optBoolean("bilibili_enabled") && it.optJSONObject("bilibili") != null || it.optBoolean("douyin_enabled") && it.optJSONObject("douyin") != null ||
-                it.optBoolean("tencent_enabled") && it.optJSONObject("tencent") != null || it.optBoolean("mango_enabled") && it.optJSONObject("mango") != null) }
+                it.optBoolean("tencent_enabled") && it.optJSONObject("tencent") != null || it.optBoolean("mango_enabled") && it.optJSONObject("mango") != null ||
+                it.optBoolean("youku_enabled") && it.optJSONObject("youku") != null) }
             .thenBy { it.optBoolean("fullscreen") }.thenBy { it.optBoolean("playing") }
             .thenBy { it.optLong("width") * it.optLong("height") })
     private val sites = listOf(

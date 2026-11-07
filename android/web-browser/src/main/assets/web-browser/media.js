@@ -100,6 +100,42 @@
     Object.assign(mangoButton.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
     mangoButton.host.hidden=!Thru3DPlayButton.visible(target.video);mangoButton.enabled(true);
   };
+  let youkuEnabled = typeof Thru3DYouku !== 'undefined' && !!Thru3DYouku.page(location.href), youkuActionEnabled=false, youkuData=[], youkuCapture={};
+  let youkuButton = null, youkuChoice = null, youkuClick = 0;
+  const youkuActionEvent = event => event.isTrusted && youkuButton && (event.composedPath?.() || []).includes(youkuButton.host);
+  // Youku player installs document-wide gesture handlers. Reserve only events on
+  // our own shadow action, before those handlers can capture or cancel the click.
+  for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
+    if(youkuActionEvent(event))event.stopImmediatePropagation();
+  },true);
+  addEventListener('click',event=>{
+    if(!youkuActionEvent(event))return;
+    event.preventDefault();event.stopImmediatePropagation();youkuButton.activate();
+  },true);
+  const syncYoukuButton = target => {
+    if (typeof Thru3DPlayButton === 'undefined') return;
+    // Keep the action outside Youku player's managed child tree and event root.
+    const box = target?.video.closest?.('#ykPlayer');
+    const mount=document.fullscreenElement||document.body;
+    if (!youkuEnabled || !youkuActionEnabled || !target?.video.isConnected || !box || !mount) {youkuButton?.dispose();youkuButton=null;return;}
+    const old=youkuButton?.target;
+    if (!old || youkuButton.host.isConnected===false || youkuButton.overlay.parentElement!==mount || old.video!==target.video || old.key!==target.key || old.source!==target.source || old.epoch!==target.epoch || youkuButton.box!==box) {
+      youkuButton?.dispose();
+      const overlay=document.createElement('span');overlay.dataset.thru3dPlayOverlay='youku';
+      overlay.style.cssText='position:fixed;pointer-events:none;z-index:2147482990;';mount.append(overlay);
+      const activate=()=>{
+        const current=youkuButton?.target;
+        if(closed||suspended||pauseLease||!current||!youkuEnabled||!youkuActionEnabled||current.video.currentSrc!==current.source||mediaEpoch.get(current.video)?.id!==current.epoch)return;
+        youkuChoice={...current,at:Date.now(),request:++youkuClick};changed();
+      };
+      const control=Thru3DPlayButton.create(document,overlay,'youku',activate);
+      control.host.dataset.thru3dYouku='beta';control.host.dataset.thru3dYoukuPage=target.page;
+      youkuButton={...control,box,overlay,target,activate,dispose(){control.dispose();overlay.remove();}};
+    } else youkuButton.target=target;
+    const rect=box.getBoundingClientRect();
+    Object.assign(youkuButton.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
+    youkuButton.host.hidden=!Thru3DPlayButton.visible(target.video);youkuButton.enabled(true);
+  };
   let bilibiliEnabled = false, bilibiliData = [];
   let bilibiliButton = null, bilibiliChoice = null, bilibiliClick = 0;
   const biliKey = data => [data.id,data.cid,data.part,data.ep || ''].join(':');
@@ -175,12 +211,13 @@
   let bilibiliInitial = null, bilibiliInitialPage = '', bilibiliScanAt = 0;
   let bilibiliOwner = null;
   const networkContext = (reset = false) => {
-    try { networkPort?.postMessage({ type: "context", page: location.href, enabled: networkEnabled, bilibili: bilibiliEnabled, douyin: douyinEnabled, weibo: weiboEnabled, tencent:tencentEnabled, mango:mangoEnabled, reset }); } catch (_) {}
+    try { networkPort?.postMessage({ type: "context", page: location.href, enabled: networkEnabled, bilibili: bilibiliEnabled, douyin: douyinEnabled, weibo: weiboEnabled, tencent:tencentEnabled, mango:mangoEnabled, youku:youkuEnabled, reset }); } catch (_) {}
   };
   const mediaEpoch = new WeakMap();
   const connectNetwork = () => {
     network = [];
     tencentData = [];mangoData=[];mangoCapture={};
+    youkuData=[];youkuCapture={};
     tencentCapture = {};tencentShape=[];tencentEnvelopes=[];
     douyinData = [];
     bilibiliData = []; bilibiliViews = [];
@@ -195,6 +232,7 @@
       bilibiliData = Array.isArray(message.bilibili) ? message.bilibili.slice(0, 4) : [];
       bilibiliViews = Array.isArray(message.bilibili_views) ? message.bilibili_views.slice(0, 4) : [];
       mangoData = Array.isArray(message.mango)?message.mango.slice(0,8):[];mangoCapture=message.mango_capture||{};
+      youkuData = Array.isArray(message.youku)?message.youku.slice(0,8):[];youkuCapture=message.youku_capture||{};
       tencentData = Array.isArray(message.tencent) ? message.tencent.slice(0,8) : [];
       tencentStatus = message.tencent_status || 'idle';
       tencentCapture = message.tencent_capture || {};
@@ -203,7 +241,7 @@
       bilibiliStatus = message.bilibili_status || 'idle'; bilibiliResponseApi = message.bilibili_response_api === true;
       changed();
     });
-    networkPort.onDisconnect.addListener(() => { if (connection === networkPort) { network = []; mangoData=[];mangoCapture={};tencentData = [];tencentCapture={};tencentShape=[];tencentEnvelopes=[]; douyinData = []; bilibiliData = []; bilibiliViews = []; bilibiliInitial = null; changed(); } });
+    networkPort.onDisconnect.addListener(() => { if (connection === networkPort) { network = []; mangoData=[];mangoCapture={};youkuData=[];youkuCapture={};tencentData = [];tencentCapture={};tencentShape=[];tencentEnvelopes=[]; douyinData = []; bilibiliData = []; bilibiliViews = []; bilibiliInitial = null; changed(); } });
     networkContext();
   };
   // Both clients put the access token and selected media version on their video URL.
@@ -254,6 +292,7 @@
     if (networkPage !== location.href) {
       if (pauseLease?.page !== location.href) pauseLease = null;
       networkPage = location.href; network = []; mangoChoice=null;mangoData=[];mangoCapture={};weiboChoice = null;tencentChoice=null;tencentData=[];tencentCapture={};tencentShape=[];tencentEnvelopes=[];
+      youkuChoice=null;youkuData=[];youkuCapture={};
       bilibiliData = []; bilibiliInitial = null;
       networkContext(true);
     }
@@ -270,7 +309,7 @@
     const currentTencentShape=[{path:'diagnostic.page_state.code',kind:'number',sample:pageTencent.status},
       {path:'diagnostic.observed_envelopes.code',kind:'number',sample:tencentEnvelopes.length},...pageTencent.shape,...tencentShape];
     let bilibiliTarget = null;
-    const tencentTargets = [],mangoTargets=[];
+    const tencentTargets = [],mangoTargets=[],youkuTargets=[];
     const live = [...videos.keys()].filter(v => v.isConnected && !v.ended && (v.currentSrc || v.readyState > 0));
     const ordered = [...videos].filter(([v])=>{if (v.isConnected) return true; videos.delete(v); return false;});
     if (weiboEnabled) {
@@ -320,11 +359,14 @@
       const douyinPrimary = douyinEnabled && typeof Thru3DDouyin !== 'undefined'
         ? Thru3DDouyin.owner(douyinData, location.href, live.filter(v=>!encrypted.has(v))) : null;
       const mangoPrimary=mangoEnabled?Thru3DMango.owner(mangoData,location.href,live.filter(v=>!encrypted.has(v))):null;
+      const youkuPrimary=youkuEnabled?Thru3DYouku.owner(youkuData,location.href,live.filter(v=>!encrypted.has(v))):null;
       // Generic MSE capture still requires a single player. Site-bound owners can
       // use exact declared files even when MSE fetches before its loadstart event.
-      let requests = protectedMedia || !(networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled) ? [] : network.filter(c => c.url === currentSource || c.original_url === currentSource ||
+      let requests = protectedMedia || !(networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled || youkuEnabled) ? [] : network.filter(c => c.url === currentSource || c.original_url === currentSource ||
         currentSource.startsWith('blob:') && (bilibiliEnabled ? primary === video :
-          douyinEnabled ? douyinPrimary === video : mangoEnabled ? mangoPrimary===video&&c.at>=epoch.since : tencentEnabled ? !!video.closest?.('#main-player .txp_videos_container') && c.at >= epoch.since : !weiboEnabled && live.length === 1 && c.at >= epoch.since));
+          douyinEnabled ? douyinPrimary === video : youkuEnabled ? youkuPrimary===video : mangoEnabled ? mangoPrimary===video&&c.at>=epoch.since : tencentEnabled ? !!video.closest?.('#main-player .txp_videos_container') && c.at >= epoch.since : !weiboEnabled && live.length === 1 && c.at >= epoch.since));
+      if(youkuEnabled)requests=requests.filter(c=>c.kind==='hls'&&youkuData.some(d=>d.id===Thru3DYouku.page(location.href)?.id&&d.streams.some(t=>
+        Thru3DYouku.sameManifest(t.url,c.url)||Thru3DYouku.sameManifest(t.url,c.original_url))));
       let weibo = null;
       if (weiboEnabled && !protectedMedia && !currentSource.startsWith('blob:')) {
         const retained = weiboEvidence.get(video);
@@ -377,6 +419,10 @@
       if(mango)mangoTargets.push({video,source:currentSource,epoch:epoch.id,key:mango.id+':'+mango.revision,page:mango.page});
       const mangoClicked=!!mango&&mangoChoice?.video===video&&mangoChoice.source===currentSource&&mangoChoice.epoch===epoch.id&&
         mangoChoice.key===mango.id+':'+mango.revision&&Date.now()-mangoChoice.at<15000;
+      const youku=youkuEnabled&&!protectedMedia?Thru3DYouku.binding(video,youkuData,requests,location.href,live.filter(v=>!encrypted.has(v))):null;
+      if(youku)youkuTargets.push({video,source:currentSource,epoch:epoch.id,key:youku.id+':'+youku.revision,page:youku.page});
+      const youkuClicked=!!youku&&youkuChoice?.video===video&&youkuChoice.source===currentSource&&youkuChoice.epoch===epoch.id&&
+        youkuChoice.key===youku.id+':'+youku.revision&&Date.now()-youkuChoice.at<15000;
       items.push({ id: videos.get(video), width: video.videoWidth, height: video.videoHeight,
         fullscreen: fullscreen(video) || !!owner && fullscreen(owner),
         source: !protectedMedia ? (resource ? resource.source : /^https?:\/\//i.test(video.currentSrc || '') ? video.currentSrc : '') : '',
@@ -388,6 +434,7 @@
         bilibili_ready: biliReady,
         bilibili_request: biliClicked ? bilibiliChoice.request : 0,
         mango,mango_ready:!!mango,mango_request:mangoClicked?mangoChoice.request:0,
+        youku,youku_ready:!!youku,youku_request:youkuClicked?youkuChoice.request:0,
         tencent,tencent_ready:!!tencent,tencent_status:pageTencent.data?'normalized':tencentStatus,tencent_request:tencentClicked?tencentChoice.request:0,
         ...(tencentEnabled ? {tencent_shape:currentTencentShape} : {}),
         ...(tencentEnabled ? {tencent_capture:{...tencentCapture,...pageTencent.capture,metadata:tencentRecords.length,requests:network.length,
@@ -412,6 +459,7 @@
     syncBilibiliButton(bilibiliTarget);
     syncTencentButton(tencentTargets.length===1?tencentTargets[0]:null);
     syncMangoButton(mangoTargets.length===1?mangoTargets[0]:null);
+    syncYoukuButton(youkuTargets.length===1?youkuTargets[0]:null);
     // A declarative VR player may keep its actual <video> in a closed shadow tree.
     // Read only the same public source the player declares; its media session still
     // acknowledges pause before the native handoff.
@@ -428,6 +476,7 @@
     const controlled = [...videos.keys()].filter(v => v.isConnected && (v.currentSrc || v.readyState > 0));
     try { port.postMessage({ type: "media", videos: items,
       ...(mangoEnabled?{mango_capture:mangoCapture}:{}),
+      ...(youkuEnabled?{youku_capture:youkuCapture}:{}),
       ...(tencentEnabled ? {tencent_capture:{...tencentCapture,...pageTencent.capture,status:pageTencent.data?'normalized':tencentStatus,metadata:tencentRecords.length,requests:network.length}} : {}),
       suspended, pause_token: pauseLease?.token || 0,
       pause_has_media: controlled.length > 0, pause_held: !!pauseLease && controlled.every(v => v.paused || v.ended) }); }
@@ -522,6 +571,9 @@
       const mango=message.mango===true&&typeof Thru3DMango!=='undefined'&&!!Thru3DMango.page(location.href);
       mangoActionEnabled=mango;
       if(mango!==mangoEnabled){mangoEnabled=mango;mangoData=[];mangoCapture={};network=[];networkContext(true);changed();}
+      const youku=message.youku===true&&typeof Thru3DYouku!=='undefined'&&!!Thru3DYouku.page(location.href);
+      youkuActionEnabled=youku;
+      if(youku!==youkuEnabled){youkuEnabled=youku;youkuData=[];youkuCapture={};network=[];networkContext(true);changed();}
       const weibo = message.weibo === true;
       if (weibo !== weiboEnabled) { weiboEnabled = weibo; weiboChoice = null; network = []; networkContext(true); changed(); }
       if (enabled !== networkEnabled) { networkEnabled = enabled; network = []; networkContext(true); changed(); }
@@ -590,6 +642,15 @@
         try { Promise.resolve(video.play()).then(() => complete(), () => complete(true)); } catch (_) { complete(true); }
       } else { video.pause(); restored(); }
       send();
+    } else if (message?.action === "restore_youku") {
+      const video=[...videos].find(([,id])=>String(id)===message.id)?.[0],epoch=video&&mediaEpoch.get(video);
+      const target=video&&epoch?.id===message.epoch&&Thru3DYouku.binding(video,youkuData,network,location.href,[...videos.keys()].filter(v=>!encrypted.has(v)));
+      if(!target||target.page!==message.page||target.revision!==message.revision)return;
+      suspended=false;
+      if(Number.isFinite(message.time)&&message.time>=0){try{video.currentTime=Math.min(message.time,video.duration);}catch(_){}}
+      if(message.play===true){try{Promise.resolve(video.play()).catch(()=>{});}catch(_){}}
+      else video.pause();
+      send();
     } else if (message?.action === "restore_mango") {
       const video=[...videos].find(([,id])=>String(id)===message.id)?.[0],epoch=video&&mediaEpoch.get(video);
       const target=video&&epoch?.id===message.epoch&&Thru3DMango.binding(video,mangoData,network.filter(c=>c.at>=epoch.since),location.href,[...videos.keys()].filter(v=>!encrypted.has(v)));
@@ -617,6 +678,7 @@
     port.onDisconnect.addListener(() => { if (port === connection) {
       closed = true; pauseLease = null; weiboChoice = null; bilibiliChoice=null;mangoChoice=null;
       mangoButton?.dispose();mangoButton=null;
+      youkuButton?.dispose();youkuButton=null;youkuChoice=null;
       bilibiliButton?.dispose();bilibiliButton=null;
       tencentButton?.dispose();tencentButton=null;tencentChoice=null;
     } });

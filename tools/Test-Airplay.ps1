@@ -11,7 +11,7 @@ if ($IsWindows) {
     $console = Join-Path (Split-Path -Parent $godot) 'godot_console.exe'
     if (Test-Path -LiteralPath $console) { $godot = $console }
 }
-foreach ($case in @('test_airplay_window','test_video_pip','test_cast_receiver')) {
+foreach ($case in @('test_airplay_password_settings','test_airplay_window','test_video_pip','test_cast_receiver')) {
     & $godot --headless --xr-mode off --path "$workspace/app/godot" --quit-after 1800 --script "res://tests/$case.gd" *> "$output/$case.log"
     $text = Get-Content -LiteralPath "$output/$case.log" -Raw
     if ($LASTEXITCODE -ne 0 -or $text -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or $text -notmatch '0 failures') { throw "AirPlay regression failed: $case" }

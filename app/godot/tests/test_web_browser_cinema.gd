@@ -117,8 +117,8 @@ func _run() -> void:
 	for id in [1, 2, 1]:
 		browser.focus_window(id)
 		check(host.on_screen() and not second.on_screen(), "Changing input focus preserves both presentations")
-	browser.data.merge({"tab_id": 2, "fullscreen_video": true, "fullscreen_request": 2, "active": true}, true)
-	browser._poll_fullscreen()
+	platform.browser.merge({"tab_id": 2, "fullscreen_video": true, "fullscreen_request": 2, "active": true}, true)
+	browser.next_poll = 0; browser.tick()
 	check(not browser.handoff, "Second webpage playback cannot automatically replace the first cinema webpage")
 	# Bookmark feedback follows the stored URL, even while editing another URL.
 	browser.saved = {"bookmarks": [{"url": "http://192.168.31.185:8096/web/index.html"}]}

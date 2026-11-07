@@ -20,6 +20,7 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
     private val mirror = AirplayMirror(render)
     private var handle = 0L
     private var wanted = false
+    private var requirePassword = false
     @Volatile private var foreground = true
     private var port = 0
     private var raopName = ""
@@ -45,6 +46,13 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
         catch (_: Exception) { state = "failed"; error = "AirPlay receiver unavailable"; return@post }
         else AirplayReceiverService.end(app)
         wanted = value; Log.i("Thru3D-Airplay", "Receiver enabled=$value"); restart()
+    } }
+    /** Godot's global configuration is the only persistent owner of this option. */
+    fun requirePassword(value: Boolean) { worker.post {
+        if (requirePassword == value) return@post
+        requirePassword = value
+        // A new server invalidates old authorization and republishes both discovery records.
+        if (wanted) restart()
     } }
     fun foreground(value: Boolean) {
         if (foreground == value) return
@@ -86,7 +94,7 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
                 if (session == generation && accepting && active > 0) mirror.packet(video, bytes, ns, codec)
             }
         }
-        handle = runCatching { AirplayNative.start(listener, "Thru3D", address, key.absolutePath) }.getOrDefault(0)
+        handle = runCatching { AirplayNative.start(listener, "Thru3D", address, key.absolutePath, requirePassword) }.getOrDefault(0)
         if (handle == 0L || port <= 0) { state = "failed"; error = "AirPlay receiver unavailable"; stop(); return }
         registeredServices = 0
         register(app, "Thru3D", "_airplay._tcp.", airplayTxt, session)

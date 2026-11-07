@@ -169,7 +169,7 @@ func _draw() -> void:
 	elif view in ["manage","review"]:
 		var count: int=library.reviews.size() if view=="review" else library.assets.size()
 		height=.46+clampi(ceili(count/3.0),1,2)*.30
-	elif view=="adjust": height=1.0 if _state.get("choice","")=="cinema" else .74 if _state.get("choice","")=="private_beach" else .62
+	elif view=="adjust": height=1.0 if _state.get("choice","")=="cinema" else .87 if _state.get("choice","")=="private_beach" else .62
 	elif view=="beach_screen": height=1.12
 	elif view in ["import","import_error"]: height=.82
 	_top=height/2; _bottom=-_top
@@ -394,14 +394,15 @@ func _draw_adjust() -> void:
 			{"key":"cinema_screen_light","value":_state.get("cinema_screen_light",true),"choices":[],"switch":true}]
 		_button(CURRENT,I18n.t("Return to start"),Vector2(.44,_bottom+.13),Vector2(.46,.075),bool(_state.get("cinema_ready",true)))
 	elif choice=="private_beach":
-		rows=[{"key":"beach_night","value":_state.get("beach_night",false),"choices":[{"value":false,"label":"Day"},{"value":true,"label":"Night"}]},
-			{"key":"cinema_interaction","value":_state.get("cinema_interaction","watch"),"choices":[{"value":"watch","label":"Watch"},{"value":"move","label":"Free movement"}]}]
+		rows=[{"key":"beach_hours","value":_state.get("beach_hours",9.0),"choices":[6.0,9.0,12.0,15.0,18.0,21.0,0.0].map(func(x): return {"value":x,"label":"%d:00"%int(x)})},
+			{"key":"cinema_interaction","value":_state.get("cinema_interaction","watch"),"choices":[{"value":"watch","label":"Watch"},{"value":"move","label":"Free movement"}]},
+			{"key":"beach_screen_light","value":_state.get("beach_screen_light",1.0),"choices":[{"value":0.0,"label":"Off"},{"value":.5,"label":"Low"},{"value":1.0,"label":"Medium"},{"value":1.6,"label":"High"}]}]
 		_button(BEACH_SCREEN,I18n.t("Screen placement"),Vector2(-.22,_bottom+.13),Vector2(.46,.075),bool(_state.get("cinema_ready",false)))
 		_button(CURRENT,I18n.t("Return to start"),Vector2(.44,_bottom+.13),Vector2(.46,.075),bool(_state.get("cinema_ready",false)))
 	elif choice not in ["dark","passthrough"]:
 		rows=[{"key":"background_yaw","value":_state.get("yaw",0),"choices":range(0,360,45).map(func(x): return {"value":x,"label":str(x)+"°"})},
 			{"key":"background_brightness","value":_state.get("brightness",1.0),"choices":[{"value":.5,"label":"50%"},{"value":.75,"label":"75%"},{"value":1.0,"label":"100%"},{"value":1.25,"label":"125%"}]}]
-	var names: Array=["Cinema lighting","Cinema interaction","Viewing brightness","Screen ambient light"] if choice=="cinema" else ["Time of day","Cinema interaction"] if choice=="private_beach" else ["Direction","Brightness"]
+	var names: Array=["Cinema lighting","Cinema interaction","Viewing brightness","Screen ambient light"] if choice=="cinema" else ["Time of day","Cinema interaction","Screen ambient light"] if choice=="private_beach" else ["Direction","Brightness"]
 	for i in rows.size():
 		var y:=_top-.25-i*.13
 		_left(I18n.t(names[i]),Vector2(LEFT,y),TEXT_BODY,.43)

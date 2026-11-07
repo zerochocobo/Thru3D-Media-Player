@@ -49,15 +49,13 @@ func _run() -> void:
 	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
 	var beta_buttons: Array = menu.web_browser.input_host()._buttons.filter(func(button): return button.target in [Browser.BASE + 6, Browser.BASE + 18])
 	check(beta_buttons.size() == 1 and beta_buttons[0].target == Browser.BASE + 18, "Adapted sites show Beta without the legacy target")
-	menu.web_browser.prefetch_uri = platform.browser.url
-	menu.web_browser.prefetch_result = {"state": "ready", "uri": platform.browser.url}
-	menu.web_browser.prefetch_ms = Time.get_ticks_msec()
+	menu.web_video.result = {"state": "ready", "uri": "stale-legacy-result"}
 	menu.web_browser.action(Browser.BASE + 18)
 	check(platform.beta_requests == 0 and menu.web_browser.handoff_waiting_pause and menu.web_video.pending == 0,
 		"Beta pauses the webpage before starting resolution")
 	platform.browser.playing = false; platform.browser.videos[0].playing = false
 	menu.web_browser.next_poll = 0; menu.web_browser.tick()
-	check(platform.beta_requests == 1 and menu.web_browser.handoff_beta and menu.web_video.pending > 0, "Beta starts its own resolver instead of reusing a ready legacy prefetch")
+	check(platform.beta_requests == 1 and menu.web_browser.handoff_beta and menu.web_video.pending > 0, "Beta starts its own resolver instead of reusing a stale legacy result")
 	var beta_pending := menu.web_video.pending
 	menu.web_browser.action(Browser.BASE + 6)
 	check(menu.web_video.pending == beta_pending, "Disabled legacy target cannot cancel Beta")
@@ -157,6 +155,26 @@ func _run() -> void:
 	check(platform.browser_commands.back().action=="restore_mango" and platform.browser_commands.back().position_ms==47000,
 		"Returning Mango restores its selected timeline through the matching adapter")
 	platform.browser=previous
+	previous=platform.browser.duplicate(true)
+	platform.browser={"url":"https://v.youku.com/v_show/id_XOTUxMzg4NDMy.html","tab_id":13,"navigation":1,"focused_window":1,"active":true,
+		"youku_beta_available":true,"pause_confirmed":true,"beta_request":4,"beta_selection":"youku:main:revision1",
+		"videos":[{"youku_ready":true,"selection":"youku:main:revision1","time":27.0},
+			{"width":3840,"height":2160,"playing":true,"time":3.0}]}
+	check(menu.web_browser.beta_site_available(platform.browser) and menu.web_browser.beta_media_ready(platform.browser),
+		"Youku exposes the bound main while a larger unrelated preview is playing")
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(menu.web_browser.handoff_waiting_pause,"Youku waits for the shared pause acknowledgement")
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(platform.selected_requests.back()==[platform.browser.url,"youku:main:revision1"] and menu.web_browser.handoff_start_ms==27000,
+		"Youku starts from the selected programme timeline")
+	platform.browser.videos[0].selection="youku:main:revision2"
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(not menu.web_browser.handoff,"Replacing Youku metadata cancels the stale selection")
+	menu.web_browser.playback_return={"tab":13,"window":1,"navigation":1,"origin":platform.browser.url,"selection":"youku:main:revision1","youku":true}
+	menu.web_browser.restore_playback(false,47000)
+	check(platform.browser_commands.back().action=="restore_youku" and platform.browser_commands.back().position_ms==47000,
+		"Returning Youku restores its selected timeline through the matching adapter")
+	platform.browser=previous
 	platform.browser.native_supported = true
 	platform.browser.url = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 	platform.browser.playing = true; platform.browser.videos[0].playing = true
@@ -237,7 +255,11 @@ func _run() -> void:
 	platform.browser.url = menu.web_browser.data.url
 	menu.web_browser.action(Browser.BASE + 6)
 	var chosen: Array = []
-	menu.chosen.connect(func(uri, title): chosen.append([uri, title]))
+	menu.chosen.connect(func(uri, title):
+		chosen.append([uri, title])
+		# Mirror main's native-open close and completion of the opening guard.
+		menu.web_browser.close(true)
+		menu.web_browser.playback_return.opening = false)
 	platform.web_state = {"id": menu.web_video.pending, "state": "ready", "uri": platform.browser.url, "title": "Video", "height": 1080}
 	menu.web_video.next_poll = 0; menu.web_video.tick()
 	menu.web_browser.next_poll = 0; menu.web_browser.tick()

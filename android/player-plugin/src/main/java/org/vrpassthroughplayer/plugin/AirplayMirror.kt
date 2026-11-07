@@ -22,6 +22,9 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
     private val scheduled = AtomicBoolean(false)
     private val attaching = AtomicBoolean(false)
     private val displayGeneration = java.util.concurrent.atomic.AtomicLong()
+    private val receivedVideo = java.util.concurrent.atomic.AtomicLong()
+    private val receivedAudio = java.util.concurrent.atomic.AtomicLong()
+    private var nextDiagnosticMs = 0L
     @Volatile var epoch = 0L; private set
     @Volatile var width = 1280; private set
     @Volatile var height = 720; private set
@@ -87,7 +90,7 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
             if (attached && error.isEmpty()) worker.postDelayed(this, 5)
         }
     }
-    fun begin(id: Long, paused: Boolean = false) { epoch = id; packets.clear(); error = ""; audioError = ""; audioBytes = 0; suspended = paused; if (paused) packets.park() }
+    fun begin(id: Long, paused: Boolean = false) { epoch = id; packets.clear(); error = ""; audioError = ""; audioBytes = 0; receivedVideo.set(0); receivedAudio.set(0); nextDiagnosticMs = 0; suspended = paused; if (paused) packets.park() }
     fun size(w: Int, h: Int) {
         if (w !in 16..1920 || h !in 16..1920) return
         synchronized(lock) { width = w; height = h }
@@ -97,7 +100,9 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
         worker.post { if (codec != audioCodec || spf != samples) stopAudio(); audioCodec = codec; samples = spf; audioError = ""; Log.i("Thru3D-Airplay", "Audio format codec=$codec samples=$spf") }
     }
     fun packet(video: Boolean, bytes: ByteArray, ns: Long, codec: Int) {
-        if (epoch <= 0 || ns <= 0 || bytes.size > 2*1024*1024) return
+        if (epoch <= 0) return
+        (if (video) receivedVideo else receivedAudio).incrementAndGet()
+        if (ns <= 0 || bytes.size > 2*1024*1024) return
         packets.offer(AirplayPackets.Packet(video, bytes, ns, codec))
     }
     fun attach(id: Long, textureId: Int): Boolean {
@@ -144,6 +149,12 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
     }
     fun frame(): JSONObject {
         val id = epoch
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (id > 0 && now >= nextDiagnosticMs) {
+            nextDiagnosticMs = now + 5000
+            // Numeric pipeline state only; no sender identity, PIN, keys or media payload.
+            Log.i("Thru3D-Airplay", "Mirror pipeline epoch=$id target=${width}x$height video_packets=${receivedVideo.get()} audio_packets=${receivedAudio.get()} config_bytes=${packets.config.size} ready=${packets.videoReady()} attached=$attached output=${decodedWidth}x$decodedHeight frames=$frames audio_bytes=$audioBytes suspended=$suspended")
+        }
         if (attached && !direct && scheduled.compareAndSet(false, true)) render(Runnable {
             try {
                 synchronized(lock) {

@@ -1,7 +1,7 @@
 {
   "upstream_android": "https://github.com/jqssun/android-airplay-server/tree/a46cca0a6a1274e9e33c0e750f0f1c1eb1d881ea",
   "sources": [
-    {"id":"uxplay","url":"https://codeload.github.com/FDH2/UxPlay/tar.gz/df67c212a433cf6dda3676dd40c097900d24e645","sha256":"168de53ed688f87c4022d79357ce91f9608ad5c53236bff95134d19b88efeb3f","root":"UxPlay-df67c212a433cf6dda3676dd40c097900d24e645","patched_files":{"lib/raop_handlers.h":"6336a38c2d0abd78fc8772412380d3db5c72d66d8f8c8d354fdc5fcbd91df416"}},
+    {"id":"uxplay","url":"https://codeload.github.com/FDH2/UxPlay/tar.gz/df67c212a433cf6dda3676dd40c097900d24e645","sha256":"168de53ed688f87c4022d79357ce91f9608ad5c53236bff95134d19b88efeb3f","root":"UxPlay-df67c212a433cf6dda3676dd40c097900d24e645","patched_files":{"lib/raop_handlers.h":"6336a38c2d0abd78fc8772412380d3db5c72d66d8f8c8d354fdc5fcbd91df416","lib/raop_rtp_mirror.c":"b36727ebb397e30ddea672b9760c045be0aef343ff9c698f408f32c40b16f0f0"},"patches":["0008-fix-pin-pairing-proof-length.patch","0009-keep-mirror-parameter-sets-across-timestamps.patch"]},
     {"id":"libplist","url":"https://codeload.github.com/libimobiledevice/libplist/tar.gz/f41b1ea67045e0c09339974d83e389972d84f166","sha256":"78babb3267616444233aca10360cd7ac66f60b07aa133e1589edbda4c8e81465","root":"libplist-f41b1ea67045e0c09339974d83e389972d84f166"},
     {"id":"openssl","url":"https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz","sha256":"603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a","root":"openssl-3.5.9"}
   ]
