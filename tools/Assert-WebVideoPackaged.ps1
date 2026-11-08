@@ -18,7 +18,12 @@ try {
     )
     $bootstrap = Join-Path $root 'android/player-plugin/src/main/assets/web-video/extract.py'
     $checks += @{ name='assets/web-video/extract.py'; bytes=(Get-Item $bootstrap).Length; sha256=(Get-FileHash $bootstrap).Hash }
-    foreach ($name in @('manifest.json', 'media.js', 'danmaku.js', 'background.js', 'network.js', 'bilibili.js', 'bilibili-response.js', 'weibo.js', 'play-button.js', 'tencent.js', 'tencent-response.js')) {
+    $extension = Get-Content -LiteralPath (Join-Path $root 'android/web-browser/src/main/assets/web-browser/manifest.json') -Raw | ConvertFrom-Json
+    $assets = @('manifest.json', 'media.js', 'danmaku.js', 'background.js', 'network.js', 'bilibili.js', 'bilibili-response.js', 'weibo.js', 'play-button.js', 'tencent.js', 'tencent-response.js') + @($extension.background.scripts)
+    foreach ($content in $extension.content_scripts) { $assets += @($content.js) }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($name in $assets) {
+        if (-not $seen.Add($name)) { continue }
         $path = Join-Path $root "android/web-browser/src/main/assets/web-browser/$name"
         $checks += @{ name="assets/web-browser/$name"; bytes=(Get-Item $path).Length; sha256=(Get-FileHash $path).Hash }
     }

@@ -29,6 +29,15 @@ const FOLIAGE := preload("res://shaders/private_beach/foliage.gdshader")
 const GRILL := preload("res://shaders/private_beach/grill.gdshader")
 const SKY := preload("res://shaders/private_beach/time_sky.gdshader")
 const BACKDROP := preload("res://shaders/private_beach/time_backdrop.gdshader")
+## Adreno 6xx only (tools/beach/mobile_shaders.py low_outputs): same uniforms, cheaper fragments.
+const LOW_SHADERS := {
+	SAND: preload("res://shaders/private_beach/sand_low.gdshader"),
+	WATER: preload("res://shaders/private_beach/water_low.gdshader"),
+	PROPS: preload("res://shaders/private_beach/props_low.gdshader"),
+	FOLIAGE: preload("res://shaders/private_beach/foliage_low.gdshader"),
+	GRILL: preload("res://shaders/private_beach/grill_low.gdshader"),
+	BACKDROP: preload("res://shaders/private_beach/time_backdrop_low.gdshader"),
+}
 const DAY_HOURS := 9.0
 const NIGHT_HOURS := 21.0
 const DRAG_HIT_DEGREES := 6.0
@@ -39,8 +48,10 @@ const SURF_FADE_SECONDS := 1.5
 const HALO_DISTANCE := 300.0
 const CONTROL_RAY_MARGIN := .22
 const CENTER_CHAIR := Vector2(0,9)
-## Eye position on a lounger's reclined back, relative to its authored centre.
-const LOUNGER_EYE := Vector3(0,1.02,.62)
+## Eye of an upright sitter over the rear of the flat seat (cushion z -.87…+.39,
+## top ≈.5, hinge +.4), relative to the lounger's authored centre. The real body
+## is upright, so an eye over the reclined back reads as sitting on the backrest.
+const LOUNGER_EYE := Vector3(0,1.2,.16)
 const CHAIR_CONTACT_SIZE := Vector2(1.5,2.7)
 ## The grill stands under the string of lights, near the loungers.
 const GRILL_SPOT := Vector2(-2.3,12.5)
@@ -628,7 +639,7 @@ func _vector(value: Array) -> Vector3:
 	return Vector3(value[0],value[1],value[2])
 
 func _material(shader: Shader) -> ShaderMaterial:
-	var material := ShaderMaterial.new(); material.shader=shader
+	var material := ShaderMaterial.new(); material.shader=quality_shader(shader,low_end)
 	var config: Dictionary = bundle.config
 	var layout: Dictionary = bundle.layout
 	var coast := PackedVector2Array()
@@ -842,13 +853,51 @@ func _build_seats() -> void:
 	_content.add_child(contact)
 	contact.position=Vector3(CENTER_CHAIR.x,navigation.ground(CENTER_CHAIR.x,CENTER_CHAIR.y)+.02,CENTER_CHAIR.y+.05)
 
-## Minimum-spec headsets give up the dynamic shadow, not the scene.
+## Minimum-spec headsets give up the dynamic shadow and surface detail, not the scene.
 func set_low_end(value: bool) -> void:
 	low_end=value
 	if is_ready: _apply_quality()
 
+var _probe_hidden: Array[Node3D] = []
+## Debug A/B only (perf_tune beach_probe): hides node patterns and overrides shader
+## parameters until the next probe; nothing is saved. Prints the scene inventory.
+func debug_probe(probe: Dictionary) -> void:
+	if not is_ready: return
+	for node in _probe_hidden:
+		if is_instance_valid(node): node.visible=true
+	_probe_hidden.clear()
+	for pattern in probe.get("hide",[]):
+		for node in _content.find_children(str(pattern),"Node3D",true,false):
+			if node.visible: node.visible=false; _probe_hidden.append(node)
+	var overrides: Dictionary=probe.get("params",{})
+	for material in _surfaces:
+		for key in overrides: material.set_shader_parameter(key,overrides[key])
+	for key in probe.get("sky_params",{}): _sky_material.set_shader_parameter(key,probe.sky_params[key])
+	if probe.has("reflections"):
+		background_environment.reflected_light_source=Environment.REFLECTION_SOURCE_BG if bool(probe.reflections) else Environment.REFLECTION_SOURCE_DISABLED
+	if probe.has("sky_mode"): background_environment.sky.process_mode=int(probe.sky_mode)
+	if bool(probe.get("dump",false)):
+		var inventory := {}
+		for mesh in _content.find_children("*","MeshInstance3D",true,false):
+			var top: Node=mesh
+			while top.get_parent()!=_content: top=top.get_parent()
+			var entry: Dictionary=inventory.get_or_add(str(top.name),{"meshes":0,"triangle_vertices":0,"names":[]})
+			entry.meshes+=1
+			if mesh.mesh:
+				entry.triangle_vertices+=mesh.mesh.get_faces().size()
+			if entry.names.size()<12: entry.names.append(str(mesh.name))
+		print("[BEACH_PROBE] ",JSON.stringify({"inventory":inventory,"hidden":_probe_hidden.size()}))
+	else: print("[BEACH_PROBE] ",JSON.stringify({"hidden":_probe_hidden.size()}))
+
 func _apply_quality() -> void:
 	for material in _surfaces: material.set_shader_parameter("moving_shadow_enabled",not low_end)
+	for material in _surfaces+[backdrop_material]:
+		if material: material.shader=quality_shader(material.shader,low_end)
+
+static func quality_shader(shader: Shader,low: bool) -> Shader:
+	for high: Shader in LOW_SHADERS:
+		if shader==high or shader==LOW_SHADERS[high]: return LOW_SHADERS[high] if low else high
+	return shader
 
 func _rect(value: Array) -> Vector4:
 	return Vector4(value[0],value[1],value[2],value[3])
@@ -915,7 +964,7 @@ func _apply_lighting() -> void:
 		material.set_shader_parameter("moving_specular_tint",light.specular_tint)
 		material.set_shader_parameter("moving_sun_color",Vector3(direct.r,direct.g,direct.b))
 		material.set_shader_parameter("moving_ambient_color",Vector3(ambient.r,ambient.g,ambient.b))
-		material.set_shader_parameter("moving_shadow_enabled",light.shadow_enabled)
+		material.set_shader_parameter("moving_shadow_enabled",light.shadow_enabled and not low_end)
 	for material in _sky_materials():
 		material.set_shader_parameter("time_sun_direction",state.sun_direction)
 		material.set_shader_parameter("time_moon_direction",-state.sun_direction)
@@ -932,7 +981,7 @@ func _sky_materials() -> Array:
 	# Sky, its mesh backdrop and water reflections read one cloud and body state.
 	var result: Array=[_sky_material,backdrop_material]
 	for material in _animated:
-		if material.shader==WATER: result.append(material)
+		if quality_shader(material.shader,false)==WATER: result.append(material)
 	return result
 
 func _apply_cloud_light() -> void:

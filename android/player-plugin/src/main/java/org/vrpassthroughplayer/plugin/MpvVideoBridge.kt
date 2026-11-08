@@ -268,7 +268,8 @@ internal class MpvVideoBridge(
     /** depth: realtime 2D->3D on a mono source; its near map rides in the Alpha mask slot. Never with alpha. */
     private class Session(val scope: MediaSessionGate.Scope, val host: Host, private val requestedStereo: Boolean,
                           val profile: String, val alpha: Boolean, val vulkan: Boolean, val normalFastPath: Boolean,
-                          private val requestedDepth: Boolean = false, private val requestedTopBottom: Boolean = false) {
+                          private val requestedDepth: Boolean = false, private val requestedTopBottom: Boolean = false,
+                          sourceEpochFloor: Long = 1) {
         @Volatile var spatial = false // the decoded source fixes its physical packing
         val stereo get() = spatial || requestedStereo
         val depth get() = requestedDepth && !spatial
@@ -330,6 +331,7 @@ internal class MpvVideoBridge(
         val pairs = HashMap<Long, JSONObject>()
         val retiring = HashSet<Long>()
         var sourceEpoch = 0L
+        val sourceEpochGate = MpvSourceEpochGate(sourceEpochFloor)
         var latestPair = ""
         var firstPair = false
         var captured = 0L
@@ -687,10 +689,12 @@ internal class MpvVideoBridge(
         if (positionMs >= 0) host.listening?.transportChanged()
         val next = gate.replace(id); if (next <= 0) return -1
         val session = Session(gate.current(next) ?: return -1, host, stereo, profile, alpha, old.vulkan, old.normalFastPath, depth,
-            stereo && topBottom)
+            stereo && topBottom, old.sourceEpochGate.floorForNextGeneration)
         // A decoder image is exported once: redrawing the current frame for a new direct session yields
         // nothing to show. Decode that frame again instead (an exact seek to its own timestamp).
-        val redecodeMs = if (positionMs < 0 && !host.layer && direct(old) && direct(session))
+        // A spontaneous boundary already supplied a new source frame. Seeking back to
+        // the old displayed PTS can hit the same HLS discontinuity over and over.
+        val redecodeMs = if (positionMs < 0 && !old.sourceEpochGate.revisionPending && !host.layer && direct(old) && direct(session))
             synchronized(old.lock) { old.pairs[old.drawnToken]?.optLong("pts_us", -1L) ?: -1L }.let { if (it >= 0) it / 1000 else -1L }
         else -1L
         val depthModel = if (depth) old.depthModel?.handOff() else null
@@ -1357,6 +1361,18 @@ internal class MpvVideoBridge(
             val eyeWidth = if (session.stereo && !session.topBottom) width / 2 else width
             val eyeHeight = if (session.topBottom) height / 2 else height
             val epoch = source.getLong("source_epoch")
+            when (session.sourceEpochGate.observe(epoch)) {
+                MpvSourceEpochGate.Action.DROP -> return true
+                MpvSourceEpochGate.Action.REVISE -> {
+                    // HLS discontinuities and native VO resets can happen without a UI seek.
+                    // Retire this producer in finally; Godot reuses its normal revision flow
+                    // to invalidate the old model, queued copies and display identities.
+                    event("mpv_state", session, JSONObject(MpvSourceNative.status(session.host.handle))
+                        .put("source_epoch_change", JSONObject().put("previous", session.sourceEpoch).put("next", epoch)))
+                    return true
+                }
+                MpvSourceEpochGate.Action.ACCEPT -> Unit
+            }
             if (session.sourceEpoch == 0L) session.sourceEpoch = epoch
             check(session.sourceEpoch == epoch) { "Source epoch changed without processing generation reset" }
             if (session.renderer == 0L) {

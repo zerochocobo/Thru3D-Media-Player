@@ -1890,6 +1890,7 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		_set_volume_at(float(point.y))
 
 func release_pointer(hand: String, _origin: Vector3, _direction: Vector3, _tracked: bool) -> void:
+	app_actions.release(hand)
 	if _track_drag.get("hand") == hand:
 		var request := _track_drag.duplicate()
 		_track_drag.clear()

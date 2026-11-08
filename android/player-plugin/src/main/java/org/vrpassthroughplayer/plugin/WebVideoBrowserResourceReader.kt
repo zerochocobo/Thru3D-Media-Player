@@ -35,7 +35,39 @@ internal object WebVideoBrowserResourceReader {
                 val match = Regex("bytes 0-([0-9]+)/([0-9]+)").matchEntire(connection.getHeaderField("Content-Range").orEmpty())
                 require(match != null && match.groupValues[1].toLong() + 1 == bytes.size.toLong() && match.groupValues[2].toLong() == bytes.size.toLong())
             }
-            return connection.url.toURI() to bytes
+            val finalUri = connection.url.toURI()
+            val inspected = if (prefix && bytes.size >= 16 && String(bytes, 4, 4, Charsets.US_ASCII) == "ftyp" && WebVideoContainer.parse(bytes) == null) {
+                val total = if (connection.responseCode == 206) Regex("bytes 0-[0-9]+/([0-9]+)")
+                    .matchEntire(connection.getHeaderField("Content-Range").orEmpty())?.groupValues?.get(1)?.toLongOrNull() ?: -1L
+                    else connection.contentLengthLong
+                val etag = connection.getHeaderField("ETag")?.takeIf { !it.startsWith("W/") }
+                if (total > bytes.size) try {
+                    WebVideoMp4Header.inspect(object : Mp4InterleavePolicy.Reader {
+                        override val size = total
+                        override fun read(offset: Long, length: Int): ByteArray {
+                            check()
+                            // Repeat the original observed URL. RemoteMediaHttp preserves
+                            // each redirect's existing credential scope, never the final
+                            // CDN URL with credentials borrowed from the original origin.
+                            val more = http.open(uri, "bytes=$offset-${offset + length - 1}", headers)
+                            try {
+                                more.readTimeout = 5000
+                                require(more.responseCode == 206 && more.url.toURI() == finalUri)
+                                require(more.getHeaderField("Content-Range") == "bytes $offset-${offset + length - 1}/$total")
+                                require(etag == null || more.getHeaderField("ETag") == etag)
+                                return more.inputStream.use { input ->
+                                    val data = ByteArray(length);var at = 0
+                                    while (at < length) { check();val n = input.read(data, at, length - at);require(n > 0);at += n }
+                                    require(input.read() == -1);data
+                                }
+                            } finally { http.release(more) }
+                        }
+                    }, bytes)
+                } catch (error: InterruptedException) { throw error }
+                catch (_: Exception) { check();bytes }
+                else bytes
+            } else bytes
+            return finalUri to inspected
         } finally { http.release(connection) }
     }
 }

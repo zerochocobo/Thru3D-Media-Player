@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Thru3D video handoff",
-  "version": "1.57",
+  "version": "1.68",
   "browser_specific_settings": {
     "gecko": {
       "id": "web-video@thru3d.local"
@@ -70,6 +70,17 @@
       "plex.js",
       "niconico.js",
       "niconico-response.js",
+      "tiktok.js",
+      "instagram.js",
+      "ted.js",
+      "redbull.js",
+      "streamable.js",
+      "archive.js",
+      "odysee.js",
+      "dailymotion.js",
+      "twitch.js",
+      "twitch-response.js",
+      "dailymotion-response.js",
       "network.js"
     ],
     "persistent": true
@@ -87,6 +98,15 @@
         "douyin-current.js",
         "niconico.js",
         "niconico-player.js",
+        "tiktok.js",
+        "instagram.js",
+        "ted.js",
+        "redbull.js",
+        "streamable.js",
+        "archive.js",
+        "odysee.js",
+        "dailymotion.js",
+        "twitch.js",
         "play-button.js",
         "weibo.js",
         "mango.js",

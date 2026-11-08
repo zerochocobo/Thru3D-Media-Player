@@ -16,10 +16,15 @@ const Thru3DIqiyi = (() => {
       if(own(info,'type')!=='Movie')return fail('not_main');
       const tvid=id(own(initial,'tvId')??own(initial,'tvid'));
       if(!tvid||tvid!==id(own(info,'id'))||tvid!==id(own(data,'tvid')))return fail('wrong_item');
-      const list=own(program,'video');if(!Array.isArray(list)||list.length<1||list.length>24)return fail('ambiguous_track');
-      const selected=[];for(let i=0;i<list.length;i++){const t=own(list,String(i));if(own(t,'_selected')===true)selected.push(t);}
-      const track=selected[0],vid=id(own(track,'vid')),bid=own(track,'bid');
-      if(selected.length!==1||!vid||vid!==id(own(info,'vid'))||!Number.isInteger(bid)||bid<0||bid!==own(info,'_bid'))return fail('wrong_track');
+      const vid=id(own(info,'vid')),bid=own(info,'_bid');
+      if(!vid||!Number.isInteger(bid)||bid<0)return fail('wrong_track');
+      // Quality fallback updates the current Movie's videoList while the initial
+      // API retains its old _selected flag and incomplete lower-quality rows.
+      const movie=own(active,'_mvInfo'),currentList=own(movie,'videoList');
+      const list=id(own(movie,'tvid'))===tvid&&currentList!==undefined?currentList:own(program,'video');
+      if(!Array.isArray(list)||list.length<1||list.length>24)return fail('ambiguous_track');
+      const selected=[];for(let i=0;i<list.length;i++){const t=own(list,String(i));if(id(own(t,'vid'))===vid&&own(t,'bid')===bid)selected.push(t);}
+      if(selected.length!==1)return fail('wrong_track');const track=selected[0];
       const videos=[...dom.querySelectorAll('video.inner-video')].filter(v=>v===element||v.wrappedJSObject===element);
       if(videos.length!==1)return fail('wrong_element');const video=videos[0];
       if(!video.isConnected||video.mediaKeys||video.readyState<2||video.seeking)return fail('not_decoded');
@@ -32,14 +37,15 @@ const Thru3DIqiyi = (() => {
       if(/#EXT-X-(?:SESSION-)?KEY:/i.test(playlist))return fail('protected_manifest');
       if(!cachedDeclaration||cachedDeclaration.text!==playlist||cachedDeclaration.page!==page){
         const refs=playlist.split(/\r?\n/).map(v=>v.trim()).filter(v=>v&&!v.startsWith('#')).map(v=>new URL(v,page));
-        cachedDeclaration={page,text:playlist,refs,revision:revision(playlist)};
+        const seconds=[...playlist.matchAll(/^\s*#EXTINF:([0-9.]+)/gm)].reduce((sum,m)=>sum+Number(m[1]),0);
+        cachedDeclaration={page,text:playlist,refs,seconds,revision:revision(playlist)};
       }
       const drm=own(track,'drmType');
       const next=own(view,'__lastAccJson');
       // The website has already parsed ms/mk into per-fragment dispatch URLs.
       // Read its selected level's data; never invoke getters or rebuild signatures.
       let dispatchers=[],dispatchStatus='unavailable',dispatchDuration=null;
-      const movie=own(active,'_mvInfo'),levels=own(movie,'levelInfoArr');
+      const levels=own(movie,'levelInfoArr');
       if(id(own(movie,'tvid'))===tvid&&Array.isArray(levels)&&levels.length<=24){
         const matching=[];for(let i=0;i<levels.length;i++){const level=own(levels,String(i));if(id(own(level,'vid'))===vid&&own(level,'bid')===bid)matching.push(level);}
         if(matching.length===1){
@@ -65,6 +71,7 @@ const Thru3DIqiyi = (() => {
       return {ready:true,status:'bound',id:/\/([vw]_[A-Za-z0-9]+)\.html$/.exec(url.pathname)[1],revision:revision([page,video.currentSrc,tvid,vid,bid,width,height,cachedDeclaration.revision].join('|')),page,src:video.currentSrc,tvid,vid,bid,width,height,duration,ff,playlist,prefetch_tvid:id(own(next,'tvId')??own(next,'tvid')),
         drm_type:Number.isInteger(drm)&&drm>=0&&drm<=32?drm:'unknown',has_drm:!!own(track,'drm'),has_root_drm:!!own(data,'drm'),
         signing_data_present:!!own(track,'ms')||!!own(track,'mk'),dispatchers,dispatch_status:dispatchStatus,dispatch_duration_ms:dispatchDuration,
+        sdk_duration_ms:sdkDuration,playlist_duration:cachedDeclaration.seconds,
         dispatch_shape:{movie_fields:movie&&typeof movie==='object'?Object.getOwnPropertyNames(movie).filter(k=>/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(k)).slice(0,32):[],level_count:Array.isArray(levels)?levels.length:0},protection_unverified:true};
     }catch(_){return fail('read_error');}
   };
@@ -77,9 +84,15 @@ const Thru3DIqiyi = (() => {
       return current.playlist.split(/\r?\n/).map(v=>v.trim()).filter(v=>v&&!v.startsWith('#')).some(v=>new URL(v,current.page).pathname===uri.pathname);
     }catch(_){return false;}
   };
+  const timelineMatches=data=>Number.isFinite(data.dispatch_duration_ms)&&(
+    Math.abs(data.dispatch_duration_ms/1000-data.duration)<=.5||
+    // Android MSE can expose the complete integer HLS total, while the SDK
+    // retains the exact final sd+EXTINF anchor. Require both declarations.
+    Number.isInteger(data.duration)&&data.duration===Math.ceil(data.dispatch_duration_ms/1000)&&
+    data.sdk_duration_ms===data.dispatch_duration_ms&&data.playlist_duration===data.duration);
   const binding=(video,data)=>data?.ready&&data.src===video.currentSrc&&data.width===video.videoWidth&&data.height===video.videoHeight&&
     Math.abs(data.duration-video.duration)<.01&&!video.mediaKeys&&!video.seeking&&data.drm_type===1&&!data.has_drm&&
-    data.dispatch_status==='selected_level'&&data.dispatchers.length>0&&Number.isFinite(data.dispatch_duration_ms)&&Math.abs(data.dispatch_duration_ms/1000-video.duration)<=.5?data:null;
+    data.dispatch_status==='selected_level'&&data.dispatchers.length>0&&timelineMatches(data)?data:null;
   // Capture remains read-only. Only an explicit retained-page return invokes the
   // website's existing playback controls; unbuffered MSE seeks need its loader.
   const restore=(view,video,data,time,play)=>{

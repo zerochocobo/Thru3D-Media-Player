@@ -213,8 +213,15 @@ func run() -> void:
 	check(not main_slot.hole.visible and menu._backdrop.layers == 1 and not capture.snapshot().active, "Closing restores meshes and hides layers")
 	check(main_slot.layer.quad_size.x < 0.001 and main_slot.layer.layer_viewport == main_slot.submit, "Closed slot shrinks but keeps its viewport and swapchain")
 	check(main_slot.raw.render_target_update_mode == SubViewport.UPDATE_DISABLED and main_slot.submit.render_target_update_mode == SubViewport.UPDATE_DISABLED, "Hidden capture stops rendering")
+	# Session stop retires every submit viewport; the next session renders into fresh targets.
+	var retired: SubViewport = main_slot.submit
+	capture._renew_submits()
+	check(not is_instance_valid(retired) and main_slot.layer.layer_viewport == main_slot.submit
+		and main_slot.raw.get_parent() == main_slot.submit and main_slot.copy.get_parent() == main_slot.submit
+		and main_slot.submit.world_2d != null and main_slot.submit.size == main_slot.raw.size, "Session stop renews the submit viewport")
 	menu.visible = true; capture.update(); await frames()
 	check(menu._buttons[0].node.layers != 1, "Reopened menu returns to layers")
+	check(main_slot.submit.get_texture().get_image().get_used_rect().has_area(), "Renewed submit viewport receives the menu copy")
 	# A stopped XR session hides the layers while the same menu stays active.
 	capture._restore(); capture._hide(); capture.update()
 	check(not capture._any_placed and not display.menu_layers, "Layers hidden while the menu stays open are not reported as placed")

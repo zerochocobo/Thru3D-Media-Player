@@ -35,7 +35,12 @@ object WebBrowserNetworkMedia {
                 .put("at", source.optLong("at").coerceAtLeast(0))
                 .put("original_url", address(source.optString("original_url"))?.toString() ?: uri.toString())
                 .put("cookies", source.optJSONArray("cookies")?.takeIf { it.length() <= 128 && it.toString().length <= 24576 } ?: JSONArray())
-                .put("mime", source.optString("mime").take(128)))
+                .put("mime", source.optString("mime").take(128)).also { target ->
+                    source.optString("request_id").takeIf{it.matches(Regex("[A-Za-z0-9_.:-]{1,200}"))}?.let{target.put("request_id",it)}
+                    source.optString("request_url").takeIf { value -> value.length<=16384 && runCatching {
+                        URI(value);address(value.substringBefore('#'))==uri
+                    }.getOrDefault(false) }?.let{target.put("request_url",it)}
+                })
         }
         return result
     }

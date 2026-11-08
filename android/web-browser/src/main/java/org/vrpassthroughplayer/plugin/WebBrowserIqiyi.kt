@@ -84,7 +84,12 @@ object WebBrowserIqiyi {
         require(data.optString("dispatch_status")=="selected_level")
         val parts=parts(data);val files=data.getJSONArray("dispatchers");require(files.length() in 1..2048)
         val duration=data.getDouble("dispatch_duration_ms")/1000.0
-        require(duration.isFinite() && duration>0 && kotlin.math.abs(duration-data.getDouble("duration"))<=.5)
+        val visibleDuration=data.getDouble("duration")
+        val roundedCompleteTimeline=visibleDuration==kotlin.math.ceil(duration) &&
+            data.optDouble("sdk_duration_ms",Double.NaN)==data.getDouble("dispatch_duration_ms") &&
+            parts.sumOf { it.duration }==visibleDuration
+        require(duration.isFinite() && duration>0 &&
+            (kotlin.math.abs(duration-visibleDuration)<=.5 || roundedCompleteTimeline))
         require(parts.first().range.sd==0L)
         val durations=parts.mapIndexed { i,part ->
             val end=if(i+1<parts.size)parts[i+1].range.sd/1000.0 else duration

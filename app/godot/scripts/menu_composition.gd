@@ -12,6 +12,10 @@ extends Node
 ##   the layer, detaching or resizing its viewport) corrupts the render target and crashed the
 ##   Quest GL thread. Each slot therefore has a fixed pixel size, is never hidden or detached, and
 ##   keeps its swapchain for the session; an idle slot shrinks to a sub-pixel quad instead.
+## - Session stop clears the override, but a render target that cycled its swapchain images keeps
+##   one of them as its own texture; that image is freed with the swapchain, and the next session
+##   stop clears the same render target again through the freed texture (Meta store crash, 0.17.1).
+##   Every session stop therefore retires each submit viewport while those images still exist.
 ## The compositor reads every pixel of a slot each frame, for each eye, whatever it shows, so the
 ## swapchains match the planes the menus actually have: main panel, tall side column, two popups,
 ## and the short playback/photo control bar (a square slot read 2.4x its area for it).
@@ -138,6 +142,7 @@ func configure(target_origin: Node3D, target_camera: Camera3D, target_display: R
 	if not host_capture:
 		api = OpenXRAPIExtension.new()
 		xr.session_begun.connect(invalidate)
+		xr.session_stopping.connect(_renew_submits)
 	process_priority = 100 # after scrolling, hover, controller moves and gesture animation
 	eye_mask = eye_camera.cull_mask
 	eye_camera.cull_mask &= ~GROUP_MASK
@@ -224,6 +229,25 @@ func _make_capture(pixels: Vector2i, cull: int, layer_name: String, hole_priorit
 	return {"index": -1, "raw": raw, "camera": camera, "submit": submit, "copy": copy, "layer": layer,
 		"hole": hole, "key": "", "used": false, "relative": Transform3D.IDENTITY, "rect": Rect2(),
 		"nodes": [], "rank": Vector2.ZERO, "tail": 0, "empty": false}
+
+func _renew_submits() -> void:
+	for slot in slots + bands: slot.submit = renew_submit(slot.layer, slot.submit)
+
+## Replaces a layer's submit viewport after (or instead of) the engine's session-stop clear. Called
+## from the stopping signal, before the swapchain images are freed, so the old target frees cleanly.
+static func renew_submit(layer: OpenXRCompositionLayer, submit: SubViewport) -> SubViewport:
+	var attached := layer.layer_viewport == submit
+	# Detaching clears the override once, whether or not the layer's own stop handler ran yet.
+	if attached: layer.layer_viewport = null
+	var fresh := SubViewport.new(); fresh.size = submit.size
+	fresh.transparent_bg = submit.transparent_bg; fresh.disable_3d = true; fresh.world_2d = submit.world_2d
+	fresh.render_target_update_mode = submit.render_target_update_mode
+	submit.add_sibling(fresh)
+	for child in submit.get_children():
+		submit.remove_child(child); fresh.add_child(child)
+	submit.get_parent().remove_child(submit); submit.free()
+	if attached: layer.layer_viewport = fresh
+	return fresh
 
 ## Compositor filtering of the menu layers (0 off, 1 normal, 2 quality). Normal supersampling:
 ## the capture is denser than the display.

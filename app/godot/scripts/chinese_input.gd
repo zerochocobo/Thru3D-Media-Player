@@ -3,6 +3,9 @@ const I18n := preload("res://scripts/i18n.gd")
 const Keyboard := preload("res://scripts/chinese_keyboard.gd")
 static var selected := false
 static var quest := OS.has_feature("quest")
+static var pico := OS.has_feature("pico")
+static var android := OS.has_feature("android")
+static var browser_keyboard := "builtin"
 static var popup: Node3D
 static var head_provider: Callable
 static var on_open: Callable
@@ -17,11 +20,19 @@ static func release_host(host: Node) -> void:
 
 static func available() -> bool: return quest and I18n.language == "zh"
 static func enabled() -> bool: return selected and available()
+## Generic Android OpenXR runtimes may not composite the system IME in VR.
+## Keep the established Quest/PICO routes and the app-field opt-in unchanged.
+static func browser_choice_available() -> bool: return android and not quest and not pico
+static func browser_enabled() -> bool: return enabled() or (browser_choice_available() and browser_keyboard == "builtin")
 static func active() -> bool: return is_instance_valid(popup) and popup.visible
+
+static func configure_browser(value: String) -> void:
+	browser_keyboard = "system" if value == "system" else "builtin"
+	if not browser_enabled(): close("browser", true)
 
 static func configure(value: bool) -> void:
 	selected = value
-	if not enabled() and active(): popup.close()
+	if not enabled() and active() and (popup.owner_id != "browser" or not browser_enabled()): popup.close()
 	if enabled(): Keyboard.Pinyin.begin_load()
 
 static func ensure(parent: Node) -> Node3D:

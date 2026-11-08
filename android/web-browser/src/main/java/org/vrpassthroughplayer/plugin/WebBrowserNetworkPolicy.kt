@@ -24,6 +24,10 @@ internal class WebBrowserNetworkPolicy(saved: String, private val save: (String)
             "TikTok" to setOf("tiktok.com"),
             "Instagram Reels" to setOf("instagram.com"),
             "TED" to setOf("ted.com"),
+            "Dailymotion" to setOf("dailymotion.com", "dai.ly"),
+            "Streamable" to setOf("streamable.com"),
+            "Internet Archive" to setOf("archive.org"),
+            "Odysee" to setOf("odysee.com"),
             "Niconico" to setOf("nicovideo.jp", "nico.ms"),
         )
         private val nativeHosts = NATIVE_PLAYBACK_HOSTS.values.flatten().toSet()

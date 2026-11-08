@@ -249,6 +249,127 @@ func _run() -> void:
 	menu.web_browser.restore_playback(false,109000)
 	check(platform.browser_commands.back().action=="restore_niconico" and platform.browser_commands.back().position_ms==109000,
 		"Niconico restores its original document through the bound adapter")
+	platform.browser={"url":"https://clips.twitch.tv/PublicClip","tab_id":17,"navigation":1,"focused_window":1,"active":true,
+		"twitch_beta_available":true,"pause_confirmed":true,"beta_request":8,"beta_selection":"twitch:main:revision1",
+		"videos":[{"twitch_ready":true,"selection":"twitch:main:revision1","time":5.0},
+			{"width":640,"height":360,"playing":true,"time":3.0}]}
+	check(menu.web_browser.beta_site_available(platform.browser) and menu.web_browser.beta_media_ready(platform.browser),
+		"Twitch exposes only the declared main and does not select an unrelated advert")
+	var closed_twitch: Dictionary=platform.browser.duplicate(true);closed_twitch.twitch_beta_available=false
+	check(not menu.web_browser.beta_site_available(closed_twitch),"Unqualified Twitch source cannot expose the action")
+	menu.web_browser.next_poll=0;menu.web_browser.tick();menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(platform.selected_requests.back()==[platform.browser.url,"twitch:main:revision1"] and menu.web_browser.handoff_start_ms==5000,
+		"Twitch hands off only its explicit current selection and playhead")
+	platform.browser.videos[0].selection="twitch:next:revision2"
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(not menu.web_browser.handoff,"Changed Twitch metadata cancels the stale selection")
+	menu.web_browser.playback_return={"tab":17,"window":1,"navigation":1,"origin":platform.browser.url,"selection":"twitch:main:revision1","twitch":true}
+	menu.web_browser.restore_playback(false,19000)
+	check(platform.browser_commands.back().action=="restore_twitch" and platform.browser_commands.back().position_ms==19000,
+		"Twitch restores its original document through the bound adapter")
+	menu.refresh()
+	check(menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 6), "Twitch keeps its original manual player action alongside Beta")
+	platform.browser={"url":"https://www.tiktok.com/@test/video/6742501081818877190","tab_id":18,"navigation":1,"focused_window":1,"active":true,
+		"tiktok_beta_available":true,"pause_confirmed":true,"beta_request":9,"beta_selection":"tiktok:main:revision1",
+		"videos":[{"tiktok_ready":true,"selection":"tiktok:main:revision1","time":5.0},
+			{"width":640,"height":360,"playing":true,"time":3.0}]}
+	check(menu.web_browser.beta_site_available(platform.browser) and menu.web_browser.beta_media_ready(platform.browser),
+		"TikTok exposes only the declared main and does not select an unrelated advert")
+	var closed_tiktok: Dictionary=platform.browser.duplicate(true);closed_tiktok.tiktok_beta_available=false
+	check(not menu.web_browser.beta_site_available(closed_tiktok),"Unqualified TikTok source cannot expose the action")
+	menu.web_browser.next_poll=0;menu.web_browser.tick();menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(platform.selected_requests.back()==[platform.browser.url,"tiktok:main:revision1"] and menu.web_browser.handoff_start_ms==5000,
+		"TikTok hands off only its explicit current selection and playhead")
+	platform.browser.videos[0].selection="tiktok:next:revision2"
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(not menu.web_browser.handoff,"Changed TikTok metadata cancels the stale selection")
+	menu.web_browser.playback_return={"tab":18,"window":1,"navigation":1,"origin":platform.browser.url,"selection":"tiktok:main:revision1","tiktok":true}
+	menu.web_browser.restore_playback(false,19000)
+	check(platform.browser_commands.back().action=="restore_tiktok" and platform.browser_commands.back().position_ms==19000,
+		"TikTok restores its original document through the bound adapter")
+	menu.refresh()
+	check(menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 6), "TikTok keeps its original manual player action alongside Beta")
+	platform.browser={"url":"https://www.ted.com/talks/current_talk","tab_id":19,"navigation":1,"focused_window":1,"active":true,
+		"ted_beta_available":true,"pause_confirmed":true,"beta_request":10,"beta_selection":"ted:main:revision1",
+		"videos":[{"ted_ready":true,"selection":"ted:main:revision1","time":5.0},
+			{"width":640,"height":360,"playing":true,"time":3.0}]}
+	check(menu.web_browser.beta_site_available(platform.browser) and menu.web_browser.beta_media_ready(platform.browser),
+		"TED exposes only the declared main and does not select an unrelated advert")
+	var closed_ted: Dictionary=platform.browser.duplicate(true);closed_ted.ted_beta_available=false
+	check(not menu.web_browser.beta_site_available(closed_ted),"Unqualified TED source cannot expose the action")
+	menu.web_browser.next_poll=0;menu.web_browser.tick();menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(platform.selected_requests.back()==[platform.browser.url,"ted:main:revision1"] and menu.web_browser.handoff_start_ms==5000,
+		"TED hands off only its explicit current selection and playhead")
+	platform.browser.videos[0].selection="ted:next:revision2"
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(not menu.web_browser.handoff,"Changed TED metadata cancels the stale selection")
+	menu.web_browser.playback_return={"tab":19,"window":1,"navigation":1,"origin":platform.browser.url,"selection":"ted:main:revision1","ted":true}
+	menu.web_browser.restore_playback(false,19000)
+	check(platform.browser_commands.back().action=="restore_ted" and platform.browser_commands.back().position_ms==19000,
+		"TED restores its original document through the bound adapter")
+	menu.refresh()
+	check(menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 6), "TED keeps its original manual player action alongside Beta")
+	platform.browser={"url":"https://www.dailymotion.com/video/x5kesuj","tab_id":21,"navigation":1,"focused_window":1,"active":true,
+		"dailymotion_beta_available":true,"pause_confirmed":true,"beta_request":12,"beta_selection":"dailymotion:main:revision1",
+		"videos":[{"dailymotion_ready":true,"selection":"dailymotion:main:revision1","time":5.0},
+			{"width":640,"height":360,"playing":true,"time":3.0}]}
+	check(menu.web_browser.beta_site_available(platform.browser) and menu.web_browser.beta_media_ready(platform.browser),
+		"Dailymotion exposes only the declared main and does not select an unrelated advert")
+	var closed_dailymotion: Dictionary=platform.browser.duplicate(true);closed_dailymotion.dailymotion_beta_available=false
+	check(not menu.web_browser.beta_site_available(closed_dailymotion),"Unqualified Dailymotion source cannot expose the action")
+	menu.web_browser.next_poll=0;menu.web_browser.tick();menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(platform.selected_requests.back()==[platform.browser.url,"dailymotion:main:revision1"] and menu.web_browser.handoff_start_ms==5000,
+		"Dailymotion hands off only its explicit current selection and playhead")
+	platform.browser.videos[0].selection="dailymotion:next:revision2"
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(not menu.web_browser.handoff,"Changed Dailymotion metadata cancels the stale selection")
+	menu.web_browser.playback_return={"tab":21,"window":1,"navigation":1,"origin":platform.browser.url,"selection":"dailymotion:main:revision1","dailymotion":true}
+	menu.web_browser.restore_playback(false,19000)
+	check(platform.browser_commands.back().action=="restore_dailymotion" and platform.browser_commands.back().position_ms==19000,
+		"Dailymotion restores its original document through the bound adapter")
+	menu.refresh()
+	check(menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 6), "Dailymotion keeps its original manual player action alongside Beta")
+	for hosted in [{"adapter":"streamable","url":"https://streamable.com/abc123"},{"adapter":"archive","url":"https://archive.org/details/PublicFilm"},{"adapter":"odysee","url":"https://odysee.com/@Public:1/PublicClip:1"}]:
+		var adapter: String=hosted.adapter
+		var selected: String=adapter+":main:revision1"
+		var main := {"selection":selected,"time":5.0};main[adapter+"_ready"]=true
+		platform.browser={"url":hosted.url,"tab_id":22,"navigation":1,"focused_window":1,"active":true,
+			"pause_confirmed":true,"beta_request":15 if adapter=="streamable" else 16 if adapter=="archive" else 17,"beta_selection":selected,"videos":[main,{"width":640,"height":360,"playing":true,"time":3.0}]}
+		platform.browser[adapter+"_beta_available"]=true
+		check(menu.web_browser.beta_site_available(platform.browser) and menu.web_browser.beta_media_ready(platform.browser),adapter+" exposes the explicit current player")
+		var closed: Dictionary=platform.browser.duplicate(true);closed[adapter+"_beta_available"]=false
+		check(not menu.web_browser.beta_site_available(closed),adapter+" requires the native site gate")
+		menu.web_browser.next_poll=0;menu.web_browser.tick();menu.web_browser.next_poll=0;menu.web_browser.tick()
+		check(platform.selected_requests.back()==[hosted.url,selected] and menu.web_browser.handoff_start_ms==5000,adapter+" preserves the selected player and playhead")
+		platform.browser.videos[0].selection=adapter+":next:revision2"
+		menu.web_browser.next_poll=0;menu.web_browser.tick()
+		check(not menu.web_browser.handoff,adapter+" cancels a stale selection")
+		menu.web_browser.playback_return={"tab":22,"window":1,"navigation":1,"origin":hosted.url,"selection":selected}
+		menu.web_browser.playback_return[adapter]=true
+		menu.web_browser.restore_playback(false,8000)
+		check(platform.browser_commands.back().action=="restore_"+adapter and platform.browser_commands.back().position_ms==8000,adapter+" returns through its original bound document")
+		menu.refresh()
+		check(menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE+6),adapter+" keeps its original manual action")
+	platform.browser={"url":"https://www.instagram.com/reel/Chunk8-jurw/","tab_id":20,"navigation":1,"focused_window":1,"active":true,
+		"instagram_beta_available":true,"pause_confirmed":true,"beta_request":11,"beta_selection":"instagram:main:revision1",
+		"videos":[{"instagram_ready":true,"selection":"instagram:main:revision1","time":5.0,"beta_time":0.0},
+			{"width":640,"height":360,"playing":true,"time":3.0}]}
+	check(menu.web_browser.beta_site_available(platform.browser) and menu.web_browser.beta_media_ready(platform.browser),
+		"Instagram exposes only the declared main and does not select an unrelated advert")
+	var closed_instagram: Dictionary=platform.browser.duplicate(true);closed_instagram.instagram_beta_available=false
+	check(not menu.web_browser.beta_site_available(closed_instagram),"Unqualified Instagram source cannot expose the action")
+	menu.web_browser.next_poll=0;menu.web_browser.tick();menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(platform.selected_requests.back()==[platform.browser.url,"instagram:main:revision1"] and menu.web_browser.handoff_start_ms==0 and menu.web_browser.handoff_context.position_ms==5000,
+		"Instagram replays natively from zero while preserving the original browser playhead")
+	platform.browser.videos[0].selection="instagram:next:revision2"
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(not menu.web_browser.handoff,"Changed Instagram metadata cancels the stale selection")
+	menu.web_browser.playback_return={"tab":20,"window":1,"navigation":1,"origin":platform.browser.url,"selection":"instagram:main:revision1","instagram":true}
+	menu.web_browser.restore_playback(false,19000)
+	check(platform.browser_commands.back().action=="restore_instagram" and platform.browser_commands.back().position_ms==19000,
+		"Instagram restores its original document through the bound adapter")
+	menu.refresh()
+	check(menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 6), "Instagram keeps its original manual player action alongside Beta")
 	platform.browser=previous
 	platform.browser.native_supported = true
 	platform.browser.url = "https://www.youtube.com/watch?v=jNQXAC9IVRw"

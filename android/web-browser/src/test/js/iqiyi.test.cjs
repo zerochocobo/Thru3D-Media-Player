@@ -21,6 +21,19 @@ test('ads, replacement items, tracks, elements and dimensions cannot borrow the 
     const f=fixture();mutate(f);assert.equal(context.capture(f.view,page,f.dom).ready,false);
   }
 });
+test('quality fallback uses the current Movie declaration rather than a stale initial selection',()=>{
+  const f=fixture(),old=f.track,track={...old,vid:'currentlow',bid:300,scrsz:'896x376',_selected:false};
+  f.info.vid=track.vid;f.info._bid=300;f.video.videoWidth=896;f.video.videoHeight=376;
+  f.view.QiyiPlayerProphetData.dashData.data.program.video=[old,{vid:track.vid,bid:300}];
+  f.view.__lastAccJson={tvId:'99',dashData:{data:{tvid:'99',program:{video:[track]}}}};
+  const movie=f.view.playback.playingPlayback._mvInfo={tvid:'42',videoList:[old,track]};
+  const c=context.capture(f.view,page,f.dom);assert.equal(c.ready,true);assert.equal(c.bid,300);assert.equal(c.width,896);
+  movie.videoList.push({...track});assert.equal(context.capture(f.view,page,f.dom).ready,false);
+  movie.videoList=[{...track,vid:'anotherstream'}];assert.equal(context.capture(f.view,page,f.dom).ready,false);
+  movie.videoList=[track];movie.tvid='99';assert.equal(context.capture(f.view,page,f.dom).ready,false);
+  movie.tvid='42';track.m3u8='#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI="PRIVATE"';
+  assert.equal(context.capture(f.view,page,f.dom).status,'protected_manifest');
+});
 test('protected manifests and page getters do not become private capture input',()=>{
   const f=fixture();f.track.m3u8='#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI="PRIVATE_KEY"';
   const c=context.capture(f.view,page,f.dom);assert.equal(c.ready,false);assert.equal(JSON.stringify(c).includes('PRIVATE'),false);
@@ -54,6 +67,15 @@ test('the visible action needs the same decoded SDK element, a clear track and c
   const data=context.capture(f.view,page,f.dom);assert.equal(data.id,'v_current123');assert.match(data.revision,/^[a-f0-9]{1,8}$/);
   assert.ok(context.bind(f.video,data));
   for(const update of [{has_drm:true},{drm_type:2},{dispatchers:[]},{dispatch_duration_ms:null},{dispatch_duration_ms:24480},{src:'blob:other'}])assert.equal(context.bind(f.video,{...data,...update}),null);
+});
+test('integer MSE duration needs both the complete playlist total and matching SDK end anchor',()=>{
+  const f=fixture();f.track.m3u8='#EXTM3U\n#EXTINF:25,\nhttps://declared.test/currentfile.ts?start=0&end=188&contentlength=188&sd=0\n#EXT-X-ENDLIST';
+  f.info.duration=24480;
+  f.view.playback.playingPlayback._mvInfo={tvid:'42',levelInfoArr:[{vid:'currentstream',bid:500,duration:24480,
+    fragmentList:[{sourceID:'currentfile',sPos:0,ePos:188,dispatchUrl:'//dispatch.test/currentfile.ts?issued=private'}]}]};
+  const data=context.capture(f.view,page,f.dom);assert.ok(context.bind(f.video,data));
+  for(const update of [{sdk_duration_ms:24000},{playlist_duration:24},{dispatch_duration_ms:23000},
+    {duration:25.2},{sdk_duration_ms:null}])assert.equal(context.bind({...f.video,duration:update.duration??25},{...data,...update}),null);
 });
 
 function controllable(){

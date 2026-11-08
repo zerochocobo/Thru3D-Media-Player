@@ -21,6 +21,8 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
     private val pending = AtomicBoolean(false)
     private val scheduled = AtomicBoolean(false)
     private val attaching = AtomicBoolean(false)
+    private val videoResetPending = AtomicBoolean(false)
+    private val audioResetPending = AtomicBoolean(false)
     private val displayGeneration = java.util.concurrent.atomic.AtomicLong()
     private val receivedVideo = java.util.concurrent.atomic.AtomicLong()
     private val receivedAudio = java.util.concurrent.atomic.AtomicLong()
@@ -47,6 +49,11 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
     private var track: AudioTrack? = null
     private var audioCodec = 8
     private var samples = 480
+    private var sampleRate = 44100
+    private var audioChannels = 2
+    private var pcmPacket: AirplayPackets.Packet? = null
+    private var pcmBuffer: ByteBuffer? = null
+    @Volatile private var sourceName = "AirPlay"
     private var baseNs = 0L
     private var wallNs = 0L
     private var frames = 0L
@@ -80,7 +87,7 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
                     waitingVideo = null
                 }
                 drainVideo()
-            }.onFailure { if (epoch == runningEpoch) error = "AirPlay decoder unavailable"; Log.w("Thru3D-Airplay", "Video decoder failed: ${it.javaClass.simpleName}"); stopCodecs() }
+            }.onFailure { if (epoch == runningEpoch) error = "$sourceName decoder unavailable"; Log.w("Thru3D-Airplay", "Video decoder failed: ${it.javaClass.simpleName}"); stopCodecs() }
             if (error.isEmpty()) runCatching {
                 for (attempt in 0 until 8) {
                     val p = waitingAudio ?: packets.take(false) ?: break
@@ -92,20 +99,28 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
             if (attached && error.isEmpty()) worker.postDelayed(this, 5)
         }
     }
-    fun begin(id: Long, paused: Boolean = false) { epoch = id; packets.clear(); error = ""; audioError = ""; audioBytes = 0; receivedVideo.set(0); receivedAudio.set(0); nextDiagnosticMs = 0; suspended = paused; if (paused) packets.park() }
+    fun begin(id: Long, paused: Boolean = false, source: String = "AirPlay") { sourceName = source; epoch = id; packets.clear(); error = ""; audioError = ""; audioBytes = 0; receivedVideo.set(0); receivedAudio.set(0); nextDiagnosticMs = 0; suspended = paused; if (paused) packets.park() }
     fun size(w: Int, h: Int) {
         if (w !in 16..1920 || h !in 16..1920) return
         synchronized(lock) { width = w; height = h }
     }
-    fun audioFormat(codec: Int, spf: Int) {
-        if (codec !in listOf(4, 8) || spf !in listOf(480, 512, 960, 1024)) return
-        worker.post { if (codec != audioCodec || spf != samples) stopAudio(); audioCodec = codec; samples = spf; audioError = ""; Log.i("Thru3D-Airplay", "Audio format codec=$codec samples=$spf") }
+    fun audioFormat(codec: Int, spf: Int, rate: Int = 44100, channels: Int = 2) {
+        if (codec !in listOf(0, 4, 8) || spf !in listOf(480, 512, 960, 1024) || rate !in listOf(44100, 48000) || channels !in 1..2 || (codec == 8 && (rate != 44100 || channels != 2))) return
+        worker.post { if (codec != audioCodec || spf != samples || rate != sampleRate || channels != audioChannels) stopAudio(); audioCodec = codec; samples = spf; sampleRate = rate; audioChannels = channels; audioError = ""; Log.i("Thru3D-Airplay", "Audio format codec=$codec samples=$spf rate=$rate channels=$channels") }
     }
     fun packet(video: Boolean, bytes: ByteArray, ns: Long, codec: Int) {
         if (epoch <= 0) return
         (if (video) receivedVideo else receivedAudio).incrementAndGet()
         if (ns <= 0 || bytes.size > 2*1024*1024) return
         packets.offer(AirplayPackets.Packet(video, bytes, ns, codec))
+    }
+    fun discontinuity(video: Boolean) {
+        packets.discontinuity(video)
+        val pending = if (video) videoResetPending else audioResetPending
+        if (pending.compareAndSet(false, true)) worker.post {
+            try { if (video) { waitingVideo = null; stopVideo() } else stopAudio() }
+            finally { pending.set(false) }
+        }
     }
     fun attach(id: Long, textureId: Int): Boolean {
         if (id <= 0 || id != epoch || textureId <= 0 || attached || !attaching.compareAndSet(false, true)) return false
@@ -164,7 +179,7 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
                         preserveOes { it.updateTexImage() }; it.getTransformMatrix(matrix); decodedWidth = outputWidth; decodedHeight = outputHeight; frames++
                     }
                 }
-            } catch (_: Exception) { error = "AirPlay decoder unavailable" }
+            } catch (_: Exception) { error = "$sourceName decoder unavailable" }
             finally { scheduled.set(false) }
         })
         return synchronized(lock) { val completed = org.json.JSONArray(); while (released.isNotEmpty()) completed.put(released.removeFirst())
@@ -206,10 +221,25 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
     }
     private fun feedAudio(p: AirplayPackets.Packet): Boolean {
         if (muted || audioError.isNotEmpty() || baseNs == 0L || p.ns < baseNs - 100_000_000) return true
+        if (p.codec != audioCodec) return true
+        if (audioCodec == 0) {
+            val due = wallNs + p.ns - baseNs
+            val now = System.nanoTime()
+            if (now > due + 200_000_000) { pcmPacket = null; pcmBuffer = null; return true }
+            if (now < due - 10_000_000) return false
+            if (track == null) track = createTrack(sampleRate, audioChannels)
+            if (pcmPacket !== p) { pcmPacket = p; pcmBuffer = ByteBuffer.wrap(p.data) }
+            val buffer = pcmBuffer!!
+            val written = track!!.write(buffer, buffer.remaining(), AudioTrack.WRITE_NON_BLOCKING)
+            check(written >= 0) { "AudioTrack write failed" }
+            audioBytes += written
+            if (buffer.hasRemaining()) return false
+            pcmPacket = null; pcmBuffer = null
+            return true
+        }
         if (audio == null) {
-            val csd = if (audioCodec == 8) byteArrayOf(0xf8.toByte(), 0xe8.toByte(), if (samples == 512) 0x40 else 0x50, 0)
-                else byteArrayOf(0x12, if (samples == 960) 0x14 else 0x10)
-            val format = MediaFormat.createAudioFormat("audio/mp4a-latm", 44100, 2)
+            val csd = MirrorAudioFormat.aacConfig(audioCodec, samples, sampleRate, audioChannels)
+            val format = MediaFormat.createAudioFormat("audio/mp4a-latm", sampleRate, audioChannels)
             format.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
             format.setByteBuffer("csd-0", ByteBuffer.wrap(csd)); format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 65536)
             audio = MediaCodec.createDecoderByType("audio/mp4a-latm").also { it.configure(format, null, null, 0); it.start() }
@@ -265,10 +295,7 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
             if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 track?.release()
                 val f = codec.outputFormat; val rate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                val channels = if (f.getInteger(MediaFormat.KEY_CHANNEL_COUNT) == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
-                track = AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build())
-                    .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(rate).setChannelMask(channels).build())
-                    .setBufferSizeInBytes(AudioTrack.getMinBufferSize(rate, channels, AudioFormat.ENCODING_PCM_16BIT).coerceAtLeast(16384)).build().also { it.play() }
+                track = createTrack(rate, f.getInteger(MediaFormat.KEY_CHANNEL_COUNT))
                 Log.i("Thru3D-Airplay", "Audio output started rate=$rate channels=${f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)}")
             } else if (index >= 0) {
                 audioOutput = index; audioBuffer = codec.getOutputBuffer(index)
@@ -309,14 +336,20 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
         catch (_: InterruptedException) { Thread.currentThread().interrupt(); false }
     }
     private fun failAudio(failure: Throwable) {
-        audioError = "AirPlay audio unavailable"
+        audioError = "$sourceName audio unavailable"
         Log.w("Thru3D-Airplay", "Audio decoder failed: ${failure.javaClass.simpleName}")
         stopAudio()
     }
     private fun stopAudio() {
         audio?.let { runCatching { it.stop() }; runCatching { it.release() } }; audio = null
         track?.let { runCatching { it.stop() }; runCatching { it.release() } }; track = null
-        audioOutput = -1; audioBuffer = null; waitingAudio = null
+        audioOutput = -1; audioBuffer = null; waitingAudio = null; pcmPacket = null; pcmBuffer = null
+    }
+    private fun createTrack(rate: Int, channels: Int): AudioTrack {
+        val mask = if (channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
+        return AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build())
+            .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(rate).setChannelMask(mask).build())
+            .setBufferSizeInBytes(AudioTrack.getMinBufferSize(rate, mask, AudioFormat.ENCODING_PCM_16BIT).coerceAtLeast(16384)).build().also { it.play() }
     }
     private fun stopCodecs() {
         stopVideo()

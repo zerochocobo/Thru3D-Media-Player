@@ -66,7 +66,13 @@ func _run() -> void:
 	check(menu.web_browser.opened and platform.browser.url == "https://www.iqiyi.com/", "iQIYI card opens the Chinese service")
 	menu.web_browser.close()
 	ProjectSettings.set_setting(Channel.KEY, "standard"); I18n.use("en"); menu.refresh()
-	check(Sites.ordered_indexes("en").size() == 19, "Standard catalog includes iQIYI and Douyin")
+	var standard_catalog := Sites.ordered_indexes("en")
+	check(standard_catalog.size() == Sites.FEATURED.size()
+		and range(Sites.FEATURED.size()).all(func(index): return standard_catalog.count(index) == 1),
+		"Standard catalog includes every featured site exactly once")
+	for name in ["iQIYI", "Douyin", "Dailymotion", "Streamable", "Internet Archive", "Odysee"]:
+		check(standard_catalog.any(func(index): return Sites.FEATURED[index].name == name),
+			"Standard catalog retains " + name)
 	I18n.use("zh")
 	ProjectSettings.set_setting(Channel.KEY, original)
 	menu.free()

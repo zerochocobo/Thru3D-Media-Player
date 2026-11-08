@@ -5,8 +5,31 @@ import org.junit.Test
 import org.vrpassthroughplayer.plugin.MediaServerClientTest.Fixture
 import org.vrpassthroughplayer.plugin.MediaServerClientTest.Reply
 import java.net.URI
+import java.nio.ByteBuffer
 
 class WebVideoBrowserResourceReaderTest {
+    @Test fun tailMp4UsesExactRangesAndRejectsChangedFileIdentity() {
+        val ftyp = ByteBuffer.allocate(24).putInt(24).put("ftypisom0000isom0000".toByteArray()).array()
+        val media = ByteBuffer.allocate(SphericalVideoMetadata.PREFIX_LIMIT + 8).putInt(SphericalVideoMetadata.PREFIX_LIMIT + 8).put("mdat".toByteArray()).array()
+        val moov = ByteBuffer.allocate(24).putInt(24).put("moov".toByteArray()).put(ByteArray(16)).array()
+        val body = ftyp + media + moov
+        for (changed in listOf(false, true)) {
+            var requests = 0
+            Fixture { _, headers, _ ->
+                assertEquals("own-media-request", headers["authorization"])
+                val range = Regex("bytes=([0-9]+)-([0-9]+)").matchEntire(headers["range"].orEmpty())!!
+                val start = range.groupValues[1].toInt();val end = minOf(range.groupValues[2].toInt(), body.size - 1)
+                requests++
+                Reply(206, "Content-Range: bytes $start-$end/${body.size}\r\nETag: \"${if(changed && start > 0) "new" else "initial"}\"\r\n", body.copyOfRange(start, end + 1))
+            }.use { origin -> RemoteMediaHttp().use { http ->
+                val actual = WebVideoBrowserResourceReader.read(URI(origin.url + "/clip.mp4"), mapOf("Authorization" to "own-media-request"), true, http) {}
+                if (changed) assertEquals(SphericalVideoMetadata.PREFIX_LIMIT, actual.second.size)
+                else assertArrayEquals(ftyp + moov, actual.second)
+                assertTrue(requests > 1)
+            } }
+        }
+    }
+
     @Test fun prefixUsesBoundedRangeAndOwnRequestHeaders() {
         val body = byteArrayOf(1, 2, 3, 4)
         Fixture { _, headers, _ ->

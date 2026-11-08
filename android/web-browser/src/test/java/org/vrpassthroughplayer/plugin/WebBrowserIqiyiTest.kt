@@ -76,4 +76,15 @@ class WebBrowserIqiyiTest {
         assertNull(WebBrowserMediaPolicy.selectedCandidate(listOf(m),"other"))
         m.getJSONObject("iqiyi").put("id","v_replaced");assertNull(WebBrowserMediaPolicy.selectedCandidate(listOf(m),"selected"))
     }
+    @Test fun integerMseTotalNeedsTheCompletePlaylistAndMatchingSdkEndAnchor() {
+        val m=item();val data=m.getJSONObject("iqiyi")
+        data.put("dispatch_duration_ms",9480).put("sdk_duration_ms",9480).put("dispatch_status","selected_level")
+            .put("dispatchers",JSONArray().put(JSONObject().put("url",url(0,752,"declared.test"))
+                .put("source_id","current").put("start",0).put("end",752)))
+        assertTrue(WebBrowserIqiyi.resourcePlan(m,page)!!.getString("playlist").contains("#EXTINF:7.48,"))
+        data.put("sdk_duration_ms",9000);assertNull(WebBrowserIqiyi.resourcePlan(m,page))
+        data.put("sdk_duration_ms",9480).put("playlist",data.getString("playlist").replace("#EXTINF:8,","#EXTINF:7,"))
+        assertNull(WebBrowserIqiyi.resourcePlan(m,page))
+        data.put("dispatch_duration_ms",8480).put("sdk_duration_ms",8480);assertNull(WebBrowserIqiyi.resourcePlan(m,page))
+    }
 }

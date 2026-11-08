@@ -12,6 +12,62 @@
   let pauseLease = null, lastPauseToken = 0;
   const resuming = new WeakMap();
   let iqiyiReturnPause = null;
+  let tiktokReturnPause = null;
+  const keepTikTokReturnPaused=video=>{
+    const saved=tiktokReturnPause;if(!saved)return false;
+    const age=Date.now()-saved.at;
+    if(age<0||age>30000||saved.page!==location.href||!saved.video.isConnected||saved.video.currentSrc!==saved.source||mediaEpoch.get(saved.video)?.id!==saved.epoch||Thru3DTikTok.declaration(saved.video,location.href)?.id!==saved.owner){tiktokReturnPause=null;return false;}
+    return video===saved.video;
+  };
+  let instagramReturnPause = null, instagramRestore = null;
+  const keepInstagramReturnPaused=video=>{
+    const saved=instagramReturnPause;if(!saved)return false;
+    const age=Date.now()-saved.at;
+    if(age<0||age>30000||saved.page!==location.href||!saved.video.isConnected||saved.video.currentSrc!==saved.source||mediaEpoch.get(saved.video)?.id!==saved.epoch||Thru3DInstagram.declaration(saved.video,location.href)?.id!==saved.owner){instagramReturnPause=null;return false;}
+    return video===saved.video;
+  };
+  let tedReturnPause = null;
+  const keepTedReturnPaused=video=>{
+    const saved=tedReturnPause;if(!saved)return false;
+    const age=Date.now()-saved.at;
+    if(age<0||age>30000||saved.page!==location.href||!saved.video.isConnected||saved.video.currentSrc!==saved.source||mediaEpoch.get(saved.video)?.id!==saved.epoch||Thru3DTed.declaration(saved.video,location.href)?.id!==saved.owner){tedReturnPause=null;return false;}
+    return video===saved.video;
+  };
+  let redbullReturnPause = null;
+  const keepRedBullReturnPaused=video=>{
+    const saved=redbullReturnPause;if(!saved)return false;
+    const age=Date.now()-saved.at;
+    if(age<0||age>30000||saved.page!==location.href||!saved.video.isConnected||saved.video.currentSrc!==saved.source||mediaEpoch.get(saved.video)?.id!==saved.epoch||Thru3DRedBull.owner(saved.video,document)?.current.id!==saved.owner){redbullReturnPause=null;return false;}
+    return video===saved.video;
+  };
+  let streamableReturnPause = null;
+  const keepStreamableReturnPaused=video=>{
+    const saved=streamableReturnPause;if(!saved)return false;
+    const age=Date.now()-saved.at;
+    if(age<0||age>30000||saved.page!==location.href||!saved.video.isConnected||saved.video.currentSrc!==saved.source||mediaEpoch.get(saved.video)?.id!==saved.epoch||Thru3DStreamable.declaration(saved.video,document)?.id!==saved.owner){streamableReturnPause=null;return false;}
+    return video===saved.video;
+  };
+  let archiveReturnPause = null;
+  const keepArchiveReturnPaused=video=>{
+    const saved=archiveReturnPause;if(!saved)return false;
+    const age=Date.now()-saved.at;
+    if(age<0||age>30000||saved.page!==location.href||!saved.video.isConnected||saved.video.currentSrc!==saved.source||mediaEpoch.get(saved.video)?.id!==saved.epoch||Thru3DArchive.declaration(saved.video,document)?.id!==saved.owner){archiveReturnPause=null;return false;}
+    return video===saved.video;
+  };
+  let odyseeReturnPause = null;
+  const keepOdyseeReturnPaused=video=>{
+    const saved=odyseeReturnPause;if(!saved)return false;
+    const age=Date.now()-saved.at;
+    if(age<0||age>30000||saved.page!==location.href||!saved.video.isConnected||saved.video.currentSrc!==saved.source||mediaEpoch.get(saved.video)?.id!==saved.epoch||Thru3DOdysee.declaration(saved.video,document)?.id!==saved.owner){odyseeReturnPause=null;return false;}
+    return video===saved.video;
+  };
+  let dailymotionReturnPause = null;
+  const keepDailymotionReturnPaused=video=>{
+    const saved=dailymotionReturnPause;if(!saved)return false;
+    const age=Date.now()-saved.at;
+    if(age<0||age>30000||saved.page!==location.href||!saved.video.isConnected||saved.video.currentSrc!==saved.source||mediaEpoch.get(saved.video)?.id!==saved.epoch||Thru3DDailymotion.declaration(saved.video,document)?.id!==saved.owner){dailymotionReturnPause=null;return false;}
+    return video===saved.video;
+  };
   let niconicoReturnPause = null;
   const keepNiconicoReturnPaused=video=>{
     const saved=niconicoReturnPause;if(!saved)return false;
@@ -36,7 +92,7 @@
   // The site's seek completion can call play again after we restored a paused
   // position. Preserve that return intent through buffering, until a real gesture.
   for(const name of ['pointerdown','mousedown','touchstart','keydown'])addEventListener(name,event=>{
-    if(event.isTrusted){iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;}
+    if(event.isTrusted){iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;tiktokReturnPause=null;instagramReturnPause=null;instagramRestore=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;}
   },true);
   const holdPaused = video => {
     if (pauseLease && pauseLease.page !== location.href) pauseLease = null;
@@ -166,8 +222,7 @@
   let niconicoEnabled = typeof Thru3DNiconico !== 'undefined' && !!Thru3DNiconico.page(location.href), niconicoActionEnabled=false, niconicoData=[], niconicoCapture={};
   let niconicoButton = null, niconicoChoice = null, niconicoClick = 0;
   const niconicoActionEvent = event => event.isTrusted && niconicoButton && (event.composedPath?.() || []).includes(niconicoButton.host);
-  // Reserve only our own action events before site gesture handlers. Reserve only events on
-  // our own shadow action, before those handlers can capture or cancel the click.
+  // Reserve our own shadow action before the site's gesture handlers capture it.
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
     if(niconicoActionEvent(event))event.stopImmediatePropagation();
   },true);
@@ -198,6 +253,330 @@
     const rect=box.getBoundingClientRect();
     Object.assign(niconicoButton.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
     niconicoButton.host.hidden=!Thru3DPlayButton.visible(target.video);niconicoButton.enabled(true);
+  };
+  let twitchEnabled = typeof Thru3DTwitch !== 'undefined' && !!Thru3DTwitch.page(location.href), twitchActionEnabled=false, twitchData=[], twitchCapture={};
+  let twitchButton = null, twitchChoice = null, twitchClick = 0;
+  const twitchActionEvent = event => event.isTrusted && twitchButton && (event.composedPath?.() || []).includes(twitchButton.host);
+  // Reserve only our own action events before site gesture handlers. Reserve only events on
+  // our own shadow action, before those handlers can capture or cancel the click.
+  for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
+    if(twitchActionEvent(event))event.stopImmediatePropagation();
+  },true);
+  addEventListener('click',event=>{
+    if(!twitchActionEvent(event))return;
+    event.preventDefault();event.stopImmediatePropagation();twitchButton.activate();
+  },true);
+  const syncTwitchButton = target => {
+    if (typeof Thru3DPlayButton === 'undefined') return;
+    // Keep the action outside Twitch player's managed child tree and event root.
+    const box = target?.video;
+    const mount=document.fullscreenElement||document.body;
+    if (!twitchEnabled || !twitchActionEnabled || !target?.video.isConnected || !box || !mount) {twitchButton?.dispose();twitchButton=null;return;}
+    const old=twitchButton?.target;
+    if (!old || twitchButton.host.isConnected===false || twitchButton.overlay.parentElement!==mount || old.video!==target.video || old.key!==target.key || old.source!==target.source || old.epoch!==target.epoch || twitchButton.box!==box) {
+      twitchButton?.dispose();
+      const overlay=document.createElement('span');overlay.dataset.thru3dPlayOverlay='twitch';
+      overlay.style.cssText='position:fixed;pointer-events:none;z-index:2147482990;';mount.append(overlay);
+      const activate=()=>{
+        const current=twitchButton?.target;
+        if(closed||suspended||pauseLease||!current||!twitchEnabled||!twitchActionEnabled||current.video.currentSrc!==current.source||mediaEpoch.get(current.video)?.id!==current.epoch)return;
+        twitchChoice={...current,at:Date.now(),request:++twitchClick};changed();
+      };
+      const control=Thru3DPlayButton.create(document,overlay,'twitch',activate);
+      control.host.dataset.thru3dTwitch='beta';control.host.dataset.thru3dTwitchPage=target.page;
+      twitchButton={...control,box,overlay,target,activate,dispose(){control.dispose();overlay.remove();}};
+    } else twitchButton.target=target;
+    const rect=box.getBoundingClientRect();
+    Object.assign(twitchButton.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
+    twitchButton.host.hidden=!Thru3DPlayButton.visible(target.video);twitchButton.enabled(true);
+  };
+  let tiktokEnabled = typeof Thru3DTikTok !== 'undefined' && Thru3DTikTok.documentPage(location.href), tiktokActionEnabled=false, tiktokCapture={};
+  let tiktokButton = null, tiktokChoice = null, tiktokClick = 0;
+  const tiktokActionEvent = event => event.isTrusted && tiktokButton && (event.composedPath?.() || []).includes(tiktokButton.host);
+  // Reserve only our own action events before site gesture handlers. Reserve only events on
+  // our own shadow action, before those handlers can capture or cancel the click.
+  for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
+    if(tiktokActionEvent(event))event.stopImmediatePropagation();
+  },true);
+  addEventListener('click',event=>{
+    if(!tiktokActionEvent(event))return;
+    event.preventDefault();event.stopImmediatePropagation();tiktokButton.activate();
+  },true);
+  const syncTikTokButton = target => {
+    if (typeof Thru3DPlayButton === 'undefined') return;
+    // Keep the action outside TikTok player's managed child tree and event root.
+    const box = target?.video;
+    const mount=document.fullscreenElement||document.body;
+    if (!tiktokEnabled || !tiktokActionEnabled || !target?.video.isConnected || !box || !mount) {tiktokButton?.dispose();tiktokButton=null;return;}
+    const old=tiktokButton?.target;
+    if (!old || tiktokButton.host.isConnected===false || tiktokButton.overlay.parentElement!==mount || old.video!==target.video || old.key!==target.key || old.source!==target.source || old.epoch!==target.epoch || tiktokButton.box!==box) {
+      tiktokButton?.dispose();
+      const overlay=document.createElement('span');overlay.dataset.thru3dPlayOverlay='tiktok';
+      overlay.style.cssText='position:fixed;pointer-events:none;z-index:2147482990;';mount.append(overlay);
+      const activate=()=>{
+        const current=tiktokButton?.target;
+        if(closed||suspended||pauseLease||!current||!tiktokEnabled||!tiktokActionEnabled||current.video.currentSrc!==current.source||mediaEpoch.get(current.video)?.id!==current.epoch)return;
+        tiktokChoice={...current,at:Date.now(),request:++tiktokClick};changed();
+      };
+      const control=Thru3DPlayButton.create(document,overlay,'tiktok',activate);
+      control.host.dataset.thru3dTiktok='beta';control.host.dataset.thru3dTiktokPage=target.page;
+      tiktokButton={...control,box,overlay,target,activate,dispose(){control.dispose();overlay.remove();}};
+    } else tiktokButton.target=target;
+    const rect=box.getBoundingClientRect();
+    Object.assign(tiktokButton.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
+    tiktokButton.host.hidden=!Thru3DPlayButton.visible(target.video);tiktokButton.enabled(true);
+  };
+  let instagramEnabled = typeof Thru3DInstagram !== 'undefined' && Thru3DInstagram.documentPage(location.href), instagramActionEnabled=false, instagramCapture={};
+  let instagramButton = null, instagramChoice = null, instagramClick = 0;
+  const instagramActionEvent = event => event.isTrusted && instagramButton && (event.composedPath?.() || []).includes(instagramButton.host);
+  // Reserve only our own action events before site gesture handlers. Reserve only events on
+  // our own shadow action, before those handlers can capture or cancel the click.
+  for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
+    if(instagramActionEvent(event))event.stopImmediatePropagation();
+  },true);
+  addEventListener('click',event=>{
+    if(!instagramActionEvent(event))return;
+    event.preventDefault();event.stopImmediatePropagation();instagramButton.activate();
+  },true);
+  const syncInstagramButton = target => {
+    if (typeof Thru3DPlayButton === 'undefined') return;
+    // Keep the action outside Instagram player's managed child tree and event root.
+    const box = target?.video;
+    const mount=document.fullscreenElement||document.body;
+    if (!instagramEnabled || !instagramActionEnabled || !target?.video.isConnected || !box || !mount) {instagramButton?.dispose();instagramButton=null;return;}
+    const old=instagramButton?.target;
+    if (!old || instagramButton.host.isConnected===false || instagramButton.overlay.parentElement!==mount || old.video!==target.video || old.key!==target.key || old.source!==target.source || old.epoch!==target.epoch || instagramButton.box!==box) {
+      instagramButton?.dispose();
+      const overlay=document.createElement('span');overlay.dataset.thru3dPlayOverlay='instagram';
+      overlay.style.cssText='position:fixed;pointer-events:none;z-index:2147482990;';mount.append(overlay);
+      const activate=()=>{
+        const current=instagramButton?.target;
+        if(closed||suspended||pauseLease||!current||!instagramEnabled||!instagramActionEnabled||current.video.currentSrc!==current.source||mediaEpoch.get(current.video)?.id!==current.epoch)return;
+        instagramChoice={...current,at:Date.now(),request:++instagramClick};changed();
+      };
+      const control=Thru3DPlayButton.create(document,overlay,'instagram',activate);
+      control.host.dataset.thru3dInstagram='beta';control.host.dataset.thru3dInstagramPage=target.page;
+      instagramButton={...control,box,overlay,target,activate,dispose(){control.dispose();overlay.remove();}};
+    } else instagramButton.target=target;
+    const rect=box.getBoundingClientRect();
+    Object.assign(instagramButton.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
+    instagramButton.host.hidden=!Thru3DPlayButton.visible(target.video);instagramButton.enabled(true);
+  };
+  let tedEnabled = typeof Thru3DTed !== 'undefined' && Thru3DTed.documentPage(location.href), tedActionEnabled=false, tedCapture={};
+  let tedButton = null, tedChoice = null, tedClick = 0;
+  const tedActionEvent = event => event.isTrusted && tedButton && (event.composedPath?.() || []).includes(tedButton.host);
+  // Reserve only our own action events before site gesture handlers. Reserve only events on
+  // our own shadow action, before those handlers can capture or cancel the click.
+  for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
+    if(tedActionEvent(event))event.stopImmediatePropagation();
+  },true);
+  addEventListener('click',event=>{
+    if(!tedActionEvent(event))return;
+    event.preventDefault();event.stopImmediatePropagation();tedButton.activate();
+  },true);
+  const syncTedButton = target => {
+    if (typeof Thru3DPlayButton === 'undefined') return;
+    // Keep the action outside Ted player's managed child tree and event root.
+    const box = target?.video;
+    const mount=document.fullscreenElement||document.body;
+    if (!tedEnabled || !tedActionEnabled || !target?.video.isConnected || !box || !mount) {tedButton?.dispose();tedButton=null;return;}
+    const old=tedButton?.target;
+    if (!old || tedButton.host.isConnected===false || tedButton.overlay.parentElement!==mount || old.video!==target.video || old.key!==target.key || old.source!==target.source || old.epoch!==target.epoch || tedButton.box!==box) {
+      tedButton?.dispose();
+      const overlay=document.createElement('span');overlay.dataset.thru3dPlayOverlay='ted';
+      overlay.style.cssText='position:fixed;pointer-events:none;z-index:2147482990;';mount.append(overlay);
+      const activate=()=>{
+        const current=tedButton?.target;
+        if(closed||suspended||pauseLease||!current||!tedEnabled||!tedActionEnabled||current.video.currentSrc!==current.source||mediaEpoch.get(current.video)?.id!==current.epoch)return;
+        tedChoice={...current,at:Date.now(),request:++tedClick};changed();
+      };
+      const control=Thru3DPlayButton.create(document,overlay,'ted',activate);
+      control.host.dataset.thru3dTed='beta';control.host.dataset.thru3dTedPage=target.page;
+      tedButton={...control,box,overlay,target,activate,dispose(){control.dispose();overlay.remove();}};
+    } else tedButton.target=target;
+    const rect=box.getBoundingClientRect();
+    Object.assign(tedButton.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
+    tedButton.host.hidden=!Thru3DPlayButton.visible(target.video);tedButton.enabled(true);
+  };
+  let redbullEnabled = typeof Thru3DRedBull !== 'undefined' && Thru3DRedBull.documentPage(location.href), redbullActionEnabled=false, redbullCapture={};
+  let redbullButton = null, redbullChoice = null, redbullClick = 0;
+  const redbullActionEvent = event => event.isTrusted && redbullButton && (event.composedPath?.() || []).includes(redbullButton.host);
+  // Reserve only our own action events before site gesture handlers. Reserve only events on
+  // our own shadow action, before those handlers can capture or cancel the click.
+  for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
+    if(redbullActionEvent(event))event.stopImmediatePropagation();
+  },true);
+  addEventListener('click',event=>{
+    if(!redbullActionEvent(event))return;
+    event.preventDefault();event.stopImmediatePropagation();redbullButton.activate();
+  },true);
+  const syncRedBullButton = target => {
+    if (typeof Thru3DPlayButton === 'undefined') return;
+    // Keep the action outside RedBull player's managed child tree and event root.
+    const box = target?.video;
+    const mount=document.fullscreenElement||document.body;
+    if (!redbullEnabled || !redbullActionEnabled || !target?.video.isConnected || !box || !mount) {redbullButton?.dispose();redbullButton=null;return;}
+    const old=redbullButton?.target;
+    if (!old || redbullButton.host.isConnected===false || redbullButton.overlay.parentElement!==mount || old.video!==target.video || old.key!==target.key || old.source!==target.source || old.epoch!==target.epoch || redbullButton.box!==box) {
+      redbullButton?.dispose();
+      const overlay=document.createElement('span');overlay.dataset.thru3dPlayOverlay='redbull';
+      overlay.style.cssText='position:fixed;pointer-events:none;z-index:2147482990;';mount.append(overlay);
+      const activate=()=>{
+        const current=redbullButton?.target;
+        if(closed||suspended||pauseLease||!current||!redbullEnabled||!redbullActionEnabled||current.video.currentSrc!==current.source||mediaEpoch.get(current.video)?.id!==current.epoch)return;
+        redbullChoice={...current,at:Date.now(),request:++redbullClick};changed();
+      };
+      const control=Thru3DPlayButton.create(document,overlay,'redbull',activate);
+      control.host.dataset.thru3dRedbull='beta';control.host.dataset.thru3dRedbullPage=target.page;
+      redbullButton={...control,box,overlay,target,activate,dispose(){control.dispose();overlay.remove();}};
+    } else redbullButton.target=target;
+    const rect=box.getBoundingClientRect();
+    Object.assign(redbullButton.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
+    redbullButton.host.hidden=!Thru3DPlayButton.visible(target.video);redbullButton.enabled(true);
+  };
+  let streamableEnabled = typeof Thru3DStreamable !== 'undefined' && Thru3DStreamable.documentPage(location.href), streamableActionEnabled=false, streamableCapture={};
+  let streamableButton = null, streamableChoice = null, streamableClick = 0;
+  const streamableActionEvent = event => event.isTrusted && streamableButton && (event.composedPath?.() || []).includes(streamableButton.host);
+  // Reserve only our own action events before site gesture handlers. Reserve only events on
+  // our own shadow action, before those handlers can capture or cancel the click.
+  for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
+    if(streamableActionEvent(event))event.stopImmediatePropagation();
+  },true);
+  addEventListener('click',event=>{
+    if(!streamableActionEvent(event))return;
+    event.preventDefault();event.stopImmediatePropagation();streamableButton.activate();
+  },true);
+  const syncStreamableButton = target => {
+    if (typeof Thru3DPlayButton === 'undefined') return;
+    // Keep the action outside Streamable player's managed child tree and event root.
+    const box = target?.video;
+    const mount=document.fullscreenElement||document.body;
+    if (!streamableEnabled || !streamableActionEnabled || !target?.video.isConnected || !box || !mount) {streamableButton?.dispose();streamableButton=null;return;}
+    const old=streamableButton?.target;
+    if (!old || streamableButton.host.isConnected===false || streamableButton.overlay.parentElement!==mount || old.video!==target.video || old.key!==target.key || old.source!==target.source || old.epoch!==target.epoch || streamableButton.box!==box) {
+      streamableButton?.dispose();
+      const overlay=document.createElement('span');overlay.dataset.thru3dPlayOverlay='streamable';
+      overlay.style.cssText='position:fixed;pointer-events:none;z-index:2147482990;';mount.append(overlay);
+      const activate=()=>{
+        const current=streamableButton?.target;
+        if(closed||suspended||pauseLease||!current||!streamableEnabled||!streamableActionEnabled||current.video.currentSrc!==current.source||mediaEpoch.get(current.video)?.id!==current.epoch)return;
+        streamableChoice={...current,at:Date.now(),request:++streamableClick};changed();
+      };
+      const control=Thru3DPlayButton.create(document,overlay,'streamable',activate);
+      control.host.dataset.thru3dStreamable='beta';control.host.dataset.thru3dStreamablePage=target.page;
+      streamableButton={...control,box,overlay,target,activate,dispose(){control.dispose();overlay.remove();}};
+    } else streamableButton.target=target;
+    const rect=box.getBoundingClientRect();
+    Object.assign(streamableButton.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
+    streamableButton.host.hidden=!Thru3DPlayButton.visible(target.video);streamableButton.enabled(true);
+  };
+  let archiveEnabled = typeof Thru3DArchive !== 'undefined' && Thru3DArchive.documentPage(location.href), archiveActionEnabled=false, archiveCapture={};
+  let archiveButton = null, archiveChoice = null, archiveClick = 0;
+  const archiveActionEvent = event => event.isTrusted && archiveButton && (event.composedPath?.() || []).includes(archiveButton.host);
+  // Reserve only our own action events before site gesture handlers. Reserve only events on
+  // our own shadow action, before those handlers can capture or cancel the click.
+  for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
+    if(archiveActionEvent(event))event.stopImmediatePropagation();
+  },true);
+  addEventListener('click',event=>{
+    if(!archiveActionEvent(event))return;
+    event.preventDefault();event.stopImmediatePropagation();archiveButton.activate();
+  },true);
+  const syncArchiveButton = target => {
+    if (typeof Thru3DPlayButton === 'undefined') return;
+    // Keep the action outside Archive player's managed child tree and event root.
+    const box = target?.video;
+    const mount=document.fullscreenElement||document.body;
+    if (!archiveEnabled || !archiveActionEnabled || !target?.video.isConnected || !box || !mount) {archiveButton?.dispose();archiveButton=null;return;}
+    const old=archiveButton?.target;
+    if (!old || archiveButton.host.isConnected===false || archiveButton.overlay.parentElement!==mount || old.video!==target.video || old.key!==target.key || old.source!==target.source || old.epoch!==target.epoch || archiveButton.box!==box) {
+      archiveButton?.dispose();
+      const overlay=document.createElement('span');overlay.dataset.thru3dPlayOverlay='archive';
+      overlay.style.cssText='position:fixed;pointer-events:none;z-index:2147482990;';mount.append(overlay);
+      const activate=()=>{
+        const current=archiveButton?.target;
+        if(closed||suspended||pauseLease||!current||!archiveEnabled||!archiveActionEnabled||current.video.currentSrc!==current.source||mediaEpoch.get(current.video)?.id!==current.epoch)return;
+        archiveChoice={...current,at:Date.now(),request:++archiveClick};changed();
+      };
+      const control=Thru3DPlayButton.create(document,overlay,'archive',activate);
+      control.host.dataset.thru3dArchive='beta';control.host.dataset.thru3dArchivePage=target.page;
+      archiveButton={...control,box,overlay,target,activate,dispose(){control.dispose();overlay.remove();}};
+    } else archiveButton.target=target;
+    const rect=box.getBoundingClientRect();
+    Object.assign(archiveButton.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
+    archiveButton.host.hidden=!Thru3DPlayButton.visible(target.video);archiveButton.enabled(true);
+  };
+  let odyseeEnabled = typeof Thru3DOdysee !== 'undefined' && Thru3DOdysee.documentPage(location.href), odyseeActionEnabled=false, odyseeCapture={};
+  let odyseeButton = null, odyseeChoice = null, odyseeClick = 0;
+  const odyseeActionEvent = event => event.isTrusted && odyseeButton && (event.composedPath?.() || []).includes(odyseeButton.host);
+  // Reserve only our own action events before site gesture handlers. Reserve only events on
+  // our own shadow action, before those handlers can capture or cancel the click.
+  for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
+    if(odyseeActionEvent(event))event.stopImmediatePropagation();
+  },true);
+  addEventListener('click',event=>{
+    if(!odyseeActionEvent(event))return;
+    event.preventDefault();event.stopImmediatePropagation();odyseeButton.activate();
+  },true);
+  const syncOdyseeButton = target => {
+    if (typeof Thru3DPlayButton === 'undefined') return;
+    // Keep the action outside Odysee player's managed child tree and event root.
+    const box = target?.video;
+    const mount=document.fullscreenElement||document.body;
+    if (!odyseeEnabled || !odyseeActionEnabled || !target?.video.isConnected || !box || !mount) {odyseeButton?.dispose();odyseeButton=null;return;}
+    const old=odyseeButton?.target;
+    if (!old || odyseeButton.host.isConnected===false || odyseeButton.overlay.parentElement!==mount || old.video!==target.video || old.key!==target.key || old.source!==target.source || old.epoch!==target.epoch || odyseeButton.box!==box) {
+      odyseeButton?.dispose();
+      const overlay=document.createElement('span');overlay.dataset.thru3dPlayOverlay='odysee';
+      overlay.style.cssText='position:fixed;pointer-events:none;z-index:2147482990;';mount.append(overlay);
+      const activate=()=>{
+        const current=odyseeButton?.target;
+        if(closed||suspended||pauseLease||!current||!odyseeEnabled||!odyseeActionEnabled||current.video.currentSrc!==current.source||mediaEpoch.get(current.video)?.id!==current.epoch)return;
+        odyseeChoice={...current,at:Date.now(),request:++odyseeClick};changed();
+      };
+      const control=Thru3DPlayButton.create(document,overlay,'odysee',activate);
+      control.host.dataset.thru3dOdysee='beta';control.host.dataset.thru3dOdyseePage=target.page;
+      odyseeButton={...control,box,overlay,target,activate,dispose(){control.dispose();overlay.remove();}};
+    } else odyseeButton.target=target;
+    const rect=box.getBoundingClientRect();
+    Object.assign(odyseeButton.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
+    odyseeButton.host.hidden=!Thru3DPlayButton.visible(target.video);odyseeButton.enabled(true);
+  };
+  let dailymotionEnabled = typeof Thru3DDailymotion !== 'undefined' && Thru3DDailymotion.frame(location.href), dailymotionActionEnabled=false, dailymotionCapture={},dailymotionBodies=[],dailymotionOwner="";
+  let dailymotionButton = null, dailymotionChoice = null, dailymotionClick = 0;
+  const dailymotionActionEvent = event => event.isTrusted && dailymotionButton && (event.composedPath?.() || []).includes(dailymotionButton.host);
+  // Reserve only our own action events before site gesture handlers. Reserve only events on
+  // our own shadow action, before those handlers can capture or cancel the click.
+  for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
+    if(dailymotionActionEvent(event))event.stopImmediatePropagation();
+  },true);
+  addEventListener('click',event=>{
+    if(!dailymotionActionEvent(event))return;
+    event.preventDefault();event.stopImmediatePropagation();dailymotionButton.activate();
+  },true);
+  const syncDailymotionButton = target => {
+    if (typeof Thru3DPlayButton === 'undefined') return;
+    // Keep the action outside Dailymotion player's managed child tree and event root.
+    const box = target?.video;
+    const mount=document.fullscreenElement||document.body;
+    if (!dailymotionEnabled || !dailymotionActionEnabled || !target?.video.isConnected || !box || !mount) {dailymotionButton?.dispose();dailymotionButton=null;return;}
+    const old=dailymotionButton?.target;
+    if (!old || dailymotionButton.host.isConnected===false || dailymotionButton.overlay.parentElement!==mount || old.video!==target.video || old.key!==target.key || old.source!==target.source || old.epoch!==target.epoch || dailymotionButton.box!==box) {
+      dailymotionButton?.dispose();
+      const overlay=document.createElement('span');overlay.dataset.thru3dPlayOverlay='dailymotion';
+      overlay.style.cssText='position:fixed;pointer-events:none;z-index:2147482990;';mount.append(overlay);
+      const activate=()=>{
+        const current=dailymotionButton?.target;
+        if(closed||suspended||pauseLease||!current||!dailymotionEnabled||!dailymotionActionEnabled||current.video.currentSrc!==current.source||mediaEpoch.get(current.video)?.id!==current.epoch)return;
+        dailymotionChoice={...current,at:Date.now(),request:++dailymotionClick};changed();
+      };
+      const control=Thru3DPlayButton.create(document,overlay,'dailymotion',activate);
+      control.host.dataset.thru3dDailymotion='beta';control.host.dataset.thru3dDailymotionPage=target.page;
+      dailymotionButton={...control,box,overlay,target,activate,dispose(){control.dispose();overlay.remove();}};
+    } else dailymotionButton.target=target;
+    const rect=box.getBoundingClientRect();
+    Object.assign(dailymotionButton.overlay.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});
+    dailymotionButton.host.hidden=!Thru3DPlayButton.visible(target.video);dailymotionButton.enabled(true);
   };
   let iqiyiEnabled = typeof Thru3DIqiyi !== 'undefined' && !!Thru3DIqiyi.page(location.href), iqiyiActionEnabled=false;
   let iqiyiButton = null, iqiyiChoice = null, iqiyiClick = 0;
@@ -349,13 +728,13 @@
   let bilibiliInitial = null, bilibiliInitialPage = '', bilibiliScanAt = 0;
   let bilibiliOwner = null;
   const networkContext = (reset = false) => {
-    try { networkPort?.postMessage({ type: "context", page: location.href, enabled: networkEnabled, bilibili: bilibiliEnabled, douyin: douyinEnabled, weibo: weiboEnabled, tencent:tencentEnabled, mango:mangoEnabled, youku:youkuEnabled, iqiyi:iqiyiEnabled, niconico:niconicoEnabled, reset }); } catch (_) {}
+    try { networkPort?.postMessage({ type: "context", page: location.href, enabled: networkEnabled, bilibili: bilibiliEnabled, douyin: douyinEnabled, weibo: weiboEnabled, tencent:tencentEnabled, mango:mangoEnabled, youku:youkuEnabled, iqiyi:iqiyiEnabled, niconico:niconicoEnabled, twitch:twitchEnabled, tiktok:tiktokEnabled, instagram:instagramEnabled, ted:tedEnabled, redbull:redbullEnabled, streamable:streamableEnabled, archive:archiveEnabled, odysee:odyseeEnabled, dailymotion:dailymotionEnabled, reset }); } catch (_) {}
   };
   const mediaEpoch = new WeakMap();
   const connectNetwork = () => {
     network = [];
     tencentData = [];mangoData=[];mangoCapture={};
-    youkuData=[];youkuCapture={};niconicoData=[];niconicoCapture={};
+    youkuData=[];youkuCapture={};niconicoData=[];niconicoCapture={};twitchData=[];twitchCapture={};tiktokCapture={};instagramCapture={};tedCapture={};dailymotionBodies=[];dailymotionCapture={};
     tencentCapture = {};tencentShape=[];tencentEnvelopes=[];
     douyinData = [];
     bilibiliData = []; bilibiliViews = [];
@@ -363,6 +742,7 @@
     const connection = networkPort;
     networkPort.onMessage.addListener(message => {
       if (connection !== networkPort || message?.type !== "network" || message.page !== location.href) return;
+      dailymotionBodies=Array.isArray(message.dailymotion_bodies)?message.dailymotion_bodies.slice(0,6):[];
       network = Array.isArray(message.candidates) ? message.candidates.slice(0, 24) : [];
       douyinData = Array.isArray(message.douyin) ? message.douyin.slice(0,16) : [];
       douyinObservation = message.douyin_observation || {};
@@ -372,6 +752,7 @@
       mangoData = Array.isArray(message.mango)?message.mango.slice(0,8):[];mangoCapture=message.mango_capture||{};
       youkuData = Array.isArray(message.youku)?message.youku.slice(0,8):[];youkuCapture=message.youku_capture||{};
       niconicoData=Array.isArray(message.niconico)?message.niconico.slice(0,8):[];niconicoCapture=message.niconico_capture||{};
+      twitchData=Array.isArray(message.twitch)?message.twitch.slice(0,16):[];twitchCapture=message.twitch_capture||{};
       tencentData = Array.isArray(message.tencent) ? message.tencent.slice(0,8) : [];
       tencentStatus = message.tencent_status || 'idle';
       tencentCapture = message.tencent_capture || {};
@@ -380,7 +761,7 @@
       bilibiliStatus = message.bilibili_status || 'idle'; bilibiliResponseApi = message.bilibili_response_api === true;
       changed();
     });
-    networkPort.onDisconnect.addListener(() => { if (connection === networkPort) { network = []; mangoData=[];mangoCapture={};youkuData=[];youkuCapture={};niconicoData=[];niconicoCapture={};tencentData = [];tencentCapture={};tencentShape=[];tencentEnvelopes=[]; douyinData = []; bilibiliData = []; bilibiliViews = []; bilibiliInitial = null; changed(); } });
+    networkPort.onDisconnect.addListener(() => { if (connection === networkPort) { network = []; mangoData=[];mangoCapture={};youkuData=[];youkuCapture={};niconicoData=[];niconicoCapture={};twitchData=[];twitchCapture={};tiktokCapture={};instagramCapture={};tedCapture={};dailymotionBodies=[];dailymotionCapture={};tencentData = [];tencentCapture={};tencentShape=[];tencentEnvelopes=[]; douyinData = []; bilibiliData = []; bilibiliViews = []; bilibiliInitial = null; changed(); } });
     networkContext();
   };
   // Both clients put the access token and selected media version on their video URL.
@@ -431,7 +812,7 @@
     if (networkPage !== location.href) {
       if (pauseLease?.page !== location.href) pauseLease = null;
       networkPage = location.href; network = []; mangoChoice=null;mangoData=[];mangoCapture={};weiboChoice = null;tencentChoice=null;tencentData=[];tencentCapture={};tencentShape=[];tencentEnvelopes=[];
-      youkuChoice=null;youkuData=[];youkuCapture={};niconicoChoice=null;niconicoData=[];niconicoCapture={};
+      youkuChoice=null;youkuData=[];youkuCapture={};niconicoChoice=null;niconicoData=[];niconicoCapture={};twitchChoice=null;twitchData=[];twitchCapture={};tiktokChoice=null;tiktokCapture={};instagramChoice=null;instagramCapture={};tedChoice=null;tedCapture={};redbullChoice=null;redbullCapture={};streamableChoice=null;streamableCapture={};archiveChoice=null;archiveCapture={};odyseeChoice=null;odyseeCapture={};
       bilibiliData = []; bilibiliInitial = null;
       networkContext(true);
     }
@@ -448,7 +829,7 @@
     const currentTencentShape=[{path:'diagnostic.page_state.code',kind:'number',sample:pageTencent.status},
       {path:'diagnostic.observed_envelopes.code',kind:'number',sample:tencentEnvelopes.length},...pageTencent.shape,...tencentShape];
     let bilibiliTarget = null;
-    const tencentTargets = [],mangoTargets=[],youkuTargets=[],niconicoTargets=[],iqiyiTargets=[],douyinTargets=[];
+    const tencentTargets = [],mangoTargets=[],youkuTargets=[],niconicoTargets=[],twitchTargets=[],tiktokTargets=[],instagramTargets=[],tedTargets=[],redbullTargets=[],streamableTargets=[],archiveTargets=[],odyseeTargets=[],dailymotionTargets=[],iqiyiTargets=[],douyinTargets=[];
     const pageIqiyi=iqiyiEnabled?Thru3DIqiyi.capture(document.defaultView?.wrappedJSObject,location.href,document):null;
     const live = [...videos.keys()].filter(v => v.isConnected && !v.ended && (v.currentSrc || v.readyState > 0));
     const ordered = [...videos].filter(([v])=>{if (v.isConnected) return true; videos.delete(v); return false;});
@@ -507,9 +888,18 @@
       const youkuPrimary=youkuEnabled?Thru3DYouku.owner(youkuData,location.href,live.filter(v=>!encrypted.has(v))):null;
       // Generic MSE capture still requires a single player. Site-bound owners can
       // use exact declared files even when MSE fetches before its loadstart event.
-      let requests = protectedMedia || !(networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled || youkuEnabled || niconicoEnabled) ? [] : network.filter(c => c.url === currentSource || c.original_url === currentSource ||
+      let requests = protectedMedia || !(networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled || youkuEnabled || niconicoEnabled || twitchEnabled || tiktokEnabled || instagramEnabled || tedEnabled || redbullEnabled || streamableEnabled || archiveEnabled || odyseeEnabled || dailymotionEnabled) ? [] : network.filter(c => c.url === currentSource || c.original_url === currentSource ||
         currentSource.startsWith('blob:') && (bilibiliEnabled ? primary === video :
           douyinEnabled ? !!douyinOwner : niconicoEnabled ? niconicoPrimary===video : youkuEnabled ? youkuPrimary===video : mangoEnabled ? mangoPrimary===video&&c.at>=epoch.since : tencentEnabled ? !!video.closest?.('#main-player .txp_videos_container') && c.at >= epoch.since : !weiboEnabled && live.length === 1 && c.at >= epoch.since));
+      const tiktokDeclaration=tiktokEnabled&&!protectedMedia?Thru3DTikTok.read(video,location.href):null;
+      if(tiktokEnabled)requests=tiktokDeclaration?network.filter(c=>c.kind==='file'&&tiktokDeclaration.urls.includes(c.url)):[];
+      if(instagramEnabled)requests=Thru3DInstagram.read(video,location.href)?network.filter(c=>c.kind==='file'):[];
+      if(tedEnabled)requests=Thru3DTed.read(video,location.href)?network.filter(c=>c.kind==='hls'||c.kind==='segment'):[];
+      if(redbullEnabled)requests=Thru3DRedBull.read(video,document)?network.filter(c=>c.kind==='hls'||c.kind==='segment'):[];
+      if(streamableEnabled)requests=Thru3DStreamable.read(video,document)?network.filter(c=>c.kind==='file'):[];
+      if(archiveEnabled)requests=Thru3DArchive.read(video,document)?network.filter(c=>c.kind==='file'):[];
+      if(odyseeEnabled)requests=Thru3DOdysee.read(video,document)?network.filter(c=>c.kind==='file'):[];
+      if(dailymotionEnabled)requests=Thru3DDailymotion.read(video,document)?network.filter(c=>c.kind==='hls'||c.kind==='segment'):[];
       if(youkuEnabled)requests=requests.filter(c=>c.kind==='hls'&&youkuData.some(d=>d.id===Thru3DYouku.page(location.href)?.id&&d.streams.some(t=>
         Thru3DYouku.sameManifest(t.url,c.url)||Thru3DYouku.sameManifest(t.url,c.original_url))));
       if(niconicoEnabled&&!protectedMedia)requests=network.filter(c=>niconicoPrimary===video&&niconicoData.some(d=>d.id===Thru3DNiconico.page(location.href)&&
@@ -571,6 +961,43 @@
       if(youku)youkuTargets.push({video,source:currentSource,epoch:epoch.id,key:youku.id+':'+youku.revision,page:youku.page});
       const youkuClicked=!!youku&&youkuChoice?.video===video&&youkuChoice.source===currentSource&&youkuChoice.epoch===epoch.id&&
         youkuChoice.key===youku.id+':'+youku.revision&&Date.now()-youkuChoice.at<15000;
+      const twitch=twitchEnabled&&!protectedMedia?Thru3DTwitch.binding(video,twitchData,requests,location.href,live.filter(v=>!encrypted.has(v))):null;
+      if(twitch)twitchTargets.push({video,source:currentSource,epoch:epoch.id,key:twitch.id+':'+twitch.revision,page:twitch.page});
+      const twitchClicked=!!twitch&&twitchChoice?.video===video&&twitchChoice.source===currentSource&&twitchChoice.epoch===epoch.id&&
+        twitchChoice.key===twitch.id+':'+twitch.revision&&Date.now()-twitchChoice.at<15000;
+      const tiktok=tiktokEnabled&&!protectedMedia?Thru3DTikTok.binding(video,requests,location.href,live.filter(v=>!encrypted.has(v))):null;
+      if(tiktok)tiktokTargets.push({video,source:currentSource,epoch:epoch.id,key:tiktok.id+':'+tiktok.revision,page:tiktok.page});
+      const tiktokClicked=!!tiktok&&tiktokChoice?.video===video&&tiktokChoice.source===currentSource&&tiktokChoice.epoch===epoch.id&&
+        tiktokChoice.key===tiktok.id+':'+tiktok.revision&&Date.now()-tiktokChoice.at<15000;
+      const instagram=instagramEnabled&&!protectedMedia?Thru3DInstagram.binding(video,requests,location.href,live.filter(v=>!encrypted.has(v))):null;
+      if(instagram)instagramTargets.push({video,source:currentSource,epoch:epoch.id,key:instagram.id+':'+instagram.revision,page:instagram.page,has_audio:instagram.has_audio});
+      const instagramClicked=!!instagram&&instagramChoice?.video===video&&instagramChoice.source===currentSource&&instagramChoice.epoch===epoch.id&&
+        instagramChoice.key===instagram.id+':'+instagram.revision&&Date.now()-instagramChoice.at<15000;
+      const ted=tedEnabled&&!protectedMedia?Thru3DTed.binding(video,requests,location.href,live.filter(v=>!encrypted.has(v))):null;
+      if(ted)tedTargets.push({video,source:currentSource,epoch:epoch.id,key:ted.id+':'+ted.revision,page:ted.page});
+      const tedClicked=!!ted&&tedChoice?.video===video&&tedChoice.source===currentSource&&tedChoice.epoch===epoch.id&&
+        tedChoice.key===ted.id+':'+ted.revision&&Date.now()-tedChoice.at<15000;
+      const redbull=redbullEnabled&&!protectedMedia?Thru3DRedBull.binding(video,requests,document,live.filter(v=>!encrypted.has(v))):null;
+      if(redbull)redbullTargets.push({video,source:currentSource,epoch:epoch.id,key:redbull.id+':'+redbull.revision,page:redbull.page});
+      const redbullClicked=!!redbull&&redbullChoice?.video===video&&redbullChoice.source===currentSource&&redbullChoice.epoch===epoch.id&&
+        redbullChoice.key===redbull.id+':'+redbull.revision&&Date.now()-redbullChoice.at<15000;
+      const streamable=streamableEnabled&&!protectedMedia?Thru3DStreamable.binding(video,requests,document,live.filter(v=>!encrypted.has(v))):null;
+      if(streamable)streamableTargets.push({video,source:currentSource,epoch:epoch.id,key:streamable.id+':'+streamable.revision,page:streamable.page});
+      const streamableClicked=!!streamable&&streamableChoice?.video===video&&streamableChoice.source===currentSource&&streamableChoice.epoch===epoch.id&&
+        streamableChoice.key===streamable.id+':'+streamable.revision&&Date.now()-streamableChoice.at<15000;
+      const archive=archiveEnabled&&!protectedMedia?Thru3DArchive.binding(video,requests,document,live.filter(v=>!encrypted.has(v))):null;
+      if(archive)archiveTargets.push({video,source:currentSource,epoch:epoch.id,key:archive.id+':'+archive.revision,page:archive.page});
+      const archiveClicked=!!archive&&archiveChoice?.video===video&&archiveChoice.source===currentSource&&archiveChoice.epoch===epoch.id&&
+        archiveChoice.key===archive.id+':'+archive.revision&&Date.now()-archiveChoice.at<15000;
+      const odysee=odyseeEnabled&&!protectedMedia?Thru3DOdysee.binding(video,requests,document,live.filter(v=>!encrypted.has(v))):null;
+      if(odysee)odyseeTargets.push({video,source:currentSource,epoch:epoch.id,key:odysee.id+':'+odysee.revision,page:odysee.page});
+      const odyseeClicked=!!odysee&&odyseeChoice?.video===video&&odyseeChoice.source===currentSource&&odyseeChoice.epoch===epoch.id&&
+        odyseeChoice.key===odysee.id+':'+odysee.revision&&Date.now()-odyseeChoice.at<15000;
+      const dailymotionBinding=dailymotionEnabled&&!protectedMedia?Thru3DDailymotion.binding(video,requests,document,live.filter(v=>!encrypted.has(v)),dailymotionBodies):null;
+      const dailymotion=dailymotionBinding&&Thru3DDailymotion.page(dailymotionOwner)===dailymotionBinding.id?dailymotionBinding:null;
+      if(dailymotion)dailymotionTargets.push({video,source:currentSource,epoch:epoch.id,key:dailymotion.id+':'+dailymotion.revision,page:dailymotion.page});
+      const dailymotionClicked=!!dailymotion&&dailymotionChoice?.video===video&&dailymotionChoice.source===currentSource&&dailymotionChoice.epoch===epoch.id&&
+        dailymotionChoice.key===dailymotion.id+':'+dailymotion.revision&&Date.now()-dailymotionChoice.at<15000;
       const niconico=niconicoEnabled&&!protectedMedia?Thru3DNiconico.binding(video,niconicoData,requests,location.href,live.filter(v=>!encrypted.has(v))):null;
       if(niconico)niconicoTargets.push({video,source:currentSource,epoch:epoch.id,key:niconico.id+':'+niconico.revision,page:niconico.page});
       const niconicoClicked=!!niconico&&niconicoChoice?.video===video&&niconicoChoice.source===currentSource&&niconicoChoice.epoch===epoch.id&&
@@ -591,6 +1018,15 @@
         bilibili_request: biliClicked ? bilibiliChoice.request : 0,
         mango,mango_ready:!!mango,mango_request:mangoClicked?mangoChoice.request:0,
         youku,youku_ready:!!youku,youku_request:youkuClicked?youkuChoice.request:0,
+        twitch,twitch_ready:!!twitch,twitch_request:twitchClicked?twitchChoice.request:0,
+        tiktok,tiktok_source:tiktok?currentSource:"",tiktok_ready:!!tiktok,tiktok_request:tiktokClicked?tiktokChoice.request:0,
+        instagram,instagram_source:instagram?currentSource:"",instagram_ended:!!instagram&&video.ended,instagram_ready:!!instagram,instagram_request:instagramClicked?instagramChoice.request:0,
+        ted,ted_source:ted?currentSource:"",ted_ready:!!ted,ted_request:tedClicked?tedChoice.request:0,
+        redbull,redbull_source:redbull?currentSource:"",redbull_ready:!!redbull,redbull_request:redbullClicked?redbullChoice.request:0,
+        streamable,streamable_source:streamable?currentSource:"",streamable_ready:!!streamable,streamable_request:streamableClicked?streamableChoice.request:0,
+        archive,archive_source:archive?currentSource:"",archive_ready:!!archive,archive_request:archiveClicked?archiveChoice.request:0,
+        odysee,odysee_source:odysee?currentSource:"",odysee_ready:!!odysee,odysee_request:odyseeClicked?odyseeChoice.request:0,
+        dailymotion,dailymotion_source:dailymotion?currentSource:"",dailymotion_ready:!!dailymotion,dailymotion_request:dailymotionClicked?dailymotionChoice.request:0,
         niconico,niconico_source:niconico?currentSource:undefined,niconico_ready:!!niconico,niconico_request:niconicoClicked?niconicoChoice.request:0,
         iqiyi,iqiyi_source:iqiyi?currentSource:undefined,iqiyi_ready:!!iqiyi,iqiyi_request:iqiyiClicked?iqiyiChoice.request:0,
         tencent,tencent_ready:!!tencent,tencent_status:pageTencent.data?'normalized':tencentStatus,tencent_request:tencentClicked?tencentChoice.request:0,
@@ -619,6 +1055,23 @@
     syncMangoButton(mangoTargets.length===1?mangoTargets[0]:null);
     syncYoukuButton(youkuTargets.length===1?youkuTargets[0]:null);
     syncNiconicoButton(niconicoTargets.length===1?niconicoTargets[0]:null);
+    syncTwitchButton(twitchTargets.length===1?twitchTargets[0]:null);
+    syncTikTokButton(tiktokTargets.length===1?tiktokTargets[0]:null);
+    tiktokCapture={status:tiktokTargets.length?'normalized':'idle',metadata:tiktokTargets.length,bound:tiktokTargets.length};
+    syncInstagramButton(instagramTargets.length===1?instagramTargets[0]:null);
+    instagramCapture={status:instagramTargets.length?'normalized':'idle',metadata:instagramTargets.length,bound:instagramTargets.length,has_audio:instagramTargets.length===1?instagramTargets[0].has_audio:null};
+    syncTedButton(tedTargets.length===1?tedTargets[0]:null);
+    syncRedBullButton(redbullTargets.length===1?redbullTargets[0]:null);
+    syncStreamableButton(streamableTargets.length===1?streamableTargets[0]:null);
+    syncArchiveButton(archiveTargets.length===1?archiveTargets[0]:null);
+    syncOdyseeButton(odyseeTargets.length===1?odyseeTargets[0]:null);
+    tedCapture={status:tedTargets.length?'normalized':'idle',metadata:tedTargets.length,bound:tedTargets.length};
+    redbullCapture={status:redbullTargets.length?'normalized':'idle',metadata:redbullTargets.length,bound:redbullTargets.length};
+    streamableCapture={status:streamableTargets.length?'normalized':'idle',metadata:streamableTargets.length,bound:streamableTargets.length};
+    archiveCapture={status:archiveTargets.length?'normalized':'idle',metadata:archiveTargets.length,bound:archiveTargets.length};
+    odyseeCapture={status:odyseeTargets.length?'normalized':'idle',metadata:odyseeTargets.length,bound:odyseeTargets.length};
+    syncDailymotionButton(dailymotionTargets.length===1?dailymotionTargets[0]:null);
+    dailymotionCapture={status:dailymotionTargets.length?'normalized':'idle',metadata:dailymotionTargets.length,bound:dailymotionTargets.length};
     syncIqiyiButton(iqiyiTargets.length===1?iqiyiTargets[0]:null);
     syncDouyinButtons(douyinTargets);
     // A declarative VR player may keep its actual <video> in a closed shadow tree.
@@ -639,6 +1092,15 @@
       ...(mangoEnabled?{mango_capture:mangoCapture}:{}),
       ...(youkuEnabled?{youku_capture:youkuCapture}:{}),
       ...(niconicoEnabled?{niconico_capture:niconicoCapture}:{}),
+      ...(twitchEnabled?{twitch_capture:twitchCapture}:{}),
+      ...(tiktokEnabled?{tiktok_capture:tiktokCapture}:{}),
+      ...(instagramEnabled?{instagram_capture:instagramCapture}:{}),
+      ...(tedEnabled?{ted_capture:tedCapture}:{}),
+      ...(redbullEnabled?{redbull_capture:redbullCapture}:{}),
+      ...(streamableEnabled?{streamable_capture:streamableCapture}:{}),
+      ...(archiveEnabled?{archive_capture:archiveCapture}:{}),
+      ...(odyseeEnabled?{odysee_capture:odyseeCapture}:{}),
+      ...(dailymotionEnabled?{dailymotion_capture:dailymotionCapture}:{}),
       ...(tencentEnabled ? {tencent_capture:{...tencentCapture,...pageTencent.capture,status:pageTencent.data?'normalized':tencentStatus,metadata:tencentRecords.length,requests:network.length}} : {}),
       suspended, pause_token: pauseLease?.token || 0,
       pause_has_media: controlled.length > 0, pause_held: !!pauseLease && controlled.every(v => v.paused || v.ended) }); }
@@ -680,8 +1142,8 @@
       video.addEventListener("encrypted", () => { encrypted.add(video); changed(); });
       for (const event of ["loadedmetadata", "resize", "durationchange", "play", "playing", "seeked", "pause", "emptied", "ended", "timeupdate"])
         video.addEventListener(event, changed);
-      video.addEventListener("play", () => { if (suspended||keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)) video.pause(); else holdPaused(video); });
-      for(const event of ['loadeddata','playing','seeked'])video.addEventListener(event,()=>{if(keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video))video.pause();});
+      video.addEventListener("play", () => { if (suspended||keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)||keepTikTokReturnPaused(video)||keepInstagramReturnPaused(video)||keepTedReturnPaused(video)||keepRedBullReturnPaused(video)||keepStreamableReturnPaused(video)||keepArchiveReturnPaused(video)||keepOdyseeReturnPaused(video)||keepDailymotionReturnPaused(video)) video.pause(); else holdPaused(video); });
+      for(const event of ['loadeddata','playing','seeked'])video.addEventListener(event,()=>{if(keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)||keepTikTokReturnPaused(video)||keepInstagramReturnPaused(video)||keepTedReturnPaused(video)||keepRedBullReturnPaused(video)||keepStreamableReturnPaused(video)||keepArchiveReturnPaused(video)||keepOdyseeReturnPaused(video)||keepDailymotionReturnPaused(video))video.pause();});
       holdPaused(video);
     }
     // Feeds and comments mutate constantly; only a new <video> changes the report.
@@ -741,6 +1203,33 @@
       const niconico=message.niconico===true&&typeof Thru3DNiconico!=='undefined'&&!!Thru3DNiconico.page(location.href);
       niconicoActionEnabled=niconico;
       if(niconico!==niconicoEnabled){niconicoEnabled=niconico;niconicoData=[];niconicoCapture={};network=[];networkContext(true);changed();}
+      const twitch=message.twitch===true&&typeof Thru3DTwitch!=='undefined'&&!!Thru3DTwitch.page(location.href);
+      twitchActionEnabled=twitch;
+      if(twitch!==twitchEnabled){twitchEnabled=twitch;twitchData=[];twitchCapture={};tiktokCapture={};instagramCapture={};tedCapture={};dailymotionBodies=[];dailymotionCapture={};network=[];networkContext(true);changed();}
+      const tiktok=message.tiktok===true&&typeof Thru3DTikTok!=='undefined'&&Thru3DTikTok.documentPage(location.href);
+      tiktokActionEnabled=tiktok;
+      if(tiktok!==tiktokEnabled){tiktokEnabled=tiktok;tiktokCapture={};network=[];networkContext(true);changed();}
+      const instagram=message.instagram===true&&typeof Thru3DInstagram!=='undefined'&&Thru3DInstagram.documentPage(location.href);
+      instagramActionEnabled=instagram;
+      if(instagram!==instagramEnabled){instagramEnabled=instagram;instagramCapture={};network=[];networkContext(true);changed();}
+      const ted=message.ted===true&&typeof Thru3DTed!=='undefined'&&Thru3DTed.documentPage(location.href);
+      tedActionEnabled=ted;
+      if(ted!==tedEnabled){tedEnabled=ted;tedCapture={};network=[];networkContext(true);changed();}
+      const redbull=message.redbull===true&&typeof Thru3DRedBull!=='undefined'&&Thru3DRedBull.documentPage(location.href);
+      redbullActionEnabled=redbull;
+      if(redbull!==redbullEnabled){redbullEnabled=redbull;redbullCapture={};network=[];networkContext(true);changed();}
+      const streamable=message.streamable===true&&typeof Thru3DStreamable!=='undefined'&&Thru3DStreamable.documentPage(location.href);
+      streamableActionEnabled=streamable;
+      if(streamable!==streamableEnabled){streamableEnabled=streamable;streamableCapture={};network=[];networkContext(true);changed();}
+      const archive=message.archive===true&&typeof Thru3DArchive!=='undefined'&&Thru3DArchive.documentPage(location.href);
+      archiveActionEnabled=archive;
+      if(archive!==archiveEnabled){archiveEnabled=archive;archiveCapture={};network=[];networkContext(true);changed();}
+      const odysee=message.odysee===true&&typeof Thru3DOdysee!=='undefined'&&Thru3DOdysee.documentPage(location.href);
+      odyseeActionEnabled=odysee;
+      if(odysee!==odyseeEnabled){odyseeEnabled=odysee;odyseeCapture={};network=[];networkContext(true);changed();}
+      const dailymotion=message.dailymotion===true&&typeof Thru3DDailymotion!=='undefined'&&Thru3DDailymotion.frame(location.href)&&!!Thru3DDailymotion.page(message.dailymotion_owner);
+      dailymotionActionEnabled=dailymotion;dailymotionOwner=dailymotion?message.dailymotion_owner:'';
+      if(dailymotion!==dailymotionEnabled){dailymotionEnabled=dailymotion;dailymotionBodies=[];dailymotionCapture={};network=[];networkContext(true);changed();}
       const iqiyi=message.iqiyi===true&&typeof Thru3DIqiyi!=='undefined'&&!!Thru3DIqiyi.page(location.href);
       iqiyiActionEnabled=iqiyi;
       if(iqiyi!==iqiyiEnabled){iqiyiEnabled=iqiyi;networkContext(true);changed();}
@@ -752,6 +1241,7 @@
       const token = message.token;
       if (!Number.isSafeInteger(token) || token <= lastPauseToken) return;
       lastPauseToken = token;
+      instagramRestore=null;
       // MediaSession.pause may have completed before this message arrives. Preserve
       // the native snapshot of this port's original playing IDs, not the new pause.
       const ids = Array.isArray(message.playing_ids) ? message.playing_ids.slice(0,16).map(String) : [];
@@ -777,7 +1267,8 @@
       }
       send();
     } else if (message?.action === "suspend") {
-      iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;
+      instagramRestore=null;
+      iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;tiktokReturnPause=null;instagramReturnPause=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;
       // A retained native handoff keeps the exact original playing-state lease.
       // Ordinary tab/background suspension still releases its temporary hold.
       if(message.keep_pause!==true||message.pause_token!==pauseLease?.token)pauseLease = null;
@@ -870,6 +1361,104 @@
       if(message.play===true){try{Promise.resolve(video.play()).catch(()=>{});}catch(_){}}
       else video.pause();
       send();
+    } else if (message?.action === "restore_twitch") {
+      const entry=[...videos].find(([,id])=>String(id)===message.id),video=entry?.[0];
+      const live=[...videos.keys()].filter(v=>!encrypted.has(v));
+      const target=video&&Thru3DTwitch.binding(video,twitchData,network,location.href,live);
+      if(!target||mediaEpoch.get(video)?.id!==message.epoch||target.page!==message.page)return;
+      suspended=false;
+      if(Number.isFinite(message.time)&&message.time>=0){try{video.currentTime=Math.min(message.time,video.duration);}catch(_){}}
+      if(message.play===true){try{Promise.resolve(video.play()).catch(()=>{});}catch(_){}}else video.pause();
+      send();
+    } else if (message?.action === "restore_tiktok") {
+      const entry=[...videos].find(([,id])=>String(id)===message.id),video=entry?.[0];
+      const live=[...videos.keys()].filter(v=>!encrypted.has(v));
+      const target=video&&Thru3DTikTok.binding(video,network,location.href,live);
+      if(!target||mediaEpoch.get(video)?.id!==message.epoch||target.page!==message.page||target.revision!==message.revision||!Number.isFinite(message.time)||message.time<0)return;
+      suspended=false;
+      tiktokReturnPause=message.play===true?null:{video,source:video.currentSrc,epoch:message.epoch,page:location.href,owner:target.id,at:Date.now()};
+      try{video.currentTime=Math.min(message.time,video.duration);}catch(_){tiktokReturnPause=null;return;}
+      if(message.play===true){try{Promise.resolve(video.play()).catch(()=>{});}catch(_){}}else video.pause();
+      send();
+    } else if (message?.action === "restore_instagram") {
+      if(message.page!==location.href||!message.identity||!Number.isFinite(message.time)||message.time<0)return;
+      // Instagram can replace an ended video when Gecko becomes active. The
+      // original port/document and complete content identity must still agree.
+      const pending={page:location.href,deadline:performance.now()+3000};instagramRestore=pending;
+      const restore=()=>{
+        if(instagramRestore!==pending||closed||suspended||pending.page!==location.href||performance.now()>pending.deadline){if(instagramRestore===pending)instagramRestore=null;return;}
+        const live=[...videos.keys()].filter(v=>v.isConnected&&!encrypted.has(v)&&!v.mediaKeys);
+        const matches=live.map(video=>({video,target:Thru3DInstagram.binding(video,network,location.href,live)}))
+          .filter(v=>Thru3DInstagram.matchesIdentity(v.target,message.identity));
+        if(matches.length!==1){setTimeout(restore,50);return;}
+        const {video,target}=matches[0],epoch=mediaEpoch.get(video);if(!epoch){setTimeout(restore,50);return;}
+        instagramRestore=null;
+        instagramReturnPause=message.play===true?null:{video,source:video.currentSrc,epoch:epoch.id,page:location.href,owner:target.id,at:Date.now()};
+        try{video.currentTime=Math.min(message.time,video.duration);}catch(_){instagramReturnPause=null;return;}
+        if(message.play===true){try{Promise.resolve(video.play()).catch(()=>{});}catch(_){}}else video.pause();
+        send();
+      };
+      restore();
+    } else if (message?.action === "restore_ted") {
+      const entry=[...videos].find(([,id])=>String(id)===message.id),video=entry?.[0];
+      const live=[...videos.keys()].filter(v=>!encrypted.has(v));
+      const target=video&&Thru3DTed.binding(video,network,location.href,live);
+      if(!target||mediaEpoch.get(video)?.id!==message.epoch||target.page!==message.page||target.revision!==message.revision||!Number.isFinite(message.time)||message.time<0)return;
+      suspended=false;
+      tedReturnPause=message.play===true?null:{video,source:video.currentSrc,epoch:message.epoch,page:location.href,owner:target.id,at:Date.now()};
+      try{video.currentTime=Math.min(message.time,video.duration);}catch(_){tedReturnPause=null;return;}
+      if(message.play===true){try{Promise.resolve(video.play()).catch(()=>{});}catch(_){}}else video.pause();
+      send();
+    } else if (message?.action === "restore_redbull") {
+      const entry=[...videos].find(([,id])=>String(id)===message.id),video=entry?.[0];
+      const live=[...videos.keys()].filter(v=>!encrypted.has(v));
+      const target=video&&Thru3DRedBull.binding(video,network,document,live);
+      if(!target||mediaEpoch.get(video)?.id!==message.epoch||target.page!==message.page||target.revision!==message.revision||!Number.isFinite(message.time)||message.time<0)return;
+      suspended=false;
+      redbullReturnPause=message.play===true?null:{video,source:video.currentSrc,epoch:message.epoch,page:location.href,owner:target.id,at:Date.now()};
+      try{video.currentTime=Math.min(message.time,video.duration);}catch(_){redbullReturnPause=null;return;}
+      if(message.play===true){try{Promise.resolve(video.play()).catch(()=>{});}catch(_){}}else video.pause();
+      send();
+    } else if (message?.action === "restore_streamable") {
+      const entry=[...videos].find(([,id])=>String(id)===message.id),video=entry?.[0];
+      const live=[...videos.keys()].filter(v=>!encrypted.has(v));
+      const target=video&&Thru3DStreamable.binding(video,network,document,live);
+      if(!target||mediaEpoch.get(video)?.id!==message.epoch||target.page!==message.page||target.revision!==message.revision||!Number.isFinite(message.time)||message.time<0)return;
+      suspended=false;
+      streamableReturnPause=message.play===true?null:{video,source:video.currentSrc,epoch:message.epoch,page:location.href,owner:target.id,at:Date.now()};
+      try{video.currentTime=Math.min(message.time,video.duration);}catch(_){streamableReturnPause=null;return;}
+      if(message.play===true){try{Promise.resolve(video.play()).catch(()=>{});}catch(_){}}else video.pause();
+      send();
+    } else if (message?.action === "restore_archive") {
+      const entry=[...videos].find(([,id])=>String(id)===message.id),video=entry?.[0];
+      const live=[...videos.keys()].filter(v=>!encrypted.has(v));
+      const target=video&&Thru3DArchive.binding(video,network,document,live);
+      if(!target||mediaEpoch.get(video)?.id!==message.epoch||target.page!==message.page||target.revision!==message.revision||!Number.isFinite(message.time)||message.time<0)return;
+      suspended=false;
+      archiveReturnPause=message.play===true?null:{video,source:video.currentSrc,epoch:message.epoch,page:location.href,owner:target.id,at:Date.now()};
+      try{video.currentTime=Math.min(message.time,video.duration);}catch(_){archiveReturnPause=null;return;}
+      if(message.play===true){try{Promise.resolve(video.play()).catch(()=>{});}catch(_){}}else video.pause();
+      send();
+    } else if (message?.action === "restore_odysee") {
+      const entry=[...videos].find(([,id])=>String(id)===message.id),video=entry?.[0];
+      const live=[...videos.keys()].filter(v=>!encrypted.has(v));
+      const target=video&&Thru3DOdysee.binding(video,network,document,live);
+      if(!target||mediaEpoch.get(video)?.id!==message.epoch||target.page!==message.page||target.revision!==message.revision||!Number.isFinite(message.time)||message.time<0)return;
+      suspended=false;
+      odyseeReturnPause=message.play===true?null:{video,source:video.currentSrc,epoch:message.epoch,page:location.href,owner:target.id,at:Date.now()};
+      try{video.currentTime=Math.min(message.time,video.duration);}catch(_){odyseeReturnPause=null;return;}
+      if(message.play===true){try{Promise.resolve(video.play()).catch(()=>{});}catch(_){}}else video.pause();
+      send();
+    } else if (message?.action === "restore_dailymotion") {
+      const entry=[...videos].find(([,id])=>String(id)===message.id),video=entry?.[0];
+      const live=[...videos.keys()].filter(v=>!encrypted.has(v));
+      const target=video&&Thru3DDailymotion.binding(video,network,document,live,dailymotionBodies);
+      if(!target||mediaEpoch.get(video)?.id!==message.epoch||target.page!==message.page||target.revision!==message.revision||!Number.isFinite(message.time)||message.time<0)return;
+      suspended=false;
+      dailymotionReturnPause=message.play===true?null:{video,source:video.currentSrc,epoch:message.epoch,page:location.href,owner:target.id,at:Date.now()};
+      try{video.currentTime=Math.min(message.time,video.duration);}catch(_){dailymotionReturnPause=null;return;}
+      if(message.play===true){try{Promise.resolve(video.play()).catch(()=>{});}catch(_){}}else video.pause();
+      send();
     } else if (message?.action === "restore_weibo") {
       const entry = [...videos].find(([,id])=>String(id) === message.id);
       const video = entry?.[0], evidence = video && weiboEvidence.get(video);
@@ -890,6 +1479,15 @@
       mangoButton?.dispose();mangoButton=null;
       youkuButton?.dispose();youkuButton=null;youkuChoice=null;
       niconicoButton?.dispose();niconicoButton=null;niconicoChoice=null;niconicoReturnPause=null;
+      twitchButton?.dispose();twitchButton=null;twitchChoice=null;
+      tiktokButton?.dispose();tiktokButton=null;tiktokChoice=null;tiktokReturnPause=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;
+      instagramButton?.dispose();instagramButton=null;instagramChoice=null;instagramReturnPause=null;instagramRestore=null;
+      tedButton?.dispose();tedButton=null;tedChoice=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;
+      redbullButton?.dispose();redbullButton=null;redbullChoice=null;redbullReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;
+      streamableButton?.dispose();streamableButton=null;streamableChoice=null;streamableReturnPause=null;
+      archiveButton?.dispose();archiveButton=null;archiveChoice=null;archiveReturnPause=null;
+      odyseeButton?.dispose();odyseeButton=null;odyseeChoice=null;odyseeReturnPause=null;
+      dailymotionButton?.dispose();dailymotionButton=null;dailymotionChoice=null;dailymotionReturnPause=null;dailymotionOwner="";
       iqiyiButton?.dispose();iqiyiButton=null;iqiyiChoice=null;
       iqiyiReturnPause=null;
       douyinReturnPause=null;douyinChoice=null;for(const b of douyinButtons.values())b.dispose();douyinButtons.clear();

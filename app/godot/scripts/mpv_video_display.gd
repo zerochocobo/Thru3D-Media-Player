@@ -1258,13 +1258,14 @@ func _record_history(force: bool = false) -> void:
 	if not recent_files.save():
 		Log.record("recent_file_save_failed", {"error": recent_files.last_error})
 
-func _request_revision(position_ms: int = -1, mode: String = "") -> void:
+func _request_revision(position_ms: int = -1, mode: String = "", source_reset: bool = false) -> void:
 	if position_ms >= 0: captures.stop()
 	if not platform or not media.accepts(media.session_id):
 		return
 	_pending_revision = {"stereo": stereo_sbs, "alpha": alpha_requested, "profile": profile, "position_ms": position_ms,
 		"depth": depth_requested and not alpha_requested and not stereo_sbs, "top_bottom": stereo_sbs and top_bottom,
 		"seek_mode": SeekPolicy.normalize(seek_mode if mode.is_empty() else mode)}
+	if source_reset: _pending_revision.source_reset = true
 	_set_backend_playing(media.session_id, false)
 	_waiting_first = true
 	_output_deadline_ms = Time.get_ticks_msec() + OUTPUT_TIMEOUT_MS
@@ -1304,12 +1305,16 @@ func _seek_event(stage: String) -> void:
 	_write_debug_report()
 
 func _abort_frozen_seek(reason: String) -> void:
+	var source_reset: bool = _pending_revision.get("source_reset", false)
 	_freeze_request = 0
 	_pending_revision = {}
 	_waiting_first = false
 	control.reject()
 	picker_error = reason
-	_set_backend_playing(media.session_id, requested_play)
+	# A failed display capture cancels the user's seek, but the native source
+	# boundary still invalidated this processing scope. Do not resume its old gate.
+	if source_reset: _request_revision(-1, "", true)
+	else: _set_backend_playing(media.session_id, requested_play)
 	_seek_event("capture_failed")
 	changed.emit()
 
@@ -1345,8 +1350,9 @@ func _on_frozen_pair(id: int, payload: String) -> void:
 func _try_revision() -> void:
 	if _pending_revision.is_empty() or _freeze_request > 0 or _pixel_busy or _thumbnail_busy:
 		return
-	if mode_transition.capturing() or (mode_transition.active() and mode_transition.stage == "preparing" and _waiting_first): return
-	if int(_pending_revision.position_ms) < 0 and mode_transition.guard_revision(): return
+	var source_reset: bool = _pending_revision.get("source_reset", false)
+	if mode_transition.capturing() or (not source_reset and mode_transition.active() and mode_transition.stage == "preparing" and _waiting_first): return
+	if not source_reset and int(_pending_revision.position_ms) < 0 and mode_transition.guard_revision(): return
 	if int(_pending_revision.position_ms) >= 0 and not mode_transition.active() and _start_seek_freeze(): return
 	if int(_pending_revision.position_ms) >= 0 and Time.get_ticks_msec() < _debug_seek_delay_until_ms:
 		return
@@ -2988,6 +2994,17 @@ func _on_state(id: int, payload: String) -> void:
 	var report: Variant = JSON.parse_string(payload)
 	if not report is Dictionary:
 		return
+	if report.has("source_epoch_change"):
+		var epoch: Variant = report.source_epoch_change
+		if not epoch is Dictionary or int(epoch.get("previous", 0)) <= 0 or int(epoch.get("next", 0)) <= int(epoch.previous): return
+		if int(report.get("session_id", 0)) != id or (media.generation > 0 and (int(report.get("generation", 0)) != media.generation \
+			or int(report.get("logical_session_id", 0)) != media.logical_session_id)): return
+		Log.record("mpv_source_epoch_change", {"session_id": id, "previous": epoch.previous, "next": epoch.next})
+		if _pending_revision.is_empty(): _request_revision(-1, "", true)
+		else:
+			_pending_revision.source_reset = true
+			_try_revision()
+		return
 	if report.get("audio_focus_change", "") == "loss":
 		requested_play = false
 	media.playback = report
@@ -3812,8 +3829,9 @@ func _process(_delta: float) -> void:
 	_apply_disc_tracks()
 	_check_open_timeout(Time.get_ticks_msec())
 	_check_playback_timeout(Time.get_ticks_msec())
-	_restore_tracks()
-	_sync_audio_timing()
+	if not _tracks_settled():
+		_restore_tracks()
+		_sync_audio_timing()
 	if _whisper_restore_pending and PlatformMethods.supports(platform, "set_mpv_whisper"):
 		set_audio_whisper(audio_whisper, _whisper_restore_remember)
 	if _audio_pending:
@@ -3832,6 +3850,21 @@ func _process(_delta: float) -> void:
 	_maybe_capture_thumbnail()
 	bookmark_loop.tick()
 	_process_playback_end()
+
+## Track restore, subtitle matching and audio timing only change with a new state report (which
+## replaces media.playback), a track choice or a pending request. Walking every subtitle track each
+## frame cost Quest 2 1.8 ms with a many-track mkv. A periodic pass still covers anything unlisted.
+const TRACKS_RECHECK_MS := 500
+var _tracks_playback: Dictionary = {}
+var _tracks_inputs: Array = []
+var _tracks_checked_ms := 0
+func _tracks_settled() -> bool:
+	var now := Time.get_ticks_msec()
+	var inputs := [media.session_id, local_uri, audio_track_id, _track_restore.size(), _subtitle_load_request, _subtitle_loaded_track,
+		_encoding_pending.size(), _subtitle_delay_pending, _audio_delay_pending, subtitle_auto_load, _subtitle_auto_pending, _subtitle_files_session]
+	if is_same(media.playback, _tracks_playback) and inputs == _tracks_inputs and now - _tracks_checked_ms < TRACKS_RECHECK_MS: return true
+	_tracks_playback = media.playback; _tracks_inputs = inputs; _tracks_checked_ms = now
+	return false
 
 func _process_playback_end() -> void:
 	if bookmark_loop.active: return

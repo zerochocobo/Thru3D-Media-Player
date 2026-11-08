@@ -104,6 +104,7 @@ func set_toolbar_shown(shown: bool) -> void:
 		depth.enabled = true; depth.error = ""; depth.state = "preparing"
 		if depth.strength <= 0.0: depth.strength = depth.Strength.VIDEO_DEFAULT
 	end_drag(); clear_pointer_visuals(); browser.tabs_open = false
+	browser.history.reset()
 	refresh(); effect_controls.sync()
 
 func sync_fullscreen(current: Dictionary) -> void:
@@ -165,7 +166,7 @@ func cinema() -> Dictionary:
 	return browser.cinema_provider.call() if browser.cinema_provider.is_valid() else {}
 func on_screen() -> bool: return mode == "cinema" and not cinema().is_empty()
 func move_centre() -> Vector3:
-	return Vector3(0.13, 0.04 if browser.tabs_open and browser.focused_window == window_id else 0.158 if browser.start_page.active(window_id) else HEADER.get_center().y, 0) if on_screen() else CENTRE
+	return Vector3(0.13, 0.04 if browser.overlay_open(window_id) else 0.158 if browser.start_page.active(window_id) else HEADER.get_center().y, 0) if on_screen() else CENTRE
 func move_target(key: String) -> Dictionary:
 	return {"node": self, "kind": "detail", "key": key, "pose": global_transform, "upright_facing": true, "face_center": move_centre()}
 func set_mode(value: String) -> void:
@@ -345,7 +346,7 @@ func _feedback_rect(mesh: MeshInstance3D, rect: Rect2, z: float = 0.003) -> void
 	mesh.position = Vector3(rect.get_center().x, rect.get_center().y, z)
 func _update_feedback() -> void:
 	_create_feedback()
-	_feedback.visible = visible and not page_input_blocked() and not browser.start_page.active(window_id) and not (browser.tabs_open and browser.focused_window == window_id)
+	_feedback.visible = visible and not page_input_blocked() and not browser.start_page.active(window_id) and not browser.overlay_open(window_id)
 	if not _feedback.visible: return
 	var frame := full_page_layout()
 	_feedback.global_transform = frame.pose
@@ -420,7 +421,7 @@ func _process(_delta: float) -> void:
 				button.node.global_transform = layout.pose
 				button.node.mesh.size = layout.size
 				button.rect.size = layout.size
-	if surface: surface.present(visible and not browser.start_page.active(window_id) and not (browser.tabs_open and browser.focused_window == window_id), RECT)
+	if surface: surface.present(visible and not browser.start_page.active(window_id) and not browser.overlay_open(window_id), RECT)
 func _place_device_status(_centre: Vector2) -> void: pass
 func _redraw_theme() -> void:
 	super._redraw_theme()
@@ -449,7 +450,7 @@ func _draw() -> void:
 	# popup-classed chrome was squeezed into a 0.93 m popup slot and blurred.
 	_backdrop.material_override.render_priority = 26 if on_screen() else 10
 	if on_screen() and not chrome_hidden():
-		if not browser.start_page.active(window_id) and not (browser.tabs_open and browser.focused_window == window_id):
+		if not browser.start_page.active(window_id) and not browser.overlay_open(window_id):
 			# The near bar uses the same empty-header drag surface as floating windows.
 			_ray_blockers.append({"target": MOVE, "rect": Rect2(-_backdrop.mesh.size / 2, _backdrop.mesh.size), "enabled": true, "node": _backdrop, "radius": 0.025})
 		# Transparent menu tiles do not write depth. Draw near controls after the

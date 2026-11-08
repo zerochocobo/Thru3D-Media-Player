@@ -6,6 +6,15 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WebBrowserYoukuTest {
+    @Test fun escapedProgrammeIdMatchesTheActualPageWithoutRewritingItsIdentity() {
+        val id="XNjUxMzU5NjI3Mg==";val encoded="https://v.youku.com/v_show/id_XNjUxMzU5NjI3Mg%3D%3d.html"
+        assertEquals(id,WebBrowserYouku.page(encoded));assertTrue(WebBrowserYouku.enabled(encoded))
+        val m=item().put("frame",encoded)
+        m.getJSONObject("youku").put("page",encoded).put("id",id)
+        assertNotNull(WebBrowserYouku.metadata(m,encoded))
+        assertNull(WebBrowserYouku.metadata(m,encoded.replace("%3D%3d","==")))
+        for(path in listOf("Xbad%2Fpath","Xbad%253D","Xbad%zz"))assertNull(WebBrowserYouku.page("https://v.youku.com/v_show/id_$path.html"))
+    }
     private val page="https://v.youku.com/v_show/id_XOTUxMzg4NDMy.html"
     private val source="https://new-cdn.test/current.m3u8?signature=exact"
     private fun item()=JSONObject().put("frame",page).put("blob",true).put("source","").put("width",960).put("height",540).put("duration",702.079)

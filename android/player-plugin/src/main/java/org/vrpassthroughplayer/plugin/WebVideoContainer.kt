@@ -1,9 +1,14 @@
 package org.vrpassthroughplayer.plugin
 
+import androidx.media3.container.NalUnitUtil
+
 /** Bounded container header inspection for observed resources. A MIME type alone does not
  * prove a whole video or its audio; MSE init/segment responses must not be played as movies. */
 internal object WebVideoContainer {
-    class Info(val video: String, val audio: String, val width: Int, val height: Int, val duration: Double)
+    class Info(val video: String, val audio: String, val width: Int, val height: Int, val duration: Double,
+        val pixelAspect: Double=1.0) {
+        val displayWidth: Int get()=(width*pixelAspect).toInt()
+    }
     private class Box(val type: String, val from: Int, val end: Int)
     private fun uint(d: ByteArray, p: Int, n: Int = 4): Long {
         require(n in 1..8 && p >= 0 && p <= d.size - n)
@@ -72,6 +77,7 @@ internal object WebVideoContainer {
         val children = boxes(d, moov.from, moov.end)
         require(children.none { it.type == "pssh" })
         var video = "none"; var audio = "none"; var width = 0; var height = 0; var duration = 0.0
+        var pixelAspect=1.0
         for (trak in children.filter { it.type == "trak" }) {
             val mdia = boxes(d, trak.from, trak.end).single { it.type == "mdia" }
             val m = boxes(d, mdia.from, mdia.end)
@@ -94,6 +100,13 @@ internal object WebVideoContainer {
                 width = uint(d, sample.from + 24, 2).toInt(); height = uint(d, sample.from + 26, 2).toInt()
                 val config = boxes(d, sample.from + 78, sample.end)
                 require(config.none { it.type == "sinf" })
+                val aspect=config.filter {it.type=="pasp"};require(aspect.size<=1)
+                aspect.singleOrNull()?.let {
+                    require(it.end-it.from==8)
+                    val numerator=uint(d,it.from);val denominator=uint(d,it.from+4)
+                    require(numerator>0 && denominator>0 && numerator<=denominator*16 && denominator<=numerator*16)
+                    pixelAspect=numerator.toDouble()/denominator
+                }
                 for (colour in config.filter { it.type == "colr" }) {
                     require(colour.end - colour.from >= 10 && String(d, colour.from, 4, Charsets.US_ASCII) in setOf("nclx", "nclc"))
                     require(uint(d, colour.from + 6, 2) in setOf(1L, 2L, 6L))
@@ -101,6 +114,7 @@ internal object WebVideoContainer {
                 video = when (sample.type) {
                     "avc1", "avc3" -> {
                         val avc = config.single { it.type == "avcC" }; require(avc.end - avc.from >= 4)
+                        if(aspect.isEmpty())avcPixelAspect(d,avc,width,height)?.let {pixelAspect=it}
                         "avc1." + (1..3).joinToString("") { "%02x".format(d[avc.from + it].toInt() and 255) }
                     }
                     "vp09" -> {
@@ -134,8 +148,25 @@ internal object WebVideoContainer {
             duration = ticks.toDouble() / scale
         }
         require(video != "none" || audio != "none")
-        return Info(video, audio, width, height, duration)
+        return Info(video, audio, width, height, duration,pixelAspect)
     }
+
+    /** Reuse the same pinned SPS parser as WebVideoTsDimensions; never infer PAR from the DOM. */
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun avcPixelAspect(data: ByteArray,config: Box,width: Int,height: Int): Double?=runCatching {
+        require(config.end-config.from>=7 && uint(data,config.from,1)==1L)
+        val count=(uint(data,config.from+5,1) and 31).toInt();require(count in 1..31)
+        var cursor=config.from+6;val ratios=ArrayList<Double>()
+        repeat(count) {
+            require(cursor+2<=config.end);val size=uint(data,cursor,2).toInt();cursor+=2
+            require(size>0 && size<=config.end-cursor && data[cursor].toInt() and 31==7)
+            val sps=NalUnitUtil.parseSpsNalUnit(data,cursor,cursor+size)
+            require(sps.width==width && sps.height==height)
+            val ratio=sps.pixelWidthHeightRatio.toDouble();require(ratio.isFinite() && ratio in (1.0/16)..16.0)
+            ratios.add(ratio);cursor+=size
+        }
+        ratios.distinct().single()
+    }.getOrNull()
 
     private class Element(val id: Long, val from: Int, val end: Int)
     private fun vint(d: ByteArray, p: Int, id: Boolean): Pair<Long, Int> {

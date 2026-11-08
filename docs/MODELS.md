@@ -112,3 +112,7 @@ Private-beach scene models/textures/manifests, generated audio and tools/beach m
 Release, normal Debug and diagnostic Debug now all require the beach payload and expose its entry. Missing scenery must stop package validation; it is not silently removed. IncludePrivateBeach remains a compatibility argument without an inclusion/exclusion effect. This replaces the 0.17.1 exclusion policy. Public source does not provide the private models, textures, generated audio or scene bundle: obtain appropriately licensed version-matched assets separately before building. No personal backup, model weight, signing material or internal modeling record is published by this change.
 
 0.17.2起各类构建均要求沙滩资源，缺失应停止；旧IncludePrivateBeach只保留参数兼容。公开仓库仍不含场景／模型／贴图／生成声音，须自行提供许可与版本匹配的资源，不能把源码接入视作完整可构建素材包。
+
+## 0.17.3 known low-tier processing limit
+
+An observed Quest2 session cannot initialize the MNN OpenCL backend for video depth/person passthrough and returns to ordinary2D. This source update does not fix that observed failure or introduce a validated Vulkan replacement. Minimum compatibility targets are not a claim that every AI path works on those devices; no weights, private performance samples or research records are exported.

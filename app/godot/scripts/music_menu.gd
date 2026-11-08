@@ -641,6 +641,7 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		if next != offset: offset = next; refresh()
 
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	app_actions.release(hand)
 	if choices.capture.get("hand", "") == hand: choices.release(hand, origin, direction, tracked); return
 	if _drag.get("hand", "") != hand: return
 	var drag := _drag.duplicate(); _drag.clear()

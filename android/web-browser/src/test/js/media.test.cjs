@@ -16,7 +16,7 @@ function fixture(count = 1, blob = true, options = {}) {
     play() { this.playCalls = (this.playCalls || 0) + 1; if (!options.deferPlay) { this.paused = false; this.emit('play'); } return Promise.resolve(); } }));
   const document = { nodeType: 9, querySelector: () => options.canonical ? {href: options.canonical} : null, querySelectorAll(s) { return s === 'video' ? videos : s === 'script:not([src])' ? options.scripts || [] : []; }, fullscreenElement: options.fullscreen === false ? null : videos[0] };
   if(options.siteState)document.defaultView={wrappedJSObject:options.siteState};
-  if(options.tencent||options.niconico){document.body={append(node){node.parentElement=this;}};document.createElement=()=>({style:{},dataset:{},remove(){this.parentElement=null;}});}
+  if(options.tencent||options.niconico||options.tiktok||options.dailymotion){document.body={append(node){node.parentElement=this;}};document.createElement=()=>({style:{},dataset:{},remove(){this.parentElement=null;}});}
   const location = { href: options.page || 'https://page.test/watch' }, clock = {now:Date.now()};
   const context = vm.createContext({ document, location, navigator: { userAgent: 'Fixture' }, URL, Date:class extends Date {static now(){return clock.now;}},
     browser: { runtime: { connectNative: () => native, connect: () => network } }, MutationObserver: class { constructor(callback) { observers.push(callback); } observe() {} disconnect() {} },
@@ -41,11 +41,26 @@ function fixture(count = 1, blob = true, options = {}) {
     capture:()=>({ready:true,id:'v_current',revision:'a1',page:location.href,src:videos[0].currentSrc}),
     binding:(video,data)=>video===videos[0]&&video.currentSrc===data.src?data:null,
     restore:(_,video,data,time,play)=>{video.currentTime=time;if(play)video.play();else video.pause();return true;}};
+  if(options.tiktok){
+    const v=videos[0],id='6742501081818877190',file='https://related.test/current-file';
+    v.currentSrc='blob:https://www.tiktok.com/current';
+    v.getBoundingClientRect=()=>({left:100,top:100,right:900,bottom:700,width:800,height:600});
+    context.Thru3DTikTok={documentPage:()=>true,page:()=>({id}),declaration:()=>({id}),read:()=>({urls:[file]}),
+      binding:(video,requests)=>video===v&&requests.some(r=>r.url===file)?{id,page:location.href,revision:'a1'}:null};
+  }
   if(options.niconico){
     context.innerWidth=1600;context.innerHeight=1000;context.getComputedStyle=()=>({});
     videos[0].currentSrc='blob:https://www.nicovideo.jp/current';
     videos[0].getBoundingClientRect=()=>({left:100,top:100,right:900,bottom:700,width:800,height:600});
     vm.runInContext(fs.readFileSync(path.join(__dirname,'../../main/assets/web-browser/niconico.js'),'utf8'),context);
+  }
+  if(options.dailymotion){
+    const video=videos[0],id='x5kesuj',page='https://www.dailymotion.com/video/'+id;
+    const source='blob:https://geo.dailymotion.com/current',root='https://related.test/current.m3u8';
+    video.currentSrc=source;video.getBoundingClientRect=()=>({left:10,top:10,width:800,height:450});
+    context.Thru3DDailymotion={frame:value=>value.startsWith('https://geo.dailymotion.com/player/'),
+      page:value=>/^https:\/\/www\.dailymotion\.com\/video\/([A-Za-z0-9]+)$/.exec(value||'')?.[1],
+      declaration:()=>({id}),read:()=>({id}),binding:(v,requests,doc,live,bodies)=>v===video&&v.currentSrc===source&&requests.some(r=>r.url===root)&&bodies.length===1?{id,page,revision:'a1'}:null};
   }
   vm.runInContext(script, context);
   const flush = () => { for (let n = 0; timers.length && n < 10; n++) timers.splice(0).forEach(f => f()); };
@@ -60,6 +75,32 @@ function fixture(count = 1, blob = true, options = {}) {
     resources(entries) { resourceObservers.forEach(f=>f({getEntries:()=>entries})); },
     emit(name,value={}) { (events[name] || []).forEach(f=>f(value)); } };
 }
+
+function dailymotionFixture(owner='https://www.dailymotion.com/video/x5kesuj'){
+  const f=fixture(1,true,{page:'https://geo.dailymotion.com/player/official.html',dailymotion:true,playButtons:true,fullscreen:false});
+  f.native.onMessage.fire({action:'network_policy',dailymotion:true,dailymotion_owner:owner});
+  f.network.onMessage.fire({type:'network',page:f.location.href,dailymotion_bodies:[{}],candidates:[{url:'https://related.test/current.m3u8',kind:'hls',at:Date.now()}]});f.flush();return f;
+}
+test('Dailymotion hosted action binds the native parent and accepts only a real click on the current video',()=>{
+  const f=dailymotionFixture(),button=f.playButtons.find(b=>b.site==='dailymotion');assert.ok(button?.ready);
+  assert.equal(f.report()[0].dailymotion_ready,true);
+  const click={composedPath:()=>[button.host],preventDefault(){},stopImmediatePropagation(){}};
+  f.emit('click',{...click,isTrusted:false});f.flush();assert.equal(f.report()[0].dailymotion_request,0);
+  f.emit('click',{...click,isTrusted:true});f.flush();assert.equal(f.report()[0].dailymotion_request,1);
+  f.videos[0].currentSrc='blob:https://geo.dailymotion.com/replacement';f.videos[0].emit('loadstart');f.flush();
+  assert.equal(f.report()[0].dailymotion_ready,false);assert.equal(f.report()[0].dailymotion_request,0);
+  const other=dailymotionFixture('https://www.dailymotion.com/video/another');
+  assert.equal(other.report()[0].dailymotion_ready,false);assert.equal(other.playButtons.length,0);
+});
+test('Dailymotion return rejects stale identity and preserves the paused position until a real page gesture',()=>{
+  const f=dailymotionFixture(),v=f.videos[0],message={action:'restore_dailymotion',id:'1',epoch:1,page:'https://www.dailymotion.com/video/x5kesuj',revision:'a1',time:50,play:false};
+  for(const change of [{revision:'stale'},{epoch:2},{page:'https://www.dailymotion.com/video/another'}]){
+    f.native.onMessage.fire({...message,...change});assert.equal(v.currentTime,3);
+  }
+  f.native.onMessage.fire(message);assert.equal(v.currentTime,50);assert.equal(v.paused,true);
+  v.play();assert.equal(v.paused,true);f.emit('pointerdown',{isTrusted:false});v.play();assert.equal(v.paused,true);
+  f.emit('pointerdown',{isTrusted:true});v.play();assert.equal(v.paused,false);
+});
 
 function niconicoFixture(){
   const f=fixture(1,true,{page:'https://www.nicovideo.jp/watch/sm9',niconico:true,playButtons:true,fullscreen:false});
@@ -81,6 +122,22 @@ test('Niconico paused return rejects old revisions and holds delayed site autopl
   f.native.onMessage.fire(message);assert.equal(v.currentTime,50);assert.equal(v.paused,true);
   v.play();assert.equal(v.paused,true);f.emit('pointerdown',{isTrusted:false});v.play();assert.equal(v.paused,true);
   f.emit('pointerdown',{isTrusted:true});v.play();assert.equal(v.paused,false);
+});
+
+test('TikTok paused return verifies revision, resists delayed autoplay and releases for a user or changed source',()=>{
+  const make=()=>{
+    const f=fixture(1,true,{page:'https://www.tiktok.com/@test/video/6742501081818877190',tiktok:true,playButtons:true,fullscreen:false});
+    f.native.onMessage.fire({action:'network_policy',tiktok:true});
+    f.network.onMessage.fire({type:'network',page:f.location.href,candidates:[{kind:'file',url:'https://related.test/current-file',at:Date.now()}]});f.flush();return f;
+  };
+  const message={action:'restore_tiktok',id:'1',epoch:1,page:'https://www.tiktok.com/@test/video/6742501081818877190',revision:'a1',time:50,play:false};
+  const f=make(),v=f.videos[0];
+  f.native.onMessage.fire({...message,revision:'old'});assert.equal(v.currentTime,3);
+  f.native.onMessage.fire(message);assert.equal(v.currentTime,50);assert(v.paused);
+  v.play();assert(v.paused);f.emit('pointerdown',{isTrusted:false});v.play();assert(v.paused);
+  f.emit('pointerdown',{isTrusted:true});v.play();assert.equal(v.paused,false);
+  const g=make();g.native.onMessage.fire(message);g.videos[0].currentSrc='blob:https://www.tiktok.com/replacement';
+  g.videos[0].play();assert.equal(g.videos[0].paused,false);
 });
 
 test('retained suspension preserves the exact pause lease and failure restores original playing videos', async()=>{

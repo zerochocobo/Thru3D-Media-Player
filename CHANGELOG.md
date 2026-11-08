@@ -4,6 +4,15 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.17.3 — 2026-11-09
+
+- Add Play Beta routes and featured entries for compatible Twitch public clips, TikTok detail pages, TED talks and Dailymotion. Preserve the legacy manual player action alongside Beta on foreign sites, explicit playback, source-scoped requests and retained-page return. Reported clip/detail validation does not imply all content, accounts or devices.
+- Add browser history shortcuts and improve recovery when an external app launch is rejected. Bind iQIYI to the active SDK quality/full timeline and improve source-reset/seek recovery and escaped Youku identifiers; remaining site challenges and unverified branches are not advertised as resolved.
+- Add restart/quit actions at the footer with two-step confirmation and session usage information. Improve compact action layout, oblique-angle icon visibility and initial photo-menu placement.
+- Skip repeated per-frame audio/subtitle restore work while its inputs stay unchanged; release menu-layer viewports when an XR session stops. Improve system-keyboard fallback/selection for generic Android OpenXR without changing the Quest/PICO compatibility targets.
+- Add lower-cost beach shaders and darker nighttime water for lower GPU tiers, improve lounger placement and finish Traditional Chinese/Japanese beach labels. Low-end compositor video layers default to unfiltered sampling. These source optimizations do not establish that Quest 2 OpenCL depth/person processing works; the observed failure remains documented.
+- Hide the abandoned Miracast experiment in every build and disconnect it from the reception switch; keep DLNA and AirPlay. Technical dormant source remains, without a user-facing Miracast feature or claim of successful phone mirroring. Private models/scenery payloads, keys, credentials, personal backups and internal development/promotion remain excluded; known AirPlay authentication limits remain in the technical guide.
+
 ## 0.17.2 — 2026-11-08
 
 - Add the private-beach cinema to distributed builds, with loungers, free movement, day/night controls, draggable sun/moon and nighttime handheld fireworks. Reorganize the scenery picker into compact four-column sections with the add-panorama card next to custom backgrounds. Public Git retains integration/shader source; scene/model/texture/audio payloads remain separately supplied and are not included here. Lower-tier hardware acceptance is not established by the Quest 3 observations.

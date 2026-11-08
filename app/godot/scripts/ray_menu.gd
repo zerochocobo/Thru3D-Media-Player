@@ -5,6 +5,8 @@ signal scenery_requested
 signal placement_changed
 signal composition_changed
 signal composition_layout_changed
+signal app_action_requested(operation: String)
+signal app_action_feedback(hand: String)
 
 const PAGE_SIZE := 7
 const NONE := -1
@@ -115,6 +117,7 @@ var _tips: Dictionary = {}
 var _tooltip: MeshInstance3D
 ## Battery and clock pill under the panel; kept across redraws.
 var device_status: Node3D
+var app_actions := preload("res://scripts/app_actions.gd").new(self)
 var session_controls_provider: Callable
 var _footer_state := {}
 var _footer_centre := Vector2.ZERO
@@ -207,6 +210,9 @@ func project_pointer(origin: Vector3, direction: Vector3, plane: Transform3D, mo
 	if delta.z >= -0.00001 or start.z <= 0: return null
 	return start + delta * (-start.z / delta.z)
 
+func _init() -> void:
+	add_child(app_actions)
+
 func _ready() -> void:
 	_connect_theme()
 	position = Vector3(0, -0.03, -1.55)
@@ -265,6 +271,7 @@ func dismiss() -> void:
 	clear_pointer_visuals()
 
 func clear_pointer_visuals() -> void:
+	app_actions.reset()
 	_hover.clear()
 	_hide_tooltip()
 	for pointer in _pointers.values():
@@ -372,6 +379,9 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 	# One button hit test per hand: the quick controls and the pointer share it, unless the quick
 	# controls just rebuilt the buttons.
 	var button_hit := ray_hit(origin, direction) if tracked else {}
+	var action_generation := _buttons_generation
+	app_actions.update(hand, button_hit, tracked)
+	if action_generation != _buttons_generation and tracked: button_hit = ray_hit(origin, direction)
 	if music_quick:
 		var generation := _buttons_generation
 		music_quick.update(hand, origin, direction, tracked, button_hit)
@@ -412,6 +422,7 @@ func _draw_pointer(hand: String, origin: Vector3, endpoint: Vector3, valid: bool
 			pointer.dot.position = tip if mono else tip + Vector3(0, 0, 0.008)
 
 func cancel_pointer(hand: String) -> void:
+	app_actions.cancel_hand(hand)
 	update_pointer(hand, Vector3.ZERO, Vector3.ZERO, false)
 
 func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
@@ -420,11 +431,13 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	var hit := ray_hit(origin, direction) if tracked else {}
 	if hit.is_empty():
 		return false
+	hit["hand"] = hand
 	_activate_hit(hit)
 	return true
 
 func _activate_hit(hit: Dictionary) -> void:
 	if not hit.get("enabled", true): return
+	if app_actions.activate(int(hit.target), str(hit.get("hand", ""))): return
 	if music_quick and music_quick.activate(int(hit.target)): return
 	if _activate_footer(int(hit.target)): return
 	_activate(int(hit.target))
@@ -459,6 +472,7 @@ func _set_backdrop(size: Vector2, centre: Vector2 = Vector2.ZERO) -> void:
 	_place_device_status(Vector2(centre.x, centre.y - size.y * 0.5 - 0.085))
 
 func _clear_layout() -> void:
+	app_actions.begin_layout()
 	if music_quick: music_quick.begin_layout()
 	composition_layout_changed.emit()
 	for button in _buttons:
@@ -566,7 +580,7 @@ func refresh_session_controls(force: bool = false) -> void:
 	if not force and state == _footer_state: return
 	_footer_state = state.duplicate()
 	for index in range(_buttons.size() - 1, -1, -1):
-		if _buttons[index].target in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT, CINEMA_LIGHTS, SCENERY]:
+		if _buttons[index].target in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT, CINEMA_LIGHTS, SCENERY, app_actions.STATUS]:
 			_buttons[index].node.free()
 			_buttons.remove_at(index)
 	var show_passthrough: bool = state.get("passthrough_visible", false)
@@ -574,6 +588,7 @@ func refresh_session_controls(force: bool = false) -> void:
 	var left := _footer_centre.x - STATUS_WIDTH * 0.5 - FOOTER_GAP - 2 * (FOOTER_DIAMETER + FOOTER_GAP)
 	var follow_left := left
 	device_status.position = Vector3(_footer_centre.x, _footer_centre.y, 0.002)
+	app_actions.draw_anchor()
 	var scene_centre := Vector2(_footer_centre.x + STATUS_WIDTH * 0.5 + FOOTER_GAP + .09, _footer_centre.y)
 	_button(SCENERY, "", scene_centre, Vector2(.18, FOOTER_DIAMETER), state.get("scenery_enabled", true))
 	var scenery_button: Node3D = _buttons.back().node
@@ -900,5 +915,6 @@ func text_snapshot() -> String:
 	for label in _labels:
 		lines.append(label.text)
 	for button in _buttons:
-		lines.append(button.node.get_child(0).text)
+		for child in button.node.get_children():
+			if child is Label3D: lines.append(child.text)
 	return "\n".join(lines)

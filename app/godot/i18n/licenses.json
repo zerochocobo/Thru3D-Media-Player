@@ -727,5 +727,14 @@
     "assets": [
       "airplay/OpenSSL-LICENSE.txt"
     ]
+  },
+  {
+    "id": "miracast-receiver",
+    "name": "MiracastReceiver",
+    "license": "MIT",
+    "assets": [
+      "miracast/NOTICE.txt",
+      "miracast/MiracastReceiver-LICENSE.txt"
+    ]
   }
 ]

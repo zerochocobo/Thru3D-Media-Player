@@ -15,3 +15,7 @@ Controller seek steps are shared between hands and configurable; ray/trigger sel
 ## 0.17.2 photos and curvature
 
 Photo autoplay uses3–30seconds(default5), starting when the final current image is presented rather than waiting for neighbour conversion. Continuous rotation/90-degree snapping and upright/ground layouts complement continuous video/photo curvature. Eligible ordinary videos with a panorama-image background offer horizontal, vertical and spherical curves; cinema configuration stays independent. Browser Back and playback-control dismissal remain separate.
+
+## 0.17.3 application actions
+
+Footer restart/quit use a second confirmation and show session usage; action icons remain visible at oblique viewing angles. Audio/subtitle restore work is skipped per frame when its inputs are unchanged, preserving mandatory recovery on source/track changes. Menu-layer viewports retire on XR session stop. These controls and source checks are not a new device performance guarantee.

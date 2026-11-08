@@ -10,7 +10,40 @@ func check(ok: bool, label: String) -> void:
 	checks += 1
 	if not ok: failures.append(label)
 func run() -> void:
-	Chinese.quest = true; I18n.use("zh"); Chinese.configure(true)
+	# Export features are injected here; no device or Android IME is required.
+	for profile in [[true, true, false, "quest"], [true, false, true, "pico"], [true, false, false, "openxr"], [false, false, false, "desktop"]]:
+		Chinese.android = profile[0]; Chinese.quest = profile[1]; Chinese.pico = profile[2]
+		for language in ["zh", "zh_Hant", "en", "ja", "auto"]:
+			for selected in [false, true]:
+				I18n.use(language); Chinese.configure(selected)
+				var original: bool = profile[1] and selected and I18n.language == "zh"
+				check(Chinese.enabled() == original, "App input policy unchanged: %s/%s/%s" % [profile[3], language, selected])
+				check(Chinese.browser_enabled() == (original or profile[3] == "openxr"), "Browser input policy: %s/%s/%s" % [profile[3], language, selected])
+				Chinese.configure_browser("system")
+				check(Chinese.browser_enabled() == original, "System choice preserves vendor routes and disables generic fallback")
+				Chinese.configure_browser("invalid")
+				check(Chinese.browser_keyboard == "builtin", "Unknown setting safely defaults to built-in")
+		var settings_menu := Menu.new(); root.add_child(settings_menu)
+		settings_menu.section = Menu.Section.SETTINGS; settings_menu.tab = Menu.GENERAL_TAB; settings_menu.refresh()
+		check(settings_menu.rows.any(func(row): return row.get("key", "") == "web_keyboard") == (profile[3] == "openxr"), "Web keyboard setting is restricted to generic Android/OpenXR")
+		settings_menu.queue_free()
+		await process_frame
+	await check_saved_choice()
+	await exercise_browser(true, "zh", true)
+	await exercise_browser(false, "zh", false)
+	await exercise_browser(false, "en", false)
+	await exercise_browser(false, "ja", true)
+	if is_instance_valid(Chinese.popup): Chinese.popup.queue_free()
+	await process_frame
+	print("Chinese browser input checks=%d failures=%d" % [checks, failures.size()])
+	for failure in failures: push_error(failure)
+	quit(0 if failures.is_empty() else 1)
+
+func exercise_browser(quest: bool, language: String, selected: bool) -> void:
+	Chinese.android = true; Chinese.quest = quest; Chinese.pico = false
+	Chinese.configure_browser("builtin")
+	I18n.use(language); Chinese.configure(selected)
+	var latin := I18n.language != "zh"
 	var platform := Fixture.Platform.new()
 	platform.browser.merge({"tab_id": 10, "navigation": 3, "focused_window": 1, "editing": true, "custom_keyboard": true, "keyboard_epoch": 1}, true)
 	var menu := Menu.new(); root.add_child(menu); menu.attach_platform(platform); menu.toggle()
@@ -20,6 +53,9 @@ func run() -> void:
 	await process_frame
 	check(platform.browser_commands.any(func(item): return item.action == "keyboard_mode" and item.enabled), "Enable mode reaches existing native command interface")
 	check(Chinese.active() and Chinese.popup.owner_id == "browser", "Focused webpage opens one app keyboard")
+	check(Chinese.popup.english == latin and browser.keyboard_visible(1), "Initial layout and visible control match the actual popup")
+	Chinese.popup._activate(Chinese.Keyboard.KEY)
+	check(JSON.parse_string(platform.inputs.back()[1]).text == "1", "Phone number digit reaches the native editor")
 	var old_action: Callable = Chinese.popup.dispatch
 	Chinese.popup._send("text", "中文🙂")
 	var request: Dictionary = JSON.parse_string(platform.inputs.back()[1])
@@ -36,7 +72,7 @@ func run() -> void:
 	check(not Chinese.active(), "Stale polled snapshot cannot reopen a manually closed keyboard")
 	platform.browser.keyboard_epoch = 3; platform.browser.keyboard_latin = false
 	browser.next_poll = 0; browser.tick()
-	check(Chinese.active() and not Chinese.popup.english, "A new focus lease can reopen Chinese input")
+	check(Chinese.active() and Chinese.popup.english == latin, "A new focus lease reopens the appropriate layout")
 	old_action = Chinese.popup.dispatch
 	platform.browser.custom_keyboard = false; platform.browser.editing = false; platform.browser.keyboard_epoch = 0
 	browser.next_poll = 0; browser.tick()
@@ -55,11 +91,45 @@ func run() -> void:
 	platform.browser.keyboard_epoch = 6; browser.next_poll = 0; browser.tick()
 	check(Chinese.active() and Chinese.popup.owner_id == "browser", "New webpage field still opens the Chinese keyboard")
 	I18n.use("en"); Chinese.configure(Chinese.selected); browser.tick()
-	check(not Chinese.active() and platform.browser_commands.back().action == "keyboard_mode" and not platform.browser_commands.back().enabled, "Leaving Simplified Chinese restores native system mode")
+	if quest:
+		check(not Chinese.active() and platform.browser_commands.back().action == "keyboard_mode" and not platform.browser_commands.back().enabled, "Quest leaving Simplified Chinese restores native system mode")
+	else:
+		check(Chinese.active() and platform.browser_commands.back().enabled, "Generic OpenXR retains its visible fallback after language/configuration changes")
+		Chinese.configure(false); browser.tick()
+		check(Chinese.active(), "Turning Chinese preference off does not strand the browser focus lease")
+		old_action = Chinese.popup.dispatch
+		Chinese.configure_browser("system"); browser.tick()
+		check(not Chinese.active() and not platform.browser_commands.back().enabled, "System choice closes the popup and disables native custom input")
+		count = platform.inputs.size()
+		check(not old_action.call("text", "stale") and platform.inputs.size() == count, "Switching backend rejects the old editing callback")
+		platform.browser.custom_keyboard = false; platform.browser.keyboard_epoch = 0; platform.browser.keyboard_visible = true
+		browser.next_poll = 0; browser.tick()
+		check(browser.keyboard_visible(1) and not Chinese.active(), "System mode follows native visibility without opening an app popup")
+		Chinese.configure_browser("builtin"); browser.tick()
+		check(platform.browser_commands.back().enabled and not Chinese.active(), "Returning to built-in requests native custom mode before opening a popup")
+		platform.browser.custom_keyboard = true; platform.browser.keyboard_epoch = 7
+		browser.next_poll = 0; browser.tick()
+		check(Chinese.active(), "Fresh native focus after returning to built-in opens the keyboard")
+		browser.toggle_keyboard(1)
+		check(not Chinese.active() and not browser.keyboard_visible(1) and platform.inputs.back()[0] == "close", "Generic OpenXR keyboard toggle closes the real popup")
 	Chinese.configure(false); browser.close(); menu.queue_free()
-	if is_instance_valid(Chinese.popup): Chinese.popup.queue_free()
 	await process_frame
 	platform.free()
-	print("Chinese browser input checks=%d failures=%d" % [checks, failures.size()])
-	for failure in failures: push_error(failure)
-	quit(0 if failures.is_empty() else 1)
+
+func check_saved_choice() -> void:
+	Chinese.android = true; Chinese.quest = false; Chinese.pico = false
+	var main := preload("res://scripts/main.gd").new()
+	var directory := ProjectSettings.globalize_path("res://../../build/output/qiyu-keyboard-choice-20261108")
+	DirAccess.make_dir_recursive_absolute(directory)
+	main.settings_path = directory.path_join("settings-%s.cfg" % Time.get_ticks_usec())
+	var menu := Menu.new(); root.add_child(menu)
+	menu.setting_changed.connect(main._on_setting_changed)
+	for value in ["system", "builtin"]:
+		menu._on_choice_changed("web_keyboard", value)
+		var saved := ConfigFile.new()
+		check(saved.load(main.settings_path) == OK and saved.get_value("ui", "web_keyboard", "missing") == value, "UI choice persists: " + value)
+		Chinese.configure_browser("builtin" if value == "system" else "system")
+		Chinese.configure_browser(str(saved.get_value("ui", "web_keyboard", "builtin")))
+		check(Chinese.browser_enabled() == (value == "builtin"), "Saved selection restores the browser backend: " + value)
+	menu.queue_free(); main.free()
+	await process_frame

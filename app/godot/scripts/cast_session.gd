@@ -22,8 +22,10 @@ func snapshot() -> Dictionary:
 	var airplay: Object = host.get("airplay_session") if is_instance_valid(host) else null
 	var airplay_status: Dictionary = airplay.status if is_instance_valid(airplay) else {}
 	var airplay_error := str(airplay_status.get("receiver_error", ""))
-	if airplay_error.is_empty(): airplay_error = str(airplay_status.get("error", ""))
-	if airplay_error.is_empty(): airplay_error = str(airplay_status.get("audio_error", ""))
+	var mirror_protocol := str(airplay_status.get("protocol", "AirPlay"))
+	if mirror_protocol == "AirPlay" and int(airplay_status.get("active", 0)) > 0:
+		if airplay_error.is_empty(): airplay_error = str(airplay_status.get("error", ""))
+		if airplay_error.is_empty(): airplay_error = str(airplay_status.get("audio_error", ""))
 	return {"supported": supported(), "enabled": enabled, "active": token > 0, "pending": pending.duplicate() if _presented == int(pending.get("token", 0)) else {}, "return_available": token == 0 and not previous.is_empty(), "name": status.get("name", "Thru3D"), "error": status.get("error", ""),
 		"airplay_state": airplay_status.get("state", "off"), "airplay_pin": airplay.pairing_code if is_instance_valid(airplay) else "", "airplay_error": airplay_error}
 

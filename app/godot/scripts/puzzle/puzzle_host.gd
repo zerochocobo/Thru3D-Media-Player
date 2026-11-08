@@ -149,6 +149,8 @@ func _enter() -> void:
 		if operation=="menu": show_panel(true)
 		else: _action(operation))
 	dock.refresh()
+	dock.app_action_requested.connect(app._on_app_action.bind(dock))
+	dock.app_action_feedback.connect(app._on_whisper_haptic)
 	dock.audio_provider=app.background_audio.snapshot
 	dock.capture_provider=func(): return session!=null and (not session.captures.is_empty() or not frame_input.movement.capture.is_empty() or not frame_input.resize.is_empty())
 	app.background_audio.changed.connect(dock.refresh)

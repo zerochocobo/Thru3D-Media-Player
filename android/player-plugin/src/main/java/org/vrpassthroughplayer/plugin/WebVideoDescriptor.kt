@@ -184,9 +184,10 @@ internal object WebVideoFormats {
         val audio = tracks.filter { !it.hasVideo && it.hasAudio }.maxWithOrNull(compareBy<WebVideoTrack> { it.bitrate }.thenBy { cdnPreference(it) }.thenBy { it.formatId })
         // Instagram's progressive acodec=none comes from the site's explicit has_audio=false.
         // Do not infer silence just because a split-track site's audio disappeared.
+        // The rendered MPD producer verifies that same explicit intent and the actual file.
         val silent = page.site == "instagram" && list.length() > 0 &&
             (0 until list.length()).all { list.optJSONObject(it)?.optString("acodec") == "none" } &&
-            tracks.any { it.hasVideo && it.transport == "file" && it.formatId.all(Char::isDigit) }
+            tracks.any { it.hasVideo && it.transport == "file" && (it.formatId.all(Char::isDigit) || json.optBoolean("browser_explicit_silent")) }
         val video = tracks.filter { it.hasVideo && accepts(it) && (it.hasAudio || audio != null || silent) }
             .maxWithOrNull(compareBy<WebVideoTrack> { it.projectionHint.isNotEmpty() }.thenBy { it.height.toLong() * it.width }.thenBy { it.fps }.thenBy { it.bitrate }.thenBy { cdnPreference(it) }.thenBy { it.sourcePreference })
             ?: error("No compatible video stream")

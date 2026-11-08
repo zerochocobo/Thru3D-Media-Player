@@ -17,3 +17,7 @@ The optimized Linux host protocol regression reproducibly accepts an earlier Dig
 0.17.1 本地优化构建的协议回归可重复发现旧 Digest nonce 被接受，不能把口令模式当作可靠的网络访问边界；请只在可信网络使用实验性接收。上游 nonce 生成位于会被 NDEBUG 移除的断言内，本轮未重新验收 Android 行为，也未修改发布运行源码来掩盖失败。
 
 0.17.2 includes a change to begin composition after decoded output submission, but its reported phone picture/audio issue has not completed acceptance and is not advertised as a verified fix. The optimized-host authentication defect above is not repaired by this source update.
+
+## 0.17.3 reception boundary
+
+Miracast is hidden and detached from the shared receiver in all builds; it is an abandoned dormant experiment, not phone mirroring support. DLNA/AirPlay remain. No helper activation, device probing or app-installed sender is required or performed by source synchronization. The existing optimized-host AirPlay Digest freshness defect is unchanged and is not a passed security check.

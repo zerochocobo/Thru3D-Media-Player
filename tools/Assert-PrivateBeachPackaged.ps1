@@ -92,7 +92,7 @@ try {
         if (-not $match.Success) { throw "Beach firework audio has no exported mapping: $name" }
         Assert-EntryMatchesFile $match.Groups[1].Value (Join-Path $project $match.Groups[1].Value)
     }
-    foreach ($name in @('firework_spark.gdshader', 'body_halo.gdshader', 'sky_texture.gdshaderinc', 'time_sky_common.gdshaderinc', 'moon_surface.gdshaderinc', 'moving_shadow.gdshaderinc', 'ground_cover.gdshaderinc', 'sand.gdshader', 'rock.gdshader', 'props.gdshader', 'water.gdshader', 'foliage.gdshader', 'grill.gdshader', 'moving_shadow_depth.gdshader', 'time_sky.gdshader', 'time_backdrop.gdshader')) {
+    foreach ($name in @('firework_spark.gdshader', 'body_halo.gdshader', 'sky_texture.gdshaderinc', 'time_sky_common.gdshaderinc', 'moon_surface.gdshaderinc', 'moving_shadow.gdshaderinc', 'ground_cover.gdshaderinc', 'sand.gdshader', 'sand_low.gdshader', 'rock.gdshader', 'props.gdshader', 'water.gdshader', 'water_low.gdshader', 'foliage.gdshader', 'grill.gdshader', 'moving_shadow_depth.gdshader', 'time_sky.gdshader', 'time_backdrop.gdshader', 'props_low.gdshader', 'foliage_low.gdshader', 'grill_low.gdshader', 'time_sky_low.gdshaderinc', 'time_backdrop_low.gdshader')) {
         $relative = 'shaders/private_beach/' + $name
         if ((Read-EntryText $relative) -cne [IO.File]::ReadAllText((Join-Path $project $relative))) { throw "Packaged beach shader differs: $name" }
     }
@@ -102,5 +102,5 @@ try {
         if (-not $match.Success) { throw "Beach runtime script has no compiled mapping: $name" }
         $null = Require-Entry $match.Groups[1].Value
     }
-    Write-Output 'Private beach package verified: layout/navigation bundle, 4 scenes, 21 ETC2/uncompressed textures, firework audio, 16 shaders/includes and 16 runtime scripts.'
+    Write-Output 'Private beach package verified: layout/navigation bundle, 4 scenes, 21 ETC2/uncompressed textures, firework audio, 23 shaders/includes and 16 runtime scripts.'
 } finally { $zip.Dispose() }

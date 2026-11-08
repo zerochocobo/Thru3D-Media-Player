@@ -167,7 +167,8 @@ func set_foveation(level: int) -> void:
 
 func _apply_foveation() -> void:
 	if xr is OpenXRInterface and xr.is_initialized() and "foveation_level" in xr:
-		var level := maxi(foveation_level, SCENE_RELIEF_FOVEATION) if scene_relief else foveation_level
+		var relief := SCENE_RELIEF_FOVEATION if debug_relief_foveation < 0 else debug_relief_foveation
+		var level := maxi(foveation_level, relief) if scene_relief else foveation_level
 		xr.foveation_dynamic = false
 		xr.foveation_level = level
 		DiagnosticLog.record("xr_foveation", {"level": level, "applied": xr.foveation_level, "scene_relief": scene_relief})
@@ -176,15 +177,21 @@ func _apply_foveation() -> void:
 ## eye buffers. Quest 3 cinema 2D at 120 Hz: 85 fps / Stale 44/s -> 120 fps / Stale 0.7/s; video
 ## and menus are compositor layers and keep their resolution. Both apply and restore at runtime.
 const SCENE_RELIEF_FOVEATION := 3
+## Debug A/B only: replaces SCENE_RELIEF_FOVEATION when 0 or more.
+var debug_relief_foveation := -1
 const SCENE_RELIEF_MAX_SCALE := 1.0
+## Adreno 6xx without runtime foveation (Quest 2 beach from a lounger: 11.4 ms at
+## foveation 3, 15.4 ms without) also gives up a tenth of each axis while relieved.
+const SCENE_RELIEF_UNFOVEATED_SCALE := 0.9
+var relief_max_scale := SCENE_RELIEF_MAX_SCALE
 var scene_relief := false
 func set_scene_relief(enabled: bool) -> void:
 	if enabled == scene_relief: return
 	scene_relief = enabled
 	_apply_foveation()
 	if xr is OpenXRInterface and xr.is_initialized() and "render_target_size_multiplier" in xr:
-		xr.render_target_size_multiplier = minf(render_scale, SCENE_RELIEF_MAX_SCALE) if enabled else render_scale
-	DiagnosticLog.record("xr_scene_relief", {"enabled": enabled, "render_scale": render_scale})
+		xr.render_target_size_multiplier = minf(render_scale, relief_max_scale) if enabled else render_scale
+	DiagnosticLog.record("xr_scene_relief", {"enabled": enabled, "render_scale": render_scale, "relief_max_scale": relief_max_scale})
 ## Debug A/B only: one of PERFORMANCE_LEVELS' keys.
 var debug_performance_level := ""
 var performance_demand := false
@@ -277,6 +284,11 @@ func set_refresh_rate(rate: float) -> bool:
 func _on_presence_changed(present: bool) -> void:
 	DiagnosticLog.record("user_presence_changed", {"present": present})
 
+## Old GPUs whose runtime ignores foveation_level; called once the session exists.
+func configure_low_end(low_end: bool) -> void:
+	var foveated: bool = xr is OpenXRInterface and xr.is_initialized() and xr.has_method("is_foveation_supported") and xr.is_foveation_supported()
+	relief_max_scale = SCENE_RELIEF_UNFOVEATED_SCALE if low_end and not foveated and not preview else SCENE_RELIEF_MAX_SCALE
+
 func capabilities() -> Dictionary:
 	var report := {
 		"preview": preview,
@@ -292,6 +304,7 @@ func capabilities() -> Dictionary:
 		"performance_levels": performance_levels,
 		"foveation_level": foveation_level,
 		"render_scale": render_scale,
+		"relief_max_scale": relief_max_scale,
 		"menu_layers": menu_layers,
 		"browser_layer": browser_layer,
 		# Vendors can shrink the actual render region without changing the allocated eye buffers.
@@ -304,6 +317,8 @@ func capabilities() -> Dictionary:
 		var target_size := xr.get_render_target_size()
 		report["render_target_size"] = [int(target_size.x), int(target_size.y)]
 		report["system_info"] = xr.get_system_info()
+		# foveation_level is only the request; a runtime without the extension ignores it.
+		if xr.has_method("is_foveation_supported"): report["foveation_supported"] = xr.is_foveation_supported()
 		report["view_count"] = xr.get_view_count()
 		report["tracking_status"] = xr.get_tracking_status()
 		report["tracking_status_enum_valid"] = int(report["tracking_status"]) in [0, 1, 2, 3, 4]

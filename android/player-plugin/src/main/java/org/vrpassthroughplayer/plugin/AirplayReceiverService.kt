@@ -50,9 +50,9 @@ class AirplayReceiverService : Service() {
         owner = current
         try {
             val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(NotificationChannel(CHANNEL, "AirPlay", NotificationManager.IMPORTANCE_LOW))
+            manager.createNotificationChannel(NotificationChannel(CHANNEL, "Cast reception", NotificationManager.IMPORTANCE_LOW))
             val notification = Notification.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.ic_menu_share)
-                .setContentTitle("Thru3D").setContentText("AirPlay").setOngoing(true).build()
+                .setContentTitle("Thru3D").setContentText("Cast reception").setOngoing(true).build()
             startForeground(8792, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
             handler.removeCallbacks(renew)
             if (current.active) {

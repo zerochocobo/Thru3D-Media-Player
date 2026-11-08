@@ -8,6 +8,223 @@ import java.net.URI
 import java.nio.ByteBuffer
 
 class WebVideoNetworkCaptureTest {
+    @Test fun odyseeUsesTheDeclaredCurrentClaimAndOnlyItsObservedFileRequest() {
+        val document="https://odysee.com/@PublicChannel:2/PublicClip:1";val claim="1"+"a".repeat(39)
+        val file="https://related.test:8443/v6/streams/$claim/abcdef.mp4?selection=exact"
+        val declared="https://other-related.test/api/v3/streams/free/PublicClip/$claim/abcdef.mp4"
+        val other="https://other.test/ad.mp4"
+        val m=media(candidate(file,headers=JSONObject().put("Authorization","actual-file-only")),candidate(other),direct=file)
+            .put("frame",document).put("odysee_source",file).put("odysee_enabled",true).put("odysee_ready",true).put("capture_identity","selected")
+            .put("odysee",JSONObject().put("id","@PublicChannel:2/PublicClip:1").put("page",document).put("source",file).put("declared_source",declared)
+                .put("claim_id",claim).put("file_id","abcdef.mp4").put("revision","a1").put("width",1920).put("height",1080)
+                .put("duration",10).put("expected_duration",10).put("whole_seconds",true))
+        val p=WebVideoOdyseeCapture.page(document,m)!!;val reads=mutableListOf<Pair<URI,Map<String,String>>>()
+        val info=WebVideoOdyseeCapture.resolve(p,m,resolver(mapOf(file to mp4()),reads))!!
+        val selected=WebVideoFormats.select(p,info){true}
+        assertEquals(file,selected.video.url.toString());assertEquals(listOf(URI(file)),reads.map{it.first})
+        assertEquals("actual-file-only",reads.single().second["authorization"])
+        assertTrue(WebVideoOdyseeCapture.keeps(p,m,m,selected.video))
+        val changed=JSONObject(m.toString());changed.getJSONObject("odysee").put("revision","a2")
+        assertFalse(WebVideoOdyseeCapture.keeps(p,m,changed,selected.video))
+        changed.getJSONObject("odysee").put("declared_source",declared.replace("abcdef","abcdee"))
+        assertNull(WebVideoOdyseeCapture.resolve(p,changed,resolver(mapOf(file to mp4()))))
+        assertNull(WebVideoOdyseeCapture.resolve(p,JSONObject(m.toString()).put("protected",true),resolver(mapOf(file to mp4()))))
+        assertNull(WebVideoOdyseeCapture.resolve(p,m,resolver(mapOf(file to mp4(protected=true)))))
+        assertNull(WebVideoOdyseeCapture.resolve(p,m,resolver(mapOf(file to mp4(width=1280,height=720)))))
+    }
+    @Test fun archiveRequiresExactPresentationDimensionsFromTheSameFilesPixelAspectBox() {
+        val document="https://archive.org/details/PublicFilm";val original="https://archive.org/download/PublicFilm/current.mp4"
+        val file="https://related.test/current.mp4?selection=exact"
+        val m=media(candidate(file).put("original_url",original),direct=original).put("width",426).put("height",240)
+            .put("frame",document).put("archive_source",original).put("archive_enabled",true)
+            .put("archive_ready",true).put("capture_identity","selected")
+            .put("archive",JSONObject().put("id","PublicFilm").put("page",document).put("source",original).put("file",file)
+                .put("revision","a1").put("width",426).put("height",240).put("duration",10))
+        val p=WebVideoArchiveCapture.page(document,m)!!
+        // Synthetic FFmpeg black 416x240 frame, setsar=40/39, libx264 ultrafast.
+        val sps="6742c00dda0687effc00a0009c40000003004000000ca3c50aa8".chunked(2).map{it.toInt(16).toByte()}.toByteArray()
+        val avc=byteArrayOf(1,66,-64,13,-1,-31)+ByteBuffer.allocate(2).putShort(sps.size.toShort()).array()+sps+byteArrayOf(0)
+        for(bytes in listOf(mp4(width=416,height=240,aspect=40 to 39),mp4(width=416,height=240,avcConfig=avc))) {
+            val header=WebVideoContainer.parse(bytes)!!
+            assertEquals(416,header.width);assertEquals(426,header.displayWidth)
+            assertEquals(40.0/39,header.pixelAspect,0.000001)
+            val info=WebVideoArchiveCapture.resolve(p,m,resolver(mapOf(file to bytes)))!!
+            val selected=WebVideoFormats.select(p,info){true}
+            assertEquals(426,selected.video.width);assertEquals(416,info.getJSONArray("formats").getJSONObject(0).getInt("coded_width"))
+            assertTrue(WebVideoArchiveCapture.keeps(p,m,m,selected.video))
+        }
+        assertNull(WebVideoArchiveCapture.resolve(p,m,resolver(mapOf(file to mp4(width=416,height=240)))))
+        assertNull(WebVideoArchiveCapture.resolve(p,m,resolver(mapOf(file to mp4(width=416,height=240,aspect=41 to 39)))))
+        assertNull(WebVideoArchiveCapture.resolve(p,m,resolver(mapOf(file to mp4(width=416,height=240,avcConfig=avc.copyOf(9))))))
+        assertEquals(512,WebVideoContainer.parse(mp4(width=512,height=240,avcConfig=avc))!!.displayWidth)
+        for(aspect in listOf(0 to 1,1 to 0,17 to 1,1 to 17,-1 to 1))assertNull(WebVideoContainer.parse(mp4(aspect=aspect)))
+    }
+    @Test fun archiveRedirectRetainsTheFinalRequestsOwnCredentialsAndCurrentFileIdentity() {
+        val document="https://archive.org/details/PublicFilm";val original="https://archive.org/download/PublicFilm/current.mp4"
+        val file="https://related.test:8443/current.mp4?selection=exact";val other="https://other.test/other.mp4"
+        val m=media(candidate(file,headers=JSONObject().put("Authorization","final-only")).put("original_url",original),
+            candidate(original,headers=JSONObject().put("Authorization","original-only")),candidate(other),direct=original)
+            .put("frame",document).put("archive_source",original).put("archive_enabled",true)
+            .put("archive_ready",true).put("capture_identity","selected")
+            .put("archive",JSONObject().put("id","PublicFilm").put("page",document).put("source",original).put("file",file)
+                .put("revision","a1").put("width",1920).put("height",1080).put("duration",10))
+        val p=WebVideoArchiveCapture.page(document,m)!!;val reads=mutableListOf<Pair<URI,Map<String,String>>>()
+        val info=WebVideoArchiveCapture.resolve(p,m,resolver(mapOf(file to mp4()),reads))!!
+        val selected=WebVideoFormats.select(p,info){true}
+        assertEquals(file,selected.video.url.toString());assertEquals(listOf(URI(file)),reads.map{it.first})
+        assertEquals("final-only",reads.single().second["authorization"])
+        assertTrue(WebVideoArchiveCapture.keeps(p,m,m,selected.video))
+        val changed=JSONObject(m.toString());changed.getJSONObject("archive").put("revision","a2")
+        assertFalse(WebVideoArchiveCapture.keeps(p,m,changed,selected.video))
+        changed.getJSONArray("network").getJSONObject(0).put("original_url",original+"?another=1")
+        assertNull(WebVideoArchiveCapture.resolve(p,changed,resolver(mapOf(file to mp4()))))
+        assertNull(WebVideoArchiveCapture.resolve(p,JSONObject(m.toString()).put("protected",true),resolver(mapOf(file to mp4()))))
+        assertNull(WebVideoArchiveCapture.resolve(p,m,resolver(mapOf(file to mp4(protected=true)))))
+    }
+    @Test fun streamableUsesOnlyTheSelectedDeclaredClipAndItsOwnRequestHeaders() {
+        val document="https://streamable.com/abc123";val file="https://related.test:8443/abc123.mp4?selection=exact"
+        val other="https://other.test/abc123.mp4?selection=other"
+        val m=media(candidate(file,headers=JSONObject().put("Authorization","file-only")),candidate(other),direct=file)
+            .put("frame",document).put("streamable_source",file).put("streamable_enabled",true)
+            .put("streamable_ready",true).put("capture_identity","selected")
+            .put("streamable",JSONObject().put("id","abc123").put("page",document).put("source",file).put("revision","a1")
+                .put("width",1920).put("height",1080).put("duration",10).put("expected_duration",10))
+        val p=WebVideoStreamableCapture.page(document,m)!!;val reads=mutableListOf<Pair<URI,Map<String,String>>>()
+        val info=WebVideoStreamableCapture.resolve(p,m,resolver(mapOf(file to mp4()),reads))!!
+        val selected=WebVideoFormats.select(p,info){true}
+        assertEquals(file,selected.video.url.toString());assertEquals(listOf(URI(file)),reads.map{it.first})
+        assertEquals("file-only",reads.single().second["authorization"])
+        assertTrue(WebVideoStreamableCapture.keeps(p,m,m,selected.video))
+        val changed=JSONObject(m.toString());changed.getJSONObject("streamable").put("revision","a2")
+        assertFalse(WebVideoStreamableCapture.keeps(p,m,changed,selected.video))
+        for(change in listOf<(JSONObject)->Unit>({it.put("protected",true)},{it.put("streamable_ready",false)},
+            {it.put("network",JSONArray().put(candidate(other)))},{it.put("source",other)})) {
+            val item=JSONObject(m.toString());change(item)
+            assertNull(WebVideoStreamableCapture.resolve(p,item,resolver(mapOf(file to mp4()))))
+        }
+        assertNull(WebVideoStreamableCapture.resolve(p,m,resolver(mapOf(file to mp4(protected=true)))))
+        assertNull(WebVideoStreamableCapture.resolve(p,m,resolver(mapOf(file to mp4(width=1280,height=720)))))
+    }
+    @Test fun declaredInstagramFileUsesItsOriginalMpdUrlAndNeverBorrowsRangeAuthorization() {
+        val document="https://www.instagram.com/reel/Chunk8-jurw/";val p=WebVideoPage.parse(document)
+        val file="https://new-cdn.test/current.mp4?selection=exact";val partial=file+"&bytestart=901&byteend=999"
+        val xml="""<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT10S"><Period><AdaptationSet><Representation id="v1" mimeType="video/mp4" codecs="avc1.640028" width="1920" height="1080" bandwidth="1000000"><BaseURL>$file</BaseURL><SegmentBase indexRange="845-900"><Initialization range="0-844"/></SegmentBase></Representation></AdaptationSet></Period></MPD>"""
+        val m=media(candidate(partial,headers=JSONObject().put("Authorization","range-only").put("Referer","https://www.instagram.com/").put("User-Agent","video-context"))).put("frame",document).put("blob",true)
+            .put("instagram_source","blob:https://www.instagram.com/current").put("instagram_ready",true).put("instagram_enabled",true).put("capture_identity","chosen")
+            .put("instagram",JSONObject().put("id","Chunk8-jurw").put("page",document).put("media_id","12345678901234567").put("revision","a1")
+                .put("manifest",xml).put("has_audio",false).put("audio",JSONObject.NULL).put("width",1920).put("height",1080).put("duration",10).put("expected_duration",10)
+                .put("video",JSONObject().put("id","v1").put("url",file).put("bandwidth",1000000).put("requests",JSONArray().put(partial))))
+        val reads=mutableListOf<Pair<URI,Map<String,String>>>()
+        val info=resolver(mapOf(file to mp4(audio=false)),reads).resolveDeclaredInstagramFiles(p,m,URI(file),null,true)!!
+        val selected=WebVideoFormats.select(p,info){true}
+        assertTrue(selected.silent);assertEquals(file,selected.video.url.toString());assertEquals(listOf(URI(file)),reads.map{it.first})
+        assertFalse(reads.single().second.containsKey("authorization"));assertEquals("https://www.instagram.com/",reads.single().second["referer"])
+        assertEquals("video-context",reads.single().second["user-agent"])
+        assertNull(resolver(mapOf(file to mp4(audio=false))).resolveDeclaredInstagramFiles(p,m,URI(file+"&changed=1"),null,true))
+        assertNull(resolver(mapOf(file to mp4())).resolveDeclaredInstagramFiles(p,m,URI(file),null,true))
+        assertNull(resolver(mapOf(file to mp4(audio=false))).resolveDeclaredInstagramFiles(p,JSONObject(m.toString()).put("network",JSONArray()),URI(file),null,true))
+        assertThrows(IllegalStateException::class.java){WebVideoFormats.select(page,info){true}}
+        val audio="https://audio-related.test/current.m4a?selection=own";val audioRange=audio+"&bytestart=901&byteend=999"
+        val audioXml="""<AdaptationSet><Representation id="a1" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="128000"><BaseURL>$audio</BaseURL><SegmentBase indexRange="845-900"><Initialization range="0-844"/></SegmentBase></Representation></AdaptationSet>"""
+        val voiced=JSONObject(m.toString());voiced.getJSONArray("network").put(candidate(audioRange,headers=JSONObject().put("Authorization","audio-range-only").put("User-Agent","audio-context")))
+        voiced.getJSONObject("instagram").put("has_audio",true).put("manifest",xml.replace("</Period>",audioXml+"</Period>"))
+            .put("audio",JSONObject().put("id","a1").put("url",audio).put("bandwidth",128000).put("requests",JSONArray().put(audioRange)))
+        val voicedReads=mutableListOf<Pair<URI,Map<String,String>>>()
+        val voicedInfo=resolver(mapOf(file to mp4(audio=false),audio to mp4(video=false)),voicedReads).resolveDeclaredInstagramFiles(p,voiced,URI(file),URI(audio),false)!!
+        val voicedSelection=WebVideoFormats.select(p,voicedInfo){true}
+        assertFalse(voicedSelection.silent);assertEquals(audio,voicedSelection.audio!!.url.toString())
+        assertTrue(voicedReads.none{it.second.containsKey("authorization")})
+        assertEquals("audio-context",voicedReads.single{it.first.toString()==audio}.second["user-agent"])
+        val missingAudio=JSONObject(voiced.toString());missingAudio.put("network",m.getJSONArray("network"))
+        assertNull(resolver(mapOf(file to mp4(audio=false),audio to mp4(video=false))).resolveDeclaredInstagramFiles(p,missingAudio,URI(file),URI(audio),false))
+    }
+    @Test fun rootedCurrentHlsRequiresTheObservedVideoAndAudioWithoutFetchingAnotherPlayer() {
+        val root="https://current.test/root.m3u8?selection=exact";val video="https://current.test/video";val audio="https://current.test/audio"
+        val advert="https://another-player.test/master.m3u8"
+        val master="#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"en\",DEFAULT=YES,URI=\"audio\"\n"+
+            "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"en\",DEFAULT=NO,URI=\"other-audio\"\n"+
+            "#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1920x1080,CODECS=\"avc1.640028,mp4a.40.2\",AUDIO=\"en\"\nvideo\n"
+        val vod="#EXTM3U\n#EXTINF:10,\nsegment.ts\n#EXT-X-ENDLIST\n"
+        val data=mapOf(root to master.toByteArray(),video to vod.toByteArray(),audio to vod.toByteArray())
+        val m=media(candidate(root,"hls",JSONObject().put("Authorization","root-only")),candidate(video,"hls"),
+            candidate(audio,"hls",JSONObject().put("Authorization","audio-only")),candidate(advert,"hls"))
+        val reads=mutableListOf<Pair<URI,Map<String,String>>>()
+        val selected=WebVideoFormats.select(page,resolver(data,reads).resolveRootedCurrentHls(page,m,URI(root))!!){true}
+        assertEquals(video,selected.video.url.toString());assertEquals(audio,selected.audio!!.url.toString())
+        assertFalse(reads.any{it.first.toString()==advert});assertEquals("audio-only",reads.first{it.first.toString()==audio}.second["authorization"])
+        assertFalse(reads.first{it.first.toString()==video}.second.containsKey("authorization"))
+        assertNull(resolver(data).resolveRootedCurrentHls(page,m,URI(root+"&changed=1")))
+        assertNull(resolver(data).resolveRootedCurrentHls(page,media(candidate(root,"hls"),candidate(video,"hls")),URI(root)))
+        assertNull(resolver(data).resolveRootedCurrentHls(page,media(candidate(root,"hls"),candidate(video,"hls"),candidate(audio,"hls"),candidate("https://current.test/other-audio","hls")),URI(root)))
+        assertNull(resolver(data).resolveRootedCurrentHls(page,JSONObject(m.toString()).put("protected",true),URI(root)))
+        val document="https://www.ted.com/talks/current_talk";val tedPage=WebVideoPage.parse(document)
+        val ted=JSONObject(m.toString()).put("frame",document).put("blob",true).put("ted_source","blob:https://www.ted.com/owned")
+            .put("capture_identity","selected").put("ted_enabled",true).put("ted_ready",true)
+            .put("ted",JSONObject().put("id","current_talk").put("talk_id","86532").put("player_id","416668").put("page",document)
+                .put("root",root).put("revision","a1").put("width",1920).put("height",1080).put("duration",10).put("expected_duration",10))
+        assertTrue(WebVideoTedCapture.keeps(tedPage,ted,ted,selected.video))
+        val changed=JSONObject(ted.toString());changed.getJSONArray("network").put(candidate("https://current.test/other-audio","hls"))
+        assertFalse(WebVideoTedCapture.keeps(tedPage,ted,changed,selected.video))
+        val id="rrn:content:films:f9d7a128-fd11-4e0c-9049-77de0f9515bd"
+        val fullPage="https://www.redbull.tv/en/page/$id/anytime"
+        val redbull=JSONObject(m.toString()).put("frame",fullPage).put("blob",true).put("redbull_source","blob:https://www.redbull.tv/current")
+            .put("capture_identity","selected").put("redbull_enabled",true).put("redbull_ready",true)
+            .put("redbull",JSONObject().put("id",id).put("page",fullPage).put("root",root).put("revision","a1")
+                .put("width",1920).put("height",1080).put("duration",10).put("expected_duration",10))
+        val redPage=WebVideoRedBullCapture.page(fullPage,redbull)!!
+        assertNotNull(WebVideoRedBullCapture.resolve(redPage,redbull,resolver(data)))
+        assertTrue(WebVideoRedBullCapture.keeps(redPage,redbull,redbull,selected.video))
+        val redChanged=JSONObject(redbull.toString());redChanged.put("redbull_source","blob:https://www.redbull.tv/replaced")
+        assertFalse(WebVideoRedBullCapture.keeps(redPage,redbull,redChanged,selected.video))
+        redChanged.put("protected",true);assertNull(WebVideoRedBullCapture.resolve(redPage,redChanged,resolver(data)))
+    }
+    @Test fun dailymotionKeepsTheTrustedParentAndHostedFrameWithTheirCurrentHlsPair() {
+        val owner="https://www.dailymotion.com/video/x5kesuj";val frame="https://geo.dailymotion.com/player/official.html#settings=opaque"
+        val root="https://hosted.test/root.m3u8?selection=exact";val video="https://video.related.test/current";val audio="https://audio.related.test/current"
+        val advert="https://advert.test/master.m3u8"
+        val master="#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"en\",DEFAULT=YES,URI=\"$audio\"\n"+
+            "#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1920x1080,CODECS=\"avc1.640028,mp4a.40.2\",AUDIO=\"en\"\n$video\n"
+        val vod="#EXTM3U\n#EXTINF:10,\nsegment.ts\n#EXT-X-ENDLIST\n"
+        val resources=mapOf(root to master.toByteArray(),video to vod.toByteArray(),audio to vod.toByteArray())
+        val m=media(candidate(root,"hls",JSONObject().put("Authorization","root-only")),candidate(video,"hls"),
+            candidate(audio,"hls",JSONObject().put("Authorization","audio-only")),candidate(advert,"hls"))
+            .put("frame",frame).put("blob",true).put("capture_identity","selected").put("dailymotion_owner",owner)
+            .put("dailymotion_enabled",true).put("dailymotion_ready",true).put("dailymotion_source","blob:https://geo.dailymotion.com/current")
+            .put("dailymotion",JSONObject().put("id","x5kesuj").put("page",owner).put("frame",frame).put("root",root).put("revision","a1")
+                .put("width",1920).put("height",1080).put("duration",10).put("expected_duration",10)
+                .put("manifests",JSONArray().put(JSONObject().put("url",root).put("body",master).put("request_id","original-0"))
+                    .put(JSONObject().put("url",video).put("body",vod).put("request_id","original-1"))
+                    .put(JSONObject().put("url",audio).put("body",vod).put("request_id","original-2"))))
+        for(i in 0 until m.getJSONArray("network").length())m.getJSONArray("network").getJSONObject(i).put("request_id","original-$i")
+        val page=WebVideoDailymotionCapture.page(owner,m)!!;val reads=mutableListOf<Pair<URI,Map<String,String>>>()
+        val info=WebVideoDailymotionCapture.resolve(page,m,resolver(resources,reads))!!
+        val selected=WebVideoFormats.select(page,info){true}
+        assertEquals(video,selected.video.url.toString());assertEquals(audio,selected.audio!!.url.toString())
+        assertTrue(reads.isEmpty());assertEquals(vod,selected.video.browserManifest)
+        assertFalse(selected.video.browserHeaders!!.forUrl(URI(video),emptyMap()).containsKey("authorization"))
+        assertEquals("audio-only",selected.video.browserHeaders!!.forUrl(URI(audio),emptyMap())["authorization"])
+        assertTrue(WebVideoDailymotionCapture.keeps(page,m,m,selected.video))
+        val clientFragments=JSONObject(m.toString());val originals=clientFragments.getJSONObject("dailymotion").getJSONArray("manifests")
+        originals.getJSONObject(0).put("body",master.replace("$video\n","$video#client-video\n").replace("URI=\"$audio\"","URI=\"$audio#client-audio\""))
+        for(i in 1..2){
+            val entry=originals.getJSONObject(i);val uri=entry.getString("url");val request=uri+"#client"
+            entry.put("request_url",request).put("body",vod.replace("segment.ts","segment.ts#transport-marker"))
+            clientFragments.getJSONArray("network").getJSONObject(i).put("request_url",request)
+        }
+        val fragmentReads=mutableListOf<Pair<URI,Map<String,String>>>()
+        val fragmentInfo=WebVideoDailymotionCapture.resolve(page,clientFragments,resolver(resources,fragmentReads))!!
+        assertTrue(fragmentReads.isEmpty());assertEquals(vod,WebVideoFormats.select(page,fragmentInfo){true}.video.browserManifest)
+        val missingOwner=JSONObject(m.toString());missingOwner.remove("dailymotion_owner")
+        assertNull(WebVideoDailymotionCapture.page(owner,missingOwner))
+        for(change in listOf<(JSONObject)->Unit>(
+            {it.put("dailymotion_owner","https://www.dailymotion.com/video/other")},{it.put("protected",true)},
+            {it.put("frame",frame+"changed")},{it.put("dailymotion_source","blob:https://geo.dailymotion.com/replaced")},
+            {it.getJSONArray("network").put(candidate("https://other.test/second.m3u8","hls"))}
+        )){val changed=JSONObject(m.toString());change(changed);assertFalse(WebVideoDailymotionCapture.keeps(page,m,changed,selected.video))}
+        val protected=JSONObject(m.toString());protected.getJSONObject("dailymotion").getJSONArray("manifests").getJSONObject(1)
+            .put("body",vod.replace("#EXTINF:","#EXT-X-KEY:METHOD=SAMPLE-AES-CTR,URI=\"key\"\n#EXTINF:"))
+        assertNull(WebVideoDailymotionCapture.resolve(page,protected,resolver(resources)))
+    }
     @Test fun youkuUsesTheDeclaredObservedHlsAndRejectsAdsProtectionAndWrongRepresentations() {
         val root="https://new-cdn.test/current/list.m3u8?signature=exact"
         val init="https://new-cdn.test/current/init.mp4"
@@ -76,10 +293,11 @@ class WebVideoNetworkCaptureTest {
     }
     private val page = WebVideoPage("browser", "fixture", "webvideo://capture/fixture")
     private fun box(type: String, data: ByteArray) = ByteBuffer.allocate(8 + data.size).putInt(data.size + 8).put(type.toByteArray()).put(data).array()
-    private fun mp4(video: Boolean = true, audio: Boolean = true, duration: Int = 10, protected: Boolean = false, width: Int = 1920, height: Int = 1080): ByteArray {
+    private fun mp4(video: Boolean = true, audio: Boolean = true, duration: Int = 10, protected: Boolean = false, width: Int = 1920, height: Int = 1080, aspect: Pair<Int,Int>?=null, avcConfig: ByteArray?=null): ByteArray {
         fun track(kind: String): ByteArray {
             val video = kind == "vide"
-            val sample = if (video) ByteArray(78).also { ByteBuffer.wrap(it).putShort(24, width.toShort()).putShort(26, height.toShort()) } + box("avcC", byteArrayOf(1, 100, 0, 40)) else ByteArray(28)
+            val sample = if (video) ByteArray(78).also { ByteBuffer.wrap(it).putShort(24, width.toShort()).putShort(26, height.toShort()) } + box("avcC", avcConfig ?: byteArrayOf(1, 100, 0, 40)) +
+                (aspect?.let {box("pasp",ByteBuffer.allocate(8).putInt(it.first).putInt(it.second).array())} ?: byteArrayOf()) else ByteArray(28)
             val stsd = box("stsd", ByteBuffer.allocate(8).putInt(0).putInt(1).array() + box(if (protected) if (video) "encv" else "enca" else if (video) "avc1" else "mp4a", sample))
             val mdhd = ByteBuffer.allocate(24).putInt(12, 1000).putInt(16, duration * 1000).array()
             val hdlr = ByteArray(24).also { kind.toByteArray().copyInto(it, 8) }

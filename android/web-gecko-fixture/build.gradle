@@ -7,6 +7,8 @@ def workspace = rootProject.projectDir.parentFile
 def pinFile = new File(workspace, 'tools/web-video-desktop/gecko-android-x86.json')
 def pin = new groovy.json.JsonSlurper().parse(pinFile)
 def mangoTrace = providers.gradleProperty('fixtureMangoTrace').orNull == 'true'
+def iqiyiTrace = providers.gradleProperty('fixtureIqiyiTrace').orNull == 'true'
+if (mangoTrace && iqiyiTrace) throw new GradleException('Choose one isolated site trace.')
 def sha256 = { File f ->
     def digest = java.security.MessageDigest.getInstance('SHA-256')
     f.withInputStream { stream ->
@@ -15,10 +17,13 @@ def sha256 = { File f ->
     }
     digest.digest().encodeHex().toString()
 }
-def shared = ['WebBrowserViewport.kt', 'WebBrowserNetworkMedia.kt', 'WebBrowserMango.kt']
+def shared = ['WebBrowserViewport.kt', 'WebBrowserAddress.kt', 'WebBrowserNetworkMedia.kt', 'WebBrowserMango.kt', 'WebBrowserIqiyi.kt']
 def stage = tasks.register('stageGeckoFixtureInputs') {
     inputs.file(pinFile)
     inputs.property('mangoTrace', mangoTrace)
+    inputs.property('iqiyiTrace', iqiyiTrace)
+    inputs.file('../../tools/web-video-desktop/iqiyi-page-inspect.js')
+    inputs.file('../../tools/web-video-desktop/fixture-iqiyi-inspect.js')
     inputs.dir('../web-browser/src/main/assets/web-browser')
     shared.each { inputs.file("../web-browser/src/main/java/org/vrpassthroughplayer/plugin/$it") }
     inputs.file('../web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowser.kt')
@@ -27,6 +32,20 @@ def stage = tasks.register('stageGeckoFixtureInputs') {
     doLast {
         def target = layout.buildDirectory.dir('shared').get().asFile
         copy { from '../web-browser/src/main/assets/web-browser'; into new File(target, 'assets/web-browser') }
+        if (iqiyiTrace) {
+            def inspector = new File(workspace,'tools/web-video-desktop/iqiyi-page-inspect.js')
+            def marker = "if(typeof browser!=='undefined'&&typeof document!=='undefined'"
+            if (inspector.text.count(marker)!=1) throw new GradleException('iQIYI schema observer entry changed.')
+            // Keep the existing read-only schema function; its desktop message transport
+            // is replaced by the fixture's scoped content-port transport.
+            new File(target,'assets/web-browser/fixture-iqiyi-schema.js').text = inspector.text.substring(0,inspector.text.indexOf(marker))
+            copy { from new File(workspace,'tools/web-video-desktop/fixture-iqiyi-inspect.js'); into new File(target,'assets/web-browser') }
+            def manifest = new File(target,'assets/web-browser/manifest.json')
+            def value = new groovy.json.JsonSlurper().parse(manifest)
+            value.content_scripts += [[matches:['https://www.iqiyi.com/*'],
+                js:['fixture-iqiyi-schema.js','fixture-iqiyi-inspect.js'],run_at:'document_idle']]
+            manifest.text = groovy.json.JsonOutput.toJson(value)
+        }
         if (mangoTrace) {
             def response = new File(target,'assets/web-browser/mango-response.js')
             def marker = 'state.mangoFiles=Thru3DMango.files(raw,p.id,state.mangoMeta);'
@@ -51,19 +70,24 @@ def stage = tasks.register('stageGeckoFixtureInputs') {
               };
             '''
             network.text = traceFunction + network.text.replace(field,field+'fixture_trace:Thru3DFixtureMangoTrace(state),')
+        }
+        if (mangoTrace || iqiyiTrace) {
+            // Gecko retains a built-in extension with the same version across
+            // APK replacement. Trace updates must replace the prior observer.
             def manifest = new File(target,'assets/web-browser/manifest.json')
             def value = new groovy.json.JsonSlurper().parse(manifest)
             long seconds = System.currentTimeMillis().intdiv(1000)
-            value.version += ".${seconds.intdiv(60)%65536}.${seconds%60}"
+            value.version += ".${seconds.intdiv(65536)}.${seconds%65536}"
             manifest.text = groovy.json.JsonOutput.toJson(value)
         }
         shared.each { name -> copy { from "../web-browser/src/main/java/org/vrpassthroughplayer/plugin/$name"; into new File(target, 'java') } }
         def files = fileTree('../web-browser/src/main/assets/web-browser').files +
             shared.collect { file("../web-browser/src/main/java/org/vrpassthroughplayer/plugin/$it") } +
             [file('../web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowser.kt')] + fileTree('src/main/java').files
+        if (iqiyiTrace) files += [new File(workspace,'tools/web-video-desktop/iqiyi-page-inspect.js'),new File(workspace,'tools/web-video-desktop/fixture-iqiyi-inspect.js')]
         def hashes = files.sort { a,b -> a.path <=> b.path }.collectEntries { f -> [(workspace.canonicalFile.toPath().relativize(f.canonicalFile.toPath()).toString().replace('\\','/')):sha256(f)] }
         def packaged = fileTree(new File(target,'assets/web-browser')).files.collectEntries { f -> [(f.name):sha256(f)] }
-        def report = [scope:'android_gecko_diagnostics_not_device_acceptance', mode:mangoTrace?'passive_mango_trace':'production_assets',
+        def report = [scope:'android_gecko_diagnostics_not_device_acceptance', mode:iqiyiTrace?'passive_iqiyi_sdk_trace':mangoTrace?'passive_mango_trace':'production_assets',
                       engine:pin.version, artifact:pin.artifact, engine_sha256:pin.sha256, sources:hashes, packaged_assets:packaged]
         new File(target,'assets/fixture-inputs.json').text = groovy.json.JsonOutput.toJson(report)
     }

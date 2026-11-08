@@ -109,6 +109,10 @@ func _run() -> void:
 	main._on_setting_changed("refresh_cap", 75)
 	settings.load(path)
 	check(Quality.load_supersampling(settings) == 0, "Supersampling off persists")
+	var unsaved := ConfigFile.new()
+	check(Quality.load_supersampling(unsaved) == Quality.DEFAULT_SUPERSAMPLING and Quality.load_supersampling(unsaved, true) == 0, "Only low-end GPUs default to unfiltered compositor layers")
+	unsaved.set_value("video", "supersampling", 2)
+	check(Quality.load_supersampling(unsaved, true) == 2, "A saved supersampling choice survives the low-end default")
 	check(Quality.load_refresh_cap(settings, false) == 72, "Power-saving refresh persists and unknown rates are ignored")
 	var layer := preload("res://scripts/video_layer.gd").new(null)
 	layer._settings = true

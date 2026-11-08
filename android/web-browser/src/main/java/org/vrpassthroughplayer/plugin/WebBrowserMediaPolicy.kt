@@ -15,6 +15,15 @@ internal object WebBrowserMediaPolicy {
                 } == true || it.optBoolean("tencent_enabled") && it.optBoolean("tencent_ready") && WebBrowserTencent.metadata(it,it.optString("frame")) != null ||
                 it.optBoolean("mango_enabled") && it.optBoolean("mango_ready") && WebBrowserMango.metadata(it,it.optString("frame")) != null ||
                 it.optBoolean("niconico_enabled") && it.optBoolean("niconico_ready") && WebBrowserNiconico.metadata(it,it.optString("frame")) != null ||
+                it.optBoolean("twitch_enabled") && it.optBoolean("twitch_ready") && WebBrowserTwitch.metadata(it,it.optString("frame")) != null ||
+                it.optBoolean("tiktok_enabled") && it.optBoolean("tiktok_ready") && WebBrowserTikTok.metadata(it,it.optString("frame")) != null ||
+                it.optBoolean("instagram_enabled") && it.optBoolean("instagram_ready") && WebBrowserInstagram.metadata(it,it.optString("frame")) != null ||
+                it.optBoolean("ted_enabled") && it.optBoolean("ted_ready") && WebBrowserTed.metadata(it,it.optString("frame")) != null ||
+                it.optBoolean("redbull_enabled") && it.optBoolean("redbull_ready") && WebBrowserRedBull.metadata(it,it.optString("frame")) != null ||
+                it.optBoolean("streamable_enabled") && it.optBoolean("streamable_ready") && WebBrowserStreamable.metadata(it,it.optString("frame")) != null ||
+                it.optBoolean("archive_enabled") && it.optBoolean("archive_ready") && WebBrowserArchive.metadata(it,it.optString("frame")) != null ||
+                it.optBoolean("odysee_enabled") && it.optBoolean("odysee_ready") && WebBrowserOdysee.metadata(it,it.optString("frame")) != null ||
+                it.optBoolean("dailymotion_enabled") && it.optBoolean("dailymotion_ready") && WebBrowserDailymotion.metadata(it,it.optString("dailymotion_owner")) != null ||
                 it.optBoolean("youku_enabled") && it.optBoolean("youku_ready") && WebBrowserYouku.metadata(it,it.optString("frame")) != null ||
                 it.optBoolean("iqiyi_enabled") && it.optBoolean("iqiyi_ready") && WebBrowserIqiyi.metadata(it,it.optString("frame")) != null ||
                 it.optBoolean("douyin_enabled") && it.optBoolean("douyin_ready") && WebBrowserDouyin.metadata(it,it.optString("frame"),true) != null) }
@@ -24,7 +33,7 @@ internal object WebBrowserMediaPolicy {
         compareBy<JSONObject> { !it.optBoolean("protected") &&
             (it.optBoolean("bilibili_enabled") && it.optJSONObject("bilibili") != null || it.optBoolean("douyin_enabled") && it.optJSONObject("douyin") != null ||
                 it.optBoolean("tencent_enabled") && it.optJSONObject("tencent") != null || it.optBoolean("mango_enabled") && it.optJSONObject("mango") != null ||
-                it.optBoolean("niconico_enabled") && it.optJSONObject("niconico") != null || it.optBoolean("youku_enabled") && it.optJSONObject("youku") != null || it.optBoolean("iqiyi_enabled") && it.optJSONObject("iqiyi") != null) }
+                it.optBoolean("niconico_enabled") && it.optJSONObject("niconico") != null || it.optBoolean("twitch_enabled") && it.optJSONObject("twitch") != null || it.optBoolean("tiktok_enabled") && it.optJSONObject("tiktok") != null || it.optBoolean("instagram_enabled") && it.optJSONObject("instagram") != null || it.optBoolean("ted_enabled") && it.optJSONObject("ted") != null || it.optBoolean("redbull_enabled") && it.optJSONObject("redbull") != null || it.optBoolean("streamable_enabled") && it.optJSONObject("streamable") != null || it.optBoolean("archive_enabled") && it.optJSONObject("archive") != null || it.optBoolean("odysee_enabled") && it.optJSONObject("odysee") != null || it.optBoolean("dailymotion_enabled") && it.optJSONObject("dailymotion") != null || it.optBoolean("youku_enabled") && it.optJSONObject("youku") != null || it.optBoolean("iqiyi_enabled") && it.optJSONObject("iqiyi") != null) }
             .thenBy { it.optBoolean("fullscreen") }.thenBy { it.optBoolean("playing") }
             .thenBy { it.optLong("width") * it.optLong("height") })
     private val sites = listOf(

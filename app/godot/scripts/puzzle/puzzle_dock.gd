@@ -12,6 +12,11 @@ func has_pointer_capture() -> bool:
 func _place_device_status(_centre: Vector2) -> void:
 	if not device_status: device_status=DeviceStatus.new(); add_child(device_status)
 	device_status.position=Vector3(0,-0.10,0.004)
+	_footer_centre=Vector2(0,-0.10)
+	app_actions.draw_anchor()
+
+func release_pointer(hand: String, _origin: Vector3, _direction: Vector3, _tracked: bool) -> void:
+	app_actions.release(hand)
 func _draw() -> void:
 	_clear_layout(); _set_backdrop(Vector2(0.001,0.001),Vector2.ZERO); _backdrop.visible=false
 	_round(1,"menu",Vector2.ZERO,0.065,true,false,I18n.t("Puzzle"))

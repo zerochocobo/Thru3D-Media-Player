@@ -9,7 +9,8 @@ const Thru3DYouku = (() => {
   };
   const page=value=>{
     const u=address(value);if(!u||u.protocol!=='https:'||u.port||u.hostname!=='v.youku.com')return null;
-    const id=/^\/v_show\/id_(X[A-Za-z0-9=]{1,127})\.html$/.exec(u.pathname)?.[1];
+    let path;try{path=decodeURIComponent(u.pathname);}catch(_){return null;}
+    const id=/^\/v_show\/id_(X[A-Za-z0-9=]{1,127})\.html$/.exec(path)?.[1];
     return id?{id}:null;
   };
   const json=text=>{

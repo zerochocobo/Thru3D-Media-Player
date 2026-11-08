@@ -66,7 +66,7 @@ func action(target: int) -> bool:
 	if target < BASE or target >= BASE + 22: return false
 	var browser: RefCounted = owner.get_ref()
 	var id: int = browser.focused_window
-	if not active(id) or browser.tabs_open: return true
+	if not active(id) or browser.overlay_open(id): return true
 	if target < BASE + 4:
 		var state: Dictionary = pages.get(id, {"sites": 0, "bookmarks": 0})
 		var key := "sites" if target < BASE + 2 else "bookmarks"

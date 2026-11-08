@@ -772,7 +772,9 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 		var voice_target := int(voice_hit.target)
 		if voice_manager.actions.get(voice_target, {}).get("operation", "") in ["use", "preview", "rename_name", "original", "clone", "save_name"]:
 			_voice_drag = {"hand": hand, "target": voice_target, "plane": control_plane(voice_target), "start_y": float(control_point(voice_hit).y), "offset": voice_manager.offset, "moved": false}
-		else: _activate_hit(voice_hit)
+		else:
+			voice_hit["hand"] = hand
+			_activate_hit(voice_hit)
 		return true
 	if audio_preview_seek.press(hand, origin, direction, tracked): return true
 	if section == Section.SETTINGS and choices.press(hand, origin, direction, tracked):
@@ -793,6 +795,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	var target := int(hit.get("target", NONE))
 	var start_y := 0.0
 	if not hit.is_empty() and target not in [SCROLLBAR, NONE] and not _row_target(target) and not collections.row_target(target) and not file_actions.selection_target(target):
+		hit["hand"] = hand
 		_activate_hit(hit)
 		return true
 	if hit.is_empty() or target == NONE:
@@ -878,6 +881,7 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		_drag.at_us = now
 
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	app_actions.release(hand)
 	if theme_editor.opened:
 		theme_editor.release(hand, origin, direction, tracked); return
 	var login_ray: Array = account_panel.web_ray(hand, origin, direction, tracked)
@@ -1392,6 +1396,7 @@ func _update_highlights() -> void:
 	# Keep captions and selected/favorite ink stable; image cards leave their plate quiet.
 	var media := section == Section.MEDIA_SERVER
 	for button in _buttons:
+		if app_actions.is_action(int(button.target)): continue
 		if media and button.has("hover_picture"): button["hover_color"] = button.base_color
 		elif media and button.base_color != ACCENT: button["hover_color"] = UiTheme.color("media_hover")
 		else: button.erase("hover_color")
@@ -1971,6 +1976,9 @@ func _rebuild_rows() -> void:
 				var languages: Array = []
 				for value in I18n.CHOICES: languages.append({"value": value, "label": LANGUAGE_NAMES[value]})
 				rows.append(_choice_row("Language", "language", I18n.choice, languages))
+				if preload("res://scripts/chinese_input.gd").browser_choice_available():
+					rows.append(_choice_row("Web keyboard", "web_keyboard", preload("res://scripts/chinese_input.gd").browser_keyboard,
+						[{"value": "builtin", "label": "Built-in keyboard"}, {"value": "system", "label": "System keyboard"}]))
 				if preload("res://scripts/chinese_input.gd").available():
 					rows.append(_choice_row("中文输入法", "quest_chinese_keyboard", preload("res://scripts/chinese_input.gd").selected,
 						[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
@@ -2398,9 +2406,9 @@ func _activate(target: int) -> void:
 		account_panel.close()
 		dismiss()
 	elif target == RESTART_APP:
-		setting_changed.emit("restart_app", true)
+		app_actions.activate(RESTART_APP, "")
 	elif target == QUIT_APP:
-		setting_changed.emit("quit_app", true)
+		app_actions.activate(QUIT_APP, "")
 	elif target >= NAV_BASE and target < NAV_BASE + NAV.size():
 		if target == NAV_BASE + Section.WEB and not Distribution.web_browser_enabled(): return
 		# Capture before shared navigation cleanup cancels requests and resets scroll.
@@ -2686,7 +2694,9 @@ func navigate_back() -> bool:
 	if system_text_input.active(): system_text_input.cancel("", true); return true
 	if subtitle_filter.active(): subtitle_filter.close(); return true
 	if web_browser.active():
-		if web_browser.tabs_open:
+		if web_browser.history.active(web_browser.focused_window):
+			web_browser.history.reset(); web_browser.refresh_windows()
+		elif web_browser.tabs_open:
 			web_browser.tabs_open = false; web_browser.window_action.clear(); web_browser.refresh_windows()
 		elif web_browser.window_state(web_browser.focused_window).get("editing", false) or web_browser.keyboard_visible(web_browser.focused_window):
 			platform.web_browser_input("close", "")
@@ -3313,7 +3323,11 @@ func _draw() -> void:
 			_button(BACK, "", Vector2(-0.48, -0.515), Vector2(0.09, 0.07), true, "previous")
 			_tips[BACK] = I18n.t("Back")
 		_button(RESTART_APP, I18n.t("Restart app"), Vector2(0.10, -0.515), Vector2(0.42, 0.07), true, "refresh")
+		app_actions.bind_button(RESTART_APP, "restart_app")
 		_button(QUIT_APP, I18n.t("Close app"), Vector2(0.59, -0.515), Vector2(0.42, 0.07), true, "close")
+		app_actions.bind_button(QUIT_APP, "quit_app")
+		_text_button(app_actions.LEGACY_CANCEL, I18n.t("Cancel"), Vector2(-0.29, -0.515), Vector2(0.20, 0.07))
+		app_actions.refresh_visuals()
 	if not archives.browsing and _local_grant_needed():
 		_button(GRANT, I18n.t("Choose a folder" if _local_access_mode() == "directory" else "Grant"), Vector2(0.19, -0.34), Vector2(0.3, 0.07), not _local_grant_pending, "", true)
 	elif not archives.browsing and _local_mount_recovery():

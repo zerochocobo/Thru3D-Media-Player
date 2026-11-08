@@ -22,16 +22,20 @@ const FEATURED := [
 	{"name": "Niconico", "url": "https://www.nicovideo.jp/", "icon": "site_niconico", "color": Color("e3e7eb"), "languages": ["ja"]},
 	{"name": "iQIYI", "url": "https://www.iqiyi.com/", "icon": "site_iqiyi", "color": Color("67d644"), "languages": ["zh"], "region": "CN"},
 	{"name": "Douyin", "url": "https://www.douyin.com/", "icon": "site_tiktok", "color": Color("68e4df"), "languages": ["zh"], "region": "CN"},
+	{"name": "Dailymotion", "url": "https://www.dailymotion.com/", "icon": "site_dailymotion", "color": Color("83b8ff"), "languages": []},
+	{"name": "Streamable", "url": "https://streamable.com/", "icon": "site_streamable", "color": Color("70bfff"), "languages": []},
+	{"name": "Internet Archive", "url": "https://archive.org/details/movies", "icon": "site_archive", "color": Color("d9dde3"), "languages": []},
+	{"name": "Odysee", "url": "https://odysee.com/", "icon": "site_odysee", "color": Color("ed77bc"), "languages": []},
 ]
 
 # Positive sample evidence, not a promise for every video/account/quality on a site.
 # See docs/WEB_VIDEO_SITES_20261028_CN.md and the 2026-10-28/29 handovers.
 # Beta compatibility follows the current decoded stream; protected content stays in the page.
 const NATIVE_PLAYBACK := ["Bilibili", "YouTube", "Weibo", "Tencent Video", "Mango TV", "Youku",
-	"Twitch", "TikTok", "Instagram Reels", "TED", "Niconico", "iQIYI", "Douyin"]
-const BETA_PLAYBACK := ["Bilibili", "Weibo", "Tencent Video", "Mango TV", "Youku", "iQIYI", "Douyin", "Niconico"]
+	"Twitch", "TikTok", "Instagram Reels", "TED", "Niconico", "iQIYI", "Douyin", "Dailymotion", "Streamable", "Internet Archive", "Odysee"]
+const BETA_PLAYBACK := ["Bilibili", "Weibo", "Tencent Video", "Mango TV", "Youku", "iQIYI", "Douyin", "Niconico", "Twitch", "TikTok", "Instagram Reels", "TED", "Dailymotion", "Streamable", "Internet Archive", "Odysee"]
 const BETA_ICON := "play" # Same triangle as the page's Play Beta action.
-static var _beta_site := RegEx.create_from_string("(?i)^https://(?:(?:www\\.)?bilibili\\.com|(?:www\\.)?weibo\\.com|v\\.qq\\.com|(?:www\\.|w\\.)?mgtv\\.com|(?:www\\.|v\\.)?youku\\.com|www\\.iqiyi\\.com|www\\.douyin\\.com|www\\.nicovideo\\.jp)(?::443)?(?:[/?#]|$)")
+static var _beta_site := RegEx.create_from_string("(?i)^https://(?:(?:www\\.)?bilibili\\.com|(?:www\\.)?weibo\\.com|v\\.qq\\.com|(?:www\\.|w\\.)?mgtv\\.com|(?:www\\.|v\\.)?youku\\.com|www\\.iqiyi\\.com|www\\.douyin\\.com|www\\.nicovideo\\.jp|(?:www\\.|clips\\.)?twitch\\.tv|(?:www\\.)?tiktok\\.com|(?:www\\.)?instagram\\.com|(?:www\\.)?ted\\.com|(?:www\\.)?dailymotion\\.com|(?:www\\.)?streamable\\.com|(?:www\\.)?archive\\.org|(?:www\\.)?odysee\\.com)(?::443)?(?:[/?#]|$)")
 
 static func supports_beta(site: Dictionary) -> bool:
 	return str(site.get("name", "")) in BETA_PLAYBACK

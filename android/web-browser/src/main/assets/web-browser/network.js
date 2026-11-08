@@ -6,6 +6,7 @@
   const TTL = 1800000, MAX = 24, REQUESTS = 256;
   const filter = { urls: ["http://*/*", "https://*/*"] };
   const key = d => `${d.tabId}:${d.frameId}`;
+  const oldest = state => ((state.ted||state.redbull||state.streamable||state.archive||state.odysee||state.dailymotionBodies) && [...state.items].find(([,r])=>r.kind==='segment')?.[0]) || state.items.keys().next().value;
   const url = (value, page = false) => {
     try { const u = new URL(value); return /^https?:$/.test(u.protocol) && !u.username && !u.password &&
       (page || !u.hash) && value.length <= 16384 ? u : null; } catch (_) { return null; }
@@ -41,8 +42,10 @@
   const publish = state => {
     const now = Date.now();
     for (const [id, c] of state.items) if (now - c.at > TTL) state.items.delete(id);
-    while (JSON.stringify([...state.items.values()]).length > (state.bilibili ? 96 : 192) * 1024) state.items.delete(state.items.keys().next().value);
+    while (JSON.stringify([...state.items.values()]).length > (state.bilibili ? 96 : 192) * 1024) state.items.delete(oldest(state));
     try { state.port.postMessage({ type: "network", page: state.page, candidates: [...state.items.values()],
+      ...(state.dailymotionBodies?{dailymotion_bodies:[...state.dailymotionBodies.values()]}:{}),
+      ...(state.dailymotionCapture?{dailymotion_capture:state.dailymotionCapture}:{}),
       bilibili: [...(state.biliResponses?.values() || [])], bilibili_requested: [...(state.biliRequests?.keys() || [])].filter(k => !k.startsWith('view:')),
       bilibili_views: [...(state.biliViews?.values() || [])],
       douyin: [...(state.douyinData?.values() || [])],
@@ -51,6 +54,7 @@
         declared_files:state.mangoFiles?.length||0,
         bound_hls:[...state.items.values()].filter(r=>r.kind==='hls'&&(state.mangoManifests?.has(r.url)||state.mangoManifests?.has(r.original_url))).length},
       niconico:[...(state.niconicoData?.values()||[])],niconico_capture:{status:state.niconicoStatus||'idle',metadata:!!state.niconicoMeta,master:!!state.niconicoMaster,leaves:state.niconicoLeaves?.size||0,bound:state.niconicoData?.size||0},
+      twitch:[...(state.twitchData?.values()||[])],twitch_capture:{status:state.twitchStatus||'idle',metadata:state.twitchMeta?.size||0,bound:state.twitchData?.size||0,...state.twitchCounters},
       youku:[...(state.youkuData?.values()||[])],youku_capture:{status:state.youkuStatus||'idle',metadata:!!state.youkuMeta,
         id:state.youkuMeta?.id||'',duration:state.youkuMeta?.duration||0,declared_streams:state.youkuMeta?.streams.length||0,
         bound_hls:[...(state.youkuData?.values()||[])].reduce((n,d)=>n+d.manifests.length,0)},
@@ -64,13 +68,22 @@
     if (port.name !== "thru3d_network" || s?.id !== browser.runtime.id || !Number.isInteger(s.tab?.id) ||
         s.tab.id < 0 || !Number.isInteger(s.frameId) || !url(s.url, true)) return;
     const id = `${s.tab.id}:${s.frameId}`;
-    const state = { key:id, port, page: s.url, documentPage: s.url, document: s.documentId, enabled: false, bilibili: false,
+    const state = { key:id, port, page: s.url, parentPage:s.tab.url, documentPage: s.url, document: s.documentId, enabled: false, bilibili: false,
       douyin: typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.documentPage(s.url),
       weibo: typeof Thru3DWeibo !== 'undefined' && Thru3DWeibo.documentPage(s.url),
       tencent: typeof Thru3DTencent !== 'undefined' && !!Thru3DTencent.page(s.url),
       mango: typeof Thru3DMango !== 'undefined' && !!Thru3DMango.page(s.url),
       youku: typeof Thru3DYouku !== 'undefined' && !!Thru3DYouku.page(s.url),
       niconico: typeof Thru3DNiconico !== 'undefined' && !!Thru3DNiconico.page(s.url),
+      twitch: typeof Thru3DTwitch !== 'undefined' && s.frameId===0 && !!Thru3DTwitch.page(s.url),
+      tiktok: typeof Thru3DTikTok !== 'undefined' && s.frameId===0 && Thru3DTikTok.documentPage(s.url),
+      instagram: typeof Thru3DInstagram !== 'undefined' && s.frameId===0 && Thru3DInstagram.documentPage(s.url),
+      ted: typeof Thru3DTed !== 'undefined' && s.frameId===0 && Thru3DTed.documentPage(s.url),
+      redbull: typeof Thru3DRedBull !== 'undefined' && s.frameId===0 && Thru3DRedBull.documentPage(s.url),
+      streamable: typeof Thru3DStreamable !== 'undefined' && s.frameId===0 && Thru3DStreamable.documentPage(s.url),
+      archive: typeof Thru3DArchive !== 'undefined' && s.frameId===0 && Thru3DArchive.documentPage(s.url),
+      odysee: typeof Thru3DOdysee !== 'undefined' && s.frameId===0 && Thru3DOdysee.documentPage(s.url),
+      dailymotion:typeof Thru3DDailymotion!=='undefined'&&Thru3DDailymotion.frame(s.url)&&!!Thru3DDailymotion.page(s.tab.url),
       iqiyi: typeof Thru3DIqiyi !== 'undefined' && !!Thru3DIqiyi.page(s.url),
       privateContext: s.tab.incognito === true, cookieStore: typeof s.tab.cookieStoreId === 'string' ? s.tab.cookieStoreId : '',
       items: new Map(), timer: null };
@@ -81,6 +94,7 @@
     if(state.mango)mangoResponses?.attach(state);
     if(state.youku)youkuResponses?.attach(state);
     if(state.niconico)niconicoResponses?.attach(state);
+    if(state.twitch)twitchResponses?.attach(state);
     if(state.douyin)douyinResponses?.restore(state);
     while (frames.size > 64) { const oldest = frames.keys().next().value; frames.get(oldest).port.disconnect(); frames.delete(oldest); }
     port.onMessage.addListener(message => {
@@ -94,7 +108,16 @@
       const youku = message.youku === true && typeof Thru3DYouku !== 'undefined' && !!Thru3DYouku.page(message.page);
       const niconico = message.niconico === true && typeof Thru3DNiconico !== 'undefined' && !!Thru3DNiconico.page(message.page);
       const iqiyi = message.iqiyi === true && typeof Thru3DIqiyi !== 'undefined' && !!Thru3DIqiyi.page(message.page);
-      if (message.page !== state.page || message.reset === true || (message.enabled === true) !== state.enabled || bili !== state.bilibili || douyin !== state.douyin || weibo !== state.weibo || tencent !== state.tencent || mango !== state.mango || youku !== state.youku || iqiyi !== state.iqiyi || niconico !== state.niconico) {
+      const twitch = message.twitch === true && s.frameId===0 && typeof Thru3DTwitch !== 'undefined' && !!Thru3DTwitch.page(message.page);
+      const tiktok = message.tiktok === true && s.frameId===0 && typeof Thru3DTikTok !== 'undefined' && Thru3DTikTok.documentPage(message.page);
+      const instagram = message.instagram === true && s.frameId===0 && typeof Thru3DInstagram !== 'undefined' && Thru3DInstagram.documentPage(message.page);
+      const ted = message.ted === true && s.frameId===0 && typeof Thru3DTed !== 'undefined' && Thru3DTed.documentPage(message.page);
+      const redbull = message.redbull === true && s.frameId===0 && typeof Thru3DRedBull !== 'undefined' && Thru3DRedBull.documentPage(message.page);
+      const streamable = message.streamable === true && s.frameId===0 && typeof Thru3DStreamable !== 'undefined' && Thru3DStreamable.documentPage(message.page);
+      const archive = message.archive === true && s.frameId===0 && typeof Thru3DArchive !== 'undefined' && Thru3DArchive.documentPage(message.page);
+      const odysee = message.odysee === true && s.frameId===0 && typeof Thru3DOdysee !== 'undefined' && Thru3DOdysee.documentPage(message.page);
+      const dailymotion=message.dailymotion===true&&typeof Thru3DDailymotion!=='undefined'&&Thru3DDailymotion.frame(message.page)&&!!Thru3DDailymotion.page(state.parentPage);
+      if (message.page !== state.page || message.reset === true || (message.enabled === true) !== state.enabled || bili !== state.bilibili || douyin !== state.douyin || weibo !== state.weibo || tencent !== state.tencent || mango !== state.mango || youku !== state.youku || iqiyi !== state.iqiyi || niconico !== state.niconico || twitch !== state.twitch || tiktok !== state.tiktok || instagram !== state.instagram || ted !== state.ted || redbull !== state.redbull || streamable !== state.streamable || archive !== state.archive || odysee !== state.odysee || dailymotion!==state.dailymotion) {
         // Bilibili can preload the next part before pushState. Retain only this document's
         // bounded observations; the content script must bind CID to the current part map.
         const sameBili = bili && state.bilibili && Thru3DBilibili.sameDocumentPage(message.page, state.page);
@@ -103,22 +126,33 @@
         const sameMango = mango && state.mango && Thru3DMango.page(message.page)?.id===Thru3DMango.page(state.page)?.id;
         const sameYouku = youku && state.youku && Thru3DYouku.page(message.page)?.id===Thru3DYouku.page(state.page)?.id;
         const sameNiconico=niconico&&state.niconico&&Thru3DNiconico.page(message.page)===Thru3DNiconico.page(state.page);
+        const sameTikTok=tiktok&&state.tiktok; // Same owned port/document; current React ID and exact file bind each card.
+        const sameInstagram=instagram&&state.instagram; // Same owned port/document; current React ID and exact file bind each card.
+        const sameTed=ted&&state.ted; // Same owned port/document; current React ID and exact file bind each card.
+        const sameRedBull=redbull&&state.redbull; // Same owned port/document; current React ID and exact file bind each card.
+        const sameStreamable=streamable&&state.streamable; // Same owned document; canonical item and exact declared file bind the player.
+        const sameArchive=archive&&state.archive; // Same owned document; canonical item and exact declared file bind the player.
+        const sameOdysee=odysee&&state.odysee; // Same owned document; canonical item and exact declared file bind the player.
         const sameIqiyi = iqiyi && state.iqiyi && Thru3DIqiyi.page(message.page)?.id===Thru3DIqiyi.page(state.page)?.id;
+        const sameTwitch=twitch&&state.twitch&&Thru3DTwitch.page(message.page)===Thru3DTwitch.page(state.page)&&
+          new URL(message.page).origin===new URL(state.page).origin;
         if (!sameBili) { responses?.cancel(state); state.biliStatus = 'idle'; state.biliResponses = new Map(); state.biliRequests = new Map(); state.biliViews = new Map(); }
         if (!sameDouyin) { douyinResponses?.cancel(state); state.douyinData = new Map(); state.douyinApiPaths = new Set(); }
         if (!sameTencent) { tencentResponses?.cancel(state); state.tencentData = new Map();state.tencentEnvelopes=new Map(); }
         if (!sameMango) mangoResponses?.cancel(state);
         if (!sameYouku) youkuResponses?.cancel(state);
         if (!sameNiconico) niconicoResponses?.cancel(state);
-        if (!sameBili && !sameDouyin && !sameTencent && !sameMango && !sameYouku && !sameIqiyi && !sameNiconico) state.items.clear();
+        if (!sameTwitch) twitchResponses?.cancel(state);
+        if (!sameBili && !sameDouyin && !sameTencent && !sameMango && !sameYouku && !sameIqiyi && !sameNiconico && !sameTwitch && !sameTikTok && !sameInstagram && !sameTed && !sameRedBull && !sameStreamable && !sameArchive && !sameOdysee) state.items.clear();
         state.bilibili = bili;
         state.douyin = douyin;
         state.weibo = weibo;
         state.tencent = tencent;
         state.mango = mango;
-        state.youku = youku;state.iqiyi=iqiyi;state.niconico=niconico;
-        state.page = message.page; state.enabled = message.enabled === true;
-        if (!sameBili && !sameDouyin && !sameTencent && !sameMango && !sameYouku && !sameIqiyi && !sameNiconico) for (const [request, value] of pending) if (value.state === state) pending.delete(request);
+        state.youku = youku;state.iqiyi=iqiyi;state.niconico=niconico;state.twitch=twitch;state.tiktok=tiktok;state.instagram=instagram;state.ted=ted;state.redbull=redbull;state.streamable=streamable;state.archive=archive;state.odysee=odysee;
+        if(message.page!==state.page||message.enabled!==true&&message.dailymotion!==true)dailymotionResponses?.cancel(state);
+        state.page = message.page; state.enabled = message.enabled === true;state.dailymotion=dailymotion;
+        if (!sameBili && !sameDouyin && !sameTencent && !sameMango && !sameYouku && !sameIqiyi && !sameNiconico && !sameTwitch && !sameTikTok && !sameInstagram && !sameTed && !sameRedBull && !sameStreamable && !sameArchive && !sameOdysee) for (const [request, value] of pending) if (value.state === state) pending.delete(request);
         publish(state);
       }
     });
@@ -129,6 +163,8 @@
       mangoResponses?.cancel(state);
       youkuResponses?.cancel(state);
       niconicoResponses?.cancel(state);
+      twitchResponses?.cancel(state);
+      dailymotionResponses?.cancel(state);
       clearTimeout(state.timer);
       if (frames.get(id) === state) frames.delete(id);
       for (const [request, value] of pending) if (value.state === state) pending.delete(request);
@@ -153,10 +189,29 @@
       (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
     const sameNiconico=state?.niconico&&typeof Thru3DNiconico!=='undefined'&&!!Thru3DNiconico.page(d.documentUrl)&&
       (d.documentId&&state.document||d.documentUrl?.split('#')[0]===state.documentPage.split('#')[0]);
+    // Twitch removes tracking query parameters using replaceState. Gecko keeps
+    // the original document URL; the same public clip AND document UUID bind it.
+    const sameTwitch=state?.twitch&&d.frameId===0&&typeof Thru3DTwitch!=='undefined'&&
+      !!Thru3DTwitch.page(d.documentUrl)&&Thru3DTwitch.page(d.documentUrl)===Thru3DTwitch.page(state.page)&&
+      !!d.documentId&&d.documentId===state.document;
+    const sameTikTok=state?.tiktok&&d.frameId===0&&typeof Thru3DTikTok!=='undefined'&&Thru3DTikTok.documentPage(d.documentUrl)&&
+      (d.documentId&&state.document||d.documentUrl?.split('#')[0]===state.documentPage.split('#')[0]);
+    const sameInstagram=state?.instagram&&d.frameId===0&&typeof Thru3DInstagram!=='undefined'&&Thru3DInstagram.documentPage(d.documentUrl)&&
+      (d.documentId&&state.document||d.documentUrl?.split('#')[0]===state.documentPage.split('#')[0]);
+    const sameTed=state?.ted&&d.frameId===0&&typeof Thru3DTed!=='undefined'&&Thru3DTed.documentPage(d.documentUrl)&&
+      (d.documentId&&state.document||d.documentUrl?.split('#')[0]===state.documentPage.split('#')[0]);
+    const sameRedBull=state?.redbull&&d.frameId===0&&typeof Thru3DRedBull!=='undefined'&&Thru3DRedBull.documentPage(d.documentUrl)&&
+      (d.documentId&&state.document||d.documentUrl?.split('#')[0]===state.documentPage.split('#')[0]);
+    const sameStreamable=state?.streamable&&d.frameId===0&&typeof Thru3DStreamable!=='undefined'&&Thru3DStreamable.documentPage(d.documentUrl)&&
+      (d.documentId&&state.document||d.documentUrl?.split('#')[0]===state.documentPage.split('#')[0]);
+    const sameArchive=state?.archive&&d.frameId===0&&typeof Thru3DArchive!=='undefined'&&Thru3DArchive.documentPage(d.documentUrl)&&
+      (d.documentId&&state.document||d.documentUrl?.split('#')[0]===state.documentPage.split('#')[0]);
+    const sameOdysee=state?.odysee&&d.frameId===0&&typeof Thru3DOdysee!=='undefined'&&Thru3DOdysee.documentPage(d.documentUrl)&&
+      (d.documentId&&state.document||d.documentUrl?.split('#')[0]===state.documentPage.split('#')[0]);
     const sameIqiyi = state?.iqiyi && typeof Thru3DIqiyi !== 'undefined' && !!Thru3DIqiyi.page(d.documentUrl) &&
       (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
-    if (!state || !(state.enabled || state.bilibili || state.douyin || state.weibo || state.tencent || state.mango || state.youku || state.iqiyi || state.niconico || plex) || d.tabId < 0 || (d.documentId && state.document && d.documentId !== state.document) ||
-        (d.documentUrl && d.documentUrl.split('#')[0] !== state.page.split('#')[0] && !sameBili && !sameDouyin && !sameWeibo && !sameTencent && !sameMango && !sameYouku && !sameIqiyi && !sameNiconico)) return null;
+    if (!state || !(state.enabled || state.bilibili || state.douyin || state.weibo || state.tencent || state.mango || state.youku || state.iqiyi || state.niconico || state.twitch || state.tiktok || state.instagram || state.ted || state.redbull || state.streamable || state.archive || state.odysee || state.dailymotion || plex) || d.tabId < 0 || (d.documentId && state.document && d.documentId !== state.document) ||
+        (d.documentUrl && d.documentUrl.split('#')[0] !== state.page.split('#')[0] && !sameBili && !sameDouyin && !sameWeibo && !sameTencent && !sameMango && !sameYouku && !sameIqiyi && !sameNiconico && !sameTwitch && !sameTikTok && !sameInstagram && !sameTed && !sameRedBull && !sameStreamable && !sameArchive && !sameOdysee)) return null;
     return state;
   };
   const responses = typeof Thru3DBilibiliResponses === 'undefined' ? null : Thru3DBilibiliResponses(stateFor, publish);
@@ -164,6 +219,8 @@
   const mangoResponses = typeof Thru3DMangoResponses === 'undefined' ? null : Thru3DMangoResponses(stateFor,publish,d=>frames.has(key(d)));
   const youkuResponses = typeof Thru3DYoukuResponses === 'undefined' ? null : Thru3DYoukuResponses(stateFor,publish,d=>frames.has(key(d)));
   const niconicoResponses=typeof Thru3DNiconicoResponses==='undefined'?null:Thru3DNiconicoResponses(stateFor,publish,d=>frames.has(key(d)));
+  const twitchResponses=typeof Thru3DTwitchResponses==='undefined'?null:Thru3DTwitchResponses(stateFor,publish,d=>frames.has(key(d)));
+  const dailymotionResponses=typeof Thru3DDailymotionResponses==='undefined'?null:Thru3DDailymotionResponses(stateFor,publish);
   // Metadata is only a hint; it never supplies request credentials. Gecko can
   // attribute the site's prefetch/worker API to frame -1 or to the original SPA
   // document URL. Keep file-request ownership on the strict stateFor path above.
@@ -193,17 +250,25 @@
     return state;
   };
   const douyinResponses = typeof Thru3DDouyinResponses === 'undefined' ? null : Thru3DDouyinResponses(douyinMetadataState,publish,d=>frames.has(key(d)));
+  const transportRequest=d=>{
+    const state=stateFor(d);
+    if(typeof Thru3DDailymotion==='undefined'||!state?.dailymotion)return d;
+    const target=Thru3DDailymotion.transport(d.url);if(!target)return d;
+    return {...d,url:target,request_url:d.url,redirectUrl:d.redirectUrl?Thru3DDailymotion.transport(d.redirectUrl)||d.redirectUrl:d.redirectUrl};
+  };
   browser.webRequest.onBeforeRequest.addListener(d => {
     if (d.type !== "main_frame" && d.type !== "sub_frame") return;
     tencentResponses?.navigate(d);
     mangoResponses?.navigate(d);
     youkuResponses?.navigate(d);
     niconicoResponses?.navigate(d);
+    twitchResponses?.navigate(d);
     for (const [id, state] of frames) if (id === key(d) || d.type === "main_frame" && id.startsWith(`${d.tabId}:`)) {
       state.port.disconnect(); frames.delete(id);
     }
   }, filter);
   browser.webRequest.onSendHeaders.addListener(d => {
+    d=transportRequest(d);
     const state = stateFor(d);
     if (!state || d.method !== "GET" || !["media", "xmlhttprequest", "other"].includes(d.type) || !url(d.url)) return;
     const safe = headers(d.requestHeaders);
@@ -214,6 +279,7 @@
     while (pending.size > REQUESTS) pending.delete(pending.keys().next().value);
   }, filter, ["requestHeaders"]);
   browser.webRequest.onHeadersReceived.addListener(d => {
+    d=transportRequest(d);
     // Structural diagnostics only: no query values, request headers or JSON bodies.
     const observed = douyinMetadataState(d), address = url(d.url);
     if (observed?.douyin && address && Thru3DDouyin.address(address.href) && d.method === 'GET' &&
@@ -231,32 +297,39 @@
     const state = stateFor(d), u = url(d.url), request = pending.get(d.requestId);
     if (!state || !u || d.method !== "GET" || ![200, 206].includes(d.statusCode)) return;
     const mime = header(d.responseHeaders, "content-type").split(";")[0].trim().toLowerCase();
-    const type = kind(u, mime, d, state.bilibili) || (state.niconico&&niconicoResponses?.resource(state,d.url)?"segment":"");
-    if (!type || type === "segment" && !(state.tencent || state.iqiyi || state.niconico)) return;
+    const type = kind(u, mime, d, state.bilibili) || (state.niconico&&niconicoResponses?.resource(state,d.url)?"segment":"") ||
+      (dailymotionResponses?.resource(state,d.url)?"hls":"");
+    if (!type || type === "segment" && !(state.tencent || state.iqiyi || state.niconico || state.ted || state.redbull || state.streamable || state.archive || state.odysee || state.dailymotion)) return;
     if(state.niconico&&type!=="hls"&&!niconicoResponses?.resource(state,d.url))return;
     // Bilibili's paused cover can load a cached alternate audio URL without any
     // onSendHeaders event. It cannot replace a replayable request with empty headers:
     // the CDN rejects that native request (403). Keep the earlier exact observation;
     // never borrow headers from another URL, or extend its lifetime from a cache hit.
-    if ((state.bilibili || state.douyin || state.weibo || state.tencent || state.mango || state.youku || state.iqiyi || state.niconico) && !(request?.state === state && request.url === d.url && request.sent === true)) return;
+    if ((state.bilibili || state.douyin || state.weibo || state.tencent || state.mango || state.youku || state.iqiyi || state.niconico || state.twitch || state.tiktok || state.instagram || state.ted || state.redbull || state.streamable || state.archive || state.odysee || state.dailymotion) && !(request?.state === state && request.url === d.url && request.sent === true)) return;
     // A cached response can have no onSendHeaders. Do not invent Cookie/Authorization.
     const safe = request?.state === state && request.url === d.url ? request.headers : {};
     // Plex Web sends its token in a request header. With generic capture disabled,
     // retain only a successful, authenticated library request from this exact frame.
-    if (!(state.enabled || state.bilibili || state.douyin || state.weibo || state.tencent || state.mango || state.youku || state.iqiyi || state.niconico) &&
+    if (!(state.enabled || state.bilibili || state.douyin || state.weibo || state.tencent || state.mango || state.youku || state.iqiyi || state.niconico || state.twitch || state.tiktok || state.instagram || state.ted || state.redbull || state.streamable || state.archive || state.odysee || state.dailymotion) &&
         !(typeof Thru3DPlex !== 'undefined' && Thru3DPlex.source(d.url, state.page, safe))) return;
     const c = { url: d.url, kind: type, mime, headers: safe, at: Date.now(), cookies: [],
       original_url: request?.state === state ? request.original : d.url,
       length: header(d.responseHeaders, "content-length").slice(0, 24),
       range: header(d.responseHeaders, "content-range").slice(0, 80) };
+    if(typeof Thru3DDailymotion!=='undefined'&&Thru3DDailymotion.frame(state.page)&&Thru3DDailymotion.page(state.parentPage)){
+      c.request_id=d.requestId;
+      c.request_url=d.request_url||d.url;
+      const body=state.dailymotionBodies?.get(d.url);if(body?.request_id===d.requestId)c.kind=body.format;
+    }
     const previous = state.items.get(d.url);
     c.cookies = previous && previous.headers.cookie === safe.cookie ? previous.cookies : [];
     state.items.delete(d.url); state.items.set(d.url, c);
     mangoResponses?.observeMedia(state,c);
     if(state.youku&&c.kind==='hls')youkuResponses?.observeMedia(state,c);
     if(state.niconico)niconicoResponses?.observeMedia(state,c);
+    if(state.twitch)twitchResponses?.observeMedia(state,c);
     while (state.items.size > MAX || JSON.stringify([...state.items.values()]).length > 192 * 1024)
-      state.items.delete(state.items.keys().next().value);
+      state.items.delete(oldest(state));
     // Range traffic often repeats several times a second. Report changed credentials/resources,
     // not every segment; a periodic refresh still keeps a long-playing resource eligible.
     if (!previous || c.at - previous.reported > 30000 || JSON.stringify(safe) !== JSON.stringify(previous.headers)) {
@@ -282,6 +355,7 @@
   browser.webRequest.onCompleted.addListener(finish, filter);
   browser.webRequest.onErrorOccurred.addListener(finish, filter);
   browser.webRequest.onBeforeRedirect.addListener(d => {
+    d=transportRequest(d);
     const request = pending.get(d.requestId);
     if (request && url(d.redirectUrl)) pending.set(d.requestId, { ...request, url: d.redirectUrl, headers: {}, sent: false });
     else finish(d);

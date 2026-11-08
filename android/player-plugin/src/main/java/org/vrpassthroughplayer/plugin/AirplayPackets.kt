@@ -40,7 +40,7 @@ internal class AirplayPackets(private val limit: Int = 2 * 1024 * 1024) {
             if (bytes + p.data.size > limit) { packets.clear(); bytes = 0; waitingKey = true }
             if (waitingKey && !key) return false
             waitingKey = false
-        } else if (parked || waitingKey || p.codec !in listOf(4, 8)) return false
+        } else if (parked || waitingKey || p.codec !in listOf(0, 4, 8)) return false
         if (bytes + p.data.size > limit) return false
         packets.addLast(p); bytes += p.data.size; return true
     }
@@ -62,6 +62,11 @@ internal class AirplayPackets(private val limit: Int = 2 * 1024 * 1024) {
         return replay.peekLast()?.ns ?: 0
     }
     @Synchronized fun videoReady() = config.isNotEmpty() && (if (parked) replayValid else !waitingKey)
+    @Synchronized fun discontinuity(video: Boolean) {
+        val iterator = packets.iterator()
+        while (iterator.hasNext()) { val packet = iterator.next(); if (packet.video == video) { bytes -= packet.data.size; iterator.remove() } }
+        if (video) { waitingKey = true; replay.clear(); replayBytes = 0; replayValid = false }
+    }
     @Synchronized fun clear() { packets.clear(); bytes = 0; config = ByteArray(0); sps = ByteArray(0); pps = ByteArray(0); waitingKey = true; replay.clear(); replayBytes = 0; replayValid = false; parked = false }
     @Synchronized fun sizeBytes() = bytes
     @Synchronized fun retainedBytes() = bytes + replayBytes

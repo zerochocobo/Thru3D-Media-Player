@@ -107,6 +107,74 @@ internal class WebVideoNetworkCapture(
     /** Explicit site Beta must preserve the decoded representation, including parallel HLS leaves. */
     fun resolveCurrent(page: WebVideoPage, media: JSONObject): JSONObject? = resolve(page, media, null, true)
 
+    /** A validated rendered Instagram MPD explicitly declares these complete
+     * files. They are new derived GETs, never relabelled as observed requests.
+     * Only scoped sent cookies/public browser context apply; a range request's
+     * Authorization is not transferred to a different query/URI. */
+    internal fun resolveDeclaredInstagramFiles(page: WebVideoPage,media: JSONObject,video: URI,audio: URI?,explicitSilent: Boolean): JSONObject? = runCatching {
+        require(page.site=="instagram" && !media.optBoolean("protected"))
+        val declaration=WebBrowserInstagram.metadata(media,media.optString("frame")) ?: error("Invalid current post")
+        require(declaration.getString("id")==page.id && URI(declaration.getJSONObject("video").getString("url"))==video &&
+            declaration.optJSONObject("audio")?.getString("url")?.let(::URI)==audio && explicitSilent==!declaration.getBoolean("has_audio"))
+        require(loadObserved(media,false)!=null)
+        val graph=WebBrowserInstagram.manifest(declaration.getString("manifest")) ?: error("Invalid declaration")
+        require(explicitSilent==(audio==null))
+        val frame=WebBrowserNetworkMedia.address(media.getString("frame")) ?: error("Missing frame")
+        val common=mapOf("referer" to frame.toString(),"origin" to "https://${frame.host}")+
+            media.optString("agent").takeIf{it.length in 1..2048 && it.none{c->c<' '||c=='\u007f'}}.let{if(it==null)emptyMap()else mapOf("user-agent" to it)}
+        fun declared(uri: URI): Probed {
+            require(uri.scheme=="https" && wholeFile(uri)==uri)
+            val track=graph.tracks.single{it.url==uri.toString()}
+            val observed=resources.values.firstOrNull{it.kind=="file" && WebBrowserInstagram.payloadRequest(track,it.uri.toString())} ?: error("Unobserved payload")
+            val publicContext=common+observed.headers.filterKeys{it in setOf("user-agent","referer","origin","accept","accept-language")}
+            val headers=resources[uri]?.headers ?: WebVideoRequestHeaders(emptyMap(),cookieJar).forUrl(uri,publicContext)
+            val resource=Resource(uri,"file",headers);resources[uri]=resource
+            return probe(resource,media).also{
+                require(it.info.duration>0 && kotlin.math.abs(it.info.duration-media.getDouble("duration"))<=maxOf(.1,media.getDouble("duration")*.0001))
+            }
+        }
+        val v=declared(video)
+        require(v.info.video !in setOf("none","unknown","") && v.info.audio=="none" && v.info.width==media.optInt("width") && v.info.height==media.optInt("height"))
+        val a=audio?.let(::declared)
+        if(a!=null)require(a.info.video=="none" && a.info.audio !in setOf("none","unknown",""))
+        info(media,listOfNotNull(v.format,a?.format)).put("browser_explicit_silent",explicitSilent)
+    }.getOrNull()
+
+    /** An explicitly rendered player's observed master owns this graph. Keep every
+     * child's original observed headers; unrelated page/ad masters are not fetched. */
+    internal fun resolveRootedCurrentHls(page: WebVideoPage, media: JSONObject, root: URI, observedBodies: Map<URI,String> = emptyMap()): JSONObject? = runCatching {
+        require(!media.optBoolean("protected") && media.optString("source").isEmpty() && loadObserved(media, true) != null)
+        require(observedBodies.size<=6 && observedBodies.values.sumOf{it.toByteArray(Charsets.UTF_8).size}<=64*1024)
+        for((uri,body)in observedBodies){
+            require(resources[uri]?.kind=="hls" && body.startsWith("#EXTM3U") && body.toByteArray(Charsets.UTF_8).size<=48*1024)
+            inlineManifests[uri]=body;bodies[uri]=uri to body.toByteArray(Charsets.UTF_8)
+        }
+        val master = resources[root] ?: error("Unobserved master")
+        require(master.kind == "hls")
+        val (base, body) = text(master)
+        require(body.toByteArray(Charsets.UTF_8).size <= 48 * 1024)
+        val lines = body.lineSequence().map(String::trim).toList()
+        require(lines.size <= 4096 && lines.firstOrNull() == "#EXTM3U" && lines.any { it.startsWith("#EXT-X-STREAM-INF:") })
+        val linked = lines.flatMap { line ->
+            if (line.isNotEmpty() && !line.startsWith('#')) listOf(base.uri.resolve(line))
+            else attrs(line)["URI"]?.let { listOf(base.uri.resolve(it)) }.orEmpty()
+        }.toSet()
+        require(linked.size in 1..128)
+        val graph = resources.values.filter { it.kind == "hls" && (it.uri == root || it.uri in linked) }
+        val audioUris = lines.filter { it.startsWith("#EXT-X-MEDIA:") }.map(::attrs).filter { it["TYPE"] == "AUDIO" }
+            .mapNotNull { it["URI"]?.let(base.uri::resolve) }.toSet()
+        val observedAudio = audioUris.filter { resources[it]?.kind == "hls" }.toSet()
+        if (audioUris.isNotEmpty()) require(observedAudio.size == 1)
+        val info = manifestInfo(page, media, graph, true)
+        val formats = info.getJSONArray("formats")
+        require((0 until formats.length()).all { resources[URI(formats.getJSONObject(it).getString("url"))]?.kind == "hls" })
+        if (audioUris.isNotEmpty()) require((0 until formats.length()).any {
+            val f = formats.getJSONObject(it)
+            f.optString("vcodec") == "none" && URI(f.getString("url")) in observedAudio
+        })
+        info
+    }.getOrNull()
+
     /** A site-bound HLS graph also retains each observed key/init request's own headers. */
     internal fun resolveCurrentHls(page: WebVideoPage,media: JSONObject,master: Pair<URI,String>): JSONObject? = runCatching { inspectCurrentHls(page,media,master) }.getOrNull()
     internal fun inspectCurrentHls(page: WebVideoPage,media: JSONObject,master: Pair<URI,String>): JSONObject {
@@ -248,10 +316,12 @@ internal class WebVideoNetworkCapture(
         require(duration > 0)
         val expected = media.optDouble("duration", 0.0)
         require(expected <= 0 || durationMatches(duration, expected))
-        val checked = WebVideoContainer.Info(container.video, container.audio, container.width, container.height, duration)
+        val checked = WebVideoContainer.Info(container.video, container.audio, container.width, container.height, duration,container.pixelAspect)
         projections[uri] = SphericalVideoMetadata.parse(bytes)
         val f = format(resource, checked.video, checked.audio, checked.width, checked.height)
             .put("web_layout", media.optString("layout").take(64))
+            .put("display_width",checked.displayWidth).put("display_height",checked.height)
+            .put("pixel_aspect",checked.pixelAspect)
         projections[uri]?.let { f.put("format_note", it.optString("kind")) }
         inspectedFiles++
         if (checked.video != "none") videoFiles++

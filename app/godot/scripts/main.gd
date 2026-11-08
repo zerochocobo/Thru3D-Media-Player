@@ -240,6 +240,7 @@ func _create_video_display() -> Node3D:
 	return Video.new()
 
 func _ready() -> void:
+	preload("res://scripts/session_usage.gd").start()
 	var world := WorldEnvironment.new()
 	world.environment = Environment.new()
 	add_child(world)
@@ -323,6 +324,7 @@ func _ready() -> void:
 	controller_bindings.restore(settings.get_value("input", "controller_bindings", {}))
 	I18n.use(str(settings.get_value("ui", "language", "auto")))
 	ChineseInput.configure(bool(settings.get_value("ui", "quest_chinese_keyboard", false)))
+	ChineseInput.configure_browser(str(settings.get_value("ui", "web_keyboard", "builtin")))
 	fps_overlay = FpsOverlay.new()
 	fps_overlay.source = _fps_sample
 	camera.add_child(fps_overlay)
@@ -355,6 +357,7 @@ func _ready() -> void:
 	display.render_scale = Quality.render_scale(display_quality, low_end_gpu)
 	_apply_memory_mode(null)
 	display.configure(get_viewport(), world.environment, XRServer.find_interface("OpenXR"), desktop)
+	display.configure_low_end(low_end_gpu)
 	display.attach_backdrop(camera)
 	input_visuals = InputVisuals.new()
 	input_visuals.name = "InputVisuals"
@@ -452,7 +455,7 @@ func _ready() -> void:
 	photo.sharpness = Quality.load_sharpness(settings, low_end_gpu)
 	photo.view_camera = camera
 	photo.video_layer = video.video_layer # one compositor layer provider for both players
-	if video.video_layer: video.video_layer.supersampling = Quality.load_supersampling(settings)
+	if video.video_layer: video.video_layer.supersampling = Quality.load_supersampling(settings, low_end_gpu)
 	display.set_foveation(int(settings.get_value("video", "foveation", 0)))
 	recent_menu = PuzzleLibraryMenu.new()
 	recent_menu.browse_memory = directory_browse_memory
@@ -1445,6 +1448,7 @@ func _on_system_recentered() -> void:
 var subtitle_tasks: RefCounted
 
 func _process(delta: float) -> void:
+	preload("res://scripts/session_usage.gd").suspend("xr", not _input_focused())
 	_tick_photo_autoplay(delta)
 	if subtitle_tasks: subtitle_tasks.tick()
 	_guard_alpha_rate(delta)
@@ -1547,7 +1551,10 @@ func _sync_display_policy() -> void:
 	# and power-saving playback without inference drop to sustained-low.
 	var inference: bool = playing and (video.alpha_requested or video.depth_requested)
 	var saving: bool = Quality.load_refresh_cap(settings, low_end_gpu) == Quality.POWER_SAVING_CAP
-	display.set_performance_demand((playing and not saving) or inference or (photo_active and photo != null and photo.depth_requested))
+	# The cinema hall and the beach draw a whole world into the eye buffers every refresh. Quest
+	# raises clocks on demand under sustained-low; PICO 4 Pro reported 14-17 fps idle there.
+	display.set_performance_demand((playing and not saving) or inference or _cinema_scene_active()
+		or (photo_active and photo != null and photo.depth_requested))
 	var rate := 0.0
 	# Opening the browser only pauses the native video. Its 90/120 Hz video rate then made Gecko
 	# and the menu miss 8–44 frames a second on Quest 3; a paused frame needs no extra refresh.
@@ -1798,7 +1805,7 @@ func _update_controls_visibility(menu: Node3D) -> void:
 	else:
 		if not menu.choices.opened.is_empty() or menu._audio_open or menu._subtitle_open or menu.bookmarks.opened or not video.requested_play or video.media.state != "playing" \
 			or video.control.pending or video.control.in_flight > 0 or not seek_feedback.phase.is_empty() or not video.loading_caption().is_empty(): return
-	if now - _menu_touched_ms > CONTROLS_HIDE_MS: menu.dismiss()
+	if now - _menu_touched_ms > CONTROLS_HIDE_MS and not _debug_hold_controls: menu.dismiss()
 
 ## Debug device probes: a stick deflection held for a time, through the normal stick path.
 var _debug_sticks := {}
@@ -2901,6 +2908,8 @@ func _on_capture_saved(result: Dictionary) -> void:
 	recent_menu._load_section()
 
 const CONTROLS_HIDE_MS := int(ControllerFeedback.IDLE_SECONDS * 1000.0)
+## Debug A/B only (perf_tune hold_controls): an idle bar stays up for steady-state device samples.
+var _debug_hold_controls := false
 var _menu_touched_ms := 0
 const PLAYER_VALUES_MS := 100
 var _player_values_due := 0
@@ -3968,9 +3977,11 @@ func _show_player_menu() -> void:
 	if recent_menu:
 		recent_menu.dismiss()
 	if player_menu and not player_menu.visible:
-		_place_menu(player_menu)
 		_menu_touched_ms = Time.get_ticks_msec()
 		player_menu.toggle()
+		# Build the current bar before locating its centre. A never-opened photo bar
+		# still has RayMenu's placeholder backdrop and would otherwise face the wrong point.
+		_place_menu(player_menu)
 
 func _browser_keeps_cinema_video() -> bool:
 	return _cinema_scene_active() and not photo_active and video != null and not video.local_uri.is_empty() and video.geometry == Geometry.Geometry.FLAT
@@ -4219,7 +4230,7 @@ func _library_settings() -> Dictionary:
 		"show_fps": fps_overlay != null and fps_overlay.visible,
 		"display_quality": display_quality, "display_quality_pending": not is_equal_approx(display.render_scale, Quality.render_scale(display_quality, low_end_gpu)),
 		"sharpness": Quality.load_video_sharpness(settings),
-		"supersampling": Quality.load_supersampling(settings),
+		"supersampling": Quality.load_supersampling(settings, low_end_gpu),
 		"refresh_cap": Quality.load_refresh_cap(settings, low_end_gpu), "low_end_gpu": low_end_gpu,
 		"history": video.history_enabled, "privacy_mode": Privacy.mode, "file_settings_memory": Privacy.file_settings, "favorites_lock_level": favorites.lock_level if favorites else "relaxed",
 		"library_restore_position": bool(settings.get_value("library", "restore_position", true)),
@@ -4375,7 +4386,7 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 				settings.save(settings_path)
 		"supersampling":
 			settings.set_value("video", "supersampling", clampi(int(value), 0, Quality.SUPERSAMPLING_NAMES.size() - 1))
-			if video.video_layer: video.video_layer.supersampling = Quality.load_supersampling(settings)
+			if video.video_layer: video.video_layer.supersampling = Quality.load_supersampling(settings, low_end_gpu)
 			settings.save(settings_path)
 		"sharpness":
 			video.sharpness = float(value)
@@ -4518,6 +4529,10 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			_clear_private_history(str(value) == "network")
 		"file_settings_clear":
 			_clear_file_settings(str(value) == "network")
+		"web_keyboard":
+			ChineseInput.configure_browser(str(value))
+			settings.set_value("ui", "web_keyboard", ChineseInput.browser_keyboard)
+			settings.save(settings_path)
 		"quest_chinese_keyboard":
 			ChineseInput.configure(bool(value))
 			settings.set_value("ui", "quest_chinese_keyboard", bool(value))
@@ -5792,6 +5807,8 @@ func _connect_session_controls(menu: Node3D) -> void:
 		if menu==recent_menu and (recent_menu.image_picker_mode or recent_menu.audio_import_mode or recent_menu.subtitle_picker_mode or recent_menu.voice_picker_mode): state["scenery_enabled"]=false
 		return state
 	menu.session_control_requested.connect(_on_session_control)
+	menu.app_action_requested.connect(_on_app_action.bind(menu))
+	menu.app_action_feedback.connect(_on_whisper_haptic)
 	menu.placement_changed.connect(_on_menu_placement_changed.bind(menu))
 
 func _on_menu_placement_changed(menu: Node3D) -> void:
@@ -6492,7 +6509,7 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 	elif operation in ["display_quality", "supersampling", "sharpness"]:
 		_on_setting_changed(operation, command.get("value", 0))
 	elif operation in ["restart_app", "quit_app"]:
-		recent_menu._activate(recent_menu.RESTART_APP if operation == "restart_app" else recent_menu.QUIT_APP)
+		_finish_app(operation == "restart_app")
 	elif operation == "cloud_accounts":
 		_show_recent_menu()
 		recent_menu.section = recent_menu.Section.CLOUD
@@ -6575,6 +6592,10 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		if command.has("perf_level"): display.debug_performance_level = str(command.perf_level); display.apply_performance_levels()
 		if command.has("foveation"): display.set_foveation(int(command.foveation))
 		if command.has("cinema_probe") and cinema_environment: cinema_environment.set_debug_shader_probe(int(command.cinema_probe))
+		if command.has("beach_probe") and beach_environment and beach_environment.beach: beach_environment.beach.debug_probe(command.beach_probe)
+		if command.has("beach_probe") and beach_environment and command.beach_probe.has("seat"): beach_environment._sit(str(command.beach_probe.seat))
+		if command.has("hold_controls"): _debug_hold_controls = bool(command.hold_controls)
+		if command.has("relief_foveation"): display.debug_relief_foveation = int(command.relief_foveation); display._apply_foveation()
 		if command.has("render_scale") and display.xr != null and "render_target_size_multiplier" in display.xr:
 			display.xr.render_target_size_multiplier = float(command.render_scale)
 		if video and video.video_layer:
@@ -6603,6 +6624,20 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		# Device probes: a player-menu action by name, as its button would send it.
 		if str(command.get("target", "")) == "capture_cancel": capture_overlay._activate(capture_overlay.CANCEL)
 		else: _on_menu_action(str(command.get("target", "")))
+	elif operation == "cast_status" and OS.is_debug_build():
+		# An explicit whitelist keeps sender identities, PINs and media offers out of device reports.
+		var report := {"request": str(command.get("request_key", ""))}
+		var receiver: Dictionary = cast_session.snapshot()
+		for key in ["enabled", "airplay_state", "miracast_supported", "miracast_state"]:
+			report[key] = receiver.get(key)
+		report["dlna_error"] = str(receiver.get("error", ""))
+		var mirror: Dictionary = airplay_session.status if is_instance_valid(airplay_session) else {}
+		for key in ["active", "protocol", "frames", "submitted_frames", "video_inputs", "width", "height", "target_width", "target_height", "audio_bytes", "muted", "foreground", "error", "audio_error"]:
+			report[key] = mirror.get(key)
+		report["miracast_error"] = str(receiver.get("miracast_error", ""))
+		DirAccess.make_dir_recursive_absolute("user://diagnostics")
+		var file := FileAccess.open("user://diagnostics/cast_status.json", FileAccess.WRITE)
+		if file: file.store_string(JSON.stringify(report))
 	elif operation == "pip_probe" and OS.is_debug_build():
 		pip_probe_result = preload("res://scripts/video_pip_device_probe.gd").new().run(self, command)
 	elif operation == "menu_nav" and OS.is_debug_build():
@@ -6649,25 +6684,37 @@ func _debug_menu_nav(target: String) -> void:
 		"list": print("MENU_NAV ", JSON.stringify(buttons.map(func(b): return b.text).filter(func(t): return not t.is_empty())))
 
 var _finishing_app := false
-func _finish_app(restart: bool) -> void:
+func _on_app_action(operation: String, menu: Node3D) -> void:
+	# Let the executing state reach the compositor before saving and closing media.
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if not _finish_app(operation == "restart_app") and is_instance_valid(menu): menu.app_actions.failed()
+
+func _finish_app(restart: bool) -> bool:
+	if _finishing_app: return true
 	if puzzle_game and puzzle_game.active:
 		puzzle_game.show_panel(true)
-		if not puzzle_game.save_now(): return
+		if not puzzle_game.save_now(): return false
 	if photo and _gallery_save_after > 0: _save_photo_adjustments()
-	if _finishing_app: return
-	_finishing_app = true
 	_save_playback_adjustments()
+	if settings.save(settings_path) != OK: return false
+	_finishing_app = true
 	video.close_video()
 	photo.close_image()
-	settings.save(settings_path)
 	DiagnosticLog.record("app_restart" if restart else "app_close")
 	if PlatformMethods.supports(platform_plugin, "finish_app"):
 		platform_plugin.finish_app(restart)
 	else:
 		if restart: OS.set_restart_on_exit(true)
 		get_tree().quit()
+	return true
 
 func _notification(what: int) -> void:
+	var usage := preload("res://scripts/session_usage.gd")
+	if what == NOTIFICATION_APPLICATION_PAUSED: usage.suspend("paused", true)
+	elif what == NOTIFICATION_APPLICATION_RESUMED: usage.suspend("paused", false)
+	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT: usage.suspend("focus", true)
+	elif what == NOTIFICATION_APPLICATION_FOCUS_IN: usage.suspend("focus", false)
 	if what in [NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_APPLICATION_FOCUS_OUT]: ChineseInput.close("", true)
 	elif what in [NOTIFICATION_APPLICATION_RESUMED, NOTIFICATION_APPLICATION_FOCUS_IN] and I18n.choice == "auto":
 		var previous_language := I18n.language

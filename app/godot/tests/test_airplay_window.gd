@@ -79,6 +79,10 @@ func run() -> void:
 		check(off[0] == "DLNA: " + I18n.t("Off") and off[1] == "AirPlay: " + I18n.t("Off"), "Both off states precede instructions in " + language)
 		var on: PackedStringArray = CastPanel.receiver_tooltip({"enabled": true, "airplay_state": "ready"}).split("\n")
 		check(on[0] == "DLNA: " + I18n.t("On") and on[1] == "AirPlay: " + I18n.t("On"), "Both on states precede instructions in " + language)
+		var combined: PackedStringArray = CastPanel.receiver_tooltip({"enabled": true, "airplay_state": "ready", "miracast_supported": true, "miracast_state": "ready"}).split("\n")
+		check(combined == on, "Archived Miracast ready data cannot expose a receiver row in " + language)
+		var unavailable: PackedStringArray = CastPanel.receiver_tooltip({"enabled": true, "airplay_state": "ready", "miracast_supported": true, "miracast_state": "unavailable"}).split("\n")
+		check(unavailable == on, "Archived Miracast unavailable data stays hidden in " + language)
 		var failed: PackedStringArray = CastPanel.receiver_tooltip({"enabled": true, "airplay_state": "failed", "airplay_error": "AirPlay receiver unavailable"}).split("\n")
 		check(failed[1] == "AirPlay: " + I18n.t("Off") and failed[-1] == I18n.t("AirPlay receiver unavailable"), "Receiver failure remains truthful below grouped status lines in " + language)
 	I18n.language = previous_language

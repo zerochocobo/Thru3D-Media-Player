@@ -66,8 +66,13 @@ static func load_sharpness(settings: ConfigFile, low_end: bool = false) -> float
 	# Earlier four levels fold in: Low stays Normal, Medium and High become Quality.
 	return SHARPNESS[0 if value <= 0.0 else (1 if value < 0.4 else 2)]
 
-static func load_supersampling(settings: ConfigFile) -> int:
-	return clampi(int(settings.get_value("video", "supersampling", DEFAULT_SUPERSAMPLING)), 0, SUPERSAMPLING_NAMES.size() - 1)
+## Quest 2 compositor, 4K HDR 24 fps in the cinema: Normal filtering 6.0 ms, off 3.6 ms per frame,
+## 36 -> 66 fps at 72 Hz (2026-11-08). Low-end GPUs default to off; a saved choice is kept.
+static func default_supersampling(low_end: bool) -> int:
+	return 0 if low_end else DEFAULT_SUPERSAMPLING
+
+static func load_supersampling(settings: ConfigFile, low_end: bool = false) -> int:
+	return clampi(int(settings.get_value("video", "supersampling", default_supersampling(low_end))), 0, SUPERSAMPLING_NAMES.size() - 1)
 
 ## Playback refresh rate: the highest rate a video may raise the display to. Matching the video's
 ## frame rate shows every frame for the same number of refreshes; higher rates cost GPU time and heat.

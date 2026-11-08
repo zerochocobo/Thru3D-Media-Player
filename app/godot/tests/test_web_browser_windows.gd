@@ -83,7 +83,7 @@ func run() -> void:
 			check(pixels.x * pixels.y <= (1920 * 1200 if low else 2560 * 1600) + 4096, "Viewport stays within the device pixel budget")
 	var close: Dictionary = primary._buttons.filter(func(button): return button.target == browser.BASE + 5)[0]
 	var address: Dictionary = primary._buttons.filter(func(button): return button.target == browser.BASE + 3)[0]
-	check(close.rect.position.y > address.rect.end.y and address.rect.size.x >= 0.7, "Window close is separated above a readable address row")
+	check(close.rect.position.y > address.rect.end.y and address.rect.size.x >= 0.54, "Window close stays above the address row with room for paste and history")
 	verify_title_drag(primary, primary)
 	var layout: Dictionary = primary.page_layout()
 	var start: Vector3 = layout.pose * Vector3(-layout.size.x * 0.49, layout.size.y * 0.49, 0.2)

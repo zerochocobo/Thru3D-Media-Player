@@ -13,7 +13,7 @@ object WebBrowserYouku {
         require(value.length<=8192)
         val u=URI(value)
         require(u.scheme=="https" && u.rawUserInfo==null && u.rawFragment==null && u.port in setOf(-1,443) && u.host?.lowercase(Locale.ROOT)=="v.youku.com")
-        Regex("/v_show/id_(X[A-Za-z0-9=]{1,127})\\.html").matchEntire(u.rawPath.orEmpty())?.groupValues?.get(1)
+        Regex("/v_show/id_(X[A-Za-z0-9=]{1,127})\\.html").matchEntire(u.path.orEmpty())?.groupValues?.get(1)
     }.getOrNull()
     internal fun sameManifest(declared: String,observed: String): Boolean = runCatching {
         val a=WebBrowserNetworkMedia.address(declared) ?: return false

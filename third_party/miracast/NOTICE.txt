@@ -1,0 +1,12 @@
+MiracastReceiver reference/adaptation
+Copyright (c) 2026 weekdayjast
+MIT License; see MiracastReceiver-LICENSE.txt.
+Source: https://github.com/weekdayjast/MiracastReceiver
+Pinned revision: 17cac2ac6e22b4fcd35676af86dc5b839109ca1c
+
+WfdRtspSession.java adapts the WFD M1-M7 flow/capability handling from
+miracast/WfdSessionHandler.kt. WfdTransport.java adapts TS PAT/PMT/PES
+assembly from miracast/TsDemuxer.kt. Both are reworked for this project's
+bounded standalone tests, ownership checks and existing playback pipeline.
+No UI, root helper, subnet scanner or bundled SDK is incorporated.
+Mirax source is not incorporated.

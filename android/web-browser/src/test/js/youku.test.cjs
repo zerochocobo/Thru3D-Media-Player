@@ -9,6 +9,14 @@ const manifest='https://new-related-cdn.example/hls/current.m3u8?signature=exact
 const raw=()=>({api:'mtop.youku.play.ups.appinfo.get',ret:['SUCCESS::调用成功'],data:{e:{code:0},enc:0,data:{
   preview:{thumb:['https://images.example/preview.jpg'],timespan:'1000'},
   video:{encodeid:'XOTUxMzg4NDMy',seconds:702.08,drm_type:'default'},stream:[{drm_type:'default',m3u8_url:manifest,width:960,height:540,milliseconds_video:702079}]}}});
+test('official escaped programme IDs match UPS without decoding media URLs or signed selectors',()=>{
+  const id='XNjUxMzU5NjI3Mg==',encoded='https://v.youku.com/v_show/id_XNjUxMzU5NjI3Mg%3D%3d.html';
+  const r=raw();r.data.data.video.encodeid=id;
+  assert.equal(y.page(encoded).id,id);assert.equal(y.normalize(r,encoded).id,id);
+  assert.equal(y.normalize(r,encoded).streams[0].url,manifest);
+  for(const path of ['id_Xbad%2Fpath.html','id_Xbad%253D.html','id_Xbad%zz.html'])
+    assert.equal(y.page('https://v.youku.com/v_show/'+path),null);
+});
 function dom(){
   const box={},layer={},adLayer={style:{},getBoundingClientRect:()=>({width:100,height:60})};
   const main={isConnected:true,readyState:4,currentSrc:'blob:https://v.youku.com/current',duration:702.079,videoWidth:960,videoHeight:540,paused:false,

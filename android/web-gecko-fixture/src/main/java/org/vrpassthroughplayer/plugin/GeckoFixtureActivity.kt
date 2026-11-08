@@ -34,6 +34,9 @@ class GeckoFixtureActivity : Activity() {
     private var sequence = 0
     private val instance = UUID.randomUUID().toString()
     private var trace = JSONObject()
+    private var iqiyiSchema = JSONObject()
+    private var rejectedNavigations = 0
+    private val navigationShapes = java.util.ArrayDeque<JSONObject>()
     private val media = mutableMapOf<WebExtension.Port, JSONArray>()
     private val ports = mutableSetOf<WebExtension.Port>()
     private val portNavigation = mutableMapOf<WebExtension.Port,Int>()
@@ -63,16 +66,28 @@ class GeckoFixtureActivity : Activity() {
             .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_DESKTOP)
             .viewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP).suspendMediaWhenInactive(true).build())
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
+            override fun onLoadRequest(s: GeckoSession,request: GeckoSession.NavigationDelegate.LoadRequest): GeckoResult<AllowOrDeny> {
+                // Reuse the production browser's ordinary navigation gate. A site's
+                // attempted app launch must not retire the still-visible web document.
+                val allowed=WebBrowserAddress.navigable(request.uri) &&
+                    (request.target!=GeckoSession.NavigationDelegate.TARGET_WINDOW_NEW || request.hasUserGesture)
+                if(!allowed) { rejectedNavigations++;recordNavigation("denied",request.uri);publish() }
+                return GeckoResult.fromValue(if(allowed) AllowOrDeny.ALLOW else AllowOrDeny.DENY)
+            }
             override fun onLocationChange(s: GeckoSession,url: String?,perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>,hasUserGesture: Boolean) {
-                if (url != null) page = url
+                if (url != null) { page = url;recordNavigation("location",url) }
                 sendPolicy();publish()
             }
             override fun onLoadError(s: GeckoSession,uri: String?,failure: WebRequestError): GeckoResult<String>? {
-                error = "load_${failure.category}_${failure.code}";publish();return null
+                recordNavigation("error",uri.orEmpty());error = "load_${failure.category}_${failure.code}";publish();return null
             }
         }
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
-            override fun onPageStart(s: GeckoSession,url: String) { invalidateHandoff();page=url;navigation++;media.clear();reports.clear();observedRequest=0;trace=JSONObject();lastReport=0;progress=0;publish() }
+            override fun onPageStart(s: GeckoSession,url: String) {
+                recordNavigation("start",url)
+                if(!WebBrowserAddress.navigable(url)) { recordNavigation("ignored_start",url);publish();return }
+                invalidateHandoff();page=url;navigation++;media.clear();reports.clear();observedRequest=0;trace=JSONObject();iqiyiSchema=JSONObject();lastReport=0;progress=0;publish()
+            }
             override fun onProgressChange(s: GeckoSession,value: Int) { progress=value;publish() }
             override fun onPageStop(s: GeckoSession,success: Boolean) { state=if(success) "loaded" else "load_failed";publish() }
         }
@@ -97,6 +112,17 @@ class GeckoFixtureActivity : Activity() {
                     override fun onPortMessage(message: Any,port: WebExtension.Port) {
                         if (portNavigation[port]!=navigation) return
                         val data=message as? JSONObject ?: return
+                        if (data.optString("type")=="fixture_iqiyi") {
+                            if (!WebBrowserIqiyi.enabled(page) || port.sender.url!=page || data.toString().length>100*1024) return
+                            val schema=data.optJSONObject("state") ?: return
+                            val binding=data.optJSONObject("binding") ?: return
+                            iqiyiSchema=JSONObject().put("schema",schema)
+                                .put("dom",data.optJSONArray("dom") ?: JSONArray())
+                                .put("ready",binding.optBoolean("ready"))
+                                .put("status",binding.optString("status").takeIf { it.matches(Regex("[a-z_]{1,48}")) } ?: "unavailable")
+                                .put("document_time_origin",data.optDouble("document_time_origin").takeIf { it.isFinite() } ?: 0.0)
+                            publish();return
+                        }
                         if (data.optString("type")!="media" || data.toString().length>256*1024) return
                         val list=data.optJSONArray("videos") ?: return
                         reports[port]=data
@@ -111,6 +137,7 @@ class GeckoFixtureActivity : Activity() {
                             val item=list.optJSONObject(i) ?: continue
                             val captured=WebBrowserMango.captureDiagnostics(data)
                             val valid=WebBrowserMango.metadata(item,page)!=null
+                            val iqiyiValid=WebBrowserIqiyi.metadata(item,page)!=null
                             captured.put("frame_matches",item.optString("frame")==page).put("binding_valid",valid)
                             safe.put(JSONObject().put("id",item.optString("id").takeIf { it.matches(Regex("[0-9]{1,8}")) }.orEmpty())
                                 .put("width",item.optInt("width").coerceIn(0,32768)).put("height",item.optInt("height").coerceIn(0,32768))
@@ -118,7 +145,8 @@ class GeckoFixtureActivity : Activity() {
                                 .put("time",item.optDouble("time",0.0).takeIf { it.isFinite() && it in 0.0..172800.0 } ?: 0.0)
                                 .put("playing",item.optBoolean("playing")).put("protected",item.optBoolean("protected"))
                                 .put("blob",item.optBoolean("blob")).put("js_ready",item.optBoolean("mango_ready"))
-                                .put("java_ready",valid).put("mango_capture",captured))
+                                .put("java_ready",valid).put("mango_capture",captured)
+                                .put("iqiyi_ready",item.optBoolean("iqiyi_ready")).put("iqiyi_binding",iqiyiValid))
                         }
                         media[port]=safe;lastReport=SystemClock.uptimeMillis()
                         if (bridge!=null && owner==null && active && phase in setOf("idle","returned","invalid")) {
@@ -137,7 +165,8 @@ class GeckoFixtureActivity : Activity() {
     }
     private fun policy(port: WebExtension.Port) {
         port.postMessage(JSONObject().put("action","network_policy").put("enabled",false).put("bilibili",false)
-            .put("douyin",false).put("weibo",false).put("tencent",false).put("mango",WebBrowserMango.enabled(page)).put("diagnostics",true))
+            .put("douyin",false).put("weibo",false).put("tencent",false).put("mango",WebBrowserMango.enabled(page))
+            .put("iqiyi",WebBrowserIqiyi.enabled(page)).put("diagnostics",true))
     }
     private fun sendPolicy() { ports.filter { portNavigation[it]==navigation }.forEach { runCatching { policy(it) } } }
     override fun onNewIntent(value: Intent) { super.onNewIntent(value);intent=value;command(value) }
@@ -146,7 +175,7 @@ class GeckoFixtureActivity : Activity() {
         when(value.getStringExtra("operation") ?: "open") {
             "open" -> {
                 val url=value.getStringExtra("url") ?: "https://www.mgtv.com/b/427837/15588271.html"
-                if (!WebBrowserMango.enabled(url)) { error="unsupported_public_page";publish();return }
+                if (!WebBrowserMango.enabled(url) && !WebBrowserIqiyi.enabled(url)) { error="unsupported_public_page";publish();return }
                 page=url;error="";session.loadUri(url)
             }
             "reload" -> session.reload()
@@ -154,6 +183,7 @@ class GeckoFixtureActivity : Activity() {
             "active" -> { active=true;session.setActive(true);ports.toList().forEach { it.postMessage(JSONObject().put("action","resume")) } }
             "snapshot" -> Unit
             "bridge" -> {
+                if (!WebBrowserMango.enabled(page)) { error="native_bridge_requires_mango";publish();return }
                 val name=value.getStringExtra("channel").orEmpty()
                 if(!name.matches(Regex("thru3d_fixture_[a-f0-9]{32}")) || android.os.Build.HARDWARE !in setOf("ranchu","goldfish")) {
                     error="invalid_local_channel";publish();return
@@ -254,11 +284,26 @@ class GeckoFixtureActivity : Activity() {
         updateHandoff();publish()
         return JSONObject().put("ok",true).put("instance",instance).put("active",active).put("handoff",handoffStatus())
     }
+    private fun recordNavigation(event: String,value: String) {
+        val uri=runCatching { java.net.URI(value) }.getOrNull()
+        val host=uri?.host.orEmpty()
+        val site=when(host) { "www.iqiyi.com" -> "iqiyi";"www.mgtv.com","w.mgtv.com","mgtv.com" -> "mgtv";else -> "other" }
+        val id=if(site=="iqiyi") Regex("/([vw]_[A-Za-z0-9]+)\\.html").matchEntire(uri?.rawPath.orEmpty())?.groupValues?.get(1) else null
+        navigationShapes.addLast(JSONObject().put("event",event).put("site",site)
+            .put("scheme",uri?.scheme?.takeIf { it in setOf("http","https","about") } ?: "other")
+            .put("public_id",id.orEmpty()).put("about_blank",value=="about:blank")
+            .put("has_query",!uri?.rawQuery.isNullOrEmpty()).put("has_fragment",!uri?.rawFragment.isNullOrEmpty()))
+        while(navigationShapes.size>16) navigationShapes.removeFirst()
+    }
     private fun publish() {
         val list=JSONArray();for (items in media.values) for (i in 0 until items.length()) if(list.length()<16) list.put(items.getJSONObject(i))
         val result=JSONObject().put("schema",1).put("scope","android_gecko_request_diagnostics_not_device_acceptance")
             .put("instance",instance).put("sequence",++sequence).put("state",state).put("error",error).put("navigation",navigation).put("progress",progress)
-            .put("active",active).put("page_id",WebBrowserMango.page(page).orEmpty()).put("extension_ready",extension!=null)
+            .put("active",active).put("page_id",WebBrowserMango.page(page) ?: WebBrowserIqiyi.page(page).orEmpty())
+            .put("site",if(WebBrowserMango.enabled(page)) "mgtv" else if(WebBrowserIqiyi.enabled(page)) "iqiyi" else "unsupported")
+            .put("iqiyi_schema",iqiyiSchema).put("extension_ready",extension!=null)
+            .put("rejected_navigations",rejectedNavigations)
+            .put("navigation_shapes",JSONArray(navigationShapes.toList()))
             .put("ports",ports.count { portNavigation[it]==navigation }).put("report_age_ms",if(lastReport==0L) -1 else SystemClock.uptimeMillis()-lastReport)
             .put("viewport",JSONObject().put("width",viewport.width).put("height",viewport.height).put("density",viewport.density))
             .put("videos",list).put("fixture_trace",trace).put("handoff",handoffStatus())

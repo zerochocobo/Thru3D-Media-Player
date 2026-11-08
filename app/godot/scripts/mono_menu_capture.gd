@@ -37,6 +37,9 @@ func configure(viewer: Camera3D, compositor: Node, provider: Callable, low: bool
 	var xr := XRServer.find_interface("OpenXR")
 	native_supported = xr != null and xr.is_initialized() and xr.get_view_count() == 2 and probe.is_natively_supported()
 	probe.free()
+	# See MenuComposition: a session stop must not leave the layer's render target for the next one.
+	if native_supported and not xr.session_stopping.is_connected(_renew_submit):
+		xr.session_stopping.connect(_renew_submit)
 	if not RenderingServer.frame_post_draw.is_connected(_restore_visual_planes):
 		RenderingServer.frame_post_draw.connect(_restore_visual_planes)
 	process_priority = 99 # after input, before the existing compositor
@@ -88,6 +91,9 @@ func _create() -> void:
 		hole_material.render_priority = Composition.HOLE_PRIORITY
 		hole_material.set_shader_parameter("menu_texture", raw.get_texture())
 		hole.material_override = hole_material; hole.hide(); add_child(hole)
+
+func _renew_submit() -> void:
+	if layer: submit = Composition.renew_submit(layer, submit)
 
 func _process(_delta: float) -> void:
 	update()

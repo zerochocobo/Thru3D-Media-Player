@@ -63,7 +63,12 @@ class Photo extends Node3D:
 	var display_name := ""
 	func close_image() -> void: local_uri = ""
 
+class MirrorState extends Node:
+	var status := {}
+	var pairing_code := ""
+
 class Owner extends Node:
+	var airplay_session: Node
 	var video: Node3D
 	var photo := Photo.new()
 	var photo_active := false
@@ -104,6 +109,12 @@ func run() -> void:
 	video.history_enabled = false
 	var owner := Owner.new(); owner.video = video; owner.player_menu = owner.video_menu
 	var session := Session.new(); session.bind(owner, bridge); session.command("toggle")
+	var mirror_state := MirrorState.new(); owner.airplay_session = mirror_state
+	mirror_state.status = {"protocol": "Miracast", "active": 8, "state": "ready", "error": "Miracast decoder unavailable"}
+	check(not session.snapshot().has("miracast_supported") and not session.snapshot().has("miracast_error") and session.snapshot().airplay_error.is_empty(), "Archived Miracast state stays outside the receive UI and AirPlay errors")
+	mirror_state.status.active = 0; mirror_state.status.protocol = "AirPlay"
+	check(session.snapshot().airplay_error.is_empty(), "A completed mirror's stale error cannot be attributed to the idle receiver")
+	owner.airplay_session = null; mirror_state.free()
 	video.open_local("http://192.168.1.8/original.mp4", "Original", 0, false)
 	video.requested_play = false; video.control.observe(43000, 120000)
 	video.depth_requested = true; video.auto_depth = true

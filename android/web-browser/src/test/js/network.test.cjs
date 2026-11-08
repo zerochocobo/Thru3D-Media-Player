@@ -14,10 +14,14 @@ function fixture(cookies = []) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/douyin.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/plex.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/weibo.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/twitch.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/tiktok.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/dailymotion.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/ted.js'), 'utf8'), context);
   vm.runInContext(source, context);
-  function connect(tab = 1, frame = 0, page = 'https://page.test/watch', enabled = true) {
+  function connect(tab = 1, frame = 0, page = 'https://page.test/watch', enabled = true, parent = page) {
     const messages = [];
-    const port = { name: 'thru3d_network', sender: { id: 'fixture', tab: { id: tab }, frameId: frame, url: page, documentId: `doc-${tab}-${frame}` },
+    const port = { name: 'thru3d_network', sender: { id: 'fixture', tab: { id: tab, url:parent }, frameId: frame, url: page, documentId: `doc-${tab}-${frame}` },
       onMessage: event(), onDisconnect: event(), postMessage(m) { messages.push(JSON.parse(JSON.stringify(m))); }, disconnect() { this.disconnected = true; this.onDisconnect.fire(); } };
     browser.runtime.onConnect.fire(port);
     if (enabled) port.onMessage.fire({ type: 'context', page, enabled: true });
@@ -32,6 +36,45 @@ function fixture(cookies = []) {
   const flush = () => { const batch = [...timers.values()]; timers.clear(); batch.forEach(f => f()); };
   return { connect, request, flush, browser, advance(ms) { now += ms; } };
 }
+
+test('Dailymotion keeps client fragments as request evidence and sends the exact signed HTTP transport URL',()=>{
+  const f=fixture(),frame='https://geo.dailymotion.com/player/official.html#settings=opaque',parent='https://www.dailymotion.com/video/x5kesuj';
+  const p=f.connect(1,3,frame,false,parent);p.port.onMessage.fire({type:'context',page:frame,enabled:false,dailymotion:true});
+  const wire='https://new-related.test:8443/current.m3u8?signature=a%2Fb&literal=%23value',raw=wire+'#client-marker';
+  const d=f.request(raw,{frameId:3,documentId:'doc-1-3',documentUrl:frame,requestHeaders:[{name:'Authorization',value:'only-this-request'}],responseHeaders:[{name:'Content-Type',value:'application/vnd.apple.mpegurl'}]});
+  f.flush();const c=p.last()[0];assert.equal(c.url,wire);assert.equal(c.request_url,raw);assert.equal(c.request_id,d.requestId);
+  assert.equal(c.headers.authorization,'only-this-request');assert.equal(c.original_url,wire);
+  const other=fixture(),q=other.connect();other.request(raw);other.flush();assert.equal(q.last().length,0,'Other sites keep their existing fragment rejection');
+});
+test('Twitch keeps a real clip document across tracking replaceState without accepting another clip or document',()=>{
+  const f=fixture(),original='https://clips.twitch.tv/PublicClip?tt_medium=clips_api',current='https://clips.twitch.tv/PublicClip',p=f.connect(1,0,original,false);
+  p.port.onMessage.fire({type:'context',page:current,twitch:true,enabled:false,reset:true});
+  f.request('https://actual-related.example/clip.mp4?sig=exact',{documentUrl:original});f.flush();assert.equal(p.last().length,1);
+  p.port.onMessage.fire({type:'context',page:current,twitch:true,enabled:false,reset:true});f.flush();assert.equal(p.last().length,1);
+  for(const change of [{documentId:'another'},{documentUrl:'https://clips.twitch.tv/AnotherClip'},{frameId:1}]){
+    f.request('https://actual-related.example/wrong.mp4',{documentUrl:original,...change});f.flush();assert.equal(p.last().length,1);
+  }
+});
+
+test('TikTok keeps same-document observations across SPA paths while rejecting other documents, frames and tabs',()=>{
+  const f=fixture(),original='https://www.tiktok.com/foryou',current='https://www.tiktok.com/@test/video/6742501081818877190',p=f.connect(1,0,original,false);
+  p.port.onMessage.fire({type:'context',page:current,tiktok:true,enabled:false,reset:true});
+  f.request('https://new-related.example/current',{documentUrl:original,requestHeaders:[{name:'Authorization',value:'only-this-file'}]});f.flush();
+  assert.equal(p.last().length,1);assert.equal(p.last()[0].headers.authorization,'only-this-file');
+  for(const change of [{documentId:'other'},{frameId:1},{tabId:2},{documentUrl:'https://different.test/foryou'}]){
+    f.request('https://new-related.example/unrelated',{documentUrl:original,...change});f.flush();assert.equal(p.last().length,1);
+  }
+  p.port.onMessage.fire({type:'context',page:current,tiktok:false,enabled:false,reset:true});f.flush();assert.equal(p.last().length,0);
+});
+
+test('TED segment traffic stays bounded without evicting the actual current master or accepting another document',()=>{
+  const f=fixture(),page='https://www.ted.com/talks/current_talk',p=f.connect(1,0,page,false),root='https://related.test/root.m3u8?exact=selector';
+  p.port.onMessage.fire({type:'context',page,ted:true,enabled:false});
+  f.request(root,{documentUrl:page,responseHeaders:[{name:'Content-Type',value:'application/vnd.apple.mpegurl'}]});
+  for(let i=0;i<40;i++)f.request('https://related.test/segment'+i+'.ts',{documentUrl:page,responseHeaders:[{name:'Content-Type',value:'video/mp2t'}]});
+  f.request('https://other.test/foreign.m3u8',{documentUrl:page,documentId:'different-document'});f.flush();
+  assert.equal(p.last().length,24);assert(p.last().some(r=>r.url===root));assert.equal(p.last().filter(r=>r.kind==='segment').length,23);
+});
 
 test('Weibo Beta observes only its document requests independently of generic sniffing and never invents cached credentials',()=>{
   const f=fixture(),page='https://weibo.com/newlogin',p=f.connect(1,0,page,false);

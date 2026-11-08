@@ -74,7 +74,10 @@ func run() -> void:
 				menu.cancel_pointer("right_hand"); menu.cancel_pointer("left_hand")
 				await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 				check(viewport.get_texture().get_image().save_png(output.path_join("%s-%s.png" % [language, "on" if value else "off"])) == OK, "Localized preview saved")
-	menu.visible = false; menu.free(); viewport.free(); restarted.free(); main.free(); platform.free()
+	menu.visible = false
+	# Choice signals and deferred menu redraws may still hold these nodes this frame.
+	menu.queue_free(); viewport.queue_free(); restarted.queue_free(); main.queue_free(); platform.queue_free()
+	await process_frame; await process_frame
 	DirAccess.remove_absolute(path)
 	for failure in failures: push_error(failure)
 	print("AirPlay password settings: %d checks, %d failures" % [checks, failures.size()])
