@@ -562,12 +562,16 @@ func _glyph(target: int, icon: String, centre: Vector2, size: float, enabled: bo
 
 ## Puts the battery and clock pill centred at [centre], under the panel like SKYBOX.
 func _place_device_status(centre: Vector2) -> void:
+	var bottom: float = _backdrop.position.y - _backdrop.mesh.size.y * 0.5
+	place_session_controls(Vector2(centre.x, minf(centre.y - 0.025, bottom - 0.085)))
+
+## Shared footer at an explicit anchor, also used by panel-free browser controls.
+func place_session_controls(centre: Vector2) -> void:
 	if not device_status:
 		device_status = DeviceStatus.new()
 		device_status.minimum_width = STATUS_WIDTH
 		add_child(device_status)
-	var bottom: float = _backdrop.position.y - _backdrop.mesh.size.y * 0.5
-	_footer_centre = Vector2(centre.x, minf(centre.y - 0.025, bottom - 0.085))
+	_footer_centre = centre
 	refresh_session_controls(true)
 	if scene_overlay: _apply_overlay_node(device_status)
 
@@ -606,13 +610,15 @@ func refresh_session_controls(force: bool = false) -> void:
 		_footer_button(FREE_MOVEMENT,"standing",Vector2(cinema_left+pitch+FOOTER_DIAMETER*.5,_footer_centre.y),
 			state.get("cinema_moving",false),true,I18n.t("Free movement"))
 	_footer_button(FOLLOW, "head_follow", Vector2(follow_left + FOOTER_DIAMETER * 0.5, _footer_centre.y),
-		state.get("follow", false), true, I18n.t("Disable follow" if state.get("follow", false) else "Enable follow"))
+		state.get("follow", false), state.get("follow_enabled", true), I18n.t("Disable follow" if state.get("follow", false) else "Enable follow"))
 	if show_passthrough:
 		var alpha: bool = state.get("alpha", false)
 		_footer_button(TEMP_PASSTHROUGH, "passthrough", Vector2(follow_left + FOOTER_DIAMETER * 1.5 + FOOTER_GAP, _footer_centre.y),
 			state.get("passthrough", false), not alpha, I18n.t("Cannot switch during person passthrough" if alpha else
 			("Disable temporary passthrough" if state.get("passthrough", false) else "Enable temporary passthrough")))
+	_buttons_generation += 1
 	_update_highlights()
+	composition_layout_changed.emit()
 
 func _footer_button(target: int, icon: String, centre: Vector2, active: bool, enabled: bool, tip: String) -> void:
 	_round(target, icon, centre, FOOTER_DIAMETER, enabled, active, tip)

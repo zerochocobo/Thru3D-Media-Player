@@ -36,7 +36,7 @@ These bridges still require device-specific website/input validation.
 
 Immersive text subtitles intersect each physical eye's viewing ray with a shared video-local plane, rather than using a single-eye longitude offset. The current configurable distance is 0.1–5 m; source tests do not establish near-field headset comfort.
 
-The normal matting backend uses MNN OpenCL with four recurrent states for each eye. ROI decisions are in Kotlin's `RoiController`; the default source snapshot uses the internal 320×320 fast profile. The normal UI exposes a remembered global 256/320/384/512 inference-size choice (default 320). A cold size can take about a minute to prepare while the current size stays active. This does not allow arbitrary replacement weights. ncnn/reference paths are retained for dedicated diagnostics; normal playback has no automatic CPU fallback.
+The normal matting backend prefers MNN OpenCL, falls back to Vulkan when GPU runtime initialization requires it, and keeps four recurrent states for each eye. ROI decisions are in Kotlin's `RoiController`; the default source snapshot uses the internal 320×320 fast profile. The normal UI exposes a remembered global 256/320/384/512 inference-size choice (default 320). A cold size can take about a minute to prepare while the current size stays active. This does not allow arbitrary replacement weights. ncnn/reference paths are retained for dedicated diagnostics; normal playback has no automatic CPU fallback.
 
 The independent depth backend processes flat mono videos/photos using Depth Anything V2 Small. `depth_stabilizer` limits temporal variation before Godot renders depth-based stereo. Depth updates and display frames have distinct timing; a rendered-frame rate is not an inference rate.
 

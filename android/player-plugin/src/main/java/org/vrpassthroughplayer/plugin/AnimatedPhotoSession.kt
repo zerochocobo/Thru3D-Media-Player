@@ -104,13 +104,10 @@ internal class AnimatedPhotoSession(private val source: PhotoSource,
             if(frame!=null&&data!=null)Triple(frame[1].toInt(),frame[2].toInt(),data) else null
         }
         if(captured==null)return ExtendedPhoto.posterSnapshot(source.file,check)
-        check();val bitmap=Bitmap.createBitmap(captured.first,captured.second,Bitmap.Config.ARGB_8888)
-        var output: File?=null
-        try {ExtendedPhoto.fill(bitmap,captured.third)
-            val file=File.createTempFile("animation-effect-",".png",source.file.parentFile)
-            output=file
-            file.outputStream().use {require(bitmap.compress(Bitmap.CompressFormat.PNG,100,it))};check();return file
-        }catch(failure: Throwable){output?.delete();throw failure}finally {bitmap.recycle()}
+        check()
+        val file=File.createTempFile("animation-effect-",".t3di",source.file.parentFile)
+        try { RawPhoto.writeRgba(file,captured.first,captured.second,captured.third,check); return file }
+        catch(failure: Throwable) { file.delete(); throw failure }
     }
     override fun close() {
         synchronized(lock){if(closed)return;closed=true

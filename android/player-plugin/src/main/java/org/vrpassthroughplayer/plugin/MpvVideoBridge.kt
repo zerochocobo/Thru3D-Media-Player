@@ -526,6 +526,14 @@ internal class MpvVideoBridge(
                 render(object : Runnable {
                     override fun run() {
                         if (host.closing || stopped) return
+                        // A layer return followed at once by an eye-buffer reopen leaves two sources
+                        // still terminating (Quest 3, 2026-11-09): wait for a slot like the Surface below.
+                        if (closingSourcesFillSlots(host)) {
+                            if (android.os.SystemClock.elapsedRealtime() < surfaceReleaseDeadline) {
+                                worker.postDelayed({ render(this) }, 16L)
+                                return
+                            }
+                        }
                         if (host.layerRequested && !layerSurfaceLease.acquire(host)) {
                             // The XR swapchain backs MediaCodec. RequestClose is asynchronous:
                             // do not destroy its Surface while the preceding decoder can still write.
@@ -2053,6 +2061,11 @@ internal class MpvVideoBridge(
         event("mpv_error", session, report)
         gate.invalidate(session.id); dispose(session, true)
     }
+    /** mpv_source.cpp admits two native sources; a closing one keeps its slot until MPV terminates. */
+    private fun closingSourcesFillSlots(except: Host): Boolean {
+        val others = hosts.filter { it !== except && it.handle > 0 }
+        return others.size >= NATIVE_SOURCE_SLOTS && others.any { it.closing }
+    }
     private fun heldSources(except: Host) = JSONArray().also { held ->
         for (host in hosts.toList()) if (host !== except && host.handle > 0) {
             val wait = runCatching { JSONObject(MpvSourceNative.closeWait(host.handle)) }.getOrElse { JSONObject().put("error", it.message) }
@@ -2114,6 +2127,7 @@ internal class MpvVideoBridge(
         const val RVM_VIDEO_FPS = 30
         val ALPHA_FPS_RANGE = 10..40
         private const val SCOUT_BUFFERS = 4
+        private const val NATIVE_SOURCE_SLOTS = 2 // registry limit in native/mpv/mpv_source.cpp
         private val NO_PLANES = MpvInputBuffers.EMPTY
     }
     fun shutdown() {

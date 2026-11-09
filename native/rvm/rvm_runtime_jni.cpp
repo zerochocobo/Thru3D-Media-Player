@@ -1,6 +1,7 @@
 #include "rvm_backend.h"
 #include "rvm_frame_identity.h"
 #include "rvm_mnn_backend.h"
+#include "mnn_gpu.h"
 #include <android/hardware_buffer.h>
 #include "rvm_profiles.generated.h"
 #include <android/asset_manager_jni.h>
@@ -104,6 +105,9 @@ std::string model_tag(AAsset* asset, const std::string& model) {
 std::string mnn_cache_path(const std::string& tag, const quest::RvmProfile& profile, bool fp16) {
     std::lock_guard<std::mutex> guard(config_mutex);
     if (cache_directory.empty()) return {};
+    if (quest::mnn_uses_vulkan())
+        return cache_directory + "/mnn_rvm_vk_portable_v1_" + profile.key + "_fp32_" + tag + "_m" +
+            std::to_string(quest::mnn_vulkan_mode(profile.rgb.width <= 320 && profile.rgb.height <= 320)) + ".cache";
     return cache_directory + "/mnn_rvm_" + profile.key + (fp16 ? "_fp16_" : "_fp32_") + tag + ".cache";
 }
 
@@ -227,11 +231,13 @@ Java_org_vrpassthroughplayer_plugin_RvmNative_runtimeCapabilities(JNIEnv* env, j
         std::ostringstream json;
         bool fp16;
         { std::lock_guard<std::mutex> guard(config_mutex); fp16 = gpu_fp16; }
-        json << "{\"schema_version\":2,\"gpu_backend\":\"MNN_3.6.1_OpenCL\",\"cpu_backend\":\"ncnn\","
+        const bool vulkan = quest::mnn_uses_vulkan();
+        if (vulkan) fp16 = false;
+        json << "{\"schema_version\":2,\"gpu_backend\":\"" << (vulkan ? "MNN_3.6.1_Vulkan" : "MNN_3.6.1_OpenCL") << "\",\"cpu_backend\":\"ncnn\","
              << "\"cpu_available\":" << (QUEST_DIAGNOSTIC_MODELS ? "true" : "false") << ','
              << "\"gpu_precision\":\"" << (fp16 ? "fp16" : "fp32") << "\",\"gpu_model\":\"ratio1_upstream_pha_states\","
              << "\"state_storage\":\"backend_dependent\",\"cpu_state_storage\":\"host_fp32\","
-             << "\"gpu_state_storage\":\"MNN_OpenCL_device\",\"gpu_cpu_fallback_ops_allowed\":false,"
+             << "\"gpu_state_storage\":\"" << (vulkan ? "MNN_Vulkan_device" : "MNN_OpenCL_device") << "\",\"gpu_cpu_fallback_ops_allowed\":false,"
              << "\"layout\":\"little-endian float32 CHW\","
              << "\"max_instances\":1,\"video_integrated\":false,\"device_tested\":false,\"profiles\":[";
         for (size_t i = 0; i < quest::kRvmProfiles.size(); ++i) {
@@ -337,9 +343,9 @@ static jstring process(JNIEnv* env, jlong handle, jlong generation, jlong frame,
              << ",\"reset_first\":" << (reset_first ? "true" : "false") << ',';
         if (runtime->gpu) {
             const auto& r = runtime->gpu->report();
-            json << "\"backend\":\"MNN_OpenCL\",\"precision\":\"" << (r.fp16 ? "fp16" : "fp32")
-                 << "\",\"state_storage\":\"MNN_OpenCL_device\",\"gpu_ops\":" << r.gpu_ops
-                 << ",\"cpu_fallback_ops\":" << r.host_ops.size() << ",\"prepare_ms\":" << r.prepare_ms << '}';
+            json << "\"backend\":\"" << (r.vulkan ? "MNN_Vulkan" : "MNN_OpenCL") << "\",\"precision\":\"" << (r.fp16 ? "fp16" : "fp32")
+                 << "\",\"state_storage\":\"" << (r.vulkan ? "MNN_Vulkan_device" : "MNN_OpenCL_device") << "\",\"gpu_ops\":" << r.gpu_ops
+                 << ",\"cpu_fallback_ops\":" << r.host_ops.size() << ",\"gpu_mode\":" << r.gpu_mode << ",\"prepare_ms\":" << r.prepare_ms << '}';
             return env->NewStringUTF(json.str().c_str());
         }
         const auto& transfers = runtime->cpu->transfer_stats();
@@ -532,4 +538,7 @@ Java_org_vrpassthroughplayer_plugin_RvmNative_readAlphaPlanes(JNIEnv* env, jclas
 
 /** MnnRvmBackend::zero_copy_self_test of this process: -1 untested, 0 unavailable, 1 verified. */
 extern "C" JNIEXPORT jint JNICALL
-Java_org_vrpassthroughplayer_plugin_RvmNative_zeroCopySupport(JNIEnv*, jclass) { return zero_copy_support.load(); }
+Java_org_vrpassthroughplayer_plugin_RvmNative_zeroCopySupport(JNIEnv* env, jclass) {
+    try { return quest::mnn_uses_vulkan() ? 0 : zero_copy_support.load(); }
+    catch (const std::exception& error) { fail(env, error.what()); return 0; }
+}

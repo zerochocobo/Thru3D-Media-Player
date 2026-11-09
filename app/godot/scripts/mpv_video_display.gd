@@ -581,8 +581,8 @@ func _maybe_capture_thumbnail() -> void:
 		if state == "ready":
 			var bytes: PackedByteArray = platform.take_embedded_cover(_cover_request)
 			_cover_request = 0
-			var cover := Image.new()
-			if not bytes.is_empty() and cover.load_png_from_buffer(bytes) == OK and Thumbnails.store(local_uri, cover):
+			var cover := preload("res://scripts/raw_image.gd").decode(bytes)
+			if cover != null and Thumbnails.store(local_uri, cover):
 				_thumb_after_ms = -1
 				_thumbnail_result = {"state": "stored", "source": "embedded_cover", "width": cover.get_width(), "height": cover.get_height()}
 				thumbnail_ready.emit(local_uri)

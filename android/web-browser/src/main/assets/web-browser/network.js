@@ -322,6 +322,22 @@
       const body=state.dailymotionBodies?.get(d.url);if(body?.request_id===d.requestId)c.kind=body.format;
     }
     const previous = state.items.get(d.url);
+    if (state.archive && c.kind === 'file') {
+      c.request_original_url=c.original_url;
+      // Native prefix/range reads use the already observed final URL. Keep its
+      // current-item download relationship, while the new request keeps ONLY
+      // its own headers/cookies. Only fresh successful requests can keep this
+      // current-document relationship live; cached responses above cannot.
+      if (c.original_url === c.url && previous?.kind === 'file' && previous.original_url !== previous.url && typeof Thru3DArchive !== 'undefined') {
+        const owner=Thru3DArchive.page(state.page), original=Thru3DArchive.address(previous.original_url);
+        const parts=original?.pathname.split('/'), age=c.at-previous.at;
+        if (owner && Thru3DArchive.documentPage(previous.original_url) && parts?.length===4 &&
+            parts[1]==='download' && parts[2]===owner.id && /\.(?:mp4|webm)$/i.test(parts[3]) &&
+            Number.isFinite(age) && age>=0 && age<=TTL) {
+          c.original_url=previous.original_url;
+        }
+      }
+    }
     c.cookies = previous && previous.headers.cookie === safe.cookie ? previous.cookies : [];
     state.items.delete(d.url); state.items.set(d.url, c);
     mangoResponses?.observeMedia(state,c);
@@ -332,7 +348,7 @@
       state.items.delete(oldest(state));
     // Range traffic often repeats several times a second. Report changed credentials/resources,
     // not every segment; a periodic refresh still keeps a long-playing resource eligible.
-    if (!previous || c.at - previous.reported > 30000 || JSON.stringify(safe) !== JSON.stringify(previous.headers)) {
+    if (!previous || c.at - previous.reported > 30000 || c.original_url !== previous.original_url || JSON.stringify(safe) !== JSON.stringify(previous.headers)) {
       c.reported = c.at;
       if (!state.timer) state.timer = setTimeout(() => { state.timer = null; publish(state); }, 100);
     } else c.reported = previous.reported;

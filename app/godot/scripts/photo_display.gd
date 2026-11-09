@@ -319,7 +319,8 @@ func pan_hand(step: Vector2) -> void:
 func _ready() -> void:
 	initialize_surface(SHADER)
 	panorama_tiles.photo = self
-	panorama_tiles.reparent(panel)
+	# Tile vertices are already in the sphere's local coordinates.
+	panorama_tiles.reparent(panel, false)
 	changed.connect(gallery._refresh_textures)
 	directory.completed.connect(func(entries, complete, failure): _directory_result = {"entries": entries, "complete": complete, "error": failure, "reorder":_directory_reorder})
 	_placeholder = MeshInstance3D.new()
@@ -982,13 +983,21 @@ static func _decode(job: Dictionary) -> Dictionary:
 					return {"uncached": true, "thumbnail": thumbnail, "info": info}
 			return {"uncached": true, "info": info}
 	var image := Image.new()
-	var bytes := FileAccess.get_file_as_bytes(path)
-	if raw:
-		# A registered magazine spread keeps its 16-byte T3DI header (see Magazine.save_raw).
-		if bytes.size() == int(header.width) * int(header.height) * 4 + 16 and bytes.slice(0, 4).get_string_from_ascii() == "T3DI": bytes = bytes.slice(16)
-		if bytes.size() != int(header.width) * int(header.height) * 4: return {"error": "Image unavailable"}
-		image = Image.create_from_data(int(header.width), int(header.height), false, Image.FORMAT_RGBA8, bytes)
+	if raw or header.codec == "rgba":
+		var file := FileAccess.open(path, FileAccess.READ)
+		if not file: return {"error": "Image unavailable"}
+		var prefix := file.get_buffer(16)
+		if file.get_length() == 16 + int(header.width) * int(header.height) * 4 and prefix.slice(0, 4).get_string_from_ascii() == "T3DI":
+			file.close()
+			image = preload("res://scripts/raw_image.gd").read(path)
+			if image == null or image.get_size() != Vector2i(int(header.width), int(header.height)): return {"error": "Image unavailable"}
+		else:
+			# Existing HEIF/extended image bridges supply headerless RGBA with explicit dimensions.
+			if not raw or file.get_length() != int(header.width) * int(header.height) * 4: return {"error": "Image unavailable"}
+			file.seek(0)
+			image = Image.create_from_data(int(header.width), int(header.height), false, Image.FORMAT_RGBA8, file.get_buffer(file.get_length()))
 	else:
+		var bytes := FileAccess.get_file_as_bytes(path)
 		var code := image.load_jpg_from_buffer(bytes) if header.codec == "jpg" else (image.load_png_from_buffer(bytes) if header.codec == "png" else image.load_webp_from_buffer(bytes))
 		if code != OK or image.is_empty(): return {"error": "Image unavailable"}
 	Info.orient(image, int(info.get("orientation", 1)))

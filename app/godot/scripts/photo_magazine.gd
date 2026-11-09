@@ -128,15 +128,7 @@ static func remove_file(path: String) -> void:
 ## Native depth/stereo read the joined spread as raw RGBA rows. Encoding it as PNG/JPEG cost
 ## 0.5 s for a 3.6 MP spread on Quest 3 (seconds for PDF spreads), and Android decoded it twice more.
 static func save_raw(image: Image, path: String) -> bool:
-	if image.get_format() != Image.FORMAT_RGBA8 or image.has_mipmaps():
-		image = image.duplicate() as Image
-		image.clear_mipmaps(); image.convert(Image.FORMAT_RGBA8)
-	var file := FileAccess.open(path, FileAccess.WRITE)
-	if file == null: return false
-	file.store_buffer("T3DI".to_ascii_buffer())
-	file.store_32(image.get_width()); file.store_32(image.get_height()); file.store_32(1)
-	file.store_buffer(image.get_data())
-	return file.get_error() == OK
+	return preload("res://scripts/raw_image.gd").write(image, path)
 
 ## Equal-height pages with no crop or gap. Bound the finished spread to 8192 x 4096.
 static func compose(left: Image, right: Image, rtl: bool) -> Image:

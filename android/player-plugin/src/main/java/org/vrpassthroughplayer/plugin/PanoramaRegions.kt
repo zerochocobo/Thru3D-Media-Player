@@ -75,8 +75,10 @@ internal class PanoramaRegions(private val context: () -> Context?) {
                     }) else region!!.decodeRegion(rectangle, BitmapFactory.Options().apply {
                     inSampleSize = 1; inPreferredConfig = Bitmap.Config.ARGB_8888; inScaled = false
                 }) ?: error("Tile unavailable")
-                val file = File(directory ?: error("Closed"), "tile.png")
-                try { file.outputStream().use { check(image.compress(Bitmap.CompressFormat.PNG, 100, it)) } }
+                val file = File(directory ?: error("Closed"), "tile.t3di")
+                try { BitmapTransfer.write(file, image) {
+                    if (closed || session != epoch.get()) throw InterruptedException()
+                } }
                 finally { image.recycle() }
                 if (session == epoch.get() && !closed) state = JSONObject().put("state", "tile")
                     .put("column", column).put("row", row).put("path", file.path)
@@ -97,7 +99,7 @@ internal class PanoramaRegions(private val context: () -> Context?) {
         decoder?.recycle(); decoder = null
         tiff = null; width = 0; height = 0
         // Only this component's generated tile directory; never traverses source/media storage.
-        directory?.let { File(it, "tile.png").delete(); it.delete() }; directory = null
+        directory?.let { File(it, "tile.t3di").delete(); it.delete() }; directory = null
     }
     fun close() { closed = true; epoch.incrementAndGet(); pending.set(0); worker.execute { detach() }; worker.shutdown() }
     companion object { const val TILE = 1024 }

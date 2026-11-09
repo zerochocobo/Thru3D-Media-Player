@@ -1,5 +1,13 @@
 extends "res://scripts/ray_menu.gd"
 
+signal screen_lock_blocked(hand: String)
+const ScreenLockMenu := preload("res://scripts/screen_lock_menu.gd")
+var screen_lock_ui := ScreenLockMenu.new(self)
+
+func flash_screen_lock() -> void:
+	screen_lock_ui.flash_until = Time.get_ticks_msec() + 1500
+	refresh_values()
+
 signal action_requested(operation: String)
 signal favorite_requested
 ## Values refreshed in place (clock, icons, toggles): menu layers repaint only if the capture changed.
@@ -276,6 +284,7 @@ var _state: Dictionary = {}
 var _status: Label3D
 var _panel_status: Label3D
 var _info: Label3D
+const VALUES_REFRESH_MS := 250
 var _refresh_ms := 0
 var _title: Label3D
 var _elapsed: Label3D
@@ -606,6 +615,7 @@ func refresh_values() -> void:
 	composition_values_changed.emit()
 	if not visible:
 		return
+	_refresh_ms = Time.get_ticks_msec() + VALUES_REFRESH_MS # a fresh state needs no periodic pass
 	_state = state_provider.call() if state_provider.is_valid() else {}
 	_state["bar_transparency"] = bar_transparency
 	if _depth_open and _depth_boost_available() and _state.get("depth_requested", false) and float(_state.get("depth_strength", 0.0)) > DepthStrength.MAX and not _depth_boost:
@@ -691,7 +701,6 @@ func _process(_delta: float) -> void:
 		_favorite_notice = ""; _favorite_notice_until = 0
 		if visible: refresh()
 	if visible and Time.get_ticks_msec() >= _refresh_ms:
-		_refresh_ms = Time.get_ticks_msec() + 250
 		refresh_values()
 
 func _draw() -> void:
@@ -1779,6 +1788,7 @@ func _plane_point(origin: Vector3, direction: Vector3, target: int = NONE) -> Va
 	return project_pointer(origin, direction, plane)
 
 func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+	if tracked and screen_lock_ui.blocked(int(ray_hit(origin, direction).get("target", -1)), hand): return true
 	if has_expanded_library() and not _controls_pointer_capture():
 		if expanded_library.has_pointer_capture() or (tracked and ray_hit(origin, direction).get("library", false)):
 			super.update_pointer(hand, origin, direction, false)
@@ -2086,7 +2096,7 @@ func _draw_panel() -> void:
 	var tile_rows := ceili(tiles.size() / 2.0)
 	var alpha_fps: bool = section == 1 and _enabled("alpha")
 	var depth_position_setting: bool = section == 1 and _cast_allowed(DepthPosition.KEY)
-	var height := 0.12 + tile_rows * 0.105 + (0.345 + ((0.085 + (0.27 if _alpha_expanded else 0.0)) if alpha_fps else 0.0) if section == 1 else 0.36)
+	var height := 0.12 + tile_rows * 0.105 + (0.430 + ((0.085 + (0.27 if _alpha_expanded else 0.0)) if alpha_fps else 0.0) if section == 1 else 0.36)
 	if depth_position_setting: height += 0.085
 	if alpha_fps and _alpha_expanded and _state.get("portrait_requested", false): height += 0.17
 	if alpha_fps and _state.get("flat_passthrough_requested", false): height += 0.17
@@ -2165,6 +2175,12 @@ func _draw_panel() -> void:
 				choices.field(null, {"key": "portrait_enhanced", "value": _state.get("portrait_enhanced", false),
 					"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}, Vector2(0.21, y), 0.46, 0.05)
 		y -= 0.085
+		var status := _label(I18n.t("Show status information"), Vector3(-0.50, y, 0.004), TEXT_BODY)
+		status.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		choices.field(null, {"key": "show_status_info", "value": _state.get("show_status_info", true),
+			"hint": "Show subtitle, narration and loading status in the upper left.",
+			"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}, Vector2(0.21, y), 0.46, 0.05)
+		y -= 0.085
 		var fps := _label(I18n.t("Show FPS"), Vector3(-0.50, y, 0.004), TEXT_BODY)
 		fps.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		choices.field(null, {"key": "show_fps", "value": _state.get("show_fps", false),
@@ -2235,10 +2251,10 @@ func _settings_key() -> String:
 	return str([_state.get("cast", {})]) + str([_state.get("source_uri", ""), _state.get("has_video", false),
 		_state.get("portrait_requested", false), _state.get("flat_passthrough_requested", false), _state.get("portrait_auto", true), _state.get("portrait_enhanced", false),
 		_state.get("playback_mode", "single"), _state.get("seek_mode", "speed"), _state.get("depth_render", "stretch"), _state.get("depth_text_protection", true), _state.get("stereo", false), _state.get("geometry", 0),
-		_state.get("show_fps", false), _state.get("alpha_keep_background", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
+		_state.get("show_status_info", true), _state.get("show_fps", false), _state.get("alpha_keep_background", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
 		_state.get("immersive_adjustment_gauges", true), _state.get("video_auto_3d", false),
-		_state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("screen_scene_curve", true), _state.get("cinema_lights", "auto"),
+		_state.get("screen_edit_locked", false), _state.get("screen_default_locked", false), _state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("screen_scene_curve", true), _state.get("cinema_lights", "auto"),
 		_state.get("screen_curve_modes_available", false), _state.get("screen_curve_mode", "horizontal"),
 		_state.get("video_aspect_preset", "original"), _state.get("depth_requested", false),
 		_state.get("error", ""), _state.get("error_report", {}), _alpha_expanded])
@@ -2327,6 +2343,7 @@ func _time(milliseconds: int) -> String:
 	return "%d:%02d:%02d" % [seconds / 3600, (seconds / 60) % 60, seconds % 60] if seconds >= 3600 else "%02d:%02d" % [seconds / 60, seconds % 60]
 
 func _activate_hit(hit: Dictionary) -> void:
+	if screen_lock_ui.blocked(int(hit.target), str(hit.get("hand", ""))): return
 	if int(hit.target) == SEEK:
 		if _can_seek():
 			var fraction := clampf((float(hit.point.x) + BAR_SEEK / 2) / BAR_SEEK, 0.0, 1.0)
@@ -2335,6 +2352,7 @@ func _activate_hit(hit: Dictionary) -> void:
 		super._activate_hit(hit)
 
 func _activate(target: int) -> void:
+	if screen_lock_ui.activate(target): return
 	if section == 0 and _subtitle_open and target in [SUBTITLE_GENERATE, SUBTITLE_TASK_CANCEL, SUBTITLE_TASKS]:
 		setting_requested.emit("listening_generate" if target == SUBTITLE_GENERATE else ("listening_cancel" if target == SUBTITLE_TASK_CANCEL else "subtitle_tasks_open"), _state.get("subtitle_task", {}).get("id", ""))
 		refresh(); return
@@ -2853,8 +2871,10 @@ func _draw_screen_settings() -> void:
 		# The beach screen itself resizes; a picture-inside-the-wall size only fits the cinema.
 		var scene_picture: bool = _state.get("screen_scene_picture", true)
 		var lift := 0.0 if scene_picture else 0.09
-		var top := _settings_frame((0.56 if scene_curve else 0.40) - lift)
+		var top := _settings_frame((0.56 if scene_curve else 0.40) - lift + 0.08)
 		_draw_settings_tabs(top - 0.055)
+		screen_lock_ui.row(top - 0.15)
+		top -= 0.08
 		# The fixed cinema screen keeps its wall; only the picture inside it scales.
 		if scene_picture: _adjustment_row(CINEMA_PICTURE_SIZE, "cinema_picture_size", "Picture size", Vector3(40, 100, 5), top - .16)
 		_draw_video_aspect(top - .25 + lift)
@@ -2867,10 +2887,12 @@ func _draw_screen_settings() -> void:
 	var spatial_fov: bool = flat and _state.get("spatial_video", false) and _state.get("spatial_metadata", {}).has("horizontal_fov_degrees")
 	var cinema: bool = flat and _state.get("screen_cinema", false)
 	var curve_mode: bool = flat and not cinema and _state.get("screen_curve_modes_available", false)
-	var top := _settings_frame(0.24 + (0.665 if flat else 0.0) + (0.10 if cinema else 0.0) + (0.08 if spatial_fov else 0.0) + (0.09 if curve_mode else 0.0))
+	var top := _settings_frame(0.24 + (0.835 if flat else 0.0) + (0.10 if cinema else 0.0) + (0.08 if spatial_fov else 0.0) + (0.09 if curve_mode else 0.0))
 	_draw_settings_tabs(top - 0.055)
 	var y := top - 0.16
 	if flat:
+		screen_lock_ui.row(y)
+		y -= 0.08
 		var cinema_title := _label(I18n.t("Cinema screen"), Vector3(-0.50, y, 0.004), TEXT_BODY)
 		cinema_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		for option in [{"target": SCREEN_CINEMA_OFF, "label": "Off", "value": false}, {"target": SCREEN_CINEMA, "label": "On", "value": true}]:
@@ -2884,7 +2906,7 @@ func _draw_screen_settings() -> void:
 				var preset: Dictionary = ScreenPresets.ITEMS[index]
 				_button(SCREEN_PRESET + index, I18n.t(preset.title) + "\n" + preset.detail, Vector2(-0.375 + index * 0.25, y), Vector2(0.235, 0.085))
 				set_label_size(_buttons.back().node.get_child(0), TEXT_AUX)
-				_tips[SCREEN_PRESET + index] = I18n.t("Apply size, distance and upright placement while preserving video proportions. Choose Lock current settings to make recenter restore this setup.")
+				_tips[SCREEN_PRESET + index] = I18n.t("Apply size, distance and upright placement while preserving video proportions. Choose Save current settings to restore this setup when recentering.")
 			y -= 0.11
 			var height_title := _label(I18n.t("Eye level"), Vector3(-0.50, y, 0.004), TEXT_BODY)
 			height_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -2902,12 +2924,18 @@ func _draw_screen_settings() -> void:
 		y -= 0.075
 		_draw_video_aspect(y)
 		y -= 0.20
-		for option in [{"target": SCREEN_AUTO_DEFAULT, "label": "Use latest adjustments", "locked": false}, {"target": SCREEN_SET_DEFAULT, "label": "Lock current settings", "locked": true}]:
+		var recenter_title := _label(I18n.t("When recentering"), Vector3(-0.50, y, 0.004), TEXT_BODY)
+		recenter_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		for option in [{"target": SCREEN_AUTO_DEFAULT, "label": "Latest settings", "locked": false}, {"target": SCREEN_SET_DEFAULT, "label": "Saved settings", "locked": true}]:
 			_button(option.target, I18n.t(option.label), Vector2(0.16 + (0.1685 if option.locked else -0.1685), y), Vector2(0.323, 0.055))
 			set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
 			_buttons.back().base_color = SELECTED if bool(_state.get("screen_default_locked", false)) == option.locked else TILE
-		_tips[SCREEN_AUTO_DEFAULT] = I18n.t("Do not lock a default. Each adjustment becomes the latest setting. Controller recenter and player Center keep that size, distance and viewing height. This also removes any previously locked settings.")
-		_tips[SCREEN_SET_DEFAULT] = I18n.t("Lock the current size, distance, cinema mode and viewing height. Controller recenter and player Center restore them after temporary adjustments. Click again to replace the locked settings with the current ones.")
+		_tips[SCREEN_AUTO_DEFAULT] = I18n.t("Recenter keeps the latest screen size, distance and height.")
+		_tips[SCREEN_SET_DEFAULT] = I18n.t("Recenter restores the saved screen size, distance and height.")
+		y -= 0.08
+		_button(ScreenLockMenu.SAVE, I18n.t("Save current settings"), Vector2(0.16, y), Vector2(0.646, 0.055))
+		set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
+		_tips[ScreenLockMenu.SAVE] = I18n.t("Recenter restores the saved screen size, distance and height.")
 		y -= 0.005
 		y -= 0.09
 		if curve_mode:
@@ -3244,8 +3272,10 @@ func _refresh_adjustments() -> void:
 		button.enabled = shown
 		button.node.visible = shown
 		button.node.get_child(0).text = button.reset_caption if shown else ""
+	screen_lock_ui.apply()
 
 func _set_adjustment_at(x: float) -> void:
+	if screen_lock_ui.blocked(_adjust_target, _adjust_hand): return
 	if not _adjust_rows.has(_adjust_target): return
 	var row: Dictionary = _adjust_rows[_adjust_target]
 	var value := clampf(snappedf(lerpf(row.span.x, row.span.y, clampf((x - row.left) / row.width, 0, 1)), row.span.z), row.span.x, row.span.y)
@@ -3259,6 +3289,7 @@ func _set_adjustment_at(x: float) -> void:
 	refresh_values()
 
 func _activate_adjustment(target: int) -> void:
+	if screen_lock_ui.activate(target): return
 	_finish_adjustment()
 	if target == CLOSE:
 		dismiss()
@@ -3287,7 +3318,8 @@ func _activate_adjustment(target: int) -> void:
 		if (target == SCREEN_CINEMA) != bool(_state.get("screen_cinema", false)):
 			adjustment_requested.emit("screen_cinema", target == SCREEN_CINEMA)
 	elif _adjustment == "screen" and target in [SCREEN_SET_DEFAULT, SCREEN_AUTO_DEFAULT] and _state.get("has_video", false) and int(_state.get("geometry", 0)) == 0:
-		adjustment_requested.emit("screen_set_default", target == SCREEN_SET_DEFAULT)
+		if target == SCREEN_AUTO_DEFAULT: adjustment_requested.emit("screen_set_default", false)
+		elif not _state.get("screen_default_locked", false): adjustment_requested.emit("screen_set_default", true)
 	elif _adjustment == "screen" and target == SPATIAL_FOV and _state.get("spatial_fov_available", false):
 		setting_requested.emit("spatial_match_fov", true)
 	elif _adjustment == "screen" and target == ROTATION_RESET:

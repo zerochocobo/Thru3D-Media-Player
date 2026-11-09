@@ -27,7 +27,7 @@ internal object PhotoPortrait {
         val depth = JSONObject(File(source.parentFile,"depth.json").readText())
         require(depth.optString("photo_cache") == "da2-518-stretch-v2" && nearFile.length() == 518L*518*4)
         val directory = File(source.parentFile,"portrait").apply { mkdirs() }
-        val sourceMask = File(directory,"mask.png")
+        val sourceMask = File(directory,"mask.t3di")
         if (!sourceMask.isFile) {
             check()
             val rgb = PhotoDepthInput.prepare(source,EDGE,EDGE).rgb
@@ -62,14 +62,13 @@ internal object PhotoPortrait {
                 Canvas(full).drawBitmap(small,null,Rect(0,0,w,h),Paint(Paint.FILTER_BITMAP_FLAG))
                 val temporary = File(directory,"mask-$token.tmp")
                 try {
-                    temporary.outputStream().use { require(full.compress(Bitmap.CompressFormat.PNG,100,it)) }
+                    BitmapTransfer.write(temporary, full, check)
                     check(); require(temporary.renameTo(sourceMask))
                 } finally { temporary.delete() }
             } finally { full.recycle(); small.recycle() }
         }
         check()
-        val maskBounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(sourceMask.path,maskBounds)
+        val maskBounds = PhotoBitmap.bounds(sourceMask)
         val (eyeWidth,h) = PhotoStereo.size(maskBounds.outWidth,maskBounds.outHeight)
         val w = eyeWidth*2
         val target = File(directory,"matte-v2-r$rotation-${(strength*100).roundToInt()}-${w}x$h.r8")

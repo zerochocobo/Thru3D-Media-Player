@@ -77,6 +77,7 @@ const HOVER_INTERVAL_MS := 33
 const SCROLL_HOVER_HOLD_MS := 250
 var menu: Node
 var opened := false
+var scene_suspended := false
 var data := {}
 var draft := ""
 var hand := ""
@@ -88,6 +89,7 @@ var low_end := false
 var window_created: Callable
 var paired_layout := false
 var focused_window := 1
+var footer_window_id := 0 # Stable owner; pointer focus never moves the global controls.
 var pointer_window := 1
 var tabs_open := false
 var window_action := {}
@@ -146,7 +148,7 @@ func configure_quality(value: bool) -> void:
 		var selected: bool = bridge.configureViewport(value)
 		if not JavaClassWrapper.get_exception(): low_end = selected
 func supported() -> bool: return Distribution.web_browser_enabled() and Methods.supports(menu.platform, "web_browser_navigate")
-func active() -> bool: return opened and menu.visible and menu.section == menu.Section.WEB
+func active() -> bool: return opened and not scene_suspended and menu.visible and menu.section == menu.Section.WEB
 func cinema_video_active() -> bool:
 	return cinema_video_provider.is_valid() and bool(cinema_video_provider.call())
 
@@ -171,6 +173,10 @@ func open(url: String = "", retained: Dictionary = {}) -> void:
 	next_poll = 0; menu.refresh()
 
 func close(force_release: bool = false) -> void:
+	# Scene selection (including its image picker) temporarily owns the library.
+	# Ordinary menu polling/dismissal must not close or hibernate the original page.
+	if scene_suspended and not force_release: return
+	scene_suspended = false
 	var retaining: bool = playback_return.get("retained", false) and playback_return.get("opening", false)
 	ChineseInput.close("browser"); _keyboard_seen = 0; _keyboard_target.clear()
 	cancel()
@@ -184,6 +190,17 @@ func close(force_release: bool = false) -> void:
 	handoff_context.clear()
 	for item in windows.values(): item.save_layout(); item.dismiss()
 	tabs_open = false
+
+func set_scene_suspended(value: bool) -> void:
+	if scene_suspended == value: return
+	scene_suspended = value and opened
+	if scene_suspended:
+		if handoff: _cancel_handoff()
+		cancel(); menu.system_text_input.cancel("web_browser"); ChineseInput.close("browser")
+		for item in windows.values():
+			item.effect_controls.finish_drag(); item.effect_controls._hide_controls(); item.dismiss()
+	elif active():
+		next_poll = 0; tick(); menu.refresh()
 
 func tick() -> void:
 	sync_effects()
@@ -203,7 +220,7 @@ func tick() -> void:
 				if snapshot is Dictionary and snapshot != data: data = snapshot; changed = true
 			if changed and (not opened or hand.is_empty()): menu.refresh()
 	if not active():
-		if opened: close()
+		if opened and not scene_suspended: close()
 		return
 	if Time.get_ticks_msec() < next_poll: return
 	next_poll = Time.get_ticks_msec() + 250
@@ -230,6 +247,7 @@ func tick() -> void:
 	if not opening and ids.is_empty():
 		close(); list_mode = ""; menu.refresh(); return
 	paired_layout = ids.size() > 1
+	_sync_footer_window(ids)
 	for item in windows.values():
 		if item.visible and item.window_id not in ids:
 			cancel(); item.save_layout(); item.dismiss(); item.placed = false
@@ -575,11 +593,23 @@ func default_window_offset(id: int) -> Vector3:
 	return best
 func ensure_window(id: int, show: bool = true) -> void:
 	if not menu.is_inside_tree(): return
+	if footer_window_id == 0: footer_window_id = id
 	if not windows.has(id):
 		var item := preload("res://scripts/web_browser_window.gd").new()
 		item.configure(self, id); menu.get_tree().root.add_child(item); windows[id] = item
 		if window_created.is_valid(): window_created.call(item)
 	if show and not windows[id].visible: windows[id].show_window()
+
+func _sync_footer_window(ids: Array) -> void:
+	if ids.has(footer_window_id): return
+	var ordered := ids.duplicate(); ordered.sort()
+	footer_window_id = focused_window if ids.has(focused_window) else int(ordered[0]) if not ordered.is_empty() else 0
+	for item in windows.values():
+		item.effect_controls.set_global_footer(item.window_id == footer_window_id)
+
+func sync_follow(follow: RefCounted, head: Transform3D, allowed: bool) -> void:
+	for item in windows.values(): item.sync_follow(follow, head, allowed and active())
+
 func refresh_windows() -> void:
 	for item in windows.values():
 		if item.visible: item.refresh()
@@ -679,6 +709,7 @@ func draw_window(host: Node) -> void:
 	if not on_screen: host.draw_resize_handles()
 
 func draw_page_content(host: Node, bounds: Rect2) -> void:
+	if host.page_input_blocked(): return
 	if start_page.active(host.window_id): start_page.draw(host)
 	else:
 		host._button(WEB, "", bounds.get_center(), bounds.size)
@@ -692,9 +723,10 @@ func draw_page_content(host: Node, bounds: Rect2) -> void:
 ## The native handoff is the browser's main action: an accent pill with icon and words,
 ## muted on pages the player cannot take over.
 func beta_available(current: Dictionary) -> bool:
-	# Site-level presentation survives homepage/loading snapshots. Current-video
-	# identity and media readiness still gate the actual handoff.
-	return Methods.supports(menu.platform, "web_video_resolve_beta") and (beta_site_available(current) or Sites.supports_beta_url(str(current.get("url", ""))))
+	# Foreign adapters remain available only through their actual webpage test
+	# buttons. A sample passing does not advertise a site-wide toolbar action.
+	var url := str(current.get("url", ""))
+	return Methods.supports(menu.platform, "web_video_resolve_beta") and Sites.beta_replaces_legacy_url(url) and (beta_site_available(current) or Sites.supports_beta_url(url))
 
 func toolbar_tools(host: Node, current: Dictionary) -> Array:
 	var result: Array = []
@@ -932,11 +964,12 @@ func action(target: int) -> bool:
 				_begin_handoff()
 				menu.refresh()
 		18:
-			if not beta_available(window_state(focused_window)): return true
 			if handoff:
-				if not handoff_beta: return true
+				# A page-only experiment still needs a working Cancel while pending.
+				if not handoff_beta or int(handoff_context.get("window", 0)) != focused_window: return true
 				_handoff_failed(); menu.refresh()
 			else:
+				if not beta_available(window_state(focused_window)): return true
 				_begin_handoff(true); menu.refresh()
 	return true
 

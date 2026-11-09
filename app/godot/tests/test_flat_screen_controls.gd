@@ -80,7 +80,7 @@ func _run() -> void:
 			check(is_equal_approx(video.screen_scale, 1) and is_equal_approx(video.screen_distance, 2), "%s down pulls closer symmetrically" % mode)
 			main._on_pointer_release("trigger_click", "right_hand")
 			check(main._grab.is_empty() and not menu.visible, "Release finishes without reopening controls")
-			for corner in [0, 1]:
+			for corner in [1, 3]:
 				menu.visible = true; menu.refresh()
 				video.set_screen_scale(1)
 				var hit: Vector3 = video.panel.to_global(video.screen_corner(corner))

@@ -18,7 +18,7 @@ Godot scenes / GDScript / OpenXR
 Android Kotlin plugin: media libraries, permissions, playback sessions
               │ JNI
 libmpv / FFmpeg → decoder Surface or shared textures → OpenXR layers / Godot
-              └ MNN OpenCL: recurrent matting and monocular depth
+              └ MNN OpenCL/Vulkan: recurrent matting and monocular depth
 ```
 
 | Directory | Purpose |

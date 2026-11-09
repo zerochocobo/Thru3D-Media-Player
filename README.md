@@ -4,24 +4,25 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.17.3** (Android versionCode **81**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.17.4** (Android versionCode **83**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
 ## Features
 
-- Compatible Twitch public clips, TikTok detail pages, TED and Dailymotion Play Beta with featured entries and retained-page return; foreign sites keep the manual player action. See [site scope](docs/WEB_BROWSER.md).
+- AI GPU compatibility with OpenCL preference and Vulkan fallback, lossless internal image transfers, linked flat-video screen-edit locking and optional passive status display. See [GPU/model scope](docs/MODELS.md).
+- Shared browser/global controls. Foreign-site playback remains experimental through in-page buttons; featured/toolbar Beta promotion is withdrawn. iQIYI/Youku directory badges are also withdrawn pending validation. See [current site status](docs/WEB_BROWSER.md).
+
 - Browser history shortcuts and two-step restart/quit actions with session usage information.
 
 - Photo autoplay from the final displayed image, continuous photo rotation/upright layouts and continuous screen curvature, including eligible horizontal/vertical/spherical video modes.
-- Compatible iQIYI, Douyin and Niconico Play Beta; foreign sites retain the legacy manual button alongside Beta. Site/content/device limits apply.
 - Beach-cinema integration with day/night, sun/moon and handheld-firework controls. Public Git excludes scenery/model/media payloads; see [scenery preparation](docs/SCENERY.md).
 
-- Pure-page browser view with preserved page interaction, browser fullscreen without automatic native handoff, and compatible Youku Play Beta. Existing media-server manual buttons retain original-page return.
+- Pure-page browser view with preserved page interaction, browser fullscreen without automatic native handoff, and experimental in-page playback. Existing media-server manual buttons retain original-page return.
 - Optional globally remembered AirPlay password requirement; pairing without a user-entered code is the default. See [AirPlay scope](docs/AIRPLAY.md).
 
 - Experimental browser-page/focused-region 3D and person passthrough; independent AirPlay mirror windows and shared DLNA/AirPlay reception controls. See [browser effects](docs/WEB_BROWSER.md) and [AirPlay scope](docs/AIRPLAY.md).
-- Compatible Bilibili, Weibo, Tencent, Mango and Youku Play Beta handoffs; global playback-speed memory, corner rotation and cinema resizing.
+- Scoped Bilibili, Weibo, Tencent, Mango and Douyin Play Beta routes; global playback-speed memory, corner rotation and cinema resizing.
 
 - Six UI palettes plus custom background/accent/text colors, with preview, quick switching and remembered choices; media and subtitle colors stay independent. See [appearance](docs/APPEARANCE.md).
 - 123 cloud drive through official OAuth, round-based video shuffle and adjustable comic narration/audition speed; earlier neighbour 3D preparation for photos and reading.

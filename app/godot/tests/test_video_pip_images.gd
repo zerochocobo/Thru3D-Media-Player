@@ -31,6 +31,7 @@ func run() -> void:
 	var mode_position: Vector2 = window._buttons.filter(func(b): return b.target == 5)[0].rect.get_center()
 	var image := Image.create(320, 640, false, Image.FORMAT_RGBA8); image.fill(Color(0.9,0.2,0.1))
 	var path := ProjectSettings.globalize_path("res://../../build/output/video-pip/image-fixture.png")
+	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
 	image.save_png(path)
 	pip.load_image(window, "cloud://account/reference.png"); await create_timer(0.05).timeout
 	check(window.image_loading and not window.image_mode and host.uris.size() == 1, "Loading retains the original video until the picture is ready")

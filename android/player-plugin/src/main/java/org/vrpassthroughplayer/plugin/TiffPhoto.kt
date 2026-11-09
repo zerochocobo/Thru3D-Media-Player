@@ -49,7 +49,7 @@ internal object PhotoBitmap {
         } else BitmapFactory.decodeFile(file.path, result)
         return result
     }
-    fun orientation(file: File): Int = if(ExtendedPhoto.kind(file)!=0) {
+    fun orientation(file: File): Int = if(rawBounds(file)!=null) 1 else if(ExtendedPhoto.kind(file)!=0) {
         val id=ExtendedImageNative.open(file.path,512,true)
         try {if(id>0)ExtendedImageNative.info(id)?.get(5)?.toInt()?:1 else 1}finally {if(id>0)ExtendedImageNative.close(id)}
     } else if(isHdr(file)) 1 else if (isTiff(file)) TiffPhotoNative.inspect(file.path)?.get(2) ?: 1
@@ -63,7 +63,7 @@ internal object PhotoBitmap {
             if (String(header, 0, 4, Charsets.US_ASCII) != "T3DI") return null
             val words = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
             val w=words.getInt(4); val h=words.getInt(8)
-            require(words.getInt(12)==1 && w in 1..65535 && h in 1..65535 && w.toLong()*h<=1_000_000_000L && input.length()==16+w.toLong()*h*4)
+            require(words.getInt(12) in 1..2 && w in 1..65535 && h in 1..65535 && w.toLong()*h<=1_000_000_000L && input.length()==16+w.toLong()*h*4)
             intArrayOf(w,h)
         }
     }
@@ -96,7 +96,12 @@ internal object PhotoBitmap {
             else TiffPhotoNative.pixels(file.path, left, top, width, height, sample, Runnable { check() }, cache?.path) ?: error("PHOTO_DECODE_FAILED")
         check()
         val image = Bitmap.createBitmap((width + sample - 1) / sample, (height + sample - 1) / sample, Bitmap.Config.ARGB_8888)
-        try { image.copyPixelsFromBuffer(ByteBuffer.wrap(bytes)); return image }
+        try {
+            if (raw != null && RawPhoto.straightAlpha(file)) ExtendedPhoto.fill(image, bytes)
+            // Legacy v1 HDR caches store premultiplied Bitmap pixels, unlike straight-alpha v2.
+            else image.copyPixelsFromBuffer(ByteBuffer.wrap(bytes))
+            return image
+        }
         catch (error: Throwable) { image.recycle(); throw error }
     }
     fun decode(file: File, options: BitmapFactory.Options, check: () -> Unit = {}): Bitmap? {
@@ -133,8 +138,9 @@ internal object NativePhoto {
             ((info.outWidth + sample - 1) / sample).toLong() * ((info.outHeight + sample - 1) / sample) > pixels) sample *= 2
         val image = PhotoBitmap.region(source, 0, 0, info.outWidth, info.outHeight, sample, check, cache)
         try {
-            val preview = File(directory, "preview.png")
-            preview.outputStream().use { require(image.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+            val preview = File(directory, "preview.t3di")
+            BitmapTransfer.write(preview, image, check)
+            metadata.put("raw_rgba", true).put("decoded_width", image.width).put("decoded_height", image.height)
             val scale = minOf(1.0, 384.0 / maxOf(image.width, image.height))
             val thumbnail = Bitmap.createScaledBitmap(image, maxOf(1, (image.width * scale).toInt()), maxOf(1, (image.height * scale).toInt()), true)
             try {

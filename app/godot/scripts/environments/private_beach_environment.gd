@@ -19,6 +19,8 @@ const Drag := preload("res://scripts/environments/private_beach_drag.gd")
 const NightProps := preload("res://scripts/environments/private_beach_night_props.gd")
 const ShoreProps := preload("res://scripts/environments/private_beach_shore_props.gd")
 const Handheld := preload("res://scripts/environments/private_beach_handheld.gd")
+const Crabs := preload("res://scripts/environments/private_beach_crabs.gd")
+const CelestialEggs := preload("res://scripts/environments/private_beach_celestial_easter_eggs.gd")
 const HALO := preload("res://shaders/private_beach/body_halo.gdshader")
 const SAND := preload("res://shaders/private_beach/sand.gdshader")
 const GROUND_VISIBILITY := preload("res://shaders/private_beach/sand_visibility.gdshader")
@@ -36,7 +38,6 @@ const LOW_SHADERS := {
 	PROPS: preload("res://shaders/private_beach/props_low.gdshader"),
 	FOLIAGE: preload("res://shaders/private_beach/foliage_low.gdshader"),
 	GRILL: preload("res://shaders/private_beach/grill_low.gdshader"),
-	BACKDROP: preload("res://shaders/private_beach/time_backdrop_low.gdshader"),
 }
 const DAY_HOURS := 9.0
 const NIGHT_HOURS := 21.0
@@ -46,7 +47,7 @@ const SURF_PATH := "res://environments/private_beach/surf.wav"
 const SURF_VOLUME_DB := -24.0
 const SURF_FADE_SECONDS := 1.5
 const HALO_DISTANCE := 300.0
-const CONTROL_RAY_MARGIN := .22
+const CONTROL_RAY_MARGIN := .008
 const CENTER_CHAIR := Vector2(0,9)
 ## Eye of an upright sitter over the rear of the flat seat (cushion z -.87…+.39,
 ## top ≈.5, hinge +.4), relative to the lounger's authored centre. The real body
@@ -55,6 +56,7 @@ const LOUNGER_EYE := Vector3(0,1.2,.16)
 const CHAIR_CONTACT_SIZE := Vector2(1.5,2.7)
 ## The grill stands under the string of lights, near the loungers.
 const GRILL_SPOT := Vector2(-2.3,12.5)
+const NEAR_ROCK_SPOT := Vector2(-22,-3.8)
 const SCREEN_GRIP_MARGIN := .3
 ## Cloud drift is imperceptible per frame; each update also redraws the sky radiance.
 const CLOUD_UPDATE_SECONDS := 1.0
@@ -90,6 +92,7 @@ var screen_error := ""
 ## Optional live tracked eye in scene coordinates. Invalid tracking rejects
 ## a screen edit; navigation's fixed standing anchor is not the actual head.
 var viewer_position_provider: Callable
+var viewer_mouth_provider: Callable
 ## Viewer-chosen gain for the screen's light on the surrounding scene.
 var screen_light := 1.0
 var _film_source := Vector3(.10,.16,.25)
@@ -119,6 +122,8 @@ var viewer_seated := false
 var night_props: Dictionary = {}
 var shore_props: Dictionary = {}
 var handheld: Dictionary = {}
+var crabs: Dictionary = {}
+var celestial_eggs: Node3D
 var _fire_light := Vector3.ZERO
 ## hand -> Transform3D grip pose, refreshed by the app every frame while presented.
 var handheld_poses: Dictionary = {}
@@ -151,10 +156,12 @@ func _begin_request() -> void:
 	_requested=_wanted; loading=true
 
 func set_presented(value: bool) -> void:
+	if value and not presented and not shore_props.is_empty(): ShoreProps.repaint(shore_props)
 	presented=value
 	visible=value and is_ready
 	if not handheld.is_empty() and not value: Handheld.clear(handheld)
 	if not value: _stop_surf()
+	if not value and celestial_eggs: celestial_eggs.cancel()
 	if fireworks!=null:
 		fireworks.release_all()
 		fireworks.set_enabled(value and _fireworks_available())
@@ -177,9 +184,11 @@ func _fireworks_available() -> bool:
 
 func firework_hit(origin: Vector3,direction: Vector3) -> bool:
 	if _control.is_empty() or not _control.root.visible: return false
-	var bounds: AABB=_control.bounds
-	var margin := maxf(CONTROL_RAY_MARGIN,origin.distance_to(bounds.get_center())*.035)
-	return bounds.grow(margin).intersects_ray(origin,direction)!=null
+	# Only the visible cap/ring is clickable, never the case or a distance-scaled
+	# area that overlaps handheld stock on the same table.
+	var half := Vector3(.043,.012,.043)
+	var bounds := AABB((_control.point as Vector3)-half,half*2.0)
+	return bounds.grow(CONTROL_RAY_MARGIN).intersects_ray(origin,direction)!=null
 
 func press_firework(source: String) -> bool:
 	var accepted: bool=fireworks.press(source)
@@ -195,6 +204,15 @@ func release_firework(source: String) -> void:
 
 func celestial_hit(direction: Vector3) -> bool:
 	return is_ready and _drag.hit(direction,hours)
+
+## A consumed target stays consumed during cooldown; it must not pause the film.
+func celestial_easter_egg(direction: Vector3, activate: bool = true) -> bool:
+	if not presented or not celestial_hit(direction) or dragging() or not celestial_eggs: return false
+	celestial_eggs.low_end = low_end
+	celestial_eggs.set_view_context(screen_layout,bundle.config.shore.points)
+	var solar := TimeOfDay.sun_direction(hours)
+	if activate: celestial_eggs.trigger("moon" if solar.y < 0.0 else "sun", _viewer_eye(), -solar if solar.y < 0.0 else solar)
+	return true
 
 func begin_drag(direction: Vector3) -> bool:
 	return is_ready and _drag.begin(direction,hours)
@@ -242,13 +260,19 @@ func _play_pop(at: Vector3) -> void:
 
 ## A hand takes the item its fingers reach, else the one its ray points at.
 func grab_handheld(hand: String,point: Variant,ray: Variant) -> bool:
-	if handheld.is_empty() or handheld.held.has(hand): return false
+	if handheld.is_empty(): return false
+	if handheld.held.has(hand): return false
 	var index := -1
 	if point is Vector3: index=Handheld.near(handheld,point)
 	# The launch button sits beside the table and keeps its own ray.
 	if index<0 and ray is Array and ray.size()==2 and not firework_hit(ray[0],ray[1]): index=Handheld.ray_hit(handheld,ray[0],ray[1])
 	if not Handheld.take(handheld,index,hand): return false
 	handheld_pulse.emit(hand,.35)
+	return true
+
+func return_handheld(hand: String) -> bool:
+	if handheld.is_empty() or not Handheld.put_back(handheld,hand): return false
+	handheld_pulse.emit(hand,.18)
 	return true
 
 func handheld_ray_hit(origin: Vector3,direction: Vector3) -> bool:
@@ -270,10 +294,12 @@ func aim_handheld(hand: String,point: Variant,ray: Variant) -> bool:
 func _update_night_props(delta := 0.0) -> void:
 	if night_props.is_empty(): return
 	ShoreProps.show(shore_props,_night_mix,_viewer_eye())
-	for event in Handheld.advance(handheld,delta,handheld_poses,_viewer_eye(),_night_mix):
+	var mouth: Vector3=viewer_mouth_provider.call() if viewer_mouth_provider.is_valid() else Vector3.INF
+	for event in Handheld.advance(handheld,delta,handheld_poses,_viewer_eye(),_night_mix,mouth):
 		handheld_pulse.emit(event.hand,event.strength)
 		if event.get("sound","")=="pop" and handheld_poses.has(event.hand): _play_pop(handheld_poses[event.hand].origin)
 	ShoreProps.fly(shore_props,_night_mix,elapsed)
+	if not crabs.is_empty(): Crabs.advance(crabs,_night_mix,elapsed)
 	var light: Vector3=NightProps.show(night_props,_night_mix,elapsed)
 	if light.is_equal_approx(_fire_light): return
 	_fire_light=light
@@ -330,8 +356,9 @@ func _clear_content() -> void:
 	_surfaces.clear(); _animated.clear()
 	_shadow=null; _shadow_stale=false; _screen_casters.clear(); _cloud_image=null
 	fireworks=null; _control={}; _halo=null; _drag.end(); _control_lit=false; _busy_flash=0.0
+	celestial_eggs=null
 	bundle=null; navigation=null; background_environment=null; backdrop_material=null
-	_surf=null; _surf_level=0.0; night_props={}; shore_props={}; handheld={}; handheld_poses={}; _fire_light=Vector3.ZERO
+	_surf=null; _surf_level=0.0; night_props={}; shore_props={}; handheld={}; crabs={}; handheld_poses={}; _fire_light=Vector3.ZERO
 	seats.clear(); _screen_marks.clear(); _screen_solids.clear(); _control_pressed=false
 	is_ready=false; visible=false
 
@@ -372,6 +399,7 @@ func _process(delta: float) -> void:
 		_apply_cloud_light()
 	_sync_shadow()
 	fireworks.advance(delta)
+	if celestial_eggs: celestial_eggs.advance(delta, _viewer_eye())
 	if _busy_flash>0.0:
 		_busy_flash=maxf(0.0,_busy_flash-delta)
 		if _busy_flash==0.0: _update_control_indicator()
@@ -661,6 +689,8 @@ func _material(shader: Shader) -> ShaderMaterial:
 	material.set_shader_parameter("screen_normal",right.cross(up).normalized())
 	var lx := float(config.furniture.lamp[0]); var lz := float(config.furniture.lamp[1])
 	material.set_shader_parameter("lamp_position",Vector3(lx,navigation.ground(lx,lz)+.8,lz))
+	var authored_rock: Dictionary=bundle.config.study.near_rock
+	material.set_shader_parameter("relocated_rock",Vector4(authored_rock.x,authored_rock.z,NEAR_ROCK_SPOT.x,NEAR_ROCK_SPOT.y))
 	_surfaces.append(material)
 	return material
 
@@ -683,6 +713,9 @@ func _install(loaded: Resource) -> void:
 	screen_layout=Screen.solve(bundle.config,navigation.ground,{})
 	_content=Node3D.new(); _content.name="BeachContent"; add_child(_content)
 	_content.add_child(model); _content.add_child(props); _content.add_child(plants); _content.add_child(grill)
+	var near_rock := props.find_child("Study_NearRock",true,false) as Node3D
+	var authored_rock: Dictionary=bundle.config.study.near_rock
+	near_rock.position+=Vector3(NEAR_ROCK_SPOT.x-float(authored_rock.x),navigation.ground(NEAR_ROCK_SPOT.x,NEAR_ROCK_SPOT.y)-navigation.ground(authored_rock.x,authored_rock.z),NEAR_ROCK_SPOT.y-float(authored_rock.z))
 	var sand := _material(SAND); var water := _material(WATER)
 	_animated.assign([sand,water])
 	water.set_shader_parameter("wave_slopes",bundle.textures.wave_slopes)
@@ -759,7 +792,9 @@ func _install(loaded: Resource) -> void:
 		var material := _material(GRILL)
 		material.set_shader_parameter("base_color",color); material.set_shader_parameter("surface_roughness",roughness)
 		material.set_shader_parameter("wood_color",bundle.textures.wood_color)
-		return material)
+		return material,navigation.ground)
+	crabs=Crabs.build(_content,navigation.ground)
+	Handheld.Refreshments.add_skewers(handheld,Vector3(GRILL_SPOT.x,navigation.ground(GRILL_SPOT.x,GRILL_SPOT.y)+.955,GRILL_SPOT.y))
 	handheld.sounds={"fizz":_optional_stream("sparkler-fizz.wav"),"pops":["candle-pop-0.wav","candle-pop-1.wav","candle-pop-2.wav"].map(_optional_stream)}
 	for material in _surfaces: material.set_shader_parameter("fire_position",night_props.fire)
 	shore_props=ShoreProps.build(_content,navigation.ground,float(bundle.config.shore.sea_level),func(color: Vector3,roughness: float,wooden: bool) -> ShaderMaterial:
@@ -791,14 +826,15 @@ func _install(loaded: Resource) -> void:
 	_control=FireworkControl.build(_content,navigation.ground(5.2,8.0),func() -> ShaderMaterial:
 		var material := _material(GRILL)
 		material.set_shader_parameter("wood_color",bundle.textures.wood_color)
-		return material)
+		return material,handheld.top)
 	_surf=AudioStreamPlayer.new(); _surf.name="Surf"; _content.add_child(_surf)
 	if ResourceLoader.exists(SURF_PATH): _surf.stream=load(SURF_PATH)
 	_surf_level=0.0
 	fireworks=Fireworks.new(); fireworks.name="Fireworks"; _content.add_child(fireworks)
-	var launch_height: float=bundle.study.firework_ground_y
-	fireworks.configure(func(_x: float,_z: float) -> float: return launch_height)
+	fireworks.configure(func(x: float,_z: float) -> float: return float(bundle.study.firework_launch_heights[0 if x<0 else 1]))
 	fireworks.configure_audio_streams(null,bundle.firework_streams)
+	celestial_eggs=CelestialEggs.new(); celestial_eggs.name="CelestialEasterEggs"; _content.add_child(celestial_eggs)
+	celestial_eggs.configure(float(bundle.config.shore.sea_level),_optional_stream("sea-monster-roar.wav"))
 	_drag.hit_degrees=DRAG_HIT_DEGREES
 	_halo=MeshInstance3D.new(); _halo.name="CelestialHalo"; _halo.visible=false
 	var halo_mesh := QuadMesh.new()

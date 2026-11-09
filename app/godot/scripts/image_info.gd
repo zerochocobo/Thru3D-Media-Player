@@ -16,6 +16,9 @@ static func _u32(bytes: PackedByteArray, offset: int, little: bool = false) -> i
 static func read_header(path: String) -> Dictionary:
 	var file := FileAccess.open(path, FileAccess.READ)
 	if not file or file.get_length() > 256 * 1024 * 1024: return {}
+	var raw := preload("res://scripts/raw_image.gd").header(file.get_buffer(16), file.get_length())
+	if not raw.is_empty(): return raw
+	file.seek(0)
 	var b := file.get_buffer(mini(file.get_length(), 1024 * 1024))
 	if b.size() < 30: return {}
 	var info := {"width": 0, "height": 0, "orientation": 1, "panorama": false}

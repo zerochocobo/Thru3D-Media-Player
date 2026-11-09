@@ -71,17 +71,17 @@ vec3 time_sky_linear(vec3 d, bool bodies) {
 	cloud_color=mix(cloud_color,vec3(.75,.26,.10)*mix(.55,1.0,layer.y),dusk*(.25+.75*toward)*.8);
 	sky=mix(sky,cloud_color,cloud);
 	if (daylight<1.0 && d.y>.02 && cloud<.98) sky+=vec3(time_stars(d)*.65*(1.0-daylight)*(1.0-cloud));
-	if (bodies && time_bodies_enabled) {
-		// Distance in direction space avoids acos precision loss at small discs.
-		float sd=length(d-time_sun_direction),md=length(d-time_moon_direction);
-		float aa=max(length(fwidth(d)),.000001);
-		float sun_disc=1.0-smoothstep(.00465-aa*.5,.00465+aa*.5,sd);
+	// Derivatives stay outside the branch on the disc pixels.
+	float aa=max(length(fwidth(d)),.000001);
+	float sd=length(d-time_sun_direction),md=length(d-time_moon_direction);
+	if (bodies && time_bodies_enabled && (sd<.25 || md<.02)) {
+		float sun_disc=1.0-smoothstep(.01395-aa*.5,.01395+aa*.5,sd);
 		float moon_disc=1.0-smoothstep(MOON_RADIUS-aa*.5,MOON_RADIUS+aa*.5,md);
 		float horizon=smoothstep(-.006,.006,d.y);
 		vec3 sunlight=mix(vec3(1.0,.20,.045),vec3(1.0,.94,.79),smoothstep(0.0,.35,elevation));
 		float veil=1.0-cloud*.85;
 		sky+=sunlight*(sun_disc*3.0+.12*exp(-sd*sd/0.0015))*horizon*veil*smoothstep(-.02,.01,elevation);
-		// Modest lunar radiance; no baked halo or decorative oversized moon.
+		// Enlarged interactive bodies; radiance and the time orbit stay unchanged.
 		if (moon_disc>0.0 && daylight<1.0)
 			sky+=time_moon_surface(d,aa)*moon_disc*horizon*veil*(1.0-daylight);
 	}

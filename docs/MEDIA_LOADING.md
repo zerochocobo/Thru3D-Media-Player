@@ -14,3 +14,7 @@ SMB、媒体服务器及网盘代理按照上游实际读到的媒体字节计�
 主机与原生编译检查不等同于所有服务器／头显的实际播放验收。
 
 摇杆先预选目标和累计跳转量，回中提交，匹配的新画面呈现后提示才淡出。播放失败自动弹出简短原因，可展开详情；关闭后可从控制栏重新打开。错误反馈不代表底层网络或解码故障都会自动修复。
+
+## 0.17.4 transfer and recovery
+
+Internal photos/reading/previews use bounded versioned lossless RGBA transfers rather than repeated PNG handoffs, with validation before publishing data; original input formats and explicit exports remain independent. SMB failed connection contexts are retired and eligible reads retried within cancellation/ownership boundaries. Current committed source also waits off the frame thread for closing MPV handles within the existing surface-release deadline before another open; this later source fix is not present in all earlier0.17.4 packages. Network/seek and scene-switch acceptance remains scoped.

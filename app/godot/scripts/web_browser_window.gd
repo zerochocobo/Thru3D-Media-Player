@@ -57,6 +57,7 @@ var title_move := Move.new()
 var placed := false
 var _save_at := 0
 var _last_pose := Transform3D.IDENTITY
+var _follow_applied: Variant = null
 var _screen_attached := false
 var _floating_pose := Transform3D.IDENTITY
 # Cinema mode: the page fills the far screen while its controls float near the viewer,
@@ -72,6 +73,21 @@ func configure(owner: RefCounted, id: int) -> void:
 	set_meta("menu_browser_layer", true)
 	ray_max_distance = 100.0
 func composition_root() -> Node3D: return self
+
+func sync_follow(follow: RefCounted, viewer: Transform3D, allowed: bool) -> void:
+	var key := StringName("browser_window_%d" % get_instance_id())
+	if not allowed or not visible or on_screen() or not follow.enabled:
+		follow.forget(key); _follow_applied = null; return
+	# Explicit moves recapture the offset; head motion never changes the saved offset.
+	if _follow_applied == null or not global_transform.is_equal_approx(_follow_applied) or not drag.is_empty():
+		follow.capture(key, viewer, global_transform)
+	else:
+		var pose: Variant = follow.pose(key, viewer)
+		if pose != null:
+			global_transform = pose
+			_last_pose = pose # Head motion is not a user layout edit.
+	_follow_applied = global_transform
+
 func relocate_view(delta: Transform3D) -> void:
 	end_drag()
 	global_transform = delta * global_transform
@@ -95,9 +111,10 @@ func _ready() -> void:
 	effect_controls.composition_changed.connect(func(): composition_changed.emit())
 	effect_controls.composition_layout_changed.connect(func(): composition_layout_changed.emit())
 func page_input_blocked() -> bool: return depth.matte and not selecting
-func chrome_hidden() -> bool: return not toolbar_shown or page_input_blocked()
+func chrome_hidden() -> bool: return not on_screen() and (not toolbar_shown or page_input_blocked())
 
 func set_toolbar_shown(shown: bool) -> void:
+	if on_screen(): shown = true
 	if toolbar_shown == shown: return
 	toolbar_shown = shown; depth_settings = false; depth_choices.reset()
 	if not shown and depth.auto_3d_hidden and not depth.enabled:
@@ -108,6 +125,9 @@ func set_toolbar_shown(shown: bool) -> void:
 	refresh(); effect_controls.sync()
 
 func sync_fullscreen(current: Dictionary) -> void:
+	if on_screen():
+		_fullscreen_restore = null; _fullscreen_active = false
+		set_toolbar_shown(true); return
 	var context := Vector2i(int(current.get("tab_id", 0)), int(current.get("navigation", 0)))
 	var fullscreen: bool = current.get("fullscreen", false)
 	if context != _fullscreen_context or (not fullscreen and _fullscreen_active):
@@ -263,6 +283,7 @@ func _reshape_edge(change: Vector2, edge: int, reference_scale: float) -> void:
 
 func _sync_presentation() -> void:
 	if on_screen():
+		toolbar_shown = true; _fullscreen_restore = null
 		if not _screen_attached: _floating_pose = global_transform; _screen_attached = true
 		var anchor := move_centre()
 		# A title or grip drag moved the bar: keep it where it was put.
@@ -436,14 +457,15 @@ func _draw() -> void:
 	_clear_layout()
 	_sync_presentation()
 	_backdrop.visible = not chrome_hidden()
-	if browser and not page_input_blocked(): browser.draw_window(self)
+	if browser and (not page_input_blocked() or on_screen()): browser.draw_window(self)
 	depth_choices.begin("browser_depth_" + str(window_id))
 	if depth_settings and not chrome_hidden(): _draw_depth_settings()
 	if browser:
 		_create_feedback()
 		_pointer_panels.append(_feedback.get_node("background"))
 	if page_input_blocked():
-		_feedback.visible = false; _pointer_panels.clear(); _ray_blockers.clear()
+		_feedback.visible = false; _pointer_panels.clear()
+		if not on_screen(): _ray_blockers.clear()
 	# Disabled controls still occlude other windows and the header drag surface.
 	for button in _buttons: button.hover_disabled = true
 	# Above the distant page's alpha hole (25) yet below MenuComposition.POPUP_PRIORITY (30):
@@ -473,6 +495,7 @@ func _raise_chrome(node: Node) -> void:
 		material.render_priority = int(material.get_meta("browser_priority")) + 16
 	for child in node.get_children(): _raise_chrome(child)
 func _activate(target: int) -> void:
+	if target == effect_controls.CHROME and on_screen(): return
 	browser.focus_window(window_id)
 	if depth_choices.action(target): return
 	if target == effect_controls.CHROME:
@@ -564,7 +587,7 @@ func _activate_hit(hit: Dictionary) -> void:
 func local_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	# Include the whole visible frame before choosing the nearest window. Otherwise
 	# the secondary's empty chrome is invisible to both the ray and trigger routing.
-	var hit := {} if page_input_blocked() else _pointer_hit_over(origin, direction, super.ray_hit(origin, direction))
+	var hit := {} if page_input_blocked() and not on_screen() else _pointer_hit_over(origin, direction, super.ray_hit(origin, direction))
 	if effect_controls:
 		var footer: Dictionary = effect_controls.ray_hit(origin,direction)
 		if not footer.is_empty() and (hit.is_empty() or footer.distance < hit.distance):
@@ -660,8 +683,8 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	if hit.is_empty(): return browser.active()
 	if not hit.get("enabled", true): return true
 	var peer: Node = browser.windows.get(int(hit.get("window", window_id)), self)
-	browser.focus_window(peer.window_id)
 	if hit.get("footer", false): return peer.effect_controls.press_pointer(hand,origin,direction,tracked)
+	browser.focus_window(peer.window_id)
 	if peer.depth_choices.press(hand, origin, direction, tracked): return true
 	if int(hit.target) == MOVE:
 		if peer.title_move.begin(hand, "trigger", ray_pose(origin, direction),
@@ -715,6 +738,8 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		return
 	browser.move(hand, origin, direction, tracked)
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	for peer in browser.windows.values():
+		if peer.effect_controls: peer.effect_controls.app_actions.release(hand)
 	for peer in browser.windows.values():
 		if peer.effect_controls and peer.effect_controls.capture_hand == hand:
 			peer.effect_controls.release_pointer(hand,origin,direction,tracked); return

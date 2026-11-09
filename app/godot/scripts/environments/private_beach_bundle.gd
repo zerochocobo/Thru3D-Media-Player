@@ -31,8 +31,12 @@ func validate() -> String:
 	for stream in firework_streams:
 		if not stream is AudioStream: return "Beach firework audio unavailable"
 	if cloud_width<=0 or cloud_data.size()!=cloud_width*cloud_height: return "Invalid beach cloud coverage"
-	for key in ["wave_slope_range","groundcover_tile","vegetation_contact_rect","grill_contact_rect","grill_shadow_center","grill_palette","firework_ground_y"]:
+	for key in ["wave_slope_range","groundcover_tile","vegetation_contact_rect","grill_contact_rect","grill_shadow_center","grill_palette","firework_launch_heights"]:
 		if not study.has(key): return "Beach study data missing: "+key
+	var launch_heights: Variant=study.firework_launch_heights
+	if not launch_heights is Array or launch_heights.size()!=2: return "Invalid beach launch sites"
+	for height in launch_heights:
+		if not (height is float or height is int) or not is_finite(float(height)): return "Invalid beach launch height"
 	var sand_bounds: Array=sand_surface.get("bounds_xz_size",[])
 	if sand_bounds.size()!=4 or float(sand_surface.get("slope_range",0))<=0: return "Invalid sand surface mapping"
 	if float(sand_surface.get("compaction_range",0))<=0: return "Invalid sand compaction encoding"

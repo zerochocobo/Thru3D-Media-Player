@@ -71,7 +71,9 @@ func fixture(low:bool)->void:
 	footer.observe_ray("right",origin,direction,true,1000);footer.observe_ray("right",origin,direction,true,1125)
 	capture.update()
 	for button in footer._buttons:
+		if not button.node is GeometryInstance3D: continue # Shared status anchor is an invisible hit target.
 		check(not slot_for(capture,button.node).is_empty(),"Visible effect target %d joins the existing HD capture"%button.target)
+	check(not slot_for(capture,footer.device_status._pill).is_empty(),"Shared status card joins the existing HD capture")
 	check(not slot_for(capture,footer.knob).is_empty() and not slot_for(capture,footer.value_label).is_empty(),"Slider knob and percentage use the HD menu path")
 	check(slot_for(capture,footer.busy_ring).is_empty(),"The shader-clock busy ring keeps animating independently of parked HD textures")
 	verify_hd(capture,footer,"normal")
@@ -84,13 +86,13 @@ func fixture(low:bool)->void:
 		host.page_size=Vector2(1.44,height);host.refresh();footer.sync(1125);capture.update()
 		verify_hd(capture,footer,"height %.1f"%height)
 		var bar:=slot_for(capture,footer._buttons[0].node)
-		check(not bar.is_empty() and bar.rect.size.y<.3,"Resizing does not accumulate old footer positions into a blurred tall texture")
+		check(not bar.is_empty() and bar.rect.size.y<.55,"Resizing keeps the two control rows in a compact texture without accumulating old positions")
 	var enabled:bool=host.depth.enabled;var strength:float=host.depth.strength
 	footer.observe_ray("right",origin,direction,false,1800);capture.update()
 	check(not footer.visible and not footer._buttons.any(func(b):return b.target==footer.STRENGTH),"Hiding the controls closes the strength popup")
 	check(host.depth.enabled==enabled and is_equal_approx(host.depth.strength,strength),"Auto-close keeps the effect and preferred strength")
 	footer.observe_ray("right",origin,direction,true,2000);footer.observe_ray("right",origin,direction,true,2125);capture.update()
-	check(footer.visible and footer._buttons.size()==5 and not footer._buttons.any(func(b):return b.target==footer.STRENGTH),"Returning to the page reveals the five icons including the keyboard")
+	check(footer.visible and footer._buttons.filter(func(b):return b.target>0).size()==5 and not footer._buttons.any(func(b):return b.target==footer.STRENGTH),"Returning to the page reveals the five browser icons alongside the shared footer")
 	# Reopening the rail must not toggle an already enabled effect off.
 	var depth:Dictionary=footer._buttons.filter(func(b):return b.target==footer.DEPTH)[0]
 	var ray:Vector3=depth.node.global_position+footer.global_basis.z.normalized()*.2
@@ -122,5 +124,9 @@ func fixture(low:bool)->void:
 			if peer!=host:peer.effect_controls.sync(2500)
 		footer.observe_ray("right",ray,-footer.global_basis.z.normalized(),true,1000001100);capture.update()
 		verify_hd(capture,footer,"%d windows"%count)
+	browser.cinema_provider=func():return {"position":[0,3,-12],"width":10.0,"height":5.625}
+	host.set_mode("cinema");host.refresh();footer.near_hands.right=true;footer.sync(1000001200)
+	verify_hd(capture,footer,"projected near controls")
+	check(not footer._buttons.any(func(b):return b.target==footer.CHROME),"Projected near controls omit the frame-hide action")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(host.depth.config_path))
 	world.free();platform.free();await process_frame

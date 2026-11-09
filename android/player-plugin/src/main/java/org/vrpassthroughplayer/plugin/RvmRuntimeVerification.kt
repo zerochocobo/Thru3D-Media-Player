@@ -38,6 +38,7 @@ internal object RvmRuntimeVerification {
         var baseline: Array<FloatArray>? = null
         var selfMaximum = 0.0
         var mnn = false
+        var actualBackend = ""
         fun compareInitial(eye: Int, offset: Int, actual: Float) {
             selfMaximum = max(selfMaximum, abs(actual.toDouble() - baseline!![eye][offset / 4]))
         }
@@ -54,7 +55,8 @@ internal object RvmRuntimeVerification {
             check(!cancelled()) { "Runtime validation cancelled" }
             val report = runtime.process(generation, frame.toLong(), frame * 33333L, left[frame], right[frame], alpha[0], alpha[1])
             frames.put(report)
-            mnn = report.optString("backend") == "MNN_OpenCL"
+            actualBackend = report.optString("backend")
+            mnn = actualBackend in setOf("MNN_OpenCL", "MNN_Vulkan")
             val record = frame == 0 && baseline == null
             if (record) baseline = Array(2) { FloatArray(alphaBytes / 4) }
             check(report.getString("state") == "ready" && report.getLong("generation") == generation &&
@@ -119,7 +121,7 @@ internal object RvmRuntimeVerification {
         }
         checks.put("close_and_prepare_new_session")
         return JSONObject().put("state", "passed").put("checks", checks).put("alpha_max_abs", maximum)
-            .put("backend", if (mnn) "MNN_OpenCL" else "ncnn")
+            .put("backend", actualBackend)
             .put("alpha_oracle_gate", if (mnn) "not_applicable_ratio1_branch_see_mnn_sequence_test" else "fp32_1e-4")
             .put("initial_state_reproduction_max_abs", selfMaximum)
             .put("frame_reports", frames)

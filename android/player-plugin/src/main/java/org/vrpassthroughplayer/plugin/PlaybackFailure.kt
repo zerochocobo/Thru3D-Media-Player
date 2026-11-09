@@ -102,7 +102,10 @@ internal data class PlaybackFailure(
             // A stale proxy failure must not replace a GPU initialization failure.
             val original = if (code == "MPV_RVM_FAILED") {
                 val gpu = failure.detail.contains("MNN OpenCL backend unavailable") ||
-                    failure.detail.contains("MNN OpenCL session creation failed")
+                    failure.detail.contains("MNN OpenCL session creation failed") ||
+                    failure.detail.contains("MNN Vulkan backend unavailable") ||
+                    failure.detail.contains("MNN GPU session creation failed") ||
+                    failure.detail.contains("AI GPU unavailable")
                 failure.copy(reason = if (gpu) "ai_gpu_unavailable" else "ai_processing_failed",
                     stage = if (gpu) "ai_initialization" else "ai_processing")
             } else failure

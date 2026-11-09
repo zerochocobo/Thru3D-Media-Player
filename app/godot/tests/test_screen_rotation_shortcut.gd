@@ -74,11 +74,11 @@ func run() -> void:
 	check(video.subtitle_transform().basis.is_equal_approx(Basis.IDENTITY), "Rotation leaves subtitles upright")
 	video.set_screen_rotation(0)
 	menu.visible = true; menu.section = 0; menu._adjustment = ""; menu.refresh()
-	for corner in [0, 1, 3]:
+	for corner in [1, 3]:
 		var origin := Vector3(0, 1.6, 0)
 		main.rays.right_hand = [origin, (video.panel.to_global(video.screen_corner(corner)) - origin).normalized()]
 		main._update_screen_rotation_control(); main._update_corner_hover()
-		check(not control.visible and video.hovered_corner == corner and video._handles[corner].visible, "Other three corners retain their right-angle resize marks")
+		check(not control.visible and video.hovered_corner == corner and video._handles[corner].visible, "Other two corners retain their right-angle resize marks")
 		check(main._try_corner_resize("right_hand") and main._grab.has("resize"), "Other corner still begins resize instead of rotation")
 		main._on_pointer_release("trigger_click", "right_hand")
 	menu.dismiss()

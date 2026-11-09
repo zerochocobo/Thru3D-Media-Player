@@ -44,6 +44,8 @@ func run() -> void:
 	host.ready=photo._on_ready; host.depth=photo._on_depth; host.preload_depth=photo._on_prefetch_depth; photo.platform=host
 	for layout in [2,3]:
 		photo.set_layout_mode(layout)
+		# The preceding single-photo phase may legitimately prefetch before this layout opens.
+		var preloads_before: int = host.preloads
 		var opens: int=host.opens; var conversions: int=host.depth_calls
 		photo.open_image(entries[0].uri,entries[0].title,entries)
 		var runtime_releases: int=host.runtime_releases
@@ -62,7 +64,7 @@ func run() -> void:
 				check(photo._texture==null and photo._stereo_texture==null and host.held.size()==1,"Switching directly between expanded comics releases the outgoing full image first")
 				await settle(photo,host)
 			photo._pump_prefetch()
-			check(host.held.size()==1 and host.preloads==0, "Expanded static/spatial comic never starts neighboring 3D jobs")
+			check(host.held.size()==1 and host.preloads==preloads_before, "Expanded static/spatial comic never starts neighboring 3D jobs")
 			photo.gallery.return_focus(); photo.gallery._process(1); await process_frame
 			empty_full_resources(photo,host,"Returned overview %d/%d"%[layout,repeat])
 			check(photo.queue.size()==120 and photo.local_uri==entries[target].uri and photo.gallery.cards.has(target), "Releasing full resources preserves album, selection and preview cards")

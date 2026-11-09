@@ -1,4 +1,6 @@
 #include "rvm_mnn_backend.h"
+#include "mnn_gpu.h"
+#include "mnn_rvm_graph.h"
 #include <MNN/Interpreter.hpp>
 #include <MNN/MNNForwardType.h>
 #include <MNN/Tensor.hpp>
@@ -6,6 +8,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#if defined(VRPP_MNN_BENCHMARK)
+#include <cstdlib>
+#endif
 #include <stdexcept>
 
 extern "C" const char* vrpp_cl_initialization_error();
@@ -38,28 +43,47 @@ MnnRvmBackend::MnnRvmBackend(const void* model, size_t bytes, int width, int hei
     const auto started = std::chrono::steady_clock::now();
     require(model && bytes > 0 && width >= 32 && height >= 32 && width % 2 == 0 && height % 2 == 0,
             "Invalid MNN RVM model or profile");
+    report_.vulkan = mnn_uses_vulkan();
+    if (report_.vulkan) {
+        fp16 = false; // FP16 Vulkan failed the recurrent Alpha accuracy checks on Adreno 650.
+#if defined(VRPP_MNN_BENCHMARK)
+        if (const char* precision = std::getenv("RVM_BENCH_VK_FP16")) fp16 = std::strcmp(precision, "1") == 0;
+#endif
+        portable_model_ = rvm_portable_graph(model, bytes);
+        model = portable_model_.data(); bytes = portable_model_.size();
+    }
     report_.width = width; report_.height = height; report_.fp16 = fp16;
     net_.reset(MNN::Interpreter::createFromBuffer(model, bytes), MNN::Interpreter::destroy);
     require(net_ != nullptr, "MNN RVM model rejected");
     if (!cache_file_.empty()) net_->setCacheFile(cache_file_.c_str());
     MNN::ScheduleConfig config;
-    config.type = MNN_FORWARD_OPENCL;
+    config.type = mnn_gpu_backend();
     config.backupType = MNN_FORWARD_CPU; // Only so placement can be audited and rejected.
-    config.numThread = MNN_GPU_TUNING_WIDE | MNN_GPU_MEMORY_IMAGE;
+    config.numThread = report_.vulkan ? mnn_vulkan_mode(width <= 320 && height <= 320) : MNN_GPU_TUNING_WIDE | MNN_GPU_MEMORY_IMAGE;
+#if defined(VRPP_MNN_BENCHMARK)
+    // Standalone harness only: production has no environment-controlled GPU mode.
+    if (report_.vulkan) {
+        if (const char* mode = std::getenv("RVM_BENCH_VK_MODE")) config.numThread = std::atoi(mode);
+    }
+#endif
+    report_.gpu_mode = config.numThread;
     MNN::BackendConfig backend;
     backend.precision = fp16 ? MNN::BackendConfig::Precision_Low : MNN::BackendConfig::Precision_High;
     backend.power = MNN::BackendConfig::Power_High;
     config.backendConfig = &backend;
+    // The four eye/scout sessions execute serially. Share the Vulkan device, pipeline
+    // cache and tuning results; separate runtimes repeat compilation four times.
+    const auto vulkan_runtime = report_.vulkan ? MNN::Interpreter::createRuntime({config}) : MNN::RuntimeInfo{};
     for (auto& stream : eyes_) for (auto& slot : stream) {
         slot = std::make_unique<Eye>();
         auto& eye = *slot;
-        eye.session = net_->createSession(config);
-        require(eye.session != nullptr, "MNN OpenCL session creation failed");
+        eye.session = report_.vulkan ? net_->createSession(config, vulkan_runtime) : net_->createSession(config);
+        require(eye.session != nullptr, "MNN GPU session creation failed");
         MNNForwardType main = MNN_FORWARD_CPU;
         net_->getSessionInfo(eye.session, MNN::Interpreter::BACKENDS, &main);
-        if (main != MNN_FORWARD_OPENCL) {
+        if (main != config.type) {
             const std::string detail = vrpp_cl_initialization_error();
-            throw std::runtime_error("MNN OpenCL backend unavailable; refusing CPU execution" +
+            throw std::runtime_error(std::string(report_.vulkan ? "MNN Vulkan backend unavailable; refusing CPU execution" : "MNN OpenCL backend unavailable; refusing CPU execution") +
                                      (detail.empty() ? std::string() : "; " + detail));
         }
         eye.src = net_->getSessionInput(eye.session, "src");
@@ -127,7 +151,7 @@ void MnnRvmBackend::audit_placement() {
         return true;
     };
     require(net_->runSessionWithCallBackInfo(eye.session, before, after, true) == MNN::NO_ERROR, "MNN RVM audit run failed");
-    require(report_.gpu_ops > 0, "MNN RVM executed no OpenCL ops");
+    require(report_.gpu_ops > 0, "MNN RVM executed no GPU ops");
     if (!report_.host_ops.empty())
         throw std::runtime_error("MNN placed RVM ops on CPU: " + report_.host_ops.front());
 }
@@ -224,6 +248,9 @@ bool fill_or_differs(AHardwareBuffer* buffer, int value, bool fill, bool& differ
 } // namespace
 
 bool MnnRvmBackend::zero_copy_self_test() {
+    // The existing AHardwareBuffer adapter is OpenCL-specific. Vulkan uses the
+    // already supported scaled host transport, while inference/states stay GPU-side.
+    if (report_.vulkan) return false;
     constexpr int kSentinel = 0x5A;
     AHardwareBuffer_Desc desc{};
     desc.width = static_cast<uint32_t>(report_.width); desc.height = static_cast<uint32_t>(report_.height); desc.layers = 1;
@@ -258,6 +285,7 @@ bool MnnRvmBackend::zero_copy_self_test() {
 
 bool MnnRvmBackend::process_ahb(const std::array<AHardwareBuffer*, 2>& rgb, const std::array<AHardwareBuffer*, 2>& alpha,
                                 int stream, bool reset_first, int eye_count) {
+    require(!report_.vulkan, "Vulkan RVM requires scaled host transport");
     require(stream >= 0 && stream < kStreams, "RVM stream index out of range");
     require(eye_count == 1 || eye_count == 2, "RVM eye count must be one or two");
     // The scout stream (1) only looks for people outside the ROI window. Both eyes of a stereo

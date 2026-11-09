@@ -112,11 +112,15 @@ internal object ExtendedPhoto {
         val size=JSONObject(File(root,"extended-size.json").readText())
         val width=size.getInt("width");val height=size.getInt("height")
         require(width in 1..8192&&height in 1..8192&&width.toLong()*height<=32*1024*1024)
-        val bitmap=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888)
-        var file: File?=null
-        try{fill(bitmap,File(root,"extended.rgba").readBytes());check()
-            file=File.createTempFile("animation-effect-",".png",root)
-            file.outputStream().use {require(bitmap.compress(Bitmap.CompressFormat.PNG,100,it))};check();return file
-        }catch(failure: Throwable){file?.delete();throw failure}finally {bitmap.recycle()}
+        val file=File.createTempFile("animation-effect-",".t3di",root)
+        try {
+            RawPhoto.write(file,width,height,check) { output ->
+                File(root,"extended.rgba").inputStream().use { input ->
+                    val buffer=ByteArray(65536)
+                    while(true) { check(); val n=input.read(buffer); if(n<0)break; output.write(buffer,0,n) }
+                }
+            }
+            return file
+        } catch(failure: Throwable) { file.delete(); throw failure }
     }
 }

@@ -88,7 +88,7 @@ func _run() -> void:
 	check(app.photo_menu._buttons.filter(func(button):return button.target in [app.photo_menu.PHOTO_NEXT,app.photo_menu.PHOTO_PREVIOUS]).all(func(button):return button.enabled), "Previous and next image controls remain enabled during portrait preparation")
 	check(app.photo_menu._buttons.any(func(button): return button.target == app.photo_menu.PHOTO_PORTRAIT and button.enabled), "The portrait button always remains available as an exit")
 	app._save_photo_adjustments()
-	check(is_equal_approx(float(app.settings.get_value("photo_screen","curve")),old_curve) and app.settings.get_value("photo_screen","layout") == 2, "Temporary flat portrait view never overwrites saved curve or layout")
+	check(is_equal_approx(float(app.settings.get_value("photo_screen","curve_degrees")),old_curve) and app.settings.get_value("photo_screen","layout") == 2, "Temporary flat portrait view never overwrites saved curve or layout")
 	var mask := Image.create(320,100,false,Image.FORMAT_R8); mask.fill(Color.WHITE)
 	var path := folder.path_join("mask.r8"); FileAccess.open(path,FileAccess.WRITE).store_buffer(mask.get_data())
 	var payload := {"state":"ready","token":photo._portrait_epoch,"path":path,"width":320,"height":100,"format":"r8_sbs","strategy":"video_soft_shift_gpu","strength":1.0}

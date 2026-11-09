@@ -54,7 +54,7 @@ func run() -> void:
 			InputFixture.trigger(main, "right_hand")
 			footer.near_hands.clear(); footer.last_near = 0; footer.sync(2000)
 			host._update_feedback(); capture.invalidate(); capture.update()
-			check(not footer.visible and not capture._any_placed, mode + ": all HD chrome is parked after leaving pure-page controls")
+			check(not footer.visible and capture._any_placed == (mode == "cinema"), mode + ": floating pure page parks chrome; projected screen keeps its near menu")
 			main.display.set_menu_layers(false); main._sync_display_policy()
 			check(host.surface.shown and host.visible and browser.active(), mode + ": webpage remains presented after the missed trigger")
 			check(viewport.transparent_bg and camera.environment.background_color.a == 0.0,

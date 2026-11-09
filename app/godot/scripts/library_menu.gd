@@ -2049,6 +2049,11 @@ func _rebuild_rows() -> void:
 					sharpness_choices.append({"value": Quality.SHARPNESS[i], "label": Quality.SHARPNESS_NAMES[i], "hint": Quality.SHARPNESS_HINTS[i]})
 				var sharpness_row := _choice_row("Sharpness", "sharpness", float(settings.get("sharpness", Quality.DEFAULT_VIDEO_SHARPNESS)), sharpness_choices, true)
 				sharpness_row.info = Quality.SHARPNESS_INFO; rows.append(sharpness_row)
+				var status_row := _choice_row("Show status information", "show_status_info", bool(settings.get("show_status_info", true)),
+					[{"value": false, "label": "Off"}, {"value": true, "label": "On"}])
+				status_row.info = "Show subtitle, narration and loading status in the upper left."
+				for option in status_row.choices: option.hint = status_row.info
+				rows.append(status_row)
 				rows.append(_choice_row("Show FPS", "show_fps", bool(settings.get("show_fps", false)),
 					[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
 				rows.append(_choice_row(PlaybackMenuDepth.TITLE, PlaybackMenuDepth.KEY,

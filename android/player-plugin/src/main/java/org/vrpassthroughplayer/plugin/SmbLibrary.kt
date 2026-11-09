@@ -34,7 +34,7 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
                       val user: String, val password: String)
 
     private val store = File(context.filesDir, "smb_servers.json")
-    private val contexts = HashMap<String, CIFSContext>()
+    private val contexts = HashMap<String, SmbConnection<CIFSContext>>()
 
     @Synchronized fun servers(): List<Server> {
         if (!store.isFile) return emptyList()
@@ -60,11 +60,11 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
         val updated = servers().filter { it.id != id } + Server(id, request.optString("name").ifEmpty { host }, host,
             request.optString("domain"), request.optString("user"), password)
         write(updated)
-        synchronized(contexts) { contexts.remove(id) }
+        synchronized(contexts) { contexts.remove(id) }?.close()
         return id
     }
 
-    @Synchronized fun remove(id: String) { write(servers().filter { it.id != id }); synchronized(contexts) { contexts.remove(id) } }
+    @Synchronized fun remove(id: String) { write(servers().filter { it.id != id }); synchronized(contexts) { contexts.remove(id) }?.close() }
 
     private fun write(list: List<Server>) {
         val array = JSONArray()
@@ -77,12 +77,16 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
 
     private fun server(id: String) = servers().firstOrNull { it.id == id } ?: error("Unknown SMB server")
 
-    private fun cifs(server: Server): CIFSContext = synchronized(contexts) {
+    private fun cifs(server: Server): CIFSContext = connection(server).get()
+
+    private fun connection(server: Server): SmbConnection<CIFSContext> = synchronized(contexts) {
         contexts.getOrPut(server.id) {
-            val properties = SmbClientPolicy.properties(server.user.isEmpty())
-            val base = BaseContext(PropertyConfiguration(properties))
-            if (server.user.isEmpty()) base.withGuestCredentials()
-            else base.withCredentials(NtlmPasswordAuthenticator(server.domain, server.user, server.password))
+            SmbConnection(create = {
+                val properties = SmbClientPolicy.properties(server.user.isEmpty())
+                val base = BaseContext(PropertyConfiguration(properties))
+                if (server.user.isEmpty()) base.withGuestCredentials()
+                else base.withCredentials(NtlmPasswordAuthenticator(server.domain, server.user, server.password))
+            }, dispose = { it.close() })
         }
     }
 
@@ -91,27 +95,30 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
         val server = server(id)
         val clean = path.trim('/')
         val url = "smb://${server.host}/" + if (clean.isEmpty()) "" else "$clean/"
-        val entries = JSONArray()
-        SmbFile(url, cifs(server)).use { directory ->
-            val children = directory.listFiles().sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
-            for (child in children) {
-                val name = child.name.trimEnd('/')
-                if (name.endsWith("$")) continue // administrative shares
-                val childPath = if (clean.isEmpty()) name else "$clean/$name"
-                if (child.isDirectory) entries.put(JSONObject().put("id", childPath).put("title", name).put("container", true)
-                    .put("modified", child.lastModified().takeIf { it > 0 } ?: -1)
-                    .put("delete_uri", "smb://$id/$childPath").put("can_delete", clean.isNotEmpty() && child.attributes and 0x401 == 0 && runCatching { MediaDeletePolicy.smbPath(childPath, true) }.isSuccess)
-                    .put("delete_reason", "File deletion unavailable for this source"))
-                else if (if (subtitlesOnly) SidecarSubtitles.supportedFile(name) else MediaKinds.supported(name)) entries.put(JSONObject().put("id", childPath).put("title", name).put("kind", MediaKinds.kind(name))
-                    .put("container", false).put("size", child.length()).put("uri", if (subtitlesOnly) URI("smb", id, "/$childPath", null).toASCIIString() else "smb://$id/$childPath")
-                    .put("modified", child.lastModified().takeIf { it > 0 } ?: -1)
-                    .put("can_delete", child.attributes and org.codelibs.jcifs.smb.SmbConstants.ATTR_READONLY == 0 && runCatching { MediaDeletePolicy.smbPath(childPath) }.isSuccess)
-                    .put("can_rename", child.attributes and 0x401 == 0 && MediaKinds.kind(name) == "video" && runCatching { MediaDeletePolicy.smbPath(childPath) }.isSuccess)
-                    .put("delete_reason", "File is read-only"))
-                child.close()
+        return connection(server).read { current ->
+            val entries = JSONArray()
+            SmbFile(url, current).use { directory ->
+                val children = directory.listFiles()
+                try {
+                    for (child in children.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))) {
+                        val name = child.name.trimEnd('/')
+                        if (name.endsWith("$")) continue // administrative shares
+                        val childPath = if (clean.isEmpty()) name else "$clean/$name"
+                        if (child.isDirectory) entries.put(JSONObject().put("id", childPath).put("title", name).put("container", true)
+                            .put("modified", child.lastModified().takeIf { it > 0 } ?: -1)
+                            .put("delete_uri", "smb://$id/$childPath").put("can_delete", clean.isNotEmpty() && child.attributes and 0x401 == 0 && runCatching { MediaDeletePolicy.smbPath(childPath, true) }.isSuccess)
+                            .put("delete_reason", "File deletion unavailable for this source"))
+                        else if (if (subtitlesOnly) SidecarSubtitles.supportedFile(name) else MediaKinds.supported(name)) entries.put(JSONObject().put("id", childPath).put("title", name).put("kind", MediaKinds.kind(name))
+                            .put("container", false).put("size", child.length()).put("uri", if (subtitlesOnly) URI("smb", id, "/$childPath", null).toASCIIString() else "smb://$id/$childPath")
+                            .put("modified", child.lastModified().takeIf { it > 0 } ?: -1)
+                            .put("can_delete", child.attributes and org.codelibs.jcifs.smb.SmbConstants.ATTR_READONLY == 0 && runCatching { MediaDeletePolicy.smbPath(childPath) }.isSuccess)
+                            .put("can_rename", child.attributes and 0x401 == 0 && MediaKinds.kind(name) == "video" && runCatching { MediaDeletePolicy.smbPath(childPath) }.isSuccess)
+                            .put("delete_reason", "File is read-only"))
+                    }
+                } finally { children.forEach { runCatching { it.close() } } }
             }
+            entries
         }
-        return entries
     }
 
     fun renameFile(request: JSONObject, prepare: Boolean): JSONObject {
@@ -290,8 +297,9 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
         val server = server(rest.substringBefore('/'))
         val path = rest.substringAfter('/')
         val url = "smb://${server.host}/$path"
-        val context = cifs(server)
-        return SmbStreamSource(url, context, SmbFile(url, context).use { it.length() })
+        val connection = connection(server)
+        val size = connection.read { current -> SmbFile(url, current).use { it.length() } }
+        return SmbStreamSource(url, connection, size)
     }
 
     /** SMB hosts seen within [timeoutMs]: mDNS _smb._tcp (NAS, macOS, Samba) plus WS-Discovery,
@@ -399,19 +407,20 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
 }
 
 /** Each reader opens its own SMB handle, so a fork reads the same file independently. */
-internal class SmbStreamSource(private val url: String, private val context: CIFSContext,
+internal class SmbStreamSource(private val url: String, private val connection: SmbConnection<CIFSContext>,
                                override val size: Long) : StreamSource {
-    override fun open(): StreamSource.Reader {
+    override fun open(): StreamSource.Reader = SmbRecoveringReader(connection) { context ->
         val file = SmbFile(url, context)
-        val reader = SmbRandomAccessFile(file, "r")
-        return object : StreamSource.Reader {
+        val reader = try { SmbRandomAccessFile(file, "r") }
+            catch (error: Exception) { runCatching { file.close() }; throw error }
+        object : StreamSource.Reader {
             override fun read(offset: Long, buffer: ByteArray, length: Int): Int {
                 reader.seek(offset)
                 return reader.read(buffer, 0, length)
             }
-            override fun close() { reader.close(); file.close() }
+            override fun close() { try { reader.close() } finally { file.close() } }
         }
     }
     override val forkable get() = true
-    override fun fork(): StreamSource = SmbStreamSource(url, context, size)
+    override fun fork(): StreamSource = SmbStreamSource(url, connection, size)
 }

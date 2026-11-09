@@ -57,10 +57,9 @@ internal class PipScreenshot(pip: JSONObject, retain: (Int) -> File?, private va
         try {
             for ((_, file) in leases) {
                 check(!cancelled.asBoolean)
-                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(file.path, options)
+                val options = PhotoBitmap.bounds(file)
                 require(options.outWidth in 1..2048 && options.outHeight in 1..2048)
-                images.add(BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply {
+                images.add(PhotoBitmap.decode(file, BitmapFactory.Options().apply {
                     inPreferredConfig = Bitmap.Config.ARGB_8888; inScaled = false
                 }) ?: error("Picture in picture capture unavailable"))
             }

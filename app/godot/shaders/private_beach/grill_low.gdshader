@@ -31,6 +31,8 @@ uniform sampler2D static_mask : hint_default_white, filter_linear_mipmap, repeat
 uniform int mask_count = 4;
 uniform vec4 mask_world[6];
 uniform vec4 mask_atlas[6];
+// Authored and relocated rock centres. Zero delta keeps the offline study unchanged.
+uniform vec4 relocated_rock = vec4(0.0);
 
 vec2 sample_mask(int tile,vec2 xz,vec2 dx,vec2 dy) {
 	vec2 local=(xz-mask_world[tile].xy)/mask_world[tile].zw;
@@ -45,6 +47,15 @@ vec2 static_ground_visibility(vec3 p,vec2 fallback) {
 	if (!use_static_mask) return fallback;
 	// Derivatives precede the per-pixel tile branches, including shore edges.
 	vec2 dx=dFdx(p.xz),dy=dFdy(p.xz);
+	float clear_old=0.0;
+	if (length(relocated_rock.zw-relocated_rock.xy)>.01) {
+		vec2 old_distance=abs(p.xz-relocated_rock.xy);
+		clear_old=1.0-smoothstep(.75,1.0,max(old_distance.x,old_distance.y));
+		vec2 new_distance=abs(p.xz-relocated_rock.zw);
+		// Reuse the original 2 m contact patch at its new world position. Clear
+		// the isolated old patch, including the coarse atlas underneath it.
+		if (max(new_distance.x,new_distance.y)<1.0) p.xz+=relocated_rock.xy-relocated_rock.zw;
+	}
 	vec2 base_uv=(p.xz-mask_world[0].xy)/mask_world[0].zw;
 	if (any(lessThan(base_uv,vec2(0.0))) || any(greaterThan(base_uv,vec2(1.0)))) return fallback;
 	vec2 result=sample_mask(0,p.xz,dx,dy);
@@ -55,7 +66,7 @@ vec2 static_ground_visibility(vec3 p,vec2 fallback) {
 		if (edge>0.0) result=mix(result,sample_mask(i,p.xz,dx,dy),smoothstep(0.0,.08,edge));
 	}
 	float edge=min(min(base_uv.x,base_uv.y),min(1.0-base_uv.x,1.0-base_uv.y));
-	return mix(fallback,result,smoothstep(0.0,.04,edge));
+	return mix(mix(fallback,result,smoothstep(0.0,.04,edge)),vec2(1.0),clear_old);
 }
 
 // Same polynomial transfers as production cinema_baked_surface.gdshader.
@@ -251,6 +262,11 @@ void fragment() {
 	vec3 color=albedo*(ambient_irradiance(n)*COLOR.r+beach_day_sun()*sun+local_light(world_position,n));
 	vec3 half_direction=normalize(moving_light_direction+normalize(CAMERA_POSITION_WORLD-world_position));
 	color+=moving_specular_tint*vec3(.10)*pow(max(dot(n,half_direction),0.0),mix(100.0,12.0,surface_roughness))*sun;
+	// Existing coal geometry/ash mask glows after dusk: no new lights or particles.
+	if (charcoal_surface) {
+		float cracks=smoothstep(.70,.94,abs(sin(world_position.x*71.0+world_position.z*37.0)*sin(world_position.z*93.0-world_position.y*61.0)));
+		color+=vec3(.85,.065,.003)*(.10+.90*cracks)*(1.0-COLOR.b*.9)*(1.0-day_mix)*(.88+.08*sin(TIME*2.1)+.04*sin(TIME*5.7));
+	}
 	ALBEDO=OUTPUT_IS_SRGB ? encode_srgb(color) : color;
 
 if (moving_shadow_debug) ALBEDO=vec3(moving_visibility(world_position,normalize(world_normal)));

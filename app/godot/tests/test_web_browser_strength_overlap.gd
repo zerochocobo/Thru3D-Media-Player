@@ -40,7 +40,7 @@ func run() -> void:
 	footer.sync(1000); footer.visible = true; footer.set_strength_open(true)
 	for boosted in [false,true]:
 		footer.boosted = boosted; footer.refresh(); capture.invalidate(); await settle(capture)
-		# The real lower frame intersects the rail at local y=.27 (0.28 below page).
+		# The real lower frame intersects the rail above its icon.
 		var point: Vector3 = host.to_global(Vector3(host.CENTRE.x + footer.SLIDER_X,host.page_rect().position.y-.01,0))
 		var outside: Vector3 = point + host.global_basis.x*.18
 		var popup: Dictionary = {}

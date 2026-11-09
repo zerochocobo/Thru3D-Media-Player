@@ -33,9 +33,14 @@ const FEATURED := [
 # Beta compatibility follows the current decoded stream; protected content stays in the page.
 const NATIVE_PLAYBACK := ["Bilibili", "YouTube", "Weibo", "Tencent Video", "Mango TV", "Youku",
 	"Twitch", "TikTok", "Instagram Reels", "TED", "Niconico", "iQIYI", "Douyin", "Dailymotion", "Streamable", "Internet Archive", "Odysee"]
-const BETA_PLAYBACK := ["Bilibili", "Weibo", "Tencent Video", "Mango TV", "Youku", "iQIYI", "Douyin", "Niconico", "Twitch", "TikTok", "Instagram Reels", "TED", "Dailymotion", "Streamable", "Internet Archive", "Odysee"]
+# Catalogue badges require the ordinary featured-site journey, not a fixed detail sample.
+# Foreign adapters stay enabled in Android and on their actual current-video buttons;
+# their broad catalogue badges are withdrawn while the reported entry failures are fixed.
+const BETA_PLAYBACK := ["Bilibili", "Weibo", "Tencent Video", "Mango TV", "Douyin"]
 const BETA_ICON := "play" # Same triangle as the page's Play Beta action.
-static var _beta_site := RegEx.create_from_string("(?i)^https://(?:(?:www\\.)?bilibili\\.com|(?:www\\.)?weibo\\.com|v\\.qq\\.com|(?:www\\.|w\\.)?mgtv\\.com|(?:www\\.|v\\.)?youku\\.com|www\\.iqiyi\\.com|www\\.douyin\\.com|www\\.nicovideo\\.jp|(?:www\\.|clips\\.)?twitch\\.tv|(?:www\\.)?tiktok\\.com|(?:www\\.)?instagram\\.com|(?:www\\.)?ted\\.com|(?:www\\.)?dailymotion\\.com|(?:www\\.)?streamable\\.com|(?:www\\.)?archive\\.org|(?:www\\.)?odysee\\.com)(?::443)?(?:[/?#]|$)")
+# Only Chinese sites retain a URL-only presentation fallback. Foreign Beta
+# experiments remain inside the webpage instead of advertising an entire domain.
+static var _beta_site := RegEx.create_from_string("(?i)^https://(?:(?:www\\.)?bilibili\\.com|(?:www\\.)?weibo\\.com|v\\.qq\\.com|(?:www\\.|w\\.)?mgtv\\.com|(?:www\\.|v\\.)?youku\\.com|www\\.iqiyi\\.com|www\\.douyin\\.com)(?::443)?(?:[/?#]|$)")
 
 static func supports_beta(site: Dictionary) -> bool:
 	return str(site.get("name", "")) in BETA_PLAYBACK

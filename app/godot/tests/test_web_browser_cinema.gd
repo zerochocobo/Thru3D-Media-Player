@@ -16,6 +16,9 @@ class InputMain extends Main:
 		var ray: Variant = _ray(hand)
 		return null if ray == null else preload("res://scripts/web_browser_window.gd").ray_pose(ray[0], ray[1])
 class Movie extends Node3D:
+	var panel := Node3D.new()
+	func _init() -> void:
+		add_child(panel); panel.visible = false # This fixture has no editable video screen.
 	var local_uri := "content://movie"
 	var geometry := 0
 	var requested_play := true

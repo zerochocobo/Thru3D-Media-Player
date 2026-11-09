@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 . "$PSScriptRoot\environment\Activate-QuestEnvironment.ps1" -ToolRoot $ToolRoot
 $projectDirectory = Join-Path $workspace 'app\godot'
+& "$PSScriptRoot/Test-ImageTransfer.ps1" -ToolRoot $ToolRoot -SkipJvm -CoreOnly
 & "$PSScriptRoot/Test-UiThemes.ps1" -Godot $env:GODOT_EXE
 & "$PSScriptRoot/Test-DepthPosition.ps1" -Godot $env:GODOT_EXE -RenderPreview:$RenderPreview
 & "$PSScriptRoot/Test-Scenery.ps1" -Godot $env:GODOT_EXE -RenderPreview:$RenderPreview

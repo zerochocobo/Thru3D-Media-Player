@@ -104,6 +104,7 @@ func _ready() -> void:
 	choices.changed.connect(_choice_changed)
 
 func _choice_changed(key: String,value: Variant) -> void:
+	if view == "beach_screen" and _state.get("screen_edit_locked", false): command.emit("screen_lock_notice", ""); return
 	if view=="beach_screen" and screen_edit.values.has(key): screen_edit.values[key]=value
 	else: command.emit("adjust", {"mode":mode,"key":key,"value":value})
 	refresh()
@@ -177,7 +178,7 @@ func refresh() -> void:
 	if view=="beach_screen" and _state.get("choice","")!="private_beach":
 		view="scene"; screen_edit.values.clear()
 	_signature = str(_state)
-	_draw(); arrange_surfaces(); composition_changed.emit()
+	_draw(); _apply_screen_lock(); arrange_surfaces(); composition_changed.emit()
 
 func _draw() -> void:
 	_clear_layout(); choices.begin(mode + view + modal)
@@ -513,6 +514,7 @@ func _draw_beach_screen() -> void:
 	_left(I18n.t(status),Vector2(LEFT,_bottom+.045),TEXT_AUX,1.30,MUTED)
 
 func _activate(target: int) -> void:
+	if _screen_lock_target(target): command.emit("screen_lock_notice", ""); return
 	if choices.action(target): return
 	if target in [BEACH_APPLY,BEACH_RESET] and has_pointer_capture(): return
 	if target==BEACH_SCREEN: command.emit("edit_beach_screen",null); return
@@ -575,6 +577,7 @@ func stick_scroll(y: float,delta: float) -> void:
 	if absf(_scroll)>=1: page+=1 if _scroll>0 else -1; _scroll=0; refresh()
 
 func press_pointer(hand: String,origin: Vector3,direction: Vector3,tracked: bool) -> bool:
+	if tracked and _screen_lock_target(int(ray_hit(origin,direction).get("target",NONE))): command.emit("screen_lock_notice", hand); return true
 	if choices.press(hand,origin,direction,tracked): return true
 	var hit:=ray_hit(origin,direction) if tracked else {}
 	if modal.is_empty() and view in ["scene","manage","review"] and not hit.is_empty() and hit.point.y<_top-.27 and hit.point.y>_bottom+.17:
@@ -606,3 +609,15 @@ func cancel_pointer(hand: String) -> void:
 	choices.cancel(hand)
 	if _drag.get("hand","")==hand: _drag.clear()
 	super(hand)
+
+
+func _screen_lock_target(target: int) -> bool:
+	return bool(_state.get("screen_edit_locked", false)) and (target in [BEACH_SCREEN, BEACH_APPLY, BEACH_RESET] or (view == "beach_screen" and choices.targets.has(target)))
+
+func _apply_screen_lock() -> void:
+	for button in _buttons:
+		if not _screen_lock_target(int(button.target)): continue
+		button.enabled = false; button["hover_disabled"] = true
+		_tips[button.target] = I18n.t("Unlock to adjust")
+		for child in button.node.get_children():
+			if child is Label3D: child.modulate = MUTED

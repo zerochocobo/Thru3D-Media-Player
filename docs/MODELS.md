@@ -113,6 +113,10 @@ Release, normal Debug and diagnostic Debug now all require the beach payload and
 
 0.17.2起各类构建均要求沙滩资源，缺失应停止；旧IncludePrivateBeach只保留参数兼容。公开仓库仍不含场景／模型／贴图／生成声音，须自行提供许可与版本匹配的资源，不能把源码接入视作完整可构建素材包。
 
-## 0.17.3 known low-tier processing limit
+## Historical 0.17.3 low-tier processing limit
 
-An observed Quest2 session cannot initialize the MNN OpenCL backend for video depth/person passthrough and returns to ordinary2D. This source update does not fix that observed failure or introduce a validated Vulkan replacement. Minimum compatibility targets are not a claim that every AI path works on those devices; no weights, private performance samples or research records are exported.
+In 0.17.3 an observed Quest 2 session could not initialize the MNN OpenCL backend for video depth/person passthrough and returns to ordinary2D. That historical all-unavailable observation is superseded for the scoped 0.17.4 GPU checks below. Minimum compatibility targets are not a claim that every AI path works on those devices; no weights, private performance samples or research records are exported.
+
+## 0.17.4 GPU selection and cadence
+
+OpenCL remains preferred; when runtime initialization fails, use MNN Vulkan and reject CPU execution. Runtime graph restoration removes the OpenCL-specific fused HardSwish representation for the fallback without distributing weights. The build requires an MNN archive with Vulkan symbols, schema/current and flatbuffers headers; the public Build-MnnAndroid.sh retains both backend flags. Reported Quest 2 checks cover video depth/base portrait and browser depth/portrait combinations, not every headset, photos, enhanced portrait or long thermal windows. Video capture stays28ms and browser depth keeps its prior strategy;120/180ms diagnostic experiments are not delivery settings. Scheduling/command reuse and lossless pixel handoffs improve processing without a universal72FPS/30Hz promise. No private benchmark samples, credentials or weights are exported.

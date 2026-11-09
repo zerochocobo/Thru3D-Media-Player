@@ -76,6 +76,8 @@ func tap(menu: Node3D, target: int) -> void:
 func wake_controls(controls: Node3D) -> void:
 	var origin: Vector3 = controls.app.xr_camera.global_position
 	controls.app.test_rays = {"right_hand": [origin, (controls.app.photo.panel.global_position - origin).normalized()]}
+	# Begin a fresh dwell; automatic processing may already have entered with a later timestamp.
+	controls._entered_ms = -1
 	var now := Time.get_ticks_msec()
 	controls.sync(now - controls.ENTER_MS); controls.sync(now)
 

@@ -65,6 +65,8 @@ if ($DebugApplicationId) {
 }
 function Convert-HexString([byte[]]$Bytes) { -join ($Bytes | ForEach-Object { $_.ToString('X2') }) }
 $workspace = Split-Path -Parent $PSScriptRoot
+& (Join-Path $workspace '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'check_image_transfers.py')
+if ($LASTEXITCODE -ne 0) { throw 'Runtime image transfer guard failed.' }
 & (Join-Path $workspace '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'Build-ChineseLexicon.py') --check
 if ($LASTEXITCODE -ne 0) { throw 'Chinese keyboard lexicon is missing or stale.' }
 & "$PSScriptRoot\Assert-NarrationPackaged.ps1"

@@ -6,6 +6,9 @@ var failures: Array[String] = []
 
 class GalleryPhoto extends Node3D:
 	var view_camera: Camera3D
+	# This fixture exercises free-floating gallery offsets, without ground leveling.
+	func layout_head(head: Transform3D) -> Transform3D: return head
+	func constrain_layout_pose(pose: Transform3D, _preserve_roll: bool = false) -> Transform3D: return pose
 
 func check(value: bool, message: String) -> void:
 	checks += 1

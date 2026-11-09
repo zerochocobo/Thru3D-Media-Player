@@ -6,6 +6,7 @@
 #include "depth_stabilizer.h"
 #include "picture_bars.h"
 #include "photo_depth.h"
+#include "mnn_gpu.h"
 #include <MNN/Interpreter.hpp>
 #include <MNN/MNNForwardType.h>
 #include <MNN/Tensor.hpp>
@@ -72,6 +73,7 @@ AssetPtr open_model(JNIEnv* env, jobject assets, const char* path = kModelAsset)
 // ZipDepth's convolution graph uses images; the independent photo ViT keeps buffers.
 // Debug builds can compare: adb shell setprop debug.vrpp.depth.gpumode <MNN_GPU_* bits>.
 int gpu_mode(bool photo = false) {
+    if (quest::mnn_uses_vulkan()) return quest::mnn_vulkan_mode(!photo);
     int mode = MNN_GPU_TUNING_FAST | (photo ? MNN_GPU_MEMORY_BUFFER : 0); // Default image mode.
     char value[PROP_VALUE_MAX] = {};
     if (__system_property_get("debug.vrpp.depth.gpumode", value) > 0) {
@@ -112,7 +114,7 @@ std::string cache_path(const void* model, size_t bytes, const std::string& direc
     char tag[17];
     snprintf(tag, sizeof(tag), "%016llx", static_cast<unsigned long long>(hash));
     // Tuned kernels belong to one memory mode: each mode keeps its own cache.
-    return directory + "/mnn_depth_fp16_" + tag + "_m" + std::to_string(gpu_mode(photo)) + ".cache";
+    return directory + (quest::mnn_uses_vulkan() ? "/mnn_depth_vulkan_fp32_" : "/mnn_depth_fp16_") + tag + "_m" + std::to_string(gpu_mode(photo)) + ".cache";
 }
 
 struct Depth final {
@@ -141,14 +143,14 @@ struct Depth final {
         require(net != nullptr, "MNN depth model rejected");
         if (!cache.empty()) net->setCacheFile(cache.c_str());
         MNN::ScheduleConfig config;
-        config.type = MNN_FORWARD_OPENCL;
+        config.type = quest::mnn_gpu_backend();
         config.backupType = MNN_FORWARD_CPU; // Only so placement can be audited and rejected.
         config.numThread = mode;
         MNN::BackendConfig backend;
         // FP16 selected by normalized-depth/disparity and temporal comparison, not raw
         // depth-scale error. Quest 3 384x224: ~19 ms, 0.4 px temporal difference P95
         // at 1080p/50% strength on the short reference sequence (see ZipDepth review).
-        backend.precision = MNN::BackendConfig::Precision_Low;
+        backend.precision = quest::mnn_uses_vulkan() ? MNN::BackendConfig::Precision_High : MNN::BackendConfig::Precision_Low;
         backend.power = MNN::BackendConfig::Power_High;
         config.backendConfig = &backend;
         // Low-priority queue (see depth_priority): XR frames take precedence over depth.
@@ -157,10 +159,10 @@ struct Depth final {
         vrpp_set_cl_priority(depth_priority(photo));
         session = net->createSession(config);
         vrpp_set_cl_priority(-1);
-        require(session != nullptr, "MNN depth OpenCL session creation failed");
+        require(session != nullptr, "MNN depth GPU session creation failed");
         MNNForwardType main = MNN_FORWARD_CPU;
         net->getSessionInfo(session, MNN::Interpreter::BACKENDS, &main);
-        require(main == MNN_FORWARD_OPENCL, "MNN OpenCL backend unavailable; refusing CPU depth");
+        require(main == config.type, "MNN GPU backend unavailable; refusing CPU depth");
         src = net->getSessionInput(session, "src");
         out = net->getSessionOutput(session, "depth");
         require(src && out && src->channel() == 3 && src->width() > 0 && src->height() > 0, "Depth model I/O differs");
@@ -185,7 +187,7 @@ struct Depth final {
             return true;
         };
         require(net->runSessionWithCallBackInfo(session, before, after, true) == MNN::NO_ERROR, "MNN depth audit run failed");
-        require(gpu_ops > 0, "MNN depth executed no OpenCL ops");
+        require(gpu_ops > 0, "MNN depth executed no GPU ops");
         if (!host_ops.empty()) {
             // Every offender at once: each needs its own graph rewrite.
             std::string names;
@@ -348,7 +350,8 @@ Java_org_vrpassthroughplayer_plugin_DepthNative_describe(JNIEnv* env, jclass, jl
         const auto depth = find(handle);
         std::ostringstream json;
         json << "{\"width\":" << depth->width << ",\"height\":" << depth->height << ",\"gpu_mode\":" << depth->mode << ",\"priority\":" << depth_priority(depth->photo) << ",\"prepare_ms\":" << depth->prepare_ms
-             << ",\"model\":\"" << (depth->photo ? "DA2 Small" : "ZipDepth base") << "\",\"precision\":\"fp16\""
+             << ",\"model\":\"" << (depth->photo ? "DA2 Small" : "ZipDepth base") << "\",\"precision\":\"" << (quest::mnn_uses_vulkan() ? "fp32" : "fp16") << "\""
+             << ",\"backend\":\"" << (quest::mnn_uses_vulkan() ? "MNN_Vulkan" : "MNN_OpenCL") << "\""
              << ",\"gpu_ops\":" << depth->gpu_ops << ",\"cpu_fallback_ops\":" << depth->host_ops.size() << '}';
         return env->NewStringUTF(json.str().c_str());
     } catch (const std::exception& error) { fail(env, error.what()); return nullptr; }

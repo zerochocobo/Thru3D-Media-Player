@@ -30,7 +30,7 @@ func run() -> void:
 	var video := Video.new(); video.history_enabled = false; root.add_child(video); video.set_process(false); main.video = video
 	video.platform = preload("res://tests/test_player_menu.gd").Host.new()
 	var camera := Camera3D.new(); root.add_child(camera); camera.transform = main.head_pose; video.view_camera = camera
-	main.recent_menu = Node3D.new(); main.recent_menu.visible = false
+	main.recent_menu = preload("res://scripts/library_menu.gd").new(); main.recent_menu.visible = false
 	var menu := Menu.new(); menu.state_provider = main._menu_state
 	menu.adjustment_requested.connect(main._on_playback_adjustment); menu.adjustment_committed.connect(main._save_playback_adjustments)
 	menu.action_requested.connect(main._on_menu_action); root.add_child(menu); menu.set_process(false); main.player_menu = menu
@@ -104,13 +104,13 @@ func run() -> void:
 		main._on_playback_adjustment("screen_distance", 2.5)
 		check(is_equal_approx(main._surface_distance(video), 2.5), "Distance slider uses the plane distance despite elevated centre")
 		for hand in ["left_hand", "right_hand"]:
-			for corner in [0, 1]:
+			for corner in [1]:
 				menu.dismiss(); menu.section = 0; menu._adjustment = ""; menu.toggle()
 				video.set_screen_scale(1.0); video.panel.visible = true
 				anchor = bottom(video)
 				var target: Vector3 = video.panel.to_global(video.screen_corner(corner))
 				main.rays[hand] = [camera.global_position, (target - camera.global_position).normalized()]
-				check(main._try_corner_resize(hand), "Either upper corner can start a resize with either hand")
+				check(main._try_corner_resize(hand), "Upper-right corner can start a resize with either hand")
 				if not main._grab.has("resize"): continue
 				main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 				check(video.cinema.guide.visible, "Either corner shows the temporary grid")
@@ -149,7 +149,7 @@ func run() -> void:
 	video.set_screen_scale(5.0)
 	main._on_playback_adjustment("screen_distance", 3.0)
 	menu.dismiss(); menu.toggle(); menu._activate(Menu.SCREEN_SETTINGS)
-	check(click(menu, Menu.SCREEN_SET_DEFAULT) and main._flat_video_is_default(), "Set as default saves cinema placement and selected feedback")
+	check(click(menu, Menu.ScreenLockMenu.SAVE) and main._flat_video_is_default(), "Set as default saves cinema placement and selected feedback")
 	menu.dismiss()
 	var saved := main._cinema_default(); var saved_size := main._flat_video_defaults()
 	check(saved_size.y == 5.0, "500 percent can be saved as the default")
@@ -203,7 +203,7 @@ func run() -> void:
 	main.settings_path = settings_path.get_base_dir(); main._set_cinema_mode(false); main._save_flat_video_defaults()
 	check(main._flat_video_defaults() == previous_view and main._cinema_default() == previous_mode, "Failed save rolls back both dimensions and mode/height")
 	main.settings_path = settings_path
-	menu.toggle(); menu._activate(Menu.SCREEN_SETTINGS); click(menu, Menu.SCREEN_SET_DEFAULT); menu.dismiss()
+	menu.toggle(); menu._activate(Menu.SCREEN_SETTINGS); click(menu, Menu.ScreenLockMenu.SAVE); menu.dismiss()
 	main._set_cinema_mode(true); main._recenter()
 	check(not video.cinema.enabled, "Saving free mode then recentering restores free mode")
 	var before := world(video); video.set_screen_scale(60)

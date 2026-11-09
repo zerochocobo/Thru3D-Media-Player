@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -14,6 +15,8 @@ namespace quest {
 struct MnnRvmReport {
     int width = 0, height = 0;
     bool fp16 = true;
+    bool vulkan = false;
+    int gpu_mode = 0;
     int gpu_ops = 0;                     // ops whose outputs live on the OpenCL device
     std::vector<std::string> host_ops;   // any entry rejects the runtime (no CPU fallback)
     double prepare_ms = 0;
@@ -55,6 +58,7 @@ public:
 private:
     struct Eye;
     void audit_placement();
+    std::vector<uint8_t> portable_model_;
     std::shared_ptr<MNN::Interpreter> net_;
     std::array<std::array<std::unique_ptr<Eye>, 2>, kStreams> eyes_;
     MnnRvmReport report_;

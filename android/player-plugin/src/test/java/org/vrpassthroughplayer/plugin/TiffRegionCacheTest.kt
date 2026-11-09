@@ -21,12 +21,13 @@ class TiffRegionCacheTest {
         return file
     }
     @Test fun completePrivateCacheHasOriginalDimensions() {
-        assertArrayEquals(intArrayOf(640,320),PhotoBitmap.rawBounds(cache(640,320)))
+        for (version in 1..2)
+            assertArrayEquals(intArrayOf(640,320),PhotoBitmap.rawBounds(cache(640,320,version)))
     }
     @Test fun incompleteWrongVersionAndOverflowedCachesNeverReachTheRegionReader() {
         val partial=cache(640,320)
         RandomAccessFile(partial,"rw").use { it.setLength(it.length()-1) }
-        for (file in listOf(partial,cache(640,320,2),cache(-1,320),cache(Int.MAX_VALUE,Int.MAX_VALUE)))
+        for (file in listOf(partial,cache(640,320,3),cache(-1,320),cache(Int.MAX_VALUE,Int.MAX_VALUE)))
             assertTrue(file.name,runCatching { PhotoBitmap.rawBounds(file) }.isFailure)
     }
     @Test fun extensionlessSpreadSourceCopiesAreRecognisedByContent() {

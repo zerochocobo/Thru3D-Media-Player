@@ -41,7 +41,7 @@ class Host extends RefCounted:
 		var core:=Tiles.core_rect(Vector2i(20778,10389),Vector2i(column,row))
 		var rect:=core.grow(2).intersection(Rect2i(0,0,20778,10389))
 		var image:=Image.create(rect.size.x,rect.size.y,false,Image.FORMAT_RGB8)
-		image.fill(Color.GREEN); image.save_png(tile_path)
+		image.fill(Color.GREEN); preload("res://scripts/raw_image.gd").write(image, tile_path)
 		region={"state":"tile","column":column,"row":row,"path":tile_path,"x":rect.position.x,"y":rect.position.y,"width":rect.size.x,"height":rect.size.y}
 		return true
 
@@ -115,7 +115,7 @@ func _run() -> void:
 	var arrays:=mesh.surface_get_arrays(0)
 	check(arrays[Mesh.ARRAY_TEX_UV][0].x>0.0 and arrays[Mesh.ARRAY_TEX_UV][-1].x<=1.0,"Partial edge patch samples decoded gutter correctly")
 	# Exercise the real asynchronous Godot tile loader and source-switch cancellation.
-	host.tile_path=ProjectSettings.globalize_path("user://online-panorama-tile.png")
+	host.tile_path=ProjectSettings.globalize_path("user://online-panorama-tile.t3di")
 	var photo:=Photo.new(); photo.history_enabled=false; root.add_child(photo)
 	photo.panel.visible=true; photo.set_projection(3)
 	photo.panorama_tiles.configure({"region_source":"original.jpg","width":size.x,"height":size.y},host)

@@ -4,6 +4,15 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.17.4 — 2026-11-09
+
+- Expand AI GPU compatibility with a Vulkan fallback when OpenCL cannot initialize, plus portable RVM activation restoration and Vulkan scheduling/transfer improvements. Keep the existing video 28 ms capture policy and browser cadence; do not trade fewer depth updates for XR frame rate. Reported Quest 2 video/base-portrait and browser-effect checks do not establish all-device, photo/enhanced-portrait or sustained 72 FPS/30 Hz acceptance.
+- Replace internal PNG image handoffs with lossless, bounded and versioned pixel transfers for photos, reading and related previews, and process the newest captured browser frame without waiting for another callback. Original file formats and explicit user exports remain separate.
+- Add a persistent linked screen-edit lock for flat video, with corner/menu controls and feedback; playback, seeking, volume, subtitles and depth strength remain usable. Add a global option to hide passive playback status while keeping actionable errors and confirmations.
+- Share the global footer with browser windows/projected controls and tighten its vertical layout. Improve scene playback-panel placement and controller ownership; add beach leisure/prop interactions and shoreline/celestial details. Public Git still excludes the private scene/model/texture/audio payloads and modeling studies.
+- Retire failed SMB connection contexts and retry eligible reads; the current source also waits for closing MPV sources before opening another after rapid presentation switches. Seek CPU/GPU performance levels stay sustained-high. The last two changes are not guaranteed in every previously delivered APK; actual network/seek and presentation behavior needs matching package validation.
+- Withdraw foreign featured-list Beta badges and toolbar Beta play entries; preserve manual playback and experimental in-page buttons. Withdraw iQIYI/Youku directory badges pending required validation, without disabling the validated domestic routes. The China-store channel keeps exactly seven CN featured sites. Earlier fixed-sample success does not override current Instagram/Niconico/TikTok/Archive user failures or establish ordinary browsing compatibility.
+
 ## 0.17.3 — 2026-11-09
 
 - Add Play Beta routes and featured entries for compatible Twitch public clips, TikTok detail pages, TED talks and Dailymotion. Preserve the legacy manual player action alongside Beta on foreign sites, explicit playback, source-scoped requests and retained-page return. Reported clip/detail validation does not imply all content, accounts or devices.

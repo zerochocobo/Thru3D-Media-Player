@@ -43,7 +43,13 @@ func _run() -> void:
 	photo.panorama_tiles.set_process(false); photo.panorama_tiles.visible=true
 	photo.panorama_tiles.dimensions=Vector2i(20778,10389)
 	var cell:=Vector2i(10,5); var rect:=Tiles.core_rect(Vector2i(20778,10389),cell).grow(2)
-	var original:=Image.create(rect.size.x,rect.size.y,false,Image.FORMAT_RGB8); original.fill(Color.GREEN); original.generate_mipmaps()
+	var original:=Image.create(rect.size.x,rect.size.y,false,Image.FORMAT_RGBA8); original.fill(Color.GREEN)
+	var tile_path:=output.path_join("source-tile.t3di")
+	if not preload("res://scripts/raw_image.gd").write(original,tile_path):
+		push_error("Cannot write raw tile fixture"); quit(1); return
+	original=Tiles._decode(tile_path)
+	if original==null:
+		push_error("Cannot decode raw tile fixture"); quit(1); return
 	photo.panorama_tiles._install(cell,original,{"x":rect.position.x,"y":rect.position.y,"width":rect.size.x,"height":rect.size.y})
 	var panorama: Image=await frame(); panorama.save_png(output.path_join("original-tile.png")); check_green(panorama,"Sphere must show original pixels over red preview")
 	photo.inspect=true; photo._detail_direction=Vector3.FORWARD; photo._update_inspect()

@@ -11,6 +11,7 @@ const KEYBOARD := 986026
 const SLIDER_X := 0.15
 const ENTER_MS := 120
 const LEAVE_MS := 650
+const GLOBAL_CENTRE := Vector2(0, -0.14)
 # PlayerMenu._draw_depth: the normal 0–100% rail rises from the icon;
 # Boost adds the separate amber 100–200% segment above it.
 const RAIL := Vector2(0.16, 0.40)
@@ -29,6 +30,9 @@ var boost_fill: MeshInstance3D
 var boosted := false
 var busy_ring: MeshInstance3D
 var strength_open := false
+var global_footer := false
+var _last_effect_error := ""
+var _error_until := 0
 var host: Node3D:
 	get: return window_ref.get_ref() if window_ref else null
 
@@ -41,26 +45,45 @@ func configure(window: Node3D) -> void:
 	ray_max_distance = 100.0
 
 func _ready() -> void:
-	super(); _backdrop.visible = false; refresh()
+	super(); _backdrop.visible = false
+	global_footer = host.browser.footer_window_id == host.window_id
+	refresh()
+
+func set_global_footer(value: bool) -> void:
+	if global_footer == value: return
+	global_footer = value
+	clear_pointer_visuals(); near_hands.clear(); entered = -1; last_near = -1
+	refresh()
+
+func refresh_session_controls(force: bool = false) -> void:
+	if global_footer: super(force)
 
 func sync(now: int = -1) -> void:
-	if not host or not host.visible or (host.browser.start_page.active(host.window_id) and host.toolbar_shown and not host.depth.enabled and not host.depth.matte):
+	if not host or not host.visible or not host.browser.active():
 		finish_drag(); _hide_controls(); near_hands.clear(); entered = -1; last_near = -1; return
+	if now < 0: now = Time.get_ticks_msec()
+	if host.depth.error != _last_effect_error:
+		_last_effect_error = host.depth.error
+		_error_until = now + 6000 if not _last_effect_error.is_empty() else 0
 	var layout: Dictionary = host.full_page_layout()
 	var factor: float = float(layout.size.x) / host.page_size.x
-	var pose: Transform3D = layout.pose * Transform3D(Basis.IDENTITY.scaled(Vector3.ONE * factor), Vector3(0, -layout.size.y / 2 - 0.28 * factor, 0.03 * factor))
+	var pose: Transform3D = layout.pose * Transform3D(Basis.IDENTITY.scaled(Vector3.ONE * factor), Vector3(0, -layout.size.y / 2 - 0.24 * factor, 0.03 * factor))
+	if host.on_screen():
+		var bounds := near_menu_bounds()
+		pose = host.global_transform * Transform3D(Basis.IDENTITY, Vector3(bounds.get_center().x,bounds.position.y-0.12,0.03))
 	if not global_transform.is_equal_approx(pose):
 		global_transform = pose; composition_layout_changed.emit()
 	if not host.depth.enabled: strength_open = false
 	if host.depth.strength > host.depth.Strength.MAX: boosted = true
 	var next := _state()
 	if next != state_key: state_key = next; refresh()
+	refresh_session_controls()
 	_refresh_strength()
 	if busy_ring: busy_ring.visible=depth_preparing()
-	_tips[DEPTH]=I18n.t("Starting 3D" if depth_preparing() else "2D to 3D effect")
+	_tips[DEPTH]=_depth_tip()
 	_update_tooltip()
 	if now < 0: now = Time.get_ticks_msec()
-	var near := not capture_hand.is_empty() or near_hands.values().has(true)
+	var near := not capture_hand.is_empty() or near_hands.values().has(true) or now < _error_until
 	if near:
 		last_near = now
 		if entered < 0: entered = now
@@ -71,7 +94,7 @@ func sync(now: int = -1) -> void:
 		if last_near < 0 or now - last_near >= LEAVE_MS: _hide_controls()
 
 func _state() -> Array:
-	return [host.toolbar_shown,host.depth.enabled,host.depth.matte,host.selecting,host.is_focused(),host.browser.keyboard_visible(host.window_id),boosted,strength_open,I18n.language] if host else []
+	return [host.on_screen(),host.toolbar_shown,host.depth.enabled,host.depth.matte,host.depth.error,host.selecting,host.is_focused(),host.browser.keyboard_visible(host.window_id),boosted,strength_open,I18n.language] if host else []
 
 func set_strength_open(value: bool) -> void:
 	if strength_open == value: return
@@ -87,37 +110,72 @@ func observe_ray(hand: String, origin: Vector3, direction: Vector3, tracked: boo
 	if tracked and host and host.visible:
 		var uv: Variant = host.page_point(origin, direction)
 		near = uv != null and Rect2(0,0,1,1).has_point(uv)
+		if host.on_screen():
+			var menu_point: Variant = host.project_pointer(origin,direction,Transform3D.IDENTITY,false)
+			if menu_point != null: near = near or near_menu_bounds().grow(.12).has_point(Vector2(menu_point.x,menu_point.y))
 		var point: Variant = project_pointer(origin, direction, Transform3D.IDENTITY, false)
 		if point != null:
-			near = near or Rect2(-0.38,-0.065,0.76,0.13).has_point(Vector2(point.x,point.y))
+			near = near or reveal_bounds().has_point(Vector2(point.x,point.y))
 			if host.depth.enabled and strength_open: near = near or strength_bounds().has_point(Vector2(point.x,point.y))
 	near_hands[hand] = near
 	sync(now)
 	var hit: Dictionary = host.ray_hit(origin,direction) if tracked and host else {}
-	_hover[hand]=int(hit.target) if hit.get("footer",false) and int(hit.get("window",0))==host.window_id else NONE
+	if not hit.get("footer",false) or int(hit.get("window",0)) != host.window_id:
+		hit = {}
+	elif not hit.is_empty():
+		hit.point = to_local(host.to_global(hit.point))
+	app_actions.update(hand, hit, tracked)
+	_hover[hand]=int(hit.get("target", NONE))
 	_update_highlights()
+
+func reveal_bounds() -> Rect2:
+	var bounds := Rect2(-0.38,-0.065,0.76,0.13)
+	if not global_footer: return bounds
+	# Derive the width from shared controls, including disabled scene actions.
+	for button in _buttons: bounds = bounds.merge(button.rect)
+	return bounds.grow(0.025)
+
+func near_menu_bounds() -> Rect2:
+	var centre: Vector3 = host._backdrop.position
+	var size: Vector2 = host._backdrop.mesh.size
+	return Rect2(Vector2(centre.x,centre.y)-size/2,size)
+
+func strength_x() -> float:
+	return SLIDER_X - (0.075 if host and host.on_screen() else 0.0)
 
 func depth_preparing() -> bool:
 	return host and host.depth.enabled and host.depth.state!="ready" and host.depth.error.is_empty()
+
+func _depth_tip() -> String:
+	if host and not host.depth.error.is_empty(): return I18n.t(host.depth.error)
+	return I18n.t("Starting 3D" if depth_preparing() else "2D to 3D effect")
 
 func _draw() -> void:
 	state_key = _state()
 	_clear_layout(); fill = null; knob = null; value_label = null; boost_fill = null; busy_ring = null
 	_backdrop.visible = false
+	if device_status: device_status.visible = global_footer
 	if not host: return
 	var focus_icon := "close" if host.selecting else "expand" if host.is_focused() else "region_focus"
 	var focus_tip := "Cancel selection" if host.selecting else "Exit focus" if host.is_focused() else "Focus region"
 	for item in [[CHROME,"browser_frame",-0.30,not host.toolbar_shown,"Hide browser frame" if host.toolbar_shown else "Show browser frame"],[FOCUS,focus_icon,-0.15,host.selecting or host.is_focused(),focus_tip],[MATTE,"alpha",0.0,host.depth.matte,"Person passthrough"],[DEPTH,"depth",0.15,host.depth.enabled,"2D to 3D effect"]]:
+		if host.on_screen() and item[0] == CHROME: continue
+		if host.on_screen(): item[2] -= 0.075
 		_button(item[0],"",Vector2(item[2],0),Vector2.ONE*0.12,not host.page_input_blocked() if item[0]==FOCUS else true,item[1],item[3])
 		_tips[item[0]] = I18n.t(item[4])
 		if item[0]==DEPTH:
 			busy_ring=preload("res://scripts/ui_busy_ring.gd").create(_buttons.back().node,0.12,ACCENT)
 			busy_ring.set_meta("menu_eye_buffer",true) # shader-clock animation stays live
 			busy_ring.visible=depth_preparing()
-			_tips[DEPTH]=I18n.t("Starting 3D" if depth_preparing() else "2D to 3D effect")
+			_tips[DEPTH]=_depth_tip()
+	if not host.depth.error.is_empty():
+		var issue := _label(I18n.t(host.depth.error), Vector3(0,0.095,0.006), 14)
+		issue.modulate = UiTheme.color("browser_error")
+		_tips[MATTE] = I18n.t(host.depth.error)
 	var keyboard_shown: bool = host.browser.keyboard_visible(host.window_id)
-	_button(KEYBOARD,"",Vector2(0.30,0),Vector2.ONE*0.12,true,"keyboard_hide" if keyboard_shown else "keyboard",keyboard_shown)
+	_button(KEYBOARD,"",Vector2(0.225 if host.on_screen() else 0.30,0),Vector2.ONE*0.12,true,"keyboard_hide" if keyboard_shown else "keyboard",keyboard_shown)
 	_tips[KEYBOARD] = I18n.t("Close keyboard" if keyboard_shown else "Show keyboard")
+	if global_footer: place_session_controls(GLOBAL_CENTRE)
 	if not host.depth.enabled or not strength_open: return
 	var before := get_children()
 	var top := RAIL.y + (BOOST_HEIGHT if boosted else 0.0)
@@ -126,31 +184,31 @@ func _draw() -> void:
 	var panel := _quad(bounds.size,Vector3(bounds.get_center().x,bounds.get_center().y,0.001),Color(PANEL,1.0),10)
 	panel.material_override.set_shader_parameter("corner_radius",0.05)
 	add_child(panel); _decorations.append(panel); _block_rays(panel,panel.mesh.size,0.04)
-	_button(STRENGTH,"",Vector2(SLIDER_X,(RAIL.x+top)/2),Vector2(0.11,top-RAIL.x+0.04))
+	_button(STRENGTH,"",Vector2(strength_x(),(RAIL.x+top)/2),Vector2(0.11,top-RAIL.x+0.04))
 	var button: Dictionary = _buttons.back()
 	button.base_color = Color(TILE,0); button.node.material_override.set_shader_parameter("surface_color",button.base_color)
-	var rail := _quad(Vector2(0.012,RAIL.y-RAIL.x),Vector3(SLIDER_X,(RAIL.x+RAIL.y)/2,0.004),UiTheme.color("track"),14)
+	var rail := _quad(Vector2(0.012,RAIL.y-RAIL.x),Vector3(strength_x(),(RAIL.x+RAIL.y)/2,0.004),UiTheme.color("track"),14)
 	add_child(rail); _decorations.append(rail)
-	_decoration(Vector2(0.035,0.003),Vector2(SLIDER_X,RAIL.y),MUTED)
+	_decoration(Vector2(0.035,0.003),Vector2(strength_x(),RAIL.y),MUTED)
 	var recommended := lerpf(RAIL.x,RAIL.y,host.depth.Strength.VIDEO_DEFAULT)
-	_decoration(Vector2(0.05,0.004),Vector2(SLIDER_X,recommended),ACCENT)
-	_icon("star_filled",Vector3(SLIDER_X-0.048,recommended,0.004),0.022,ACCENT)
+	_decoration(Vector2(0.05,0.004),Vector2(strength_x(),recommended),ACCENT)
+	_icon("star_filled",Vector3(strength_x()-0.048,recommended,0.004),0.022,ACCENT)
 	fill = _quad(rail.mesh.size,rail.position,ACCENT,15); add_child(fill); _decorations.append(fill)
 	if boosted:
-		_decoration(Vector2(0.012,BOOST_HEIGHT),Vector2(SLIDER_X,RAIL.y+BOOST_HEIGHT/2),Color(UiTheme.color("warning"),0.35))
-		boost_fill = _quad(Vector2(0.012,BOOST_HEIGHT),Vector3(SLIDER_X,RAIL.y+BOOST_HEIGHT/2,0.004),UiTheme.color("warning"),15)
+		_decoration(Vector2(0.012,BOOST_HEIGHT),Vector2(strength_x(),RAIL.y+BOOST_HEIGHT/2),Color(UiTheme.color("warning"),0.35))
+		boost_fill = _quad(Vector2(0.012,BOOST_HEIGHT),Vector3(strength_x(),RAIL.y+BOOST_HEIGHT/2,0.004),UiTheme.color("warning"),15)
 		add_child(boost_fill); _decorations.append(boost_fill)
-		_decoration(Vector2(0.08,0.004),Vector2(SLIDER_X,RAIL.y),UiTheme.color("track_tick"))
-	knob = _quad(Vector2.ONE*0.03,Vector3(SLIDER_X,RAIL.x,0.006),UiTheme.color("knob"),17)
+		_decoration(Vector2(0.08,0.004),Vector2(strength_x(),RAIL.y),UiTheme.color("track_tick"))
+	knob = _quad(Vector2.ONE*0.03,Vector3(strength_x(),RAIL.x,0.006),UiTheme.color("knob"),17)
 	_style_slider_marker(knob); knob.material_override.set_shader_parameter("corner_radius",0.015); add_child(knob); _decorations.append(knob)
-	value_label = _label("",Vector3(SLIDER_X,top+0.038,0.006),16)
-	_button(BOOST,I18n.t("Boost"),Vector2(SLIDER_X,cap_y),BOOST_BUTTON_SIZE,true,"",boosted)
+	value_label = _label("",Vector3(strength_x(),top+0.038,0.006),16)
+	_button(BOOST,I18n.t("Boost"),Vector2(strength_x(),cap_y),BOOST_BUTTON_SIZE,true,"",boosted)
 	var caption: Label3D = _buttons.back().node.get_child(0)
 	var font_size := 13
 	while font_size>10 and text_width(caption.text,font_size)>BOOST_BUTTON_SIZE.x-0.014: font_size -= 1
 	set_label_size(caption,font_size)
 	caption.modulate = UiTheme.color("warning") if boosted else UiTheme.color("label")
-	_round(OFF,"power",Vector2(SLIDER_X,RAIL.x-0.055),0.075,true,false,I18n.t("Turn off 3D"))
+	_round(OFF,"power",Vector2(strength_x(),RAIL.x-0.055),0.075,true,false,I18n.t("Turn off 3D"))
 	var power: Dictionary = _buttons.back()
 	power.base_color=UiTheme.color("danger_surface");power.foreground=UiTheme.color("danger")
 	power.node.material_override.set_shader_parameter("surface_color",power.base_color)
@@ -164,7 +222,7 @@ func _draw() -> void:
 func strength_bounds() -> Rect2:
 	var bottom := RAIL.x-0.095
 	var top := RAIL.y+(BOOST_HEIGHT if boosted else 0.0)+0.128
-	return Rect2(SLIDER_X-0.065,bottom,0.13,top-bottom)
+	return Rect2(strength_x()-0.065,bottom,0.13,top-bottom)
 
 func _raise_rail(node: Node) -> void:
 	# The independent XR texture is behind the eye buffer. Its coverage mask
@@ -220,13 +278,18 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	if hit.is_empty(): return false
 	if hit.target == STRENGTH:
 		capture_hand = hand; drag_pointer(hand,origin,direction,tracked)
-	else: _activate_hit(hit)
+	else:
+		hit.hand = hand
+		_activate_hit(hit)
 	return true
 func finish_drag() -> void:
 	if capture_hand.is_empty(): return
 	capture_hand = ""
 	if host: host._depth_changed("strength",host.depth.strength*100.0)
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	app_actions.release(hand)
 	if capture_hand == hand: drag_pointer(hand,origin,direction,tracked); finish_drag()
 func cancel_pointer(hand: String) -> void:
+	app_actions.cancel_hand(hand)
+	near_hands.erase(hand); _hover.erase(hand)
 	if capture_hand == hand: finish_drag()

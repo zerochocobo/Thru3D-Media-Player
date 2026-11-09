@@ -3,7 +3,7 @@
 // Fixed near-side full moon follows the existing artistic opposite-sun orbit.
 uniform sampler2D moon_albedo : filter_linear_mipmap,repeat_disable;
 uniform bool moon_detail_enabled = true;
-const float MOON_RADIUS = .0045;
+const float MOON_RADIUS = .0135;
 
 vec3 time_moon_surface(vec3 direction,float footprint) {
 	if (!moon_detail_enabled) return vec3(.70,.77,.85);

@@ -165,3 +165,7 @@ Optional QUEST Release comparison builds can use -UncompressedNativeLibraries. T
 Meta `-QuestStore` builds temporarily use the application display name `Thru3D Media Player XR` in project and Android package labels, verified through APK metadata and recorded in build.json. Other channels keep `Thru3D Media Player`; original source settings are restored. This does not change package identity or signing requirements.
 
 0.16.2 complete builds still prepare/verify the separately supplied Tiny text-detector payload through `Prepare-TextProtection.ps1` and `Assert-TextProtectionModel.ps1`. The feature is disabled/hidden in both Godot and Android for this release; retained packaging is not permission to reopen it. No detector weight is stored in Git. External-video entry/host intent guards are verified by `Assert-ExternalPlaybackPackaged.ps1`.
+
+## 0.17.4 source/package correspondence
+
+This source snapshot includes the latest committed0.17.4 source. Four delivered packages shared the recorded build inputs; the existing signed OpenXR package was accepted with two changed source inputs(main.gd/xr_display.gd), so inclusion of the later seek-performance change was not guaranteed. A subsequent MPV closing-source wait is also included in current source and was not rebuilt into that batch. Do not claim identical content for all delivered APKs. Model/scenery payloads and original signing identities remain separately supplied; missing resources must stop builds.

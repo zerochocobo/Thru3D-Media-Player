@@ -28,6 +28,12 @@ class PlaybackFailureTest {
         assertEquals(detail, report.getString("detail"))
         val session = PlaybackFailure.report("MPV_RVM_FAILED", IllegalStateException("MNN OpenCL session creation failed"), "reading")
         assertEquals("ai_gpu_unavailable", session.getString("reason"))
+        for (detailGpu in listOf("MNN Vulkan backend unavailable; refusing CPU execution",
+            "MNN GPU session creation failed", "AI GPU unavailable: OpenCL and Vulkan initialization failed")) {
+            val unavailable = PlaybackFailure.report("MPV_RVM_FAILED", IllegalStateException(detailGpu), "reading")
+            assertEquals("ai_gpu_unavailable", unavailable.getString("reason"))
+            assertEquals("ai_initialization", unavailable.getString("stage"))
+        }
         val inference = PlaybackFailure.report("MPV_RVM_FAILED", IllegalStateException("MNN RVM inference failed"), "reading")
         assertEquals("ai_processing_failed", inference.getString("reason"))
         assertEquals("ai_processing", inference.getString("stage"))

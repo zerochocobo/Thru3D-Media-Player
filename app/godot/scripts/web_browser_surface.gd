@@ -150,8 +150,8 @@ func _process(_delta: float) -> void:
 		if OS.get_name()=="Android": JavaClassWrapper.get_exception()
 		preparation_pending = not prepared is Dictionary or prepared.get("state") != "ready"
 		if prepared is Dictionary and prepared.get("state") == "failed":
-			menu.depth.enabled=false;menu.depth.matte=false;menu.depth.error="3D unavailable";menu.refresh();menu.browser.effects_changed.emit()
-		if preparation_pending: menu.depth.state="preparing"
+			menu.depth.enabled=false;menu.depth.matte=false;menu.depth.state="failed";menu.depth.error="3D unavailable";menu.refresh();menu.browser.effects_changed.emit()
+		elif preparation_pending: menu.depth.state="preparing"
 	elif not conversion and preparation_api:
 		preparation_api.clearPreparation(window_id)
 		if OS.get_name()=="Android": JavaClassWrapper.get_exception()

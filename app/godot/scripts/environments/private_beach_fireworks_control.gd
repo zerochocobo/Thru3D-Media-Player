@@ -5,7 +5,7 @@ const RING_IDLE := Color(1,.56,.14,.42)
 const RING_HOVER := Color(1,.72,.28,.95)
 const RING_PRESSED := Color(1,.95,.72,1)
 const BUTTON_TRAVEL := .005
-const BEACON_SIZE := .8
+const BEACON_SIZE := .18
 static func beveled_case(size: Vector3) -> ArrayMesh:
 	var st := SurfaceTool.new(); st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var rings: Array[PackedVector3Array]=[]
@@ -33,10 +33,11 @@ static func _glow_material(color: Color) -> StandardMaterial3D:
 	material.cull_mode=BaseMaterial3D.CULL_DISABLED; material.no_depth_test=false; material.albedo_color=color
 	return material
 
-static func build(parent: Node,ground_y: float,make_material: Callable) -> Dictionary:
+static func build(parent: Node,ground_y: float,make_material: Callable,table_top := Vector3.INF) -> Dictionary:
 	var root := Node3D.new(); root.name="FireworksController"; parent.add_child(root)
 	# Lamp occupies the middle 19 cm; use the near edge of the existing 65 cm table.
 	var position := Vector3(5.2,ground_y+.535,7.77)
+	if table_top.is_finite(): position=table_top+Vector3(0,0,-.23)
 	var colors := [Vector3(.025,.033,.04),Vector3(.17,.105,.032),Vector3(.012,.014,.015)]
 	var materials: Array[ShaderMaterial]=[]
 	for color in colors:
@@ -62,8 +63,7 @@ static func build(parent: Node,ground_y: float,make_material: Callable) -> Dicti
 		var bar := BoxMesh.new(); bar.size=Vector3(.0018,.0005,.009); line.mesh=bar; line.material_override=ink
 		var angle := index*TAU/8.0; cap.add_child(line)
 		line.position=Vector3(sin(angle)*.013,.0044,cos(angle)*.013); line.rotation.y=angle
-	# The cap alone is too small to find from a lounger: a lit ring and a soft
-	# beacon mark it from across the sand and answer the ray and the trigger.
+	# A compact glow identifies the cap without covering neighbouring stock.
 	var ring_material := _glow_material(RING_IDLE)
 	var ring := MeshInstance3D.new(); ring.name="Study_Fireworks_Ring"
 	var torus := TorusMesh.new(); torus.inner_radius=.034; torus.outer_radius=.043; torus.rings=24; torus.ring_segments=6

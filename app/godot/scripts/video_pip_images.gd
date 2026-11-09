@@ -116,7 +116,10 @@ static func _decode(info: Dictionary) -> Image:
 	var header := Info.read_header(path)
 	if header.is_empty() or int(header.width) * int(header.height) > 32 * 1024 * 1024: return null
 	var image := Image.new()
-	if image.load(path) != OK or image.is_empty(): return null
+	if header.codec == "rgba":
+		image = preload("res://scripts/raw_image.gd").read(path, 2048)
+		if image == null: return null
+	elif image.load(path) != OK or image.is_empty(): return null
 	Info.orient(image, int(info.get("orientation", header.get("orientation", 1))))
 	var ratio := minf(1, 2048.0 / maxf(image.get_width(), image.get_height()))
 	if ratio < 1: image.resize(maxi(1, roundi(image.get_width() * ratio)), maxi(1, roundi(image.get_height() * ratio)), Image.INTERPOLATE_LANCZOS)

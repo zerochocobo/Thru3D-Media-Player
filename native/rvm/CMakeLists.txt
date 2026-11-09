@@ -11,12 +11,20 @@ endif()
 if(NOT MNN_SOURCE OR NOT EXISTS "${MNN_SOURCE}/include/MNN/Interpreter.hpp" OR NOT EXISTS "${MNN_LIB}")
     message(FATAL_ERROR "Pass -DMNN_SOURCE and -DMNN_LIB (run tools/Build-MnnAndroid.sh)")
 endif()
+# An old OpenCL-only archive links successfully but makes the fallback unusable.
+execute_process(COMMAND "${CMAKE_NM}" --defined-only --extern-only "${MNN_LIB}"
+    RESULT_VARIABLE mnn_symbols_status OUTPUT_VARIABLE mnn_symbols ERROR_VARIABLE mnn_symbols_error)
+if(NOT mnn_symbols_status EQUAL 0 OR NOT mnn_symbols MATCHES "VulkanRuntime")
+    message(FATAL_ERROR "MNN archive lacks Vulkan: rebuild with tools/Build-MnnAndroid.sh")
+endif()
+unset(mnn_symbols)
 add_library(quest_rvm SHARED rvm_backend.cpp rvm_channel_mean.cpp rvm_identity_tile.cpp rvm_state_guard.cpp rvm_benchmark_jni.cpp
-    rvm_runtime_jni.cpp rvm_mnn_backend.cpp depth_runtime_jni.cpp depth_stabilizer.cpp photo_depth.cpp media_delete.cpp)
+    rvm_runtime_jni.cpp rvm_mnn_backend.cpp mnn_rvm_graph.cpp depth_runtime_jni.cpp depth_stabilizer.cpp photo_depth.cpp media_delete.cpp)
 target_compile_features(quest_rvm PRIVATE cxx_std_17)
 target_compile_definitions(quest_rvm PRIVATE QUEST_DIAGNOSTIC_MODELS=$<BOOL:${QUEST_DIAGNOSTIC_MODELS}>)
 target_include_directories(quest_rvm PRIVATE "${RVM_PROFILE_INCLUDE}")
 target_include_directories(quest_rvm SYSTEM PRIVATE "${MNN_SOURCE}/include")
+target_include_directories(quest_rvm SYSTEM PRIVATE "${MNN_SOURCE}/schema/current" "${MNN_SOURCE}/3rd_party/flatbuffers/include")
 target_compile_options(quest_rvm PRIVATE -Wall -Wextra -Werror)
 # Debug remains debuggable but must exercise the optimized production wrapper.
 # Keep finite-value rejection valid; ncnn's separately built library is unchanged.
@@ -24,7 +32,7 @@ target_compile_options(quest_rvm PRIVATE "$<$<CONFIG:Debug>:-O2>" -fno-fast-math
 # The ncnn package exports -fno-exceptions for its own build. This JNI wrapper
 # catches its validation errors; source options take precedence over that interface.
 set_source_files_properties(rvm_backend.cpp rvm_channel_mean.cpp rvm_identity_tile.cpp rvm_state_guard.cpp rvm_benchmark_jni.cpp rvm_runtime_jni.cpp
-    rvm_mnn_backend.cpp depth_runtime_jni.cpp depth_stabilizer.cpp photo_depth.cpp PROPERTIES COMPILE_OPTIONS "-fexceptions")
+    rvm_mnn_backend.cpp mnn_rvm_graph.cpp depth_runtime_jni.cpp depth_stabilizer.cpp photo_depth.cpp PROPERTIES COMPILE_OPTIONS "-fexceptions")
 # MNN registers its OpenCL backend from static initializers; keep every object.
 target_link_libraries(quest_rvm PRIVATE ncnn -Wl,--whole-archive "${MNN_LIB}" -Wl,--no-whole-archive log android dl nativewindow)
 target_link_options(quest_rvm PRIVATE "-Wl,-z,max-page-size=16384")

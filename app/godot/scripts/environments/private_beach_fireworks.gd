@@ -9,8 +9,9 @@ const STARS := 480
 const TRAIL := 10
 const ROCKET := 24
 const FLIGHT_TIME := 3.4
-const LAUNCH_Z_MIN := 132.0
-const LAUNCH_Z_MAX := 142.0
+const LAUNCH_LEFT := Vector2(-64,-77)
+const LAUNCH_RIGHT := Vector2(65,-72)
+const BURST_Z := -150.0
 const BURST_RISE_MIN := 128.0
 const BURST_RISE_MAX := 140.0
 const SPARK_RADIUS := Vector2(.46,.12)
@@ -18,7 +19,7 @@ const SPARK_RADIUS := Vector2(.46,.12)
 const STYLE_COUNT := 6
 ## Burst sound per style; the bank has three burst recordings.
 const STYLE_SOUND := [0,0,2,1,2,1]
-const SALVO_CHANCE := .2
+const SALVO_CHANCE := .5
 const FLASHES := 2
 var slots: Array[Dictionary]=[]
 var held: Dictionary={}
@@ -47,7 +48,7 @@ func configure(sample_ground: Callable,seed_value := -1) -> void:
 		var multimesh := MultiMesh.new(); multimesh.transform_format=MultiMesh.TRANSFORM_3D
 		multimesh.use_colors=true; multimesh.use_custom_data=true
 		multimesh.mesh=quad; multimesh.instance_count=STARS*TRAIL+ROCKET*2+FLASHES
-		multimesh.custom_aabb=AABB(Vector3(-150,-110,0),Vector3(300,370,300))
+		multimesh.custom_aabb=AABB(Vector3(-160,-110,-280),Vector3(320,370,300))
 		var node := MultiMeshInstance3D.new(); node.multimesh=multimesh; node.visible=false
 		var material := ShaderMaterial.new(); material.shader=SparkShader
 		node.material_override=material; add_child(node)
@@ -114,13 +115,13 @@ const SILVER := Color(.9,.92,1)
 
 ## Each shell draws its shape, size, height, colours and salvo at random, so no two read alike.
 func start(slot: Dictionary,style: int) -> void:
-	var x := random.randf_range(-24.0,24.0)
-	var z := random.randf_range(LAUNCH_Z_MIN,LAUNCH_Z_MAX)
-	var launch := Vector3(x,float(ground.call(x,z))+.15,z)
-	# Finish above the distant hills: low bursts sent stars through the terrain.
-	var burst := launch+Vector3(random.randf_range(-8,8),random.randf_range(BURST_RISE_MIN,BURST_RISE_MAX),random.randf_range(-6,6))
+	var site := LAUNCH_LEFT if random.randf()<.5 else LAUNCH_RIGHT
+	var other := LAUNCH_RIGHT if site==LAUNCH_LEFT else LAUNCH_LEFT
+	var launch := Vector3(site.x,float(ground.call(site.x,site.y))+.15,site.y)
+	var launch2 := Vector3(other.x,float(ground.call(other.x,other.y))+.15,other.y)
+	var burst := Vector3(random.randf_range(-7,7),random.randf_range(BURST_RISE_MIN,BURST_RISE_MAX),BURST_Z+random.randf_range(-6,6))
 	var salvo := random.randf()<SALVO_CHANCE
-	var burst2 := burst+Vector3(random.randf_range(-16,16),random.randf_range(-10,8),random.randf_range(-8,8))
+	var burst2 := burst
 	var first: Color=PALETTE[_next_color()]
 	colors.append(last_color)
 	if colors.size()>32: colors.pop_front()
@@ -180,8 +181,9 @@ func start(slot: Dictionary,style: int) -> void:
 		mm.set_instance_color(index,Color(1,1,1,1.0 if group==0 or salvo else 0.0))
 	var material: ShaderMaterial=slot.material
 	material.set_shader_parameter("launch",launch); material.set_shader_parameter("burst",burst)
+	material.set_shader_parameter("launch2",launch2)
 	material.set_shader_parameter("burst2",burst2)
-	var second_delay := random.randf_range(.35,.9) if salvo else 0.0
+	var second_delay := 0.0
 	material.set_shader_parameter("second_delay",second_delay)
 	material.set_shader_parameter("lifetime",params.life)
 	material.set_shader_parameter("flight_time",FLIGHT_TIME)
@@ -201,7 +203,9 @@ func start(slot: Dictionary,style: int) -> void:
 	if styles.size()>32: styles.pop_front()
 	if audio!=null:
 		audio.schedule(slots.find(slot),launch,burst,STYLE_SOUND[style],random.randf_range(.97,1.03),FLIGHT_TIME)
-		if salvo: audio.schedule_second(slots.find(slot),burst2,STYLE_SOUND[(style+1)%STYLE_COUNT],random.randf_range(.92,1.08),FLIGHT_TIME+second_delay)
+		if salvo:
+			audio.schedule_second(slots.find(slot),burst2,STYLE_SOUND[(style+1)%STYLE_COUNT],random.randf_range(.92,1.08),FLIGHT_TIME+second_delay)
+			audio.schedule_launch_second(slots.find(slot),launch2)
 
 func advance(delta: float) -> void:
 	if audio!=null: audio.advance(delta)

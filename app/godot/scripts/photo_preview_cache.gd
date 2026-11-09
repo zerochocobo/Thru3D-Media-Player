@@ -62,7 +62,7 @@ func _process(_delta: float) -> void:
 				_metadata[uri] = result.info
 				_textures[uri] = {"texture": ImageTexture.create_from_image(image), "info": result.info, "bytes": image.get_data_size()}
 			elif _job.info.get("cached", false):
-				var cached := DIRECTORY.path_join(uri.sha256_text() + ".png")
+				var cached := DIRECTORY.path_join(uri.sha256_text() + ".t3di")
 				DirAccess.remove_absolute(cached); DirAccess.remove_absolute(cached + ".json")
 			else: _failed[uri] = true
 			_active = {}; _request = 0; preview_ready.emit(uri)
@@ -72,7 +72,7 @@ func _process(_delta: float) -> void:
 			var uri := str(entry.uri)
 			if _textures.has(uri) or _failed.has(uri): continue
 			_active = entry; _serial += 1
-			var path := DIRECTORY.path_join(uri.sha256_text() + ".png")
+			var path := DIRECTORY.path_join(uri.sha256_text() + ".t3di")
 			var meta := path + ".json"
 			if preload("res://scripts/media_privacy.gd").cache_allowed(uri) and FileAccess.file_exists(path) and FileAccess.file_exists(meta):
 				var info: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta))
@@ -107,7 +107,11 @@ static func _decode(job: Dictionary) -> Dictionary:
 	if header.is_empty() or int(header.width) * int(header.height) > 32 * 1024 * 1024 or int(header.width) > 8192 or int(header.height) > 8192: return {}
 	var image := Image.new()
 	var bytes := FileAccess.get_file_as_bytes(path)
-	var code := image.load_jpg_from_buffer(bytes) if header.codec == "jpg" else (image.load_png_from_buffer(bytes) if header.codec == "png" else image.load_webp_from_buffer(bytes))
+	var code := OK
+	if header.codec == "rgba":
+		image = preload("res://scripts/raw_image.gd").decode(bytes)
+		if image == null: return {}
+	else: code = image.load_jpg_from_buffer(bytes) if header.codec == "jpg" else (image.load_png_from_buffer(bytes) if header.codec == "png" else image.load_webp_from_buffer(bytes))
 	if code != OK or image.is_empty(): return {}
 	if not info.get("cached", false):
 		Info.orient(image, int(info.get("orientation", header.get("orientation", 1))))
@@ -118,8 +122,8 @@ static func _decode(job: Dictionary) -> Dictionary:
 		if not preload("res://scripts/media_privacy.gd").cache_allowed(str(job.uri)):
 			image.generate_mipmaps(); return {"image": image, "info": info}
 		DirAccess.make_dir_recursive_absolute(DIRECTORY)
-		var target := DIRECTORY.path_join(str(job.uri).sha256_text() + ".png")
-		if image.save_png(target) == OK:
+		var target := DIRECTORY.path_join(str(job.uri).sha256_text() + ".t3di")
+		if preload("res://scripts/raw_image.gd").write(image, target):
 			var file := FileAccess.open(target + ".json", FileAccess.WRITE)
 			if file: file.store_string(JSON.stringify(info))
 			_prune_disk(target)
@@ -134,7 +138,7 @@ static func _prune_disk(protected: String) -> void:
 	if not directory: return
 	var files := []; var total := 0
 	for name in directory.get_files():
-		if name.length() != 68 or not name.ends_with(".png"): continue
+		if not _cache_file(name) or name.ends_with(".json"): continue
 		var path := DIRECTORY.path_join(name)
 		var handle := FileAccess.open(path, FileAccess.READ)
 		if not handle: continue
@@ -159,8 +163,9 @@ static func disk_usage() -> Vector2i:
 	return usage
 
 static func _cache_file(name: String) -> bool:
-	var stem := name.trim_suffix(".json").trim_suffix(".png")
-	return stem.length() == 64 and stem.is_valid_hex_number() and (name.ends_with(".png") or name.ends_with(".png.json"))
+	# Include legacy PNGs in bounded eviction/clear; new writes only use T3DI.
+	var stem := name.trim_suffix(".json").trim_suffix(".png").trim_suffix(".t3di")
+	return stem.length() == 64 and stem.is_valid_hex_number() and (name.ends_with(".png") or name.ends_with(".png.json") or name.ends_with(".t3di") or name.ends_with(".t3di.json"))
 
 static func clear_disk() -> void:
 	var directory := DirAccess.open(DIRECTORY)

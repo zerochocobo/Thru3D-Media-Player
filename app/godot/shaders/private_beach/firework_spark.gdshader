@@ -6,6 +6,7 @@ render_mode unshaded,blend_add,depth_draw_never,cull_disabled;
 uniform float age = 0.0;
 uniform float flight_time = 1.4;
 uniform vec3 launch;
+uniform vec3 launch2;
 uniform vec3 burst;
 uniform vec3 burst2;
 uniform float second_delay = 0.0;
@@ -24,8 +25,8 @@ varying float spark_alpha;
 varying vec3 spark_color;
 varying float flash;
 float spark_hash(float x) { return fract(sin(x*12.9898)*43758.5453); }
-vec3 rocket_at(vec3 target,float t) {
-	return mix(launch,target,t/flight_time)+vec3(0,4.9*t*(flight_time-t),0);
+vec3 rocket_at(vec3 origin,vec3 target,float t) {
+	return mix(origin,target,t/flight_time)+vec3(0,4.9*t*(flight_time-t),0);
 }
 vec3 star_at(vec3 origin,vec3 initial_velocity,float t) {
 	float integrated=(1.0-exp(-drag*t))/drag;
@@ -37,6 +38,7 @@ void vertex() {
 	float delay=MODEL_MATRIX[3].x*trail_scale;
 	float offset=second ? second_delay : 0.0;
 	vec3 target=second ? burst2 : burst;
+	vec3 origin=second ? launch2 : launch;
 	vec3 center;
 	vec3 previous;
 	vec3 velocity;
@@ -56,9 +58,9 @@ void vertex() {
 	} else {
 		if (kind>.5) {
 			float t=clamp(age-offset-delay,0.0,flight_time);
-			center=rocket_at(target,t);
-			previous=rocket_at(target,max(0.0,t-.035));
-			velocity=(target-launch)/flight_time+vec3(0,4.9*(flight_time-2.0*t),0);
+			center=rocket_at(origin,target,t);
+			previous=rocket_at(origin,target,max(0.0,t-.035));
+			velocity=(target-origin)/flight_time+vec3(0,4.9*(flight_time-2.0*t),0);
 			// Colour alpha switches the second rocket off unless the shell is a salvo.
 			spark_alpha=step(offset+delay,age)*(1.0-smoothstep(flight_time,flight_time+.12,age-offset))*exp(-delay*7.0)*COLOR.a;
 			radius=.08+.04*exp(-delay*8.0);

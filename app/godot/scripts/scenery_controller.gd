@@ -7,6 +7,7 @@ var library := Catalog.new()
 var menu: Node3D
 var _return: Dictionary = {}
 var _return_rig := Transform3D.IDENTITY
+var _return_browser := false
 var _pending: Dictionary = {}
 var _delete: Array = []
 var _error := ""
@@ -70,6 +71,8 @@ func open(_source: Node3D = null) -> void:
 	if menu.visible: menu.dismiss(); return
 	_return.clear()
 	_return_rig=app.xr_origin.global_transform
+	_return_browser = is_instance_valid(app.recent_menu) and app.recent_menu.web_browser.active()
+	if _return_browser: app.recent_menu.web_browser.set_scene_suspended(true)
 	for panel in [app.recent_menu,app.video_menu,app.photo_menu,app.music_menu]:
 		if is_instance_valid(panel):
 			_return[panel]=panel.visible
@@ -96,6 +99,8 @@ func close() -> void:
 				for key in ["space_pose","space_head"]:
 					if panel.get_meta(key,null) is Transform3D: panel.set_meta(key,delta*panel.get_meta(key))
 			app._place_menu(panel,true)
+	if _return_browser: app.recent_menu.web_browser.set_scene_suspended(false)
+	_return_browser = false
 	_return.clear(); app.stick_controls.suspend()
 	app._menu_touched_ms=Time.get_ticks_msec()
 	if app.menu_composition: app.menu_composition.invalidate()
@@ -204,6 +209,7 @@ func current_image_state(source: Dictionary) -> Dictionary:
 func snapshot(mode: String) -> Dictionary:
 	var background: Node=_background(mode)
 	var state: Dictionary=app._library_settings()
+	state["screen_edit_locked"] = app.screen_edit_lock.locked()
 	var selected: String=str(library.bindings.get(mode,{}).get("id",background.choice))
 	var status:=_error if not _error.is_empty() else library.error
 	if library.busy or _pending.has(mode): status="Loading…"
@@ -224,6 +230,8 @@ func snapshot(mode: String) -> Dictionary:
 	return state
 
 func _command(operation: String,value: Variant) -> void:
+	if operation == "screen_lock_notice": app.screen_edit_lock.deny(str(value), "beach_menu"); return
+	if operation in ["edit_beach_screen", "apply_beach_screen"] and app.screen_edit_lock.deny("", "beach_menu"): return
 	match operation:
 		"select": select(str(value.mode),str(value.id))
 		"use_current": import_current(app.photo.background_source(),app.photo.display_name,str(value))

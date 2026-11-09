@@ -44,7 +44,11 @@ object WebBrowserDepthBridge {
         var current=preparations[id]
         if(current==null || current.depth!=depth || current.matte!=matte) {
             val pending=Preparation(depth,matte);preparations[id]=pending;current=pending
-            fun failed(error: Throwable) { pending.error=error.javaClass.simpleName;pending.state="failed" }
+            fun failed(error: Throwable) {
+                pending.error=error.message ?: error.javaClass.simpleName
+                pending.state="failed"
+                android.util.Log.w("BrowserDepth", "Browser effect preparation failed", error)
+            }
             DepthWorker.handler.post {
                 try {
                     if(depth) ModelPreparationGate.run {
@@ -112,6 +116,12 @@ object WebBrowserDepthBridge {
         @Volatile private var depthEnabled = true
         @Volatile private var matteFrames = 0L
         @Volatile private var matteBusy = false
+        @Volatile private var depthBackend = ""
+        @Volatile private var matteBackend = ""
+        @Volatile private var depthInferMs = 0.0
+        @Volatile private var matteProcessMs = 0.0
+        private var pendingCapturedNs = 0L
+        @Volatile private var matteLatencyMs = 0.0
         private data class Matte(val epoch: Long, val token: Long)
         @Volatile private var matteResult: Matte? = null
         private var matteWorkToken = 0L
@@ -135,8 +145,10 @@ object WebBrowserDepthBridge {
         private val shot = PortraitShotDetector()
         private val shotPixels = ByteBuffer.allocateDirect(PortraitShotDetector.WIDTH * PortraitShotDetector.HEIGHT * 4)
         private var pendingEpoch = 0L
+        private var pendingFrame = 0L
         private var pendingDepth = false
         @Volatile private var shownEpoch = -1L
+        @Volatile private var shownFrame = -1L
         private data class Near(val left: ByteBuffer, val right: ByteBuffer)
         private val mapLock = Any()
         @Volatile private var latest: Near? = null
@@ -158,6 +170,7 @@ object WebBrowserDepthBridge {
         private var vao = 0
         private var lastInference = 0L
         private var submittedRevision = -1L
+        @Volatile private var submittedFrame = -1L
         private var dirty = true
         private val dims = DepthNative.PROFILE.split('x').map(String::toInt)
         private val rgbInput = direct(dims[0] * dims[1] * 12)
@@ -175,6 +188,10 @@ object WebBrowserDepthBridge {
             gl.post { dirty = true }
         }
         fun status(): String = JSONObject().put("frames", frames).put("maps", maps).put("error", error)
+            .put("depth_backend", depthBackend).put("matte_backend", matteBackend)
+            .put("depth_infer_ms_avg", depthInferMs).put("matte_process_ms_avg", matteProcessMs)
+            .put("matte_latency_ms_avg", matteLatencyMs)
+            .put("depth_frame_id", submittedFrame).put("shown_frame_id", shownFrame)
             .put("matte_frames", matteFrames).put("matte_frame_id",matteAcceptedFrame).put("state", if (error.isNotEmpty()) "failed" else if (matte && (matteFrames == 0L || shownEpoch != revision) || depthEnabled && strength > 0f && latest == null) "preparing" else "ready").toString()
         fun start() { gl.post { try { create(); tick() } catch (e: Throwable) { fail(e) } } }
         private fun create() {
@@ -229,27 +246,30 @@ object WebBrowserDepthBridge {
                 if (pending != 0L && RenderBridgeNative.ready(renderer, pending)) {
                     if (!pendingDepth && !busy && System.nanoTime() - lastInference > 66_666_666L && strength > 0f && depthEnabled) {
                         val rgb = rgbInput
-                        if (RenderBridgeNative.readMonoInput(renderer, pending, rgb)) { infer(rgb, pendingEpoch, frames); pendingDepth = true }
+                        if (RenderBridgeNative.readMonoInput(renderer, pending, rgb)) { infer(rgb, pendingEpoch, pendingFrame); pendingDepth = true }
                     }
                     if (matte && pendingEpoch != revision && !matteBusy && matteRetiring == 0L) {
                         if (matteStageToken != 0L) { RenderBridgeNative.retire(matteStage, matteStageToken); matteRetiring = matteStageToken; matteStageToken = 0 }
                         RenderBridgeNative.retire(renderer, pending); retiring = pending; pending = 0; matteWorkToken = 0; matteResult = null
                     } else if (!matte || prepareMatte()) {
                         if (shown != 0L) { RenderBridgeNative.retire(renderer, shown); retiring = shown }
-                        shown = pending; shownEpoch = pendingEpoch; pending = 0; maskUploaded = false; dirty = true
+                        shown = pending; shownEpoch = pendingEpoch; shownFrame = pendingFrame; pending = 0; maskUploaded = false; dirty = true
                     }
                 }
                 if (pending == 0L && retiring == 0L && (latched || available.getAndSet(false))) {
                     if (!latched) { source!!.updateTexImage(); source!!.getTransformMatrix(matrix); latched = true }
                     WebBrowserDepthGeometry.transform(matrix, crop, transform)
                     pending = RenderBridgeNative.capture(renderer, transform)
-                    if (pending != 0L) { latched = false; frames++; pendingEpoch = revision; pendingDepth = false }
+                    if (pending != 0L) { latched = false; frames++; pendingFrame = frames; pendingEpoch = revision; pendingDepth = false; pendingCapturedNs = System.nanoTime() }
                 }
                 if (shown != 0L && dirty) dirty = !draw()
-                // A static page may not queue another buffer after navigation/model preparation.
-                if (shown != 0L && shownEpoch == revision && latest == null && !busy && strength > 0f && depthEnabled && submittedRevision != revision && System.nanoTime() - lastInference > 66_666_666L) {
+                // Catch up to an already captured newer frame as soon as the worker is free.
+                // Waiting for another Surface callback unnecessarily quantizes AI cadence to
+                // capture timing. Never re-infer a static frame or go behind an inferred pending frame.
+                if (shown != 0L && shownEpoch == revision && !busy && strength > 0f && depthEnabled &&
+                    (submittedRevision != revision || shownFrame > submittedFrame) && System.nanoTime() - lastInference > 66_666_666L) {
                     val rgb = rgbInput
-                    if (RenderBridgeNative.readMonoInput(renderer, shown, rgb)) infer(rgb, revision, frames)
+                    if (RenderBridgeNative.readMonoInput(renderer, shown, rgb)) infer(rgb, revision, shownFrame)
                 }
                 gl.postDelayed(::tick, 8)
             } catch (e: Throwable) { fail(e) }
@@ -259,6 +279,7 @@ object WebBrowserDepthBridge {
             if (completed != null && completed.token == pending && completed.epoch == revision) {
                 if (matteRetiring != 0L && !RenderBridgeNative.retired(matteStage, matteRetiring)) return false
                 matteRetiring = 0
+                matteLatencyMs = matteLatencyMs * .9 + (System.nanoTime() - pendingCapturedNs) / 1e6 * .1
                 matteBytes.clear()
                 for (i in 0 until matteSize * matteSize) matteBytes.put((matteLeft.getFloat(i*4).coerceIn(0f,1f)*255f).roundToInt().toByte())
                 matteBytes.flip()
@@ -296,7 +317,10 @@ object WebBrowserDepthBridge {
                     }
                     val cut = shot.observe(shotPixels,pts).cut
                     matteRightRgb.clear(); matteRightRgb.put(matteRgb.duplicate().apply { clear() }); matteRightRgb.clear()
+                    val started = System.nanoTime()
                     val result = matteRuntime!!.process(generation,frame,pts,matteRgb,matteRightRgb,matteLeft,matteRight,0,cut,1)
+                    matteProcessMs = matteProcessMs * .9 + (System.nanoTime() - started) / 1e6 * .1
+                    matteBackend = result.optString("backend")
                     check(result.optString("state") == "ready")
                     if (matteLease.finish(ticket) && !closed.get() && epoch == revision) { matteAcceptedFrame = frame; matteResult = Matte(epoch,token) }
                 } catch (e: Throwable) { fail(e) }
@@ -305,7 +329,7 @@ object WebBrowserDepthBridge {
             return false
         }
         private fun infer(rgb: ByteBuffer, generation: Long, frame: Long) {
-            busy = true; lastInference = System.nanoTime(); submittedRevision = generation
+            busy = true; lastInference = System.nanoTime(); submittedRevision = generation; submittedFrame = frame
             DepthWorker.handler.post {
                 try {
                     if (closed.get()) return@post
@@ -314,9 +338,12 @@ object WebBrowserDepthBridge {
                             ?: DepthNative.create(host.assets, DepthWarmup.cacheDirectory(host).absolutePath)
                     }
                     check(model != 0L)
+                    if (depthBackend.isEmpty()) depthBackend = JSONObject(DepthNative.describe(model)).optString("backend")
                     val raw = rawInput
                     val near = synchronized(mapLock) { nearPool.first { it !== latest && it !== reading } }
+                    val started = System.nanoTime()
                     DepthNative.infer(model, rgb, raw)
+                    depthInferMs = depthInferMs * .9 + (System.nanoTime() - started) / 1e6 * .1
                     val reset = modelRevision != generation
                     val result = JSONObject(DepthNative.stabilize(model, raw, rgb, near.left, reset, if (reset) 1 else (frame - modelFrame).coerceIn(1L, 1000L).toInt(),
                         content[0], content[1], content[2], content[3]))

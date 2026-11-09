@@ -65,7 +65,7 @@ internal class EmbeddedCover(private val context: () -> Context?, private val re
         var sample=1
         while(maxOf(bounds.outWidth,bounds.outHeight)/sample>1024)sample*=2
         val bitmap=BitmapFactory.decodeByteArray(bytes,0,bytes.size,BitmapFactory.Options().apply { inSampleSize=sample }) ?: return ByteArray(0)
-        return try {ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG,100,it) }.toByteArray()}
+        return try { BitmapTransfer.bytes(bitmap) }
         finally {bitmap.recycle()}
     }
 }

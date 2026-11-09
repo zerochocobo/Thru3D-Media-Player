@@ -13,3 +13,15 @@ if(MSVC)
     target_compile_options(rvm_resident_oracle PRIVATE /EHsc /W4)
     target_compile_options(rvm_layer_precision PRIVATE /EHsc /W4)
 endif()
+if(ANDROID)
+    # Standalone device oracle: same resident backend, no player/APK replacement.
+    # ncnn exports -fno-exceptions; these validation sources catch failures.
+    get_target_property(oracle_sources rvm_resident_oracle SOURCES)
+    get_target_property(precision_sources rvm_layer_precision SOURCES)
+    set_source_files_properties(${oracle_sources} ${precision_sources}
+        PROPERTIES COMPILE_OPTIONS "-fexceptions;-fno-fast-math")
+    foreach(target IN ITEMS rvm_resident_oracle rvm_layer_precision)
+        target_link_libraries(${target} PRIVATE android log)
+        target_link_options(${target} PRIVATE "-Wl,-z,max-page-size=16384")
+    endforeach()
+endif()

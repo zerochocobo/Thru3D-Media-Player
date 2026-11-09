@@ -16,6 +16,7 @@ function fixture(cookies = []) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/weibo.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/twitch.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/tiktok.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/archive.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/dailymotion.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/ted.js'), 'utf8'), context);
   vm.runInContext(source, context);
@@ -34,8 +35,60 @@ function fixture(cookies = []) {
     webRequest.onHeadersReceived.fire(d); webRequest.onCompleted.fire(d); return d;
   }
   const flush = () => { const batch = [...timers.values()]; timers.clear(); batch.forEach(f => f()); };
-  return { connect, request, flush, browser, advance(ms) { now += ms; } };
+  return { connect, request, flush, browser, archive: vm.runInContext('Thru3DArchive',context), advance(ms) { now += ms; } };
 }
+
+function archiveRedirect(f, page, original, target, id='archive-redirect') {
+  const d={tabId:1,frameId:0,documentId:'doc-1-0',documentUrl:page,method:'GET',type:'media',requestId:id,url:original};
+  f.browser.webRequest.onSendHeaders.fire({...d,requestHeaders:[{name:'Cookie',value:'only-original=1'}]});
+  f.browser.webRequest.onBeforeRedirect.fire({...d,redirectUrl:target});
+  f.browser.webRequest.onSendHeaders.fire({...d,url:target,requestHeaders:[{name:'Authorization',value:'redirect-own-request'}]});
+  f.browser.webRequest.onHeadersReceived.fire({...d,url:target,statusCode:206,responseHeaders:[{name:'Content-Type',value:'video/mp4'}]});
+  f.browser.webRequest.onCompleted.fire({...d,url:target});f.flush();
+}
+
+test('Archive keeps its observed download association when the same final file is read directly with fresh own headers',()=>{
+  const f=fixture(),page='https://archive.org/details/PublicFilm',original='https://archive.org/download/PublicFilm/current.mp4',file='https://related.test:8443/current.mp4?ticket=observed';
+  const p=f.connect(1,0,page,false);p.port.onMessage.fire({type:'context',page,enabled:false,archive:true});
+  archiveRedirect(f,page,original,file);
+  assert.equal(p.last()[0].original_url,original);assert.equal(p.last()[0].headers.authorization,'redirect-own-request');
+  const video={isConnected:true,readyState:4,currentSrc:original,videoWidth:426,videoHeight:240,duration:596.416666};
+  const document={location:{href:page},querySelectorAll:s=>s.startsWith('link')?[{href:page}]:[{href:original}]};
+  assert.ok(f.archive.binding(video,p.last(),document,[video]));
+  f.advance(20);f.request(file,{documentUrl:page,requestHeaders:[{name:'Authorization',value:'fresh-direct-request'}]});f.flush();
+  const current=p.last().find(r=>r.url===file);
+  assert.equal(current.original_url,original,'A native prefix/range read must not erase the already observed page download relationship');
+  assert.equal(current.request_original_url,file,'Request provenance remains separate from its retained page download relationship');
+  assert.equal(current.headers.authorization,'fresh-direct-request');assert.equal(current.headers.cookie,undefined);
+  assert.ok(f.archive.binding(video,p.last(),document,[video]),'The actual current Archive component remains bound after the reader refresh');
+});
+
+test('Archive fresh periodic reads keep a long video associated while cache hits cannot renew stale evidence',()=>{
+  const f=fixture(),page='https://archive.org/details/PublicFilm',original='https://archive.org/download/PublicFilm/current.mp4',file='https://related.test/current.mp4';
+  const p=f.connect(1,0,page,false);p.port.onMessage.fire({type:'context',page,enabled:false,archive:true});
+  archiveRedirect(f,page,original,file);
+  f.advance(31000);f.request(file,{documentUrl:page,requestHeaders:[{name:'Authorization',value:'redirect-own-request'}]});f.flush();
+  assert.equal(p.last()[0].original_url,original);
+  f.advance(900000);f.request(file,{documentUrl:page});f.flush();assert.equal(p.last()[0].original_url,original);
+  f.advance(900000);f.request(file,{documentUrl:page});f.flush();assert.equal(p.last()[0].original_url,original,'Fresh owned requests keep the same active resource valid beyond the initial redirect TTL');
+  f.advance(1799990);f.request(file,{documentUrl:page,cache:true});f.flush();
+  f.advance(20);f.request(file,{documentUrl:page});f.flush();assert.equal(p.last()[0].original_url,file,'A cache hit cannot keep stale relationship or credential evidence alive');
+});
+
+test('Archive redirect relationships do not cross items, navigation or a newer actual redirect',()=>{
+  const page='https://archive.org/details/PublicFilm',original='https://archive.org/download/PublicFilm/current.mp4',file='https://related.test/current.mp4';
+  for(const unrelated of ['https://archive.org/download/OtherFilm/current.mp4','https://other.test/download/PublicFilm/current.mp4']){
+    const f=fixture(),p=f.connect(1,0,page,false);p.port.onMessage.fire({type:'context',page,enabled:false,archive:true});
+    archiveRedirect(f,page,unrelated,file);f.advance(20);f.request(file,{documentUrl:page,requestHeaders:[{name:'Authorization',value:'new'}]});f.flush();
+    assert.equal(p.last()[0].original_url,file);
+  }
+  const f=fixture(),p=f.connect(1,0,page,false);p.port.onMessage.fire({type:'context',page,enabled:false,archive:true});
+  archiveRedirect(f,page,original,file);f.advance(20);
+  const latest='https://archive.org/download/PublicFilm/selected.mp4';archiveRedirect(f,page,latest,file,'new-redirect');
+  assert.equal(p.last()[0].original_url,latest,'The new actual redirect wins even with unchanged final headers');
+  const next='https://archive.org/details/OtherFilm';p.port.onMessage.fire({type:'context',page:next,enabled:false,archive:true,reset:true});
+  f.request(file,{documentUrl:next});f.flush();assert.equal(p.last()[0].original_url,file);
+});
 
 test('Dailymotion keeps client fragments as request evidence and sends the exact signed HTTP transport URL',()=>{
   const f=fixture(),frame='https://geo.dailymotion.com/player/official.html#settings=opaque',parent='https://www.dailymotion.com/video/x5kesuj';

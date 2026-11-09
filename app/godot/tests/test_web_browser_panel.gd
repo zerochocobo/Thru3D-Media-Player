@@ -70,19 +70,19 @@ func _run() -> void:
 	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
 	menu.web_browser.action(Browser.BASE + 18)
 	check(platform.beta_requests == 1, "A stale Beta target cannot resolve an unavailable site")
-	# The presentation policy follows the page URL even when a new foreign
-	# adapter supplies the same availability/readiness contract as this fixture.
+	# Foreign adapter reports must not restore a withdrawn external Beta action.
 	platform.browser.url = "https://www.nicovideo.jp/watch/sm9"
 	platform.browser.bilibili_beta_available = true
 	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
 	beta_buttons = menu.web_browser.input_host()._buttons.filter(func(button): return button.target in [Browser.BASE + 6, Browser.BASE + 18])
-	check(beta_buttons.size() == 2 and beta_buttons.all(func(button): return button.enabled), "Foreign Beta and the original player action coexist and remain usable")
-	check(beta_buttons.size() == 2 and not beta_buttons[0].rect.intersects(beta_buttons[1].rect), "The two player buttons have separate ray targets")
+	check(beta_buttons.size() == 1 and beta_buttons[0].target == Browser.BASE + 6 and beta_buttons[0].enabled, "Foreign sites keep their original manual action without an external Beta promotion")
+	menu.web_browser.action(Browser.BASE + 18)
+	check(platform.beta_requests == 1 and not menu.web_browser.handoff, "A stale foreign toolbar target cannot start a Beta experiment")
 	platform.browser.videos[0].bilibili_ready = false
 	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
 	check(menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 6 and button.enabled)
-		and menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 18 and not button.enabled),
-		"An unready foreign Beta does not disable or hide legacy playback")
+		and not menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 18),
+		"An unready foreign adapter neither promotes Beta nor disables legacy playback")
 	menu.web_browser.action(Browser.BASE + 6)
 	check(platform.beta_requests == 1 and not menu.web_browser.handoff_beta and menu.web_video.pending > 0, "The visible foreign legacy action still uses its original resolver")
 	menu.web_browser.action(Browser.BASE + 6)
@@ -237,11 +237,17 @@ func _run() -> void:
 			{"width":640,"height":360,"playing":true,"time":3.0}]}
 	check(menu.web_browser.beta_site_available(platform.browser) and menu.web_browser.beta_media_ready(platform.browser),
 		"Niconico exposes only the declared main and does not select an unrelated advert")
+	check(not menu.web_browser.beta_available(platform.browser), "Ready Niconico webpage experiments do not restore an external toolbar Beta")
 	var closed_niconico: Dictionary=platform.browser.duplicate(true);closed_niconico.niconico_beta_available=false
 	check(not menu.web_browser.beta_site_available(closed_niconico),"Unqualified Niconico source cannot expose the action")
 	menu.web_browser.next_poll=0;menu.web_browser.tick();menu.web_browser.next_poll=0;menu.web_browser.tick()
 	check(platform.selected_requests.back()==[platform.browser.url,"niconico:main:revision1"] and menu.web_browser.handoff_start_ms==35000,
 		"Niconico hands off only its explicit current selection and playhead")
+	menu.web_browser.action(Browser.BASE + 18)
+	check(not menu.web_browser.handoff and menu.web_video.pending == 0, "The ongoing webpage experiment still exposes a working Cancel")
+	platform.browser.beta_request = 8
+	menu.web_browser.next_poll=0;menu.web_browser.tick();menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(menu.web_browser.handoff and menu.web_browser.handoff_beta, "A fresh webpage Beta click still works after cancelling the previous experiment")
 	platform.browser.videos[0].selection="niconico:next:revision2"
 	menu.web_browser.next_poll=0;menu.web_browser.tick()
 	check(not menu.web_browser.handoff,"Changed Niconico metadata cancels the stale selection")

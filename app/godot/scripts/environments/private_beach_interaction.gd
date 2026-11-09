@@ -45,6 +45,7 @@ func _ready() -> void:
 	process_priority=-20
 	beach=Beach.new(); beach.name="PrivateBeach"; add_child(beach)
 	beach.viewer_position_provider=_viewer_position
+	beach.viewer_mouth_provider=_viewer_mouth
 	beach.changed.connect(_beach_changed)
 	set_process(false)
 
@@ -232,6 +233,10 @@ func _viewer_position() -> Vector3:
 	if active: return _camera.global_position if _tracking_ready() else Vector3.INF
 	return _movement.eye_position if _movement!=null else Vector3.INF
 
+func _viewer_mouth() -> Vector3:
+	if not active or not _tracking_ready(): return Vector3.INF
+	return _camera.global_transform*Vector3(0,-.09,-.055)
+
 func _tracking_ready() -> bool:
 	return _head_tracked()
 
@@ -282,6 +287,10 @@ func scene_press(hand: String,origin: Vector3,direction: Vector3) -> bool:
 	else: return false
 	_scene_hand=hand
 	return true
+
+func celestial_easter_egg(direction: Vector3, activate: bool = true) -> bool:
+	if not active or not _position_applied or not _tracking_ready() or not _scene_hand.is_empty() or not _capture_hand.is_empty(): return false
+	return beach.celestial_easter_egg(direction, activate)
 
 func _begin_screen_resize(origin: Vector3,direction: Vector3) -> bool:
 	var hit: Dictionary=beach.screen_hit(origin,direction)

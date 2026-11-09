@@ -26,6 +26,8 @@ uniform sampler2D static_mask : hint_default_white, filter_linear_mipmap, repeat
 uniform int mask_count = 4;
 uniform vec4 mask_world[6];
 uniform vec4 mask_atlas[6];
+// Authored and relocated rock centres. Zero delta keeps the offline study unchanged.
+uniform vec4 relocated_rock = vec4(0.0);
 
 vec2 sample_mask(int tile,vec2 xz,vec2 dx,vec2 dy) {
 	vec2 local=(xz-mask_world[tile].xy)/mask_world[tile].zw;
@@ -40,6 +42,15 @@ vec2 static_ground_visibility(vec3 p,vec2 fallback) {
 	if (!use_static_mask) return fallback;
 	// Derivatives precede the per-pixel tile branches, including shore edges.
 	vec2 dx=dFdx(p.xz),dy=dFdy(p.xz);
+	float clear_old=0.0;
+	if (length(relocated_rock.zw-relocated_rock.xy)>.01) {
+		vec2 old_distance=abs(p.xz-relocated_rock.xy);
+		clear_old=1.0-smoothstep(.75,1.0,max(old_distance.x,old_distance.y));
+		vec2 new_distance=abs(p.xz-relocated_rock.zw);
+		// Reuse the original 2 m contact patch at its new world position. Clear
+		// the isolated old patch, including the coarse atlas underneath it.
+		if (max(new_distance.x,new_distance.y)<1.0) p.xz+=relocated_rock.xy-relocated_rock.zw;
+	}
 	vec2 base_uv=(p.xz-mask_world[0].xy)/mask_world[0].zw;
 	if (any(lessThan(base_uv,vec2(0.0))) || any(greaterThan(base_uv,vec2(1.0)))) return fallback;
 	vec2 result=sample_mask(0,p.xz,dx,dy);
@@ -50,7 +61,7 @@ vec2 static_ground_visibility(vec3 p,vec2 fallback) {
 		if (edge>0.0) result=mix(result,sample_mask(i,p.xz,dx,dy),smoothstep(0.0,.08,edge));
 	}
 	float edge=min(min(base_uv.x,base_uv.y),min(1.0-base_uv.x,1.0-base_uv.y));
-	return mix(fallback,result,smoothstep(0.0,.04,edge));
+	return mix(mix(fallback,result,smoothstep(0.0,.04,edge)),vec2(1.0),clear_old);
 }
 
 // Same polynomial transfers as production cinema_baked_surface.gdshader.

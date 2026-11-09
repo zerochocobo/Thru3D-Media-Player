@@ -107,8 +107,8 @@ func _process(delta: float) -> void:
 			if platform.panorama_regions_request(session,cell.x,cell.y): pending=cell
 			break
 static func _decode(path: String) -> Image:
-	var image:=Image.new()
-	if image.load_png_from_buffer(FileAccess.get_file_as_bytes(path))!=OK or image.get_width()>TILE+4 or image.get_height()>TILE+4: return null
+	var image:=preload("res://scripts/raw_image.gd").read(path, TILE+4)
+	if image == null: return null
 	image.generate_mipmaps()
 	return image
 static func patch_mesh(size: Vector2i, cell: Vector2i, decoded: Rect2i) -> ArrayMesh:

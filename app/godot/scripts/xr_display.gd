@@ -199,6 +199,21 @@ func set_performance_demand(high: bool) -> void:
 	if high == performance_demand: return
 	performance_demand = high
 	if xr != null and xr.is_initialized(): apply_performance_levels()
+
+## A seek reopens the video and briefly leaves the playing state. Dropping to sustained-low for
+## those 20-300 ms (every seek, PICO 4 Ultra 2026-11-09) lets PICO lower clocks it then raises
+## slowly: the seconds after a seek stuttered. Raises apply at once; drops must hold this long.
+const PERFORMANCE_SETTLE_MS := 3000
+var _performance_low_since := -1
+func request_performance_demand(high: bool, now_ms: int) -> void:
+	if high or not performance_demand:
+		_performance_low_since = -1
+		set_performance_demand(high)
+	elif _performance_low_since < 0:
+		_performance_low_since = now_ms
+	elif now_ms - _performance_low_since >= PERFORMANCE_SETTLE_MS:
+		_performance_low_since = -1
+		set_performance_demand(false)
 const PERFORMANCE_LEVELS := {"power_savings": OpenXRInterface.PERF_SETTINGS_LEVEL_POWER_SAVINGS,
 	"sustained_low": OpenXRInterface.PERF_SETTINGS_LEVEL_SUSTAINED_LOW,
 	"sustained_high": OpenXRInterface.PERF_SETTINGS_LEVEL_SUSTAINED_HIGH,

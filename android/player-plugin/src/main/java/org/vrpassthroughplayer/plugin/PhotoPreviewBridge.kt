@@ -144,9 +144,9 @@ internal class PhotoPreviewBridge(
                         if (scaled !== bitmap) bitmap.recycle()
                         bitmap = scaled
                     }
-                    phase = "encode"
-                    val preview = File(directory, "preview.png")
-                    preview.outputStream().use { require(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+                    phase = "transfer"
+                    val preview = File(directory, "preview.t3di")
+                    BitmapTransfer.write(preview, bitmap, ::checkCurrent)
                     metadata.put("path", preview.path).put("width", bitmap.width).put("height", bitmap.height)
                     source.delete()
                     checkCurrent(); published = true; emit(id, metadata.toString())
@@ -171,7 +171,7 @@ internal class PhotoPreviewBridge(
     fun retain(id: Int): File? = synchronized(lock) {
         val directory = directories[id] ?: return@synchronized null
         references[id] = (references[id] ?: 1) + 1
-        File(directory, "preview.png")
+        File(directory, "preview.t3di")
     }
     fun release(id: Int) {
         val directory = synchronized(lock) {

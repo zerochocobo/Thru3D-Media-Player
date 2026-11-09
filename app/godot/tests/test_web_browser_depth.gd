@@ -1,4 +1,5 @@
 extends SceneTree
+const I18n := preload("res://scripts/i18n.gd")
 const Menu := preload("res://scripts/library_menu.gd")
 const Fixture := preload("res://tests/test_web_browser_panel.gd")
 var checks := 0
@@ -164,6 +165,15 @@ func run() -> void:
 	host.toggle_focus()
 	host._activate(footer.MATTE)
 	check(browser.person_passthrough_active(), "Completing selection resumes the same person mode")
+	host.depth.enabled=false; host.depth.matte=false; host.depth.state="failed"; host.depth.error="3D unavailable"
+	footer.near_hands.clear(); footer.capture_hand=""
+	footer.sync(10000); footer.sync(10130)
+	check(footer.visible and footer._labels.any(func(label): return label.text==I18n.t("3D unavailable")), "Failed preparation shows a concise error without needing hover")
+	check(not footer.depth_preparing() and footer._tips[footer.DEPTH]==I18n.t("3D unavailable"), "Failed effect stops the spinner and retains its error tooltip")
+	footer.sync(17000)
+	check(not footer.visible, "Error feedback uses a bounded display interval")
+	host._activate(browser.BASE+16); footer.sync(18000)
+	check(host.depth.error.is_empty() and footer.depth_preparing(), "Explicit retry clears the old error and starts preparing")
 	host.dismiss()
 	check(not browser.person_passthrough_active(), "Closing the browser releases its camera request")
 	menu.free(); platform.free(); await process_frame

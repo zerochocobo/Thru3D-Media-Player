@@ -268,8 +268,9 @@ internal class PhotoBridge(
                 if (sample > 1) {
                     val bitmap = BitmapFactory.decodeFile(source.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: error("PHOTO_DECODE_FAILED")
                     try {
-                        output = File(directory, "preview.png")
-                        output.outputStream().use { require(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+                        output = File(directory, "preview.t3di")
+                        BitmapTransfer.write(output, bitmap) { checkCurrent(id) }
+                        metadata.put("raw_rgba", true).put("decoded_width", bitmap.width).put("decoded_height", bitmap.height)
                     } finally { bitmap.recycle() }
                 }
                 if (preload && !uri.startsWith("pdfpage://")) {

@@ -25,7 +25,7 @@ func run() -> void:
 	var native_surface: Node3D = host.surface
 	var initial_actions: Array = platform.actions.duplicate()
 	var initial_commands: Array = platform.browser_commands.duplicate()
-	for cinema in [false,true]:
+	for cinema in [false]: # Projected screens keep their near menu; covered by global-footer tests.
 		browser.cinema_provider = func(): return {"position":[0,3,-12],"width":10.,"height":5.625}
 		host.set_mode("cinema" if cinema else "floating"); host.refresh()
 		var layout: Dictionary = host.page_layout(); var size: Vector2 = host.page_size

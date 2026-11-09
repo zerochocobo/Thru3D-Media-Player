@@ -94,6 +94,7 @@ func _run() -> void:
 	_picture_size_routes(world_screen, preferences)
 	_picture_gesture_routes(world_screen, preferences)
 	_playback_routes("cinema-watch", false)
+	_panel_reopen_routes()
 	_footer_shortcut_routes()
 	await _seat_routes()
 	_movement_routes()
@@ -142,6 +143,54 @@ func _run() -> void:
 	check(_screen_preferences() == preferences, "Leaving cinema restores without saving scene dimensions")
 	await _photo_close_routes()
 	await _finish()
+
+func _panel_reopen_routes() -> void:
+	var rig: Transform3D = main.xr_origin.global_transform
+	var menu: Node3D = main.video_menu
+	var screen: Transform3D = main.video.global_transform * main.video.flat_pose
+	var scope: String = main.controller_bindings.move_scope
+	main.controller_bindings.move_scope = "panel"
+	main._clear_controls_locks()
+	for hand in ["left_hand", "right_hand"]:
+		_close_menus(); main._show_player_menu()
+		var head: Transform3D = main._head_pose()
+		var before: Transform3D = menu.global_transform
+		var play: Dictionary = menu._buttons.filter(func(item): return item.target == 102)[0]
+		main.rays[hand] = [head.origin, (play.node.global_position - head.origin).normalized()]
+		main.move_poses[hand] = head
+		main._on_controller_button("grip_click", hand)
+		check(not main.interface_move.capture.is_empty(), "Scene panel accepts physical grip: " + hand)
+		main.move_poses[hand].origin.x += .2
+		main._update_interface_move(); main._on_controller_release("grip_click", hand)
+		check(not menu.global_transform.is_equal_approx(before), "Physical grip moves scene controls: " + hand)
+		var offset: Transform3D = main.InterfaceMove.menu_head(head).affine_inverse() * menu.global_transform
+		var held: Transform3D = menu.global_transform
+		# Moving the observer never makes an already open panel chase their head.
+		main.xr_origin.position += Vector3(7, .1, 3)
+		main.xr_origin.rotate_y(PI)
+		main._sync_cinema_transport(); menu.refresh()
+		check(menu.global_transform.is_equal_approx(held), "Visible scene panel stays stable while observer moves: " + hand)
+		menu.dismiss()
+		head = main._head_pose()
+		main.rays[hand] = [head.origin, -head.basis.z]
+		main._on_controller_button("trigger_click", hand); main._on_controller_release("trigger_click", hand)
+		check(menu.visible and menu.global_position.distance_to(head.origin) < 2.0,
+			"Trigger retrieves controls after walking beyond the old ray range and turning: " + hand)
+		check(menu.global_transform.is_equal_approx(main.InterfaceMove.menu_head(head) * offset),
+			"Scene reopen preserves the grip offset relative to the current observer: " + hand)
+		main._on_menu_action("space_lock")
+		held = menu.global_transform
+		menu.dismiss(); main.xr_origin.position += Vector3(.3, .1, .2); main._show_player_menu()
+		check(menu.space_locked() and menu.global_transform.is_equal_approx(held),
+			"Locked scene controls keep their world position on reopen: " + hand)
+		main._on_menu_action("space_lock")
+		check(not menu.space_locked() and menu.global_transform.is_equal_approx(held),
+			"Unlock releases scene controls without jumping: " + hand)
+	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(screen), "Panel reopen and grip never move the cinema movie screen")
+	main.xr_origin.global_transform = rig
+	main.controller_bindings.move_scope = scope
+	main.interface_move.placements.erase(main._menu_key(menu)); main.view_follow.forget(main._menu_key(menu))
+	main.rays.clear(); main.move_poses.clear(); _close_menus()
 
 func _panel_lock_routes() -> void:
 	_close_menus(); main._show_player_menu()
@@ -476,7 +525,7 @@ func _picture_gesture_routes(full_screen: Transform3D, preferences: Dictionary) 
 	var head: Transform3D = main._head_pose()
 	for level in main._cinema_curve_presets():
 		main._set_cinema_curve(level)
-		for corner in 4:
+		for corner in [1, 2, 3]:
 			_close_menus()
 			main.rays.clear()
 			var hand := "left_hand" if corner % 2 == 1 else "right_hand"
@@ -888,10 +937,10 @@ func _cutout_grip(label: String) -> void:
 	check(main.video.flat_pose.is_equal_approx(moved) and is_equal_approx(main.video.view_yaw, moved_yaw), label + " background refresh preserves the dragged placement")
 	if flat:
 		main._show_player_menu()
-		var corner: Vector3 = main.video.panel.to_global(main.video.screen_corner(0))
+		var corner: Vector3 = main.video.panel.to_global(main.video.screen_corner(1))
 		main.rays.right_hand = [head.origin, (corner - head.origin).normalized()]
 		main._update_corner_hover()
-		check(main.video.hovered_corner == 0, "Retained cinema portrait exposes the existing resize corner")
+		check(main.video.hovered_corner == 1, "Retained cinema portrait exposes the existing resize corner")
 		check(main._try_corner_resize("right_hand") and main._grab.has("resize"), "Retained cinema portrait accepts corner resizing")
 		main._grab.clear(); main.video.set_corner_hover(-1); _close_menus()
 	main.rays.clear(); main.move_poses.clear()
