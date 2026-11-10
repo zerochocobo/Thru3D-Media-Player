@@ -99,6 +99,20 @@ test('Dailymotion keeps client fragments as request evidence and sends the exact
   assert.equal(c.headers.authorization,'only-this-request');assert.equal(c.original_url,wire);
   const other=fixture(),q=other.connect();other.request(raw);other.flush();assert.equal(q.last().length,0,'Other sites keep their existing fragment rejection');
 });
+test('Dailymotion keeps owned homepage-frame observations across the same-frame media reset',()=>{
+  const f=fixture(),frame='https://geo.dailymotion.com/player/official.html#settings=opaque';
+  const p=f.connect(1,3,frame,false,'https://www.dailymotion.com/');
+  p.port.onMessage.fire({type:'context',page:frame,enabled:false,dailymotion:true});
+  const url='https://related.test/current.m3u8?signature=EXACT';
+  f.request(url,{frameId:3,documentId:'doc-1-3',documentUrl:frame,responseHeaders:[{name:'Content-Type',value:'application/vnd.apple.mpegurl'}]});
+  f.flush();assert.equal(p.last().length,1);
+  p.port.onMessage.fire({type:'context',page:frame,enabled:false,dailymotion:true,reset:true});f.flush();
+  assert.equal(p.last().length,1);assert.equal(p.last()[0].url,url);
+  const other=fixture(),q=other.connect(1,3,frame,false,'https://unrelated.test/');
+  q.port.onMessage.fire({type:'context',page:frame,enabled:false,dailymotion:true});
+  other.request(url,{frameId:3,documentId:'doc-1-3',documentUrl:frame,responseHeaders:[{name:'Content-Type',value:'application/vnd.apple.mpegurl'}]});
+  other.flush();assert.equal(q.last().length,0);
+});
 test('Twitch keeps a real clip document across tracking replaceState without accepting another clip or document',()=>{
   const f=fixture(),original='https://clips.twitch.tv/PublicClip?tt_medium=clips_api',current='https://clips.twitch.tv/PublicClip',p=f.connect(1,0,original,false);
   p.port.onMessage.fire({type:'context',page:current,twitch:true,enabled:false,reset:true});

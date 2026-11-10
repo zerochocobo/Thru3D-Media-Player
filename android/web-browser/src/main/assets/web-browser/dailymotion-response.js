@@ -15,7 +15,7 @@ const Thru3DDailymotionResponses=(stateFor,publish)=>{
   const note=(s,status)=>{const data=s.dailymotionCapture||={};data[status]=(data[status]||0)+1;};
   const owner=d=>{
     const s=stateFor(d);
-    return s&&(s.enabled||s.dailymotion)&&Thru3DDailymotion.frame(s.page)&&Thru3DDailymotion.page(s.parentPage)&&
+    return s&&(s.enabled||s.dailymotion)&&Thru3DDailymotion.frame(s.page)&&Thru3DDailymotion.documentPage(s.parentPage)&&
       s.privateContext===d.incognito&&(!s.cookieStore||!d.cookieStoreId||s.cookieStore===d.cookieStoreId)?s:null;
   };
   const release=e=>{

@@ -56,7 +56,7 @@ static func build(state: Dictionary,top: Vector3) -> void:
 		root.add_child(node)
 		node.position=top+(Vector3(-.23 if index==0 else .23,0,-.16) if index<2 else Vector3(-.07+.14*((index-2)%2),.025,-.015+.09*((index-2)/2)))
 		state.slots.append({"kind":kind,"node":node,"rest":node.transform,"available":true,"restock":0.0})
-	state.snack_sounds={"fruit":sound(false),"drink":sound(true)}
+	state.snack_sounds={"fruit":sound(false),"drink":load("res://environments/private_beach/straw-sip.wav"),"skewer":load("res://environments/private_beach/skewer-chew.wav")}
 	var audio := AudioStreamPlayer3D.new(); audio.name="RefreshmentSound"; root.add_child(audio)
 	audio.volume_db=-20; audio.unit_size=.5; audio.max_distance=3; state.snack_audio=audio
 
@@ -107,7 +107,7 @@ static func advance(state: Dictionary,held: Dictionary,hand: String,delta: float
 	held.dwell=float(held.get("dwell",0.0))+minf(delta,.05) if held.get("armed",false) and distance<MOUTH_RADIUS and float(held.age)>.35 else 0.0
 	if float(held.dwell)>=DWELL:
 		var audio: AudioStreamPlayer3D=state.snack_audio; audio.global_position=mouth
-		audio.stream=state.snack_sounds["drink" if held.kind=="drink" else "fruit"]; audio.play()
+		audio.stream=state.snack_sounds[held.kind]; audio.play()
 		events.append({"hand":hand,"strength":.18,"sound":"sip" if held.kind=="drink" else "bite"})
 		# Cups remain; fruit is eaten, while skewers lose one piece per approach.
 		held.armed=false; held.dwell=0.0

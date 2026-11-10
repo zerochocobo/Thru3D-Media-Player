@@ -11,9 +11,27 @@ function fixture(){
 }
 test('rendered talk/root uses the actual top-level duration without equating distinct player IDs',()=>{
  const f=fixture(),b=t.binding(f.v,f.requests,page,[f.v]);assert.equal(b.id,'current_talk');assert.equal(b.talk_id,'86532');assert.equal(b.player_id,'416668');assert.equal(b.expected_duration,679);
+ assert.equal(b.duration_source,'catalog');assert.equal(b.player_duration,676);
  assert.equal(b.root,root);f.v.paused=true;assert.equal(t.binding(f.v,f.requests,page,[f.v]).revision,b.revision);
  f.model.videoPlayerData.external={service:'external-alternative',code:'unrelated'};
  assert.equal(t.binding(f.v,f.requests,page,[f.v]).root,root);
+});
+
+test('the played talk matches its explicit player duration when the catalogue declares three seconds more',()=>{
+ const f=fixture();f.model.duration=816;f.model.videoPlayerData.duration=813;f.v.duration=813.115;
+ const b=t.binding(f.v,f.requests,page,[f.v]);assert.equal(b.expected_duration,813);assert.equal(b.catalog_duration,816);
+ assert.equal(b.duration_source,'player');assert.equal(b.duration,813.115);assert.equal(b.root,root);
+ f.requests[0].url=root+'&other=1';assert.equal(t.binding(f.v,f.requests,page,[f.v]),null);
+});
+
+test('preview lengths, missing player declarations and arbitrary duration drift do not get a wider tolerance',()=>{
+ for(const [catalog,player,actual] of [[816,813,814.115],[816,812,812.115],[816,15,15.1],[816,813.5,813.5],[816,undefined,813.115]]){
+  const f=fixture();f.model.duration=catalog;f.model.videoPlayerData.duration=player;f.v.duration=actual;
+  assert.equal(t.binding(f.v,f.requests,page,[f.v]),null);
+ }
+ const f=fixture();f.model.duration=816;f.v.duration=813.115;let calls=0;
+ Object.defineProperty(f.model.videoPlayerData,'duration',{get(){calls++;return 813;}});
+ assert.equal(t.binding(f.v,f.requests,page,[f.v]),null);assert.equal(calls,0);
 });
 test('wrong talk, source, protection, ad and replacement cannot borrow the HLS request',()=>{
  for(const change of [f=>f.model.slug='next_talk',f=>f.model.duration=676,f=>f.model.hlsUrl=root+'&changed=1',f=>f.model.isAd=true,

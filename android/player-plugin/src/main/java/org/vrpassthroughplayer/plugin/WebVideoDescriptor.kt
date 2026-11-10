@@ -134,7 +134,8 @@ internal class WebVideoTrack(
     init {
         require(transport in setOf("file", "hls"))
         require(browserManifest == null || transport == "hls" && browserHeaders != null &&
-            browserManifest.startsWith("#EXTM3U") && browserManifest.toByteArray(Charsets.UTF_8).size <= 160 * 1024) { "Invalid observed manifest" }
+            browserManifest.startsWith("#EXTM3U") && browserManifest.toByteArray(Charsets.UTF_8).size <=
+                (if(browserIqiyi!=null) 1024*1024 else 160*1024)) { "Invalid observed manifest" }
         require(browserIqiyi==null || transport=="hls" && browserManifest!=null && browserHeaders!=null &&
             runCatching { WebVideoIqiyiResources(requireNotNull(browserIqiyi),requireNotNull(browserManifest)).use { } }.isSuccess) { "Invalid selected resource plan" }
         require(url.scheme in setOf("http", "https") && !url.host.isNullOrBlank() && url.rawUserInfo == null && url.fragment == null) { "Invalid media address" }
@@ -185,9 +186,11 @@ internal object WebVideoFormats {
         // Instagram's progressive acodec=none comes from the site's explicit has_audio=false.
         // Do not infer silence just because a split-track site's audio disappeared.
         // The rendered MPD producer verifies that same explicit intent and the actual file.
-        val silent = page.site == "instagram" && list.length() > 0 &&
+        // Reddit's separate GIF path instead proves absence in its exact received container.
+        val silentRedditGif=page.site=="reddit" && list.length()==1 && json.opt("browser_reddit_gif")==true && json.opt("browser_explicit_silent")==true
+        val silent = (page.site == "instagram" || silentRedditGif) && list.length() > 0 &&
             (0 until list.length()).all { list.optJSONObject(it)?.optString("acodec") == "none" } &&
-            tracks.any { it.hasVideo && it.transport == "file" && (it.formatId.all(Char::isDigit) || json.optBoolean("browser_explicit_silent")) }
+            tracks.any { it.hasVideo && it.transport == "file" && (silentRedditGif || it.formatId.all(Char::isDigit) || json.optBoolean("browser_explicit_silent")) }
         val video = tracks.filter { it.hasVideo && accepts(it) && (it.hasAudio || audio != null || silent) }
             .maxWithOrNull(compareBy<WebVideoTrack> { it.projectionHint.isNotEmpty() }.thenBy { it.height.toLong() * it.width }.thenBy { it.fps }.thenBy { it.bitrate }.thenBy { cdnPreference(it) }.thenBy { it.sourcePreference })
             ?: error("No compatible video stream")

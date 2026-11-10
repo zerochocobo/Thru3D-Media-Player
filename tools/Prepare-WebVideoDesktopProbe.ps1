@@ -54,6 +54,8 @@ $inputs = @(
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoTedCapture.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoRedBullCapture.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoStreamableCapture.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoRedditCapture.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoNaverCapture.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoArchiveCapture.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoOdyseeCapture.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoDailymotionCapture.kt',
@@ -70,6 +72,8 @@ $inputs = @(
     'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserTed.kt',
     'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserRedBull.kt',
     'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserStreamable.kt',
+    'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserReddit.kt',
+    'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserNaver.kt',
     'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserArchive.kt',
     'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserOdysee.kt',
     'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserDailymotion.kt',
@@ -94,9 +98,15 @@ $inputs = @(
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/RemoteMediaHttp.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/SphericalVideoMetadata.kt',
     'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserDouyin.kt',
+    'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserCaptureDiagnostics.kt',
     'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserNetworkMedia.kt',
     'android/player-plugin/src/test/java/org/vrpassthroughplayer/plugin/WebVideoDesktopProbe.kt',
     'android/player-plugin/src/test/java/org/vrpassthroughplayer/plugin/WebVideoCnDesktopProbe.kt')
+# Include the renderer's scheduling helper only while it participates in the
+# current bridge, so a helper-only edit cannot leave a falsely current runtime.
+if ((Get-Content -LiteralPath (Join-Path $workspace 'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/MpvVideoBridge.kt') -Raw) -match '\bLayerAlphaCadence\b') {
+    $inputs += 'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/LayerAlphaCadence.kt'
+}
 function Measure-ProbeInputs {
     $hashes = [ordered]@{}
     foreach ($relative in $inputs) { $hashes[$relative] = (Get-FileHash -LiteralPath (Join-Path $workspace $relative) -Algorithm SHA256).Hash.ToLowerInvariant() }

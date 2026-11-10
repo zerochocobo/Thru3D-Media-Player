@@ -74,7 +74,7 @@ func _ready() -> void:
 				tracked_hand.add_child(mesh)
 				entry.hand_mesh = mesh
 
-func update_visibility(focused: bool, controller_opacity: Dictionary = {}, interaction_visible: bool = true) -> void:
+func update_visibility(focused: bool, controller_opacity: Dictionary = {}, interaction_visible: bool = true, hidden_hands: Dictionary = {}) -> void:
 	for hand in hands:
 		var entry: Dictionary = hands[hand]
 		var tracker := XRServer.get_tracker("/user/hand_tracker/" + hand.trim_suffix("_hand")) as XRHandTracker
@@ -83,8 +83,8 @@ func update_visibility(focused: bool, controller_opacity: Dictionary = {}, inter
 		entry["interaction_visible"] = interaction_visible
 		entry["optical"] = optical
 		entry["opacity_visible"] = float(controller_opacity.get(hand, 1.0)) > 0.0
-		entry.hand_gate.visible = focused and interaction_visible and optical
-		entry.controller_gate.visible = focused and interaction_visible and not optical and _pose_tracked(entry.grip) and float(controller_opacity.get(hand, 1.0)) > 0.0
+		entry.hand_gate.visible = focused and interaction_visible and optical and not hidden_hands.get(hand, false)
+		entry.controller_gate.visible = focused and interaction_visible and not optical and _pose_tracked(entry.grip) and float(controller_opacity.get(hand, 1.0)) > 0.0 and not hidden_hands.get(hand, false)
 		# A runtime container may exist before its drawable model, or retain hidden
 		# meshes. Neither condition may suppress the bundled controller fallback.
 		var ext_ready := entry.ext != null and _has_drawable_mesh(entry.ext, true)

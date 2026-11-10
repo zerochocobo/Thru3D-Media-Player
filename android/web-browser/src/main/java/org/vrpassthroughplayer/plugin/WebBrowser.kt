@@ -113,6 +113,9 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         val tedClicks = mutableMapOf<WebExtension.Port, Long>()
         val redbullClicks = mutableMapOf<WebExtension.Port, Long>()
         val streamableClicks = mutableMapOf<WebExtension.Port, Long>()
+        val redditClicks = mutableMapOf<WebExtension.Port, Long>()
+        val naverReturns = mutableMapOf<String,Pair<WebExtension.Port,JSONObject>>()
+        val naverClicks = mutableMapOf<WebExtension.Port, Long>()
         val archiveClicks = mutableMapOf<WebExtension.Port, Long>()
         val odyseeClicks = mutableMapOf<WebExtension.Port, Long>()
         val dailymotionClicks = mutableMapOf<WebExtension.Port, Long>()
@@ -360,7 +363,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     }
     private fun sendNetworkPolicy(tab: Tab) {
         val message = JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
-            .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url)).put("youku",WebBrowserYouku.enabled(tab.url)).put("iqiyi",WebBrowserIqiyi.enabled(tab.url)).put("niconico",WebBrowserNiconico.enabled(tab.url)).put("twitch",WebBrowserTwitch.enabled(tab.url)).put("tiktok",WebBrowserTikTok.observing(tab.url)).put("instagram",WebBrowserInstagram.observing(tab.url)).put("ted",WebBrowserTed.observing(tab.url)).put("redbull",WebBrowserRedBull.observing(tab.url)).put("streamable",WebBrowserStreamable.observing(tab.url)).put("archive",WebBrowserArchive.observing(tab.url)).put("odysee",WebBrowserOdysee.observing(tab.url)).put("dailymotion",WebBrowserDailymotion.enabled(tab.url)).put("dailymotion_owner",tab.url.takeIf{WebBrowserDailymotion.enabled(it)}.orEmpty())
+            .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url)).put("youku",WebBrowserYouku.enabled(tab.url)).put("iqiyi",WebBrowserIqiyi.enabled(tab.url)).put("niconico",WebBrowserNiconico.observing(tab.url)).put("twitch",WebBrowserTwitch.enabled(tab.url)).put("tiktok",WebBrowserTikTok.observing(tab.url)).put("instagram",WebBrowserInstagram.observing(tab.url)).put("ted",WebBrowserTed.observing(tab.url)).put("redbull",WebBrowserRedBull.observing(tab.url)).put("naver",WebBrowserNaver.observing(tab.url)).put("reddit",WebBrowserReddit.observing(tab.url)).put("streamable",WebBrowserStreamable.observing(tab.url)).put("archive",WebBrowserArchive.observing(tab.url)).put("odysee",WebBrowserOdysee.observing(tab.url)).put("dailymotion",WebBrowserDailymotion.observing(tab.url)).put("dailymotion_owner",tab.url.takeIf{WebBrowserDailymotion.observing(it)}.orEmpty())
             .put("bilibili", bilibiliEnabled(tab)).put("douyin", douyinEnabled(tab)).put("weibo", WebBrowserWeibo.document(tab.url)).put("diagnostics", mediaDiagnosticsEnabled())
         tab.ports.keys.forEach { runCatching { it.postMessage(message) } }
     }
@@ -579,7 +582,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 tab.navigation++; tab.pauseToken = 0; tab.pauseReports.clear()
                 tab.weiboRequest = 0; tab.weiboSelection = ""; tab.weiboClicks.clear()
                 tab.betaRequest = 0; tab.betaSelection = ""; tab.bilibiliClicks.clear()
-                tab.tencentClicks.clear();tab.mangoClicks.clear();tab.youkuClicks.clear();tab.niconicoClicks.clear();tab.twitchClicks.clear();tab.tiktokClicks.clear();tab.instagramClicks.clear();tab.instagramReturns.clear();tab.tedClicks.clear();tab.redbullClicks.clear();tab.streamableClicks.clear();tab.archiveClicks.clear();tab.odyseeClicks.clear();tab.dailymotionClicks.clear();tab.iqiyiClicks.clear();tab.douyinClicks.clear()
+                tab.tencentClicks.clear();tab.mangoClicks.clear();tab.youkuClicks.clear();tab.niconicoClicks.clear();tab.twitchClicks.clear();tab.tiktokClicks.clear();tab.instagramClicks.clear();tab.instagramReturns.clear();tab.tedClicks.clear();tab.redbullClicks.clear();tab.naverClicks.clear();tab.naverReturns.clear();tab.redditClicks.clear();tab.streamableClicks.clear();tab.archiveClicks.clear();tab.odyseeClicks.clear();tab.dailymotionClicks.clear();tab.iqiyiClicks.clear();tab.douyinClicks.clear()
                 tab.media.clear(); tab.sources.clear(); tab.fullScreen = false; tab.editor = null; tab.editing = false; tab.keyboardVisible = false
                 tab.error = ""; tab.progress = 0; publish()
 
@@ -692,10 +695,12 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val tedEnabled = WebBrowserTed.observing(tab.url)
                             val redbullEnabled = WebBrowserRedBull.observing(tab.url)
                             val streamableEnabled = WebBrowserStreamable.observing(tab.url)
+                            val redditEnabled = WebBrowserReddit.observing(tab.url)
+                            val naverEnabled = WebBrowserNaver.observing(tab.url)
                             val archiveEnabled = WebBrowserArchive.observing(tab.url)
                             val odyseeEnabled = WebBrowserOdysee.observing(tab.url)
                             val dailymotionEnabled = WebBrowserDailymotion.enabled(tab.url)
-                            val network = if (networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled || youkuEnabled || iqiyiEnabled || niconicoEnabled || twitchEnabled || tiktokEnabled || instagramEnabled || tedEnabled || redbullEnabled || streamableEnabled || archiveEnabled || odyseeEnabled || dailymotionEnabled) WebBrowserNetworkMedia.candidates(item,includeSegments=tencentEnabled || iqiyiEnabled || niconicoEnabled || tedEnabled || redbullEnabled || streamableEnabled || archiveEnabled || odyseeEnabled || dailymotionEnabled) else JSONArray()
+                            val network = if (networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled || youkuEnabled || iqiyiEnabled || niconicoEnabled || twitchEnabled || tiktokEnabled || instagramEnabled || tedEnabled || redbullEnabled || naverEnabled || redditEnabled || streamableEnabled || archiveEnabled || odyseeEnabled || dailymotionEnabled) WebBrowserNetworkMedia.candidates(item,includeSegments=tencentEnabled || iqiyiEnabled || niconicoEnabled || tedEnabled || redbullEnabled || naverEnabled || redditEnabled || streamableEnabled || archiveEnabled || odyseeEnabled || dailymotionEnabled) else JSONArray()
                             val bilibili = item.optJSONObject("bilibili")?.takeIf { bilibiliEnabled &&
                                 !item.optBoolean("protected") && it.toString().length <= 96 * 1024 && it.optString("page") == tab.url }
                             val serverHeaders = item.optJSONObject("server_headers")?.let { data ->
@@ -714,6 +719,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val ted=if(tedEnabled)WebBrowserTed.metadata(item,tab.url) else null
                             val redbull=if(redbullEnabled)WebBrowserRedBull.metadata(item,tab.url) else null
                             val streamable=if(streamableEnabled)WebBrowserStreamable.metadata(item,tab.url) else null
+                            val reddit=if(redditEnabled)WebBrowserReddit.metadata(item,tab.url) else null
+                            val naver=if(naverEnabled)WebBrowserNaver.metadata(item,tab.url) else null
                             val archive=if(archiveEnabled)WebBrowserArchive.metadata(item,tab.url) else null
                             val odysee=if(odyseeEnabled)WebBrowserOdysee.metadata(item,tab.url) else null
                             val dailymotion=if(dailymotionEnabled && item.optString("frame")==port.sender.url)WebBrowserDailymotion.metadata(item,tab.url) else null
@@ -730,6 +737,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                 (ted?.let { ":ted:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
                                 (redbull?.let { ":redbull:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
                                 (streamable?.let { ":streamable:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
+                                (reddit?.let { ":reddit:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
+                                (naver?.let { ":naver:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
                                 (archive?.let { ":archive:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
                                 (odysee?.let { ":odysee:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
                                 (dailymotion?.let { ":dailymotion:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
@@ -755,22 +764,26 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                 .put("ted_ready",ted!=null && item.optBoolean("ted_ready")).put("ted_page",ted?.optString("page").orEmpty())
                                 .put("redbull_ready",redbull!=null && item.optBoolean("redbull_ready")).put("redbull_page",redbull?.optString("page").orEmpty())
                                 .put("streamable_ready",streamable!=null && item.optBoolean("streamable_ready")).put("streamable_page",streamable?.optString("page").orEmpty())
+                                .put("reddit_ready",reddit!=null && item.optBoolean("reddit_ready")).put("reddit_page",reddit?.optString("page").orEmpty())
+                                .put("naver_ready",naver!=null && item.optBoolean("naver_ready")).put("naver_page",naver?.optString("page").orEmpty())
                                 .put("archive_ready",archive!=null && item.optBoolean("archive_ready")).put("archive_page",archive?.optString("page").orEmpty())
                                 .put("odysee_ready",odysee!=null && item.optBoolean("odysee_ready")).put("odysee_page",odysee?.optString("page").orEmpty())
                                 .put("dailymotion_ready",dailymotion!=null && item.optBoolean("dailymotion_ready")).put("dailymotion_page",dailymotion?.optString("page").orEmpty())
                                 .put("iqiyi_ready",iqiyi != null && item.optBoolean("iqiyi_ready")).put("iqiyi_page",iqiyi?.optString("page").orEmpty())
+                                .put("iqiyi_diagnostics",if(iqiyiEnabled)WebBrowserCaptureDiagnostics.project("iqiyi",item).put("native_binding_valid",iqiyi!=null) else null)
+                                .put("tiktok_diagnostics",if(tiktokEnabled)WebBrowserCaptureDiagnostics.project("tiktok",item).put("native_binding_valid",tiktok!=null) else null)
                                 .put("youku_page",youku?.let { "https://v.youku.com/v_show/id_${it.optString("id")}.html" }.orEmpty())
                                 .put("mango_capture", if (mangoEnabled) WebBrowserMango.captureDiagnostics(data)
                                     .put("frame_matches", item.optString("frame") == tab.url).put("binding_valid", mango != null) else null)
                                 .put("mango_page",mango?.let { "https://www.mgtv.com/b/${it.optString("id")}.html" }.orEmpty())
-                                .put("selection", if (weibo != null || bilibili != null || tencent != null || mango != null || youku != null || iqiyi != null || douyin != null || niconico != null || twitch != null || tiktok != null || instagram != null || ted != null || redbull != null || streamable != null || archive != null || odysee != null || dailymotion != null) captureIdentity else "")
+                                .put("selection", if (weibo != null || bilibili != null || tencent != null || mango != null || youku != null || iqiyi != null || douyin != null || niconico != null || twitch != null || tiktok != null || instagram != null || ted != null || redbull != null || naver != null || reddit != null || streamable != null || archive != null || odysee != null || dailymotion != null) captureIdentity else "")
                                 .put("network_media", networkEnabled && (network.length() > 0 || !item.optBoolean("protected") && WebBrowserNetworkMedia.address(item.optString("source")) != null))
                                 .put("media_epoch", "${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}")
                                 .put("protected", item.optBoolean("protected"))
                                 .put("height", item.optInt("height").coerceIn(0, 32768))
                                 .put("playing", item.optBoolean("playing"))
                                 .put("time", item.optDouble("time", 0.0).takeIf { it.isFinite() && it >= 0 } ?: 0.0)
-                                .put("beta_time",instagram?.optDouble("start_seconds",item.optDouble("time",0.0)) ?: (item.optDouble("time",0.0).takeIf{it.isFinite()&&it>=0} ?: 0.0)))
+                                .put("beta_time",instagram?.optDouble("start_seconds",item.optDouble("time",0.0)) ?: tiktok?.optDouble("start_seconds",item.optDouble("time",0.0)) ?: (item.optDouble("time",0.0).takeIf{it.isFinite()&&it>=0} ?: 0.0)))
                             val source = item.optString("source")
                             if (item.optString("frame").length <= 8192 && item.optString("agent").length <= 2048 &&
                                 (source.isEmpty() || (source.length <= 16384 && (source.startsWith("https://") || source.startsWith("http://"))) || item.optBoolean("protected"))) {
@@ -790,6 +803,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                     .put("ted_enabled",tedEnabled).put("ted",ted).put("ted_source",if(ted!=null)item.optString("ted_source") else "")
                                     .put("redbull_enabled",redbullEnabled).put("redbull",redbull).put("redbull_source",if(redbull!=null)item.optString("redbull_source") else "")
                                     .put("streamable_enabled",streamableEnabled).put("streamable",streamable).put("streamable_source",if(streamable!=null)item.optString("streamable_source") else "")
+                                    .put("reddit_enabled",redditEnabled).put("reddit",reddit).put("reddit_source",if(reddit!=null)item.optString("reddit_source") else "")
+                                    .put("naver_enabled",naverEnabled).put("naver",naver).put("naver_source",if(naver!=null)item.optString("naver_source") else "")
                                     .put("archive_enabled",archiveEnabled).put("archive",archive).put("archive_source",if(archive!=null)item.optString("archive_source") else "")
                                     .put("odysee_enabled",odyseeEnabled).put("odysee",odysee).put("odysee_source",if(odysee!=null)item.optString("odysee_source") else "")
                                     .put("dailymotion_enabled",dailymotionEnabled).put("dailymotion",dailymotion).put("dailymotion_source",if(dailymotion!=null)item.optString("dailymotion_source") else "").put("dailymotion_owner",if(dailymotion!=null)tab.url else "")
@@ -869,6 +884,19 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                     tab.streamableClicks[port] = streamableClick
                                     tab.betaRequest = ++nextBetaRequest; tab.betaSelection = captureIdentity
                                 }
+                                val redditClick = item.optLong("reddit_request")
+                                if (reddit != null && item.optBoolean("reddit_ready") && redditClick > (tab.redditClicks[port] ?: 0) &&
+                                    redditClick in 1..Int.MAX_VALUE.toLong() && active && current() === tab && tab.pauseToken == 0L) {
+                                    tab.redditClicks[port] = redditClick
+                                    tab.betaRequest = ++nextBetaRequest; tab.betaSelection = captureIdentity
+                                }
+                                val naverClick = item.optLong("naver_request")
+                                if (naver != null && item.optBoolean("naver_ready") && naverClick > (tab.naverClicks[port] ?: 0) &&
+                                    naverClick in 1..Int.MAX_VALUE.toLong() && active && current() === tab && tab.pauseToken == 0L) {
+                                    tab.naverClicks[port] = naverClick
+                                    tab.naverReturns.clear();tab.naverReturns[captureIdentity]=port to JSONObject().put("id",id).put("epoch",item.optLong("network_epoch")).put("page",naver.getString("page")).put("revision",naver.getString("revision"))
+                                    tab.betaRequest = ++nextBetaRequest; tab.betaSelection = captureIdentity
+                                }
                                 val archiveClick = item.optLong("archive_request")
                                 if (archive != null && item.optBoolean("archive_ready") && archiveClick > (tab.archiveClicks[port] ?: 0) &&
                                     archiveClick in 1..Int.MAX_VALUE.toLong() && active && current() === tab && tab.pauseToken == 0L) {
@@ -914,13 +942,13 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     override fun onDisconnect(port: WebExtension.Port) {
                         tab.ports.remove(port); tab.media.remove(port); tab.sources.remove(port); tab.pauseReports.remove(port); tab.weiboClicks.remove(port)
                         tab.bilibiliClicks.remove(port)
-                        tab.tencentClicks.remove(port);tab.mangoClicks.remove(port);tab.youkuClicks.remove(port);tab.niconicoClicks.remove(port);tab.twitchClicks.remove(port);tab.tiktokClicks.remove(port);tab.instagramClicks.remove(port);tab.instagramReturns.entries.removeAll{it.value.first===port};tab.tedClicks.remove(port);tab.redbullClicks.remove(port);tab.streamableClicks.remove(port);tab.archiveClicks.remove(port);tab.odyseeClicks.remove(port);tab.dailymotionClicks.remove(port);tab.iqiyiClicks.remove(port);tab.douyinClicks.remove(port)
+                        tab.tencentClicks.remove(port);tab.mangoClicks.remove(port);tab.youkuClicks.remove(port);tab.niconicoClicks.remove(port);tab.twitchClicks.remove(port);tab.tiktokClicks.remove(port);tab.instagramClicks.remove(port);tab.instagramReturns.entries.removeAll{it.value.first===port};tab.tedClicks.remove(port);tab.redbullClicks.remove(port);tab.naverClicks.remove(port);tab.naverReturns.entries.removeAll{it.value.first===port};tab.redditClicks.remove(port);tab.streamableClicks.remove(port);tab.archiveClicks.remove(port);tab.odyseeClicks.remove(port);tab.dailymotionClicks.remove(port);tab.iqiyiClicks.remove(port);tab.douyinClicks.remove(port)
                         updateFullscreen(tab); publish()
                     }
                 })
                 port.postMessage(JSONObject().put("action", if (displayed(tab)) "resume" else "suspend"))
                 port.postMessage(JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
-                    .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url)).put("youku",WebBrowserYouku.enabled(tab.url)).put("iqiyi",WebBrowserIqiyi.enabled(tab.url)).put("niconico",WebBrowserNiconico.enabled(tab.url)).put("twitch",WebBrowserTwitch.enabled(tab.url)).put("tiktok",WebBrowserTikTok.observing(tab.url)).put("instagram",WebBrowserInstagram.observing(tab.url)).put("ted",WebBrowserTed.observing(tab.url)).put("redbull",WebBrowserRedBull.observing(tab.url)).put("streamable",WebBrowserStreamable.observing(tab.url)).put("archive",WebBrowserArchive.observing(tab.url)).put("odysee",WebBrowserOdysee.observing(tab.url)).put("dailymotion",WebBrowserDailymotion.enabled(tab.url)).put("dailymotion_owner",tab.url.takeIf{WebBrowserDailymotion.enabled(it)}.orEmpty())
+                    .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url)).put("youku",WebBrowserYouku.enabled(tab.url)).put("iqiyi",WebBrowserIqiyi.enabled(tab.url)).put("niconico",WebBrowserNiconico.observing(tab.url)).put("twitch",WebBrowserTwitch.enabled(tab.url)).put("tiktok",WebBrowserTikTok.observing(tab.url)).put("instagram",WebBrowserInstagram.observing(tab.url)).put("ted",WebBrowserTed.observing(tab.url)).put("redbull",WebBrowserRedBull.observing(tab.url)).put("naver",WebBrowserNaver.observing(tab.url)).put("reddit",WebBrowserReddit.observing(tab.url)).put("streamable",WebBrowserStreamable.observing(tab.url)).put("archive",WebBrowserArchive.observing(tab.url)).put("odysee",WebBrowserOdysee.observing(tab.url)).put("dailymotion",WebBrowserDailymotion.observing(tab.url)).put("dailymotion_owner",tab.url.takeIf{WebBrowserDailymotion.observing(it)}.orEmpty())
                     .put("bilibili", bilibiliEnabled(tab)).put("douyin", douyinEnabled(tab)).put("weibo", WebBrowserWeibo.document(tab.url)).put("diagnostics", mediaDiagnosticsEnabled()))
                 if (tab.pauseToken > 0) port.postMessage(JSONObject().put("action", "pause_media").put("token", tab.pauseToken))
             }
@@ -1384,12 +1412,19 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     }
                 }
             }
-            "restore_weibo", "restore_mango", "restore_youku", "restore_iqiyi", "restore_douyin", "restore_niconico", "restore_twitch", "restore_tiktok", "restore_instagram", "restore_ted", "restore_redbull", "restore_streamable", "restore_archive", "restore_odysee", "restore_dailymotion" -> {
+            "restore_weibo", "restore_mango", "restore_youku", "restore_iqiyi", "restore_douyin", "restore_niconico", "restore_twitch", "restore_tiktok", "restore_instagram", "restore_ted", "restore_redbull", "restore_naver", "restore_reddit", "restore_streamable", "restore_archive", "restore_odysee", "restore_dailymotion" -> {
                 val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id } ?: return@dispatch
                 if (!tab.awake || window(id).tab != tab.id || tab.navigation != request.optLong("navigation", -1) ||
                     tab.url != request.optString("origin")) return@dispatch
                 val selection = request.optString("selection")
-                val kind=when(request.optString("action")) { "restore_mango" -> "mango"; "restore_youku" -> "youku"; "restore_niconico" -> "niconico"; "restore_twitch" -> "twitch"; "restore_tiktok" -> "tiktok"; "restore_instagram" -> "instagram"; "restore_ted" -> "ted"; "restore_redbull" -> "redbull"; "restore_streamable" -> "streamable"; "restore_archive" -> "archive"; "restore_odysee" -> "odysee"; "restore_dailymotion" -> "dailymotion"; "restore_iqiyi" -> "iqiyi"; "restore_douyin" -> "douyin"; else -> "weibo" }
+                val kind=when(request.optString("action")) { "restore_mango" -> "mango"; "restore_youku" -> "youku"; "restore_niconico" -> "niconico"; "restore_twitch" -> "twitch"; "restore_tiktok" -> "tiktok"; "restore_instagram" -> "instagram"; "restore_ted" -> "ted"; "restore_redbull" -> "redbull"; "restore_naver" -> "naver"; "restore_reddit" -> "reddit"; "restore_streamable" -> "streamable"; "restore_archive" -> "archive"; "restore_odysee" -> "odysee"; "restore_dailymotion" -> "dailymotion"; "restore_iqiyi" -> "iqiyi"; "restore_douyin" -> "douyin"; else -> "weibo" }
+                if(kind=="naver"){
+                    val witness=tab.naverReturns.remove(selection) ?: return@dispatch
+                    if(witness.first !in tab.ports)return@dispatch
+                    witness.first.postMessage(JSONObject(witness.second.toString()).put("action","restore_naver")
+                        .put("time",request.optLong("position_ms").coerceAtLeast(0)/1000.0).put("play",request.optBoolean("play")))
+                    return@dispatch
+                }
                 if(kind=="instagram"){
                     val witness=tab.instagramReturns.remove(selection) ?: return@dispatch
                     if(witness.first !in tab.ports)return@dispatch
@@ -1877,6 +1912,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             .put("ted_beta_available",tab != null && WebBrowserTed.enabled(tab.url))
             .put("redbull_beta_available",tab != null && WebBrowserRedBull.enabled(tab.url))
             .put("streamable_beta_available",tab != null && WebBrowserStreamable.enabled(tab.url))
+            .put("reddit_beta_available",tab != null && WebBrowserReddit.enabled(tab.url))
+            .put("naver_beta_available",tab != null && WebBrowserNaver.enabled(tab.url))
             .put("archive_beta_available",tab != null && WebBrowserArchive.enabled(tab.url))
             .put("odysee_beta_available",tab != null && WebBrowserOdysee.enabled(tab.url))
             .put("dailymotion_beta_available",tab != null && WebBrowserDailymotion.enabled(tab.url))

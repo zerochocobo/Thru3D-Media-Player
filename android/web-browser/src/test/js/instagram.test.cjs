@@ -61,3 +61,41 @@ test('a remounted return element must match the complete original content identi
   assert.equal(f.t.matchesIdentity(after,{...identity,[key]:typeof identity[key]==='number'?identity[key]+1:String(identity[key])+'changed'}),false,key);
  assert.equal(f.t.matchesIdentity(null,identity),false);assert.equal('headers' in identity,false);
 });
+
+test('Reels uses the current player media ID and exact inline manifest to identify its own post',()=>{
+ const f=fixture(),root='https://www.instagram.com/reels/';
+ f.document.querySelectorAll=s=>s.startsWith('meta')?[]:[f.script];
+ f.script.textContent=JSON.stringify({feed:[{pk:'99999999999999999',code:'next_post',has_audio:true,video_dash_manifest:f.model.manifest},
+  {pk:f.model.coreVideoPlayerMetaData.videoFBID,code,has_audio:false,video_dash_manifest:f.model.manifest}]});
+ const b=f.t.binding(f.v,[f.request],root,[f.v],f.document);
+ assert.equal(b.id,code);assert.equal(b.page,page);assert.equal(b.document,root);assert.equal(b.active_id,code);assert.equal(b.binding,'rendered_card');assert.equal(b.has_audio,false);
+ assert.equal(f.t.matchesIdentity(b,f.t.identity(b)),true);
+ for(const change of [p=>p.pk='99999999999999999',p=>p.video_dash_manifest+='changed',p=>delete p.has_audio,p=>p.has_audio=true]){
+  const post={pk:f.model.coreVideoPlayerMetaData.videoFBID,code,has_audio:false,video_dash_manifest:f.model.manifest};change(post);f.script.textContent=JSON.stringify(post);
+  assert.equal(f.t.binding(f.v,[f.request],root,[f.v],f.document),null);
+ }
+});
+
+test('a navigated Reel may use the same exact post evidence but cannot borrow a sibling code',()=>{
+ const f=fixture();f.document.querySelectorAll=s=>s.startsWith('meta')?[]:[f.script];
+ f.script.textContent=JSON.stringify({pk:f.model.coreVideoPlayerMetaData.videoFBID,code,has_audio:false,video_dash_manifest:f.model.manifest});
+ assert.equal(f.t.binding(f.v,[f.request],page,[f.v],f.document).id,code);
+ assert.equal(f.t.binding(f.v,[f.request],page.replace('/reel/','/reels/'),[f.v],f.document).id,code);
+ assert.equal(f.t.binding(f.v,[f.request],page.replace(code,'next_post'),[f.v],f.document),null);
+ for(const bad of ['https://www.instagram.com/','https://www.instagram.com/explore/','https://www.instagram.com.evil/reels/'])
+  assert.equal(f.t.binding(f.v,[f.request],bad,[f.v],f.document),null);
+ assert.equal(f.t.binding(f.v,[f.request],'https://www.instagram.com/reels/',[f.v,{...f.v}],f.document),null);
+});
+
+test('same-post MPD duration tolerates a bounded media tail, never a different-length clip',()=>{
+ const f=fixture();f.v.duration=5.136;assert.notEqual(f.t.read(f.v,page,f.document),null);
+ f.v.duration=5.218;assert.equal(f.t.read(f.v,page,f.document),null);
+});
+
+test('the next Reel preload at the viewport edge cannot suppress or borrow the current post',()=>{
+ const f=fixture(),next={...f.v,getBoundingClientRect:()=>({left:100,top:990,right:437,bottom:1589,width:337,height:599})};
+ assert.notEqual(f.t.binding(f.v,[f.request],page,[f.v,next],f.document),null);
+ assert.equal(f.t.read(next,page,f.document),null);
+ next.getBoundingClientRect=()=>({left:700,top:100,right:1037,bottom:699,width:337,height:599});
+ assert.equal(f.t.binding(f.v,[f.request],page,[f.v,next],f.document),null);
+});

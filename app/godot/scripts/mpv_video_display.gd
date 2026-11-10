@@ -1359,12 +1359,12 @@ func _try_revision() -> void:
 	var request := _pending_revision
 	if _layer_session and ((bool(request.alpha) and not _layer_alpha()) or bool(request.depth)):
 		_pending_revision = {}
-		_reopen_on_eye_buffer(int(request.position_ms))
+		_reopen_on_eye_buffer(int(request.position_ms), "revision_effect")
 		return
 	if _layer_session and bool(request.alpha) and not _layer_alpha_host:
 		# Alpha on a layer session opened without it: its decoder has no frame fan-out for the model.
 		_pending_revision = {}
-		_reopen_at(int(request.position_ms), true)
+		_reopen_at(int(request.position_ms), true, "revision_alpha_host")
 		return
 	var id: int = platform.revise_mpv_video(media.session_id, request.stereo, request.alpha, request.profile, request.position_ms,
 		request.depth, request.top_bottom, request.seek_mode == SeekPolicy.EXACT)
@@ -1673,7 +1673,7 @@ func select_disc_title(playlist: int) -> bool:
 func _open_disc_title(playlist: int, position_ms: int, disc_tracks: Dictionary = {}) -> void:
 	disc.request(local_uri, playlist)
 	# A menu session ran in the eye buffers; a title may return to the compositor layer.
-	_reopen_at(position_ms, true if disc.menu_session else (_layer_session or _layer_requested))
+	_reopen_at(position_ms, true if disc.menu_session else (_layer_session or _layer_requested), "disc_title")
 	# The disc menu's language choice replaces the menu session's own track state.
 	_disc_tracks = {}
 	for channel in ["audio", "subtitle"]:
@@ -1715,7 +1715,7 @@ func open_disc_menu() -> bool:
 	if local_uri.is_empty() or local_uri != disc.uri or not disc.menu_available() or disc.menu_session: return false
 	if not disc.extra(): _record_history(true)
 	disc.request(local_uri, DiscTitles.MENU)
-	_reopen_at(0, false)
+	_reopen_at(0, false, "disc_menu")
 	return true
 
 func _poll_disc_menu(now_ms: int) -> void:
@@ -3167,7 +3167,7 @@ func _check_playback_stall(now_ms: int) -> void:
 	Log.record("mpv_playback_stall", {"session_id": media.session_id, "position_ms": at, "layer": _layer_session,
 		"decoder": media.decoder, "audio_pts_us": details.get("audio_pts_us", null), "verdict": verdict})
 	if verdict == StallWatch.RECOVER:
-		call_deferred("_reopen_at", at, _layer_session)
+		call_deferred("_reopen_at", at, _layer_session, "stall")
 		return
 	# The reopen froze at the same spot again: stop instead of reopening every minute.
 	var id: int = media.session_id
@@ -3996,6 +3996,25 @@ func _layer_presentation() -> bool:
 		and video_layer.grades(color_grade) and video_layer.supports_surface(self) \
 		and (int(media.format.get("source_rotation_degrees", 0)) == 0 or _layer_turns())
 
+## _layer_presentation() term by term, for the exported log when a layer session falls back.
+func _layer_presentation_terms() -> Dictionary:
+	return {"stream_mesh": _stream_mesh_active(), "pip_windows": pip.video_windows().size(),
+		"pip_direct": pip.compositor.direct_compatible(), "layer_enabled": layer_enabled,
+		"alpha": alpha_requested, "layer_alpha": alpha_requested and _layer_alpha(), "depth": depth_requested,
+		"packed": packed_file, "capacity": video_layer.capacity() if video_layer else -1, "stereo": stereo_sbs,
+		"blocked_uri": not local_uri.is_empty() and local_uri == _layer_blocked_uri,
+		"grades": video_layer != null and video_layer.grades(color_grade),
+		"surface": video_layer != null and video_layer.supports_surface(self),
+		"rotation": int(media.format.get("source_rotation_degrees", 0)), "turns": _layer_turns()}
+
+## The settings a failed return to the layer was tried with. Another return waits until one changes:
+## a seek alone must not retry it.
+var _layer_return_attempt := ""
+var _layer_return_refused := ""
+func _layer_return_key() -> String:
+	return str([local_uri, color_grade.snapshot(), alpha_requested, depth_requested, stereo_sbs, top_bottom,
+		geometry, screen_curve, screen_rotation, packed_file, layer_enabled, pip.video_windows().size()])
+
 ## Alpha may stay on the layer: allowed by the platform, and the runtime blends layers by the mask
 ## (XR_FB_composition_layer_alpha_blend). Without that blend the video layer would show uncut, so
 ## Alpha uses the eye buffers instead.
@@ -4048,7 +4067,7 @@ func _recover_layer_output() -> bool:
 		return false
 	if _await_web_decoder(): return true
 	_layer_blocked_uri = local_uri
-	_reopen_on_eye_buffer(-1) # Profile 5, software decode or rotation: MPV must normalize.
+	_reopen_on_eye_buffer(-1, "layer_incompatible") # Profile 5, software decode or rotation: MPV must normalize.
 	return true
 
 ## The retained page's player keeps its MediaCodec for a few seconds after the pause, so an
@@ -4064,7 +4083,7 @@ func _await_web_decoder() -> bool:
 	if now < _decoder_retry_at: return true
 	_decoder_retry_at = 0; _decoder_retries += 1
 	Log.record("web_decoder_retry", {"attempt": _decoder_retries})
-	_reopen_at(-1, true)
+	_reopen_at(-1, true, "web_decoder_retry")
 	return true
 
 ## Keep the layer, the hole and the subtitles in step with the video surface every frame.
@@ -4094,18 +4113,27 @@ func _update_layer() -> void:
 		video_layer.hide(self); video_layer_shown = false; panel.visible = false
 		_subtitle_on_layer = false; _flat_subtitle_on_layer = false; _sync_subtitle_surface()
 		return
-	if _layer_session and media.accepts(media.session_id) and media.frame_counter > 0 and media.state != "failed" \
-		and _pending_revision.is_empty() and not _layer_presentation():
-		_reopen_on_eye_buffer(-1)
+	var layer_settled: bool = _layer_session and media.accepts(media.session_id) and media.frame_counter > 0 \
+		and media.state != "failed" and _pending_revision.is_empty()
+	if layer_settled and not _layer_presentation():
+		var failed_return := _layer_return_attempt == local_uri
+		Log.record("video_layer_fallback", {"return_attempt": failed_return, "terms": _layer_presentation_terms()})
+		_reopen_on_eye_buffer(-1, "layer_fallback")
+		if failed_return:
+			# The return itself fell back at its first frame: retrying after every seek reopened
+			# the source twice per seek and exhausted the native slots (Quest 3, 2026-11-09).
+			_layer_return_attempt = ""
+			_layer_return_refused = _layer_return_key()
 		return
+	if layer_settled: _layer_return_attempt = "" # the return held past its first frame
 	if _layer_session and video_layer.generation != _layer_generation and media.accepts(media.session_id) \
 		and _pending_revision.is_empty():
-		_reopen_at(-1, true) # a new XR session replaced the swapchain MPV decodes into
+		_reopen_at(-1, true, "xr_session") # a new XR session replaced the swapchain MPV decodes into
 		return
 	if media.accepts(media.session_id) and media.playback.get("network_interleave_retry", false):
 		media.playback["network_interleave_retry"] = false # close_video updates the layer before retiring this session.
 		_network_interleave_compat = true
-		_reopen_at(int(media.playback.get("network_interleave_restart_ms", 0)), _layer_session or _layer_requested)
+		_reopen_at(int(media.playback.get("network_interleave_restart_ms", 0)), _layer_session or _layer_requested, "network_interleave")
 		return
 	# Profile 5 and a software decoder are known before the surface shows anything (no frame would come).
 	if _recover_layer_output(): return
@@ -4113,9 +4141,11 @@ func _update_layer() -> void:
 	if not _layer_session and not _layer_return_uri.is_empty() and _layer_return_uri == local_uri and not disc.menu_session \
 		and media.accepts(media.session_id) and media.frame_counter > 0 and _pending_revision.is_empty() \
 		and captures.recording.is_empty() \
-		and _freeze_request == 0 and not _waiting_first and _thumb_after_ms < 0 and not _thumbnail_busy and _layer_wanted():
+		and _freeze_request == 0 and not _waiting_first and _thumb_after_ms < 0 and not _thumbnail_busy and _layer_wanted() \
+		and _layer_return_key() != _layer_return_refused:
 		_layer_return_uri = ""
-		_reopen_at(-1, true)
+		_layer_return_attempt = local_uri
+		_reopen_at(-1, true, "layer_return")
 		return
 	var origin := _origin()
 	if _layer_seek_hold and not _waiting_first: _layer_seek_hold = false
@@ -4451,13 +4481,14 @@ func _show_frame_picture(origin: XROrigin3D, extras: Array) -> bool:
 		VideoLayer.OPAQUE, extras)
 
 ## Same file and position, decoded for Godot's shader (Alpha, 2D->3D, fisheye, grading, Profile 5).
-func _reopen_on_eye_buffer(position_ms: int) -> void:
+func _reopen_on_eye_buffer(position_ms: int, trigger: String = "") -> void:
 	if local_uri != _layer_blocked_uri:
 		_layer_return_uri = local_uri
-	_reopen_at(position_ms, false)
+	_reopen_at(position_ms, false, trigger)
 
 ## Reopen the shown file at its position (layer: may decode into the compositor layer).
-func _reopen_at(position_ms: int, layer: bool) -> void:
+## trigger: the caller, for the exported log only.
+func _reopen_at(position_ms: int, layer: bool, trigger: String = "") -> void:
 	if local_uri.is_empty():
 		return
 	if mode_transition.guard_reopen(position_ms, layer): return
@@ -4481,7 +4512,7 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	var whisper := audio_whisper
 	var boost_mark := audio_boost_saved
 	var whisper_save := _whisper_remember or _whisper_restore_remember
-	Log.record("video_layer_reopen", {"layer": layer, "position_ms": position, "alpha": alpha_requested,
+	Log.record("video_layer_reopen", {"layer": layer, "trigger": trigger, "position_ms": position, "alpha": alpha_requested,
 		"depth": depth_requested, "geometry": geometry, "compatible": media.playback.get("layer_compatible", true)})
 	_eye_buffer_only = not layer
 	var return_uri := _layer_return_uri

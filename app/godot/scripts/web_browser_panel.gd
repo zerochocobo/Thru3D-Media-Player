@@ -326,7 +326,7 @@ func _poll_beta_button() -> void:
 	if not selection.is_empty() and not selected_beta_target(data, selection).is_empty(): _begin_handoff(true, selection)
 
 func selected_beta_target(current: Dictionary, selection: String) -> Dictionary:
-	var candidates: Array = current.get("videos", []).filter(func(item): return (item.get("weibo_ready", false) or item.get("bilibili_ready", false) or item.get("douyin_ready", false) or item.get("tencent_ready", false) or item.get("mango_ready", false) or item.get("youku_ready", false) or item.get("iqiyi_ready", false) or item.get("niconico_ready", false) or item.get("twitch_ready", false) or item.get("tiktok_ready", false) or item.get("instagram_ready", false) or item.get("odysee_ready", false) or item.get("archive_ready", false) or item.get("streamable_ready", false) or item.get("redbull_ready", false) or item.get("ted_ready", false) or item.get("dailymotion_ready", false)) and not item.get("protected", false) and str(item.get("selection", "")) == selection)
+	var candidates: Array = current.get("videos", []).filter(func(item): return (item.get("weibo_ready", false) or item.get("bilibili_ready", false) or item.get("douyin_ready", false) or item.get("tencent_ready", false) or item.get("mango_ready", false) or item.get("youku_ready", false) or item.get("iqiyi_ready", false) or item.get("niconico_ready", false) or item.get("twitch_ready", false) or item.get("tiktok_ready", false) or item.get("instagram_ready", false) or item.get("odysee_ready", false) or item.get("archive_ready", false) or item.get("naver_ready", false) or item.get("reddit_ready", false) or item.get("streamable_ready", false) or item.get("redbull_ready", false) or item.get("ted_ready", false) or item.get("dailymotion_ready", false)) and not item.get("protected", false) and str(item.get("selection", "")) == selection)
 	return candidates[0] if not selection.is_empty() and candidates.size() == 1 else {}
 
 func weibo_target(current: Dictionary, selection: String = "") -> Dictionary:
@@ -376,6 +376,14 @@ func redbull_target(current: Dictionary, selection: String = "") -> Dictionary:
 
 func streamable_target(current: Dictionary, selection: String = "") -> Dictionary:
 	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("streamable_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
+	return candidates[0] if candidates.size() == 1 else {}
+
+func reddit_target(current: Dictionary, selection: String = "") -> Dictionary:
+	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("reddit_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
+	return candidates[0] if candidates.size() == 1 else {}
+
+func naver_target(current: Dictionary, selection: String = "") -> Dictionary:
+	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("naver_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
 	return candidates[0] if candidates.size() == 1 else {}
 
 func archive_target(current: Dictionary, selection: String = "") -> Dictionary:
@@ -452,6 +460,14 @@ func _begin_handoff(beta: bool = false, selection: String = "") -> void:
 			var target := streamable_target(fresh, selection)
 			if target.is_empty(): return
 			selection = str(target.selection)
+		if fresh.get("reddit_beta_available", false):
+			var target := reddit_target(fresh, selection)
+			if target.is_empty(): return
+			selection = str(target.selection)
+		if fresh.get("naver_beta_available", false):
+			var target := naver_target(fresh, selection)
+			if target.is_empty(): return
+			selection = str(target.selection)
 		if fresh.get("archive_beta_available", false):
 			var target := archive_target(fresh, selection)
 			if target.is_empty(): return
@@ -481,7 +497,7 @@ func _begin_handoff(beta: bool = false, selection: String = "") -> void:
 	handoff_uri = str(data.get("url", ""))
 	handoff_tab = int(data.get("tab_id", 0)); handoff_navigation = int(data.get("navigation", 0))
 	handoff_context = {"tab": handoff_tab, "window": focused_window, "navigation": handoff_navigation,
-		"douyin": data.get("douyin_beta_available", false), "iqiyi": data.get("iqiyi_beta_available", false), "youku": data.get("youku_beta_available", false), "niconico": data.get("niconico_beta_available", false), "twitch": data.get("twitch_beta_available", false), "tiktok": data.get("tiktok_beta_available", false), "instagram": data.get("instagram_beta_available", false), "ted": data.get("ted_beta_available", false), "redbull": data.get("redbull_beta_available", false), "streamable": data.get("streamable_beta_available", false), "archive": data.get("archive_beta_available", false), "odysee": data.get("odysee_beta_available", false), "dailymotion": data.get("dailymotion_beta_available", false), "mango": data.get("mango_beta_available", false), "origin": handoff_uri, "request": int(data.get("fullscreen_request", 0)), "selection": selection,
+		"douyin": data.get("douyin_beta_available", false), "iqiyi": data.get("iqiyi_beta_available", false), "youku": data.get("youku_beta_available", false), "niconico": data.get("niconico_beta_available", false), "twitch": data.get("twitch_beta_available", false), "tiktok": data.get("tiktok_beta_available", false), "instagram": data.get("instagram_beta_available", false), "ted": data.get("ted_beta_available", false), "redbull": data.get("redbull_beta_available", false), "naver": data.get("naver_beta_available", false), "reddit": data.get("reddit_beta_available", false), "streamable": data.get("streamable_beta_available", false), "archive": data.get("archive_beta_available", false), "odysee": data.get("odysee_beta_available", false), "dailymotion": data.get("dailymotion_beta_available", false), "mango": data.get("mango_beta_available", false), "origin": handoff_uri, "request": int(data.get("fullscreen_request", 0)), "selection": selection,
 		"was_playing": data.get("videos", []).any(func(item): return (selection.is_empty() or str(item.get("selection", "")) == selection) and item.get("playing", false))}
 	handoff_context.position_ms = _playhead()
 	menu.web_video.address = handoff_uri
@@ -497,10 +513,10 @@ func _begin_handoff(beta: bool = false, selection: String = "") -> void:
 
 func beta_media_ready(current: Dictionary, selection: String = "") -> bool:
 	if not selection.is_empty(): return not selected_beta_target(current, selection).is_empty()
-	return not douyin_target(current).is_empty() or not weibo_target(current).is_empty() or not tencent_target(current).is_empty() or not mango_target(current).is_empty() or not youku_target(current).is_empty() or not iqiyi_target(current).is_empty() or not niconico_target(current).is_empty() or not twitch_target(current).is_empty() or not tiktok_target(current).is_empty() or not instagram_target(current).is_empty() or not odysee_target(current).is_empty() or not archive_target(current).is_empty() or not streamable_target(current).is_empty() or not redbull_target(current).is_empty() or not ted_target(current).is_empty() or not dailymotion_target(current).is_empty() or current.get("videos", []).any(func(item): return item.get("bilibili_ready", false) and not item.get("protected", false))
+	return not douyin_target(current).is_empty() or not weibo_target(current).is_empty() or not tencent_target(current).is_empty() or not mango_target(current).is_empty() or not youku_target(current).is_empty() or not iqiyi_target(current).is_empty() or not niconico_target(current).is_empty() or not twitch_target(current).is_empty() or not tiktok_target(current).is_empty() or not instagram_target(current).is_empty() or not odysee_target(current).is_empty() or not archive_target(current).is_empty() or not naver_target(current).is_empty() or not reddit_target(current).is_empty() or not streamable_target(current).is_empty() or not redbull_target(current).is_empty() or not ted_target(current).is_empty() or not dailymotion_target(current).is_empty() or current.get("videos", []).any(func(item): return item.get("bilibili_ready", false) and not item.get("protected", false))
 
 func beta_site_available(current: Dictionary) -> bool:
-	return current.get("bilibili_beta_available", false) or current.get("douyin_beta_available", false) or current.get("weibo_beta_available", false) or current.get("tencent_beta_available", false) or current.get("mango_beta_available", false) or current.get("youku_beta_available", false) or current.get("iqiyi_beta_available", false) or current.get("niconico_beta_available", false) or current.get("twitch_beta_available", false) or current.get("tiktok_beta_available", false) or current.get("instagram_beta_available", false) or current.get("odysee_beta_available", false) or current.get("archive_beta_available", false) or current.get("streamable_beta_available", false) or current.get("redbull_beta_available", false) or current.get("ted_beta_available", false) or current.get("dailymotion_beta_available", false)
+	return current.get("bilibili_beta_available", false) or current.get("douyin_beta_available", false) or current.get("weibo_beta_available", false) or current.get("tencent_beta_available", false) or current.get("mango_beta_available", false) or current.get("youku_beta_available", false) or current.get("iqiyi_beta_available", false) or current.get("niconico_beta_available", false) or current.get("twitch_beta_available", false) or current.get("tiktok_beta_available", false) or current.get("instagram_beta_available", false) or current.get("odysee_beta_available", false) or current.get("archive_beta_available", false) or current.get("naver_beta_available", false) or current.get("reddit_beta_available", false) or current.get("streamable_beta_available", false) or current.get("redbull_beta_available", false) or current.get("ted_beta_available", false) or current.get("dailymotion_beta_available", false)
 
 func handoff_status() -> String:
 	if handoff_waiting_pause: return I18n.t("Pausing web video…")
@@ -572,7 +588,7 @@ func restore_playback(failed: bool, position_ms: int = -1) -> void:
 		# The button can hand off without a fullscreen video capture. Restore the
 		# original tab/window without navigating again or addressing stale media.
 		if not context.get("retained", false): _video_command("select", context)
-		if not str(context.get("selection", "")).is_empty(): _video_command("restore_douyin" if context.get("douyin", false) else "restore_iqiyi" if context.get("iqiyi", false) else "restore_dailymotion" if context.get("dailymotion", false) else "restore_odysee" if context.get("odysee", false) else "restore_archive" if context.get("archive", false) else "restore_streamable" if context.get("streamable", false) else "restore_redbull" if context.get("redbull", false) else "restore_ted" if context.get("ted", false) else "restore_instagram" if context.get("instagram", false) else "restore_tiktok" if context.get("tiktok", false) else "restore_twitch" if context.get("twitch", false) else "restore_niconico" if context.get("niconico", false) else "restore_youku" if context.get("youku", false) else "restore_mango" if context.get("mango", false) else "restore_weibo", context)
+		if not str(context.get("selection", "")).is_empty(): _video_command("restore_douyin" if context.get("douyin", false) else "restore_iqiyi" if context.get("iqiyi", false) else "restore_dailymotion" if context.get("dailymotion", false) else "restore_odysee" if context.get("odysee", false) else "restore_archive" if context.get("archive", false) else "restore_naver" if context.get("naver", false) else "restore_reddit" if context.get("reddit", false) else "restore_streamable" if context.get("streamable", false) else "restore_redbull" if context.get("redbull", false) else "restore_ted" if context.get("ted", false) else "restore_instagram" if context.get("instagram", false) else "restore_tiktok" if context.get("tiktok", false) else "restore_twitch" if context.get("twitch", false) else "restore_niconico" if context.get("niconico", false) else "restore_youku" if context.get("youku", false) else "restore_mango" if context.get("mango", false) else "restore_weibo", context)
 	menu.web_video.result = {}; next_poll = 0
 
 func live_window_ids() -> Array:

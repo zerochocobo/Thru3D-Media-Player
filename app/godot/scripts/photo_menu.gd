@@ -6,6 +6,9 @@ const PHOTO_COMIC := 986060
 func _supports_native_passthrough() -> bool:
 	return false
 
+func _reuse_mode_title() -> String: return Photo.LastMode.TITLE
+func _reuse_mode_hint() -> String: return Photo.LastMode.HINT
+
 const PHOTO_COMIC_VOICE := 986061
 const PHOTO_COMIC_PREVIEW := 986062
 const PHOTO_COMIC_MANAGE := 986064
@@ -721,7 +724,7 @@ func _activate(target: int) -> void:
 		action_requested.emit("photo_scenery_yaw" if target == PHOTO_SCENERY_YAW else "photo_scenery_brightness"); refresh(); return
 	_scenery_open = false
 	if _state.get("archive_mode", false) and (target in [PHOTO_GALLERY, PHOTO_SHUFFLE] or target in [PHOTO_LAYOUT_BASE + 1, PHOTO_LAYOUT_BASE + 2, PHOTO_LAYOUT_BASE + 3]): return
-	if target == SPACE_LOCK or _adjustment == "bar_transparency": super._activate(target); return
+	if target in [SPACE_LOCK, MODE_REUSE] or _adjustment == "bar_transparency": super._activate(target); return
 	if target==PHOTO_STATIC:
 		action_requested.emit("photo_static"); refresh()
 		return

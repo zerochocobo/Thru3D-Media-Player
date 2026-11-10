@@ -4,7 +4,7 @@ import java.net.URI
 import java.util.Locale
 import org.json.JSONObject
 
-/** Current free claim declaration and actual complete-file request; never API replay. */
+/** Current rendered claim or free-file declaration and actual requests; never API replay. */
 object WebBrowserOdysee {
     private const val ENABLED=true // Current free-claim file flow passed the production desktop preflight.
     private data class Identity(val id: String,val slug: String,val prefix: String)
@@ -32,23 +32,43 @@ object WebBrowserOdysee {
     }.getOrNull()
     fun metadata(item: JSONObject,currentPage: String): JSONObject?=runCatching {
         val current=identity(currentPage) ?: return null
-        require(item.optString("frame")==currentPage && !item.optBoolean("protected") && !item.optBoolean("blob"))
+        require(item.optString("frame")==currentPage && !item.optBoolean("protected"))
         val data=item.getJSONObject("odysee")
         require(data.toString().length<=48*1024 && data.getString("id")==current.id && data.getString("page")==currentPage)
         require(data.getString("revision").matches(Regex("[a-f0-9]{1,8}")))
-        val source=item.getString("source");val actual=file(source) ?: return null
+        val binding=data.optString("binding");val hls=binding=="rendered_hls"
+        val rendered=hls || binding=="rendered_file"
+        val source=if(hls)item.getString("odysee_source") else item.getString("source")
         require(source==data.getString("source") && source==item.getString("odysee_source"))
-        val declared=file(data.getString("declared_source")) ?: return null
-        require(declared.slug==current.slug && actual.claim==declared.claim && actual.file==declared.file && actual.claim.startsWith(current.prefix))
-        require(actual.slug==null || actual.slug==current.slug)
-        require(data.getString("claim_id")==actual.claim && data.getString("file_id")==actual.file)
+        if(rendered) {
+            val claim=data.getString("claim_id");require(claim.matches(Regex("[a-f0-9]{40}")) && claim.startsWith(current.prefix))
+            val uri=data.getString("claim_uri");require(uri.length<=8192)
+            val declared=Regex("lbry://(?:@[A-Za-z0-9_.-]+[#:][a-fA-F0-9]{1,40}/)?([A-Za-z0-9_.-]+)[#:]([a-fA-F0-9]{1,40})/?").matchEntire(uri) ?: return null
+            require(declared.groupValues[1]==current.slug && claim.startsWith(declared.groupValues[2].lowercase(Locale.ROOT)))
+            if(hls) {
+                require(item.optBoolean("blob") && item.optString("source").isEmpty() && source.startsWith("blob:${URI(currentPage).scheme}://${URI(currentPage).host}/"))
+                val root=WebBrowserNetworkMedia.address(data.getString("root")) ?: return null
+                require(root.scheme=="https" && root.rawPath.split('/').any{it.lowercase(Locale.ROOT)==claim} && data.getString("declared_source")==root.toString())
+            } else {
+                require(!item.optBoolean("blob") && !data.has("root") && data.getString("declared_source")==source)
+                val actual=file(source) ?: return null
+                require(actual.claim==claim && data.getString("file_id")==actual.file && (actual.slug==null || actual.slug==current.slug))
+            }
+        } else {
+            require(binding.isEmpty() && !item.optBoolean("blob"))
+            val actual=file(source) ?: return null;val declared=file(data.getString("declared_source")) ?: return null
+            require(declared.slug==current.slug && actual.claim==declared.claim && actual.file==declared.file && actual.claim.startsWith(current.prefix))
+            require(actual.slug==null || actual.slug==current.slug)
+            require(data.getString("claim_id")==actual.claim && data.getString("file_id")==actual.file)
+        }
         val width=item.getInt("width");val height=item.getInt("height");val duration=item.getDouble("duration")
         require(width in 1..16384 && height in 1..16384 && width==data.getInt("width") && height==data.getInt("height"))
         require(duration.isFinite() && duration>0 && duration<=86400 && kotlin.math.abs(duration-data.getDouble("duration"))<=.001)
         val expected=data.getDouble("expected_duration");require(expected.isFinite() && expected>0 && expected<=86400 && data.opt("whole_seconds") is Boolean)
         require(if(data.getBoolean("whole_seconds"))kotlin.math.floor(duration)==expected else kotlin.math.abs(duration-expected)<=.5)
-        val requests=WebBrowserNetworkMedia.candidates(item)
-        require((0 until requests.length()).any {val r=requests.getJSONObject(it);r.optString("kind")=="file" && r.optString("url")==source})
+        val requests=WebBrowserNetworkMedia.candidates(item,hls)
+        val target=if(hls)data.getString("root") else source
+        require((0 until requests.length()).any {val r=requests.getJSONObject(it);r.optString("kind")== (if(hls)"hls" else "file") && r.optString("url")==target})
         data
     }.getOrNull()
 }

@@ -1,6 +1,6 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const n=vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../../main/assets/web-browser/niconico.js'),'utf8')+'\nThru3DNiconico',
-  {URL,getComputedStyle:v=>v.style||{},innerWidth:1600,innerHeight:1000});
+const scope={URL,getComputedStyle:v=>v.style||{},innerWidth:1600,innerHeight:1000};
+const n=vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../../main/assets/web-browser/niconico.js'),'utf8')+'\nThru3DNiconico',scope);
 const page='https://www.nicovideo.jp/watch/sm9',root='https://related.example/current/master.m3u8?signature=exact';
 const master='#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="main",DEFAULT=YES,URI="audio.m3u8?signature=audio"\n'+
   '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=512x384,CODECS="avc1.64001e,mp4a.40.2",AUDIO="audio"\nvideo.m3u8?signature=video\n';
@@ -10,6 +10,23 @@ function graph(){const m=n.master(master,root),v=m.variants[0],vl=n.leaf(leaf,v.
   requests:[...new Set([...vl.resources,...al.resources])].map(url=>({url,kind:'segment',at:Date.now()})).concat([root,v.video,v.audio].map(url=>({url,kind:'hls',at:Date.now()})))};}
 function dom(){return {isConnected:true,readyState:4,currentSrc:'blob:https://www.nicovideo.jp/current',duration:10.1,videoWidth:512,videoHeight:384,paused:false,
   getBoundingClientRect:()=>({left:100,top:100,right:900,bottom:700,width:800,height:600})};}
+
+test('rendered discovery shares the exported viewport test and excludes hidden/preloaded players',()=>{
+  const v=dom();assert.equal(n.visible(v),true);
+  v.getBoundingClientRect=()=>({left:100,top:1100,right:900,bottom:1700,width:800,height:600});assert.equal(n.visible(v),false);
+  v.getBoundingClientRect=()=>({left:100,top:100,right:900,bottom:700,width:800,height:600});v.style={visibility:'hidden'};
+  assert.equal(n.visible(v),false);
+});
+test('a rendered-player record is revalidated against the live facade before every binding',()=>{
+  const g=graph(),video=dom(),record={...n.records(meta(),g.m,g.leaves,g.requests,page)[0],binding:'rendered_player'};
+  assert.equal(n.binding(video,[record],g.requests,page,[video]),null,'A cached rendered declaration alone is insufficient');
+  scope.Thru3DNiconicoPlayer={declaration:()=>({id:'sm9',page,root})};
+  assert.equal(n.binding(video,[record],g.requests,page,[video]).id,'sm9');
+  for(const changed of [null,{id:'sm10',page,root},{id:'sm9',page,root:root+'changed'}]){
+    scope.Thru3DNiconicoPlayer.declaration=()=>changed;assert.equal(n.binding(video,[record],g.requests,page,[video]),null);
+  }
+  delete scope.Thru3DNiconicoPlayer;
+});
 
 test('only the current trusted watch page and its actual access response declare a root',()=>{
   assert.equal(n.page(page),'sm9');assert.equal(n.page('https://www.nicovideo.jp.evil/watch/sm9'),null);assert.equal(n.page(page.replace('https:','http:')),null);

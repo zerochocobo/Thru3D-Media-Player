@@ -149,6 +149,8 @@ const HEADING_SWITCHES := ["listening_enabled", "narration_enabled"]
 const SUBTITLE_FILE_ROW := 22000
 const PLAYBACK_SETTINGS := 470
 const ROTATION_RESET := 471
+const ROTATION_PRESET := 620
+const ROTATION_ANGLES := [-90.0, 0.0, 90.0, 180.0]
 const SPEED_RESET := 472
 const SLIDER_RESET_BASE := 6000
 const GRADE_PAGE_RESET := 441
@@ -187,6 +189,7 @@ const VIDEO_ASPECT_FACTOR := 616
 var _screen_measurement: Label3D
 const ERROR_DETAILS := 496
 const ERROR_OPEN := 499
+const USB_TAKEOVER := 497
 const PlaybackErrors := preload("res://scripts/playback_errors.gd")
 var _failure_open := false
 var _error_details_open := false
@@ -234,6 +237,24 @@ const BAR_DONE := 987103
 ## Wrist watch on/off, beside the lock. Always shown: following the hand-tracking state made it
 ## flicker and swallowed taps when the bar redrew under the finger.
 const WATCH := 987104
+const HAND_LOCK := 987105
+const HandLockIndicator := preload("res://scripts/hand_lock_indicator.gd")
+var _hand_lock_ring: MeshInstance3D
+
+func set_hand_lock_progress(value: float) -> void:
+	if not is_instance_valid(_hand_lock_ring): return
+	_hand_lock_ring.visible = value > 0
+	_hand_lock_ring.material_override.set_shader_parameter("progress", value)
+
+func refresh_hand_lock_icon(locked: bool) -> void:
+	for button in _buttons:
+		if button.target != HAND_LOCK: continue
+		button.foreground = UiTheme.color("active_ink") if locked else MUTED
+		_tips[HAND_LOCK] = I18n.t("Unlock hand gestures" if locked else "Lock hand gestures")
+		for child in button.node.get_children():
+			if child is MeshInstance3D and child.material_override is BaseMaterial3D:
+				child.material_override.albedo_texture = Icons.texture("hand_locked" if locked else "hand_unlocked")
+				child.material_override.albedo_color = button.foreground
 var bar_transparency := 14.0
 
 func set_bar_transparency(value: float) -> void:
@@ -258,9 +279,17 @@ func _style_control_bar() -> void:
 	_glyph(SPACE_LOCK, "lock" if space_locked() else "unlock", Vector2(0.535, 0.10), 0.065, true,
 		I18n.t("Unlock spatial position" if space_locked() else "Lock spatial position"))
 	_buttons.back().foreground = UiTheme.color("active_ink") if space_locked() else MUTED
+	if _state.get("hand_lock_available", false):
+		var hand_locked: bool = _state.get("hand_locked", false)
+		_glyph(HAND_LOCK, "hand_locked" if hand_locked else "hand_unlocked", Vector2(0.465, 0.10), 0.06, true,
+			I18n.t("Unlock hand gestures" if hand_locked else "Lock hand gestures"))
+		_buttons.back().foreground = UiTheme.color("active_ink") if hand_locked else MUTED
+		_hand_lock_ring = HandLockIndicator.make_ring(_buttons.back().node, 0.064)
+		_hand_lock_ring.material_override.render_priority = 13
+		_hand_lock_ring.visible = false
 	if _state.get("watch_available", false):
 		var watch_on: bool = _state.get("watch_enabled", true)
-		_glyph(WATCH, "watch" if watch_on else "watch_off", Vector2(0.465, 0.10), 0.06, true,
+		_glyph(WATCH, "watch" if watch_on else "watch_off", Vector2(0.395 if _state.get("hand_lock_available", false) else 0.465, 0.10), 0.06, true,
 			I18n.t("Show a watch on the left wrist in hand tracking") + ": " + I18n.t("On" if watch_on else "Off"))
 		_buttons.back().foreground = UiTheme.color("active_ink") if watch_on else MUTED
 
@@ -617,6 +646,7 @@ func refresh_values() -> void:
 		return
 	_refresh_ms = Time.get_ticks_msec() + VALUES_REFRESH_MS # a fresh state needs no periodic pass
 	_state = state_provider.call() if state_provider.is_valid() else {}
+	refresh_hand_lock_icon(bool(_state.get("hand_locked", false)))
 	_state["bar_transparency"] = bar_transparency
 	if _depth_open and _depth_boost_available() and _state.get("depth_requested", false) and float(_state.get("depth_strength", 0.0)) > DepthStrength.MAX and not _depth_boost:
 		_depth_boost = true
@@ -1840,6 +1870,14 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 		return true
 	return super(hand, origin, direction, tracked)
 
+func cancel_for_hand_lock(hand: String) -> void:
+	# Keep live preview values, but never turn cancellation into a final commit.
+	if _adjust_hand == hand:
+		_adjust_hand = ""
+		_adjust_target = -1
+	if _depth_hand == hand: _depth_hand = ""
+	cancel_pointer(hand)
+
 func cancel_pointer(hand: String) -> void:
 	if has_expanded_library(): expanded_library.cancel_pointer(hand)
 	if _track_drag.get("hand") == hand: _track_drag.clear()
@@ -1926,7 +1964,7 @@ func release_pointer(hand: String, _origin: Vector3, _direction: Vector3, _track
 		_volume_hand = ""
 
 func _bar_key() -> String:
-	return str([_state.get("subtitle_encoding_row", {}), _state.get("audio_play_during_video", false), _state.get("audio_current", ""), _state.get("audio_title", ""), _state.get("audio_paused", true), _state.get("audio_active", false),
+	return str([_state.get("hand_lock_available", false), _state.get("subtitle_encoding_row", {}), _state.get("audio_play_during_video", false), _state.get("audio_current", ""), _state.get("audio_title", ""), _state.get("audio_paused", true), _state.get("audio_active", false),
 		_state.get("narration_voice_kind", "preset"), _state.get("narration_custom_voice", ""), _state.get("narration_personal_voices", []), _state.get("narration_voice_warning", ""), _state.get("narration_preview_status", ""), _state.get("narration_clone_state", {}).get("revision", 0)]) + _base_bar_key()
 
 func _base_bar_key() -> String:
@@ -1947,6 +1985,12 @@ func _supports_half_layouts() -> bool:
 func _supports_native_passthrough() -> bool:
 	return true
 
+func _supports_reuse_last_mode() -> bool:
+	return not _state.get("spatial_video", false) and not _state.has("cast")
+
+func _reuse_mode_title() -> String: return VideoModeDefault.TITLE
+func _reuse_mode_hint() -> String: return VideoModeDefault.HINT
+
 ## Video mode: every projection and stereo layout at once, the current ones lit (no cycling).
 ## Pressing a lit tile again locks that projection and layout for unnamed new files (a lock on
 ## the corner of both); pressing a locked one again unlocks.
@@ -1961,7 +2005,7 @@ func _draw_modes() -> void:
 		locked[MODE_STEREO + (3 if lock.depth and not half_choices else [0, 1, 4, 5, 6][int(lock.layout)])] = true
 	var fisheye := not fixed and int(_state.get("geometry", 0)) == 2
 	var native_control := _supports_native_passthrough()
-	var reuse_control := native_control and not fixed and not _state.has("cast")
+	var reuse_control := _supports_reuse_last_mode()
 	# The lens row sits under the layouts: the panel rises to clear the floating round buttons.
 	var top := 0.61 if fisheye else 0.47
 	if half_choices: top = 0.465 if fisheye else 0.365
@@ -1970,11 +2014,15 @@ func _draw_modes() -> void:
 	var centre_y := (0.44 if fisheye else 0.385) if half_choices else top - (0.07 if fisheye else 0.0)
 	var reuse_y := centre_y - height / 2.0 + 0.042
 	if reuse_control:
+		# Keep the shared footer at the video coordinates, including in the photo picker.
+		var footer_y := (0.44 - 0.33 / 2.0 if fisheye else 0.385 - 0.24 / 2.0) + 0.042
+		var bottom_extension := reuse_y - footer_y
+		height += bottom_extension; centre_y -= bottom_extension / 2.0; reuse_y = footer_y
 		top += 0.09; height += 0.09; centre_y += 0.045
 	if fixed:
 		height += 0.08
 		centre_y += 0.04
-	var panel := _quad(Vector2(1.22 if native_control else 1.06, height), Vector3(0, centre_y, 0.001), Color(PANEL, 0.94), 10)
+	var panel := _quad(Vector2(1.22 if native_control or reuse_control else 1.06, height), Vector3(0, centre_y, 0.001), Color(PANEL, 0.94), 10)
 	_pointer_panels.append(panel)
 	panel.material_override.set_shader_parameter("corner_radius", 0.04)
 	add_child(panel)
@@ -2033,7 +2081,7 @@ func _draw_reuse_mode(y: float) -> void:
 	var button: Dictionary = _buttons.back()
 	button.base_color = Color(TILE, 0.0)
 	var caption: Label3D = button.node.get_child(0)
-	caption.text = _fit_title(I18n.t(VideoModeDefault.TITLE), "", 0.9, TEXT_BODY)
+	caption.text = _fit_title(I18n.t(_reuse_mode_title()), "", 0.9, TEXT_BODY)
 	caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	caption.position.x = 0.39 # Fixed gap before the switch; longer translations extend left.
 	set_label_size(caption, TEXT_BODY)
@@ -2043,7 +2091,7 @@ func _draw_reuse_mode(y: float) -> void:
 	var knob := _quad(Vector2(0.028, 0.028), Vector3(0.024 if on else -0.024, 0, 0.002), ACCENT if on else MUTED, 14)
 	knob.material_override.set_shader_parameter("corner_radius", 0.014)
 	rail.add_child(knob)
-	_tips[MODE_REUSE] = I18n.t(VideoModeDefault.HINT)
+	_tips[MODE_REUSE] = I18n.t(_reuse_mode_hint())
 
 func _draw_native_passthrough(centre: Vector2) -> void:
 	_decoration(Vector2(0.002, 0.08), Vector2(0.265, centre.y), Color(MUTED, 0.35))
@@ -2096,7 +2144,7 @@ func _draw_panel() -> void:
 	var tile_rows := ceili(tiles.size() / 2.0)
 	var alpha_fps: bool = section == 1 and _enabled("alpha")
 	var depth_position_setting: bool = section == 1 and _cast_allowed(DepthPosition.KEY)
-	var height := 0.12 + tile_rows * 0.105 + (0.430 + ((0.085 + (0.27 if _alpha_expanded else 0.0)) if alpha_fps else 0.0) if section == 1 else 0.36)
+	var height := 0.12 + tile_rows * 0.105 + (0.430 + ((0.085 + (0.355 if _alpha_expanded else 0.0)) if alpha_fps else 0.0) if section == 1 else 0.36)
 	if depth_position_setting: height += 0.085
 	if alpha_fps and _alpha_expanded and _state.get("portrait_requested", false): height += 0.17
 	if alpha_fps and _state.get("flat_passthrough_requested", false): height += 0.17
@@ -2163,6 +2211,12 @@ func _draw_panel() -> void:
 			_adjustment_row(455, "alpha_feather", "Alpha feather", Vector3(0, 100, 1), y)
 			y -= 0.085
 			_adjustment_row(456, "alpha_shrink", "Alpha edge shrink", Vector3(0, 100, 1), y)
+			y -= 0.085
+			var interpolation := _label(I18n.t("Cut-out interpolation"), Vector3(-0.50, y, 0.004), TEXT_BODY)
+			interpolation.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+			choices.field(null, {"key": "alpha_mask_blend", "value": _state.get("alpha_mask_blend", true),
+				"choices": [{"value": false, "label": "Off", "hint": preload("res://scripts/alpha_edge.gd").MASK_BLEND_OFF_HINT},
+					{"value": true, "label": "On", "hint": preload("res://scripts/alpha_edge.gd").MASK_BLEND_ON_HINT}]}, Vector2(0.21, y), 0.46, 0.05)
 			if _state.get("portrait_requested", false):
 				y -= 0.085
 				var anchor := _label(I18n.t("Automatic distance"), Vector3(-0.50, y, 0.004), TEXT_BODY)
@@ -2205,7 +2259,8 @@ func _draw_failure_panel() -> void:
 	_error_identity = identity
 	var summary := _info_text()
 	var detail := PlaybackErrors.details(_state.get("error_report", {}))
-	var button_offset := 0.14 + _error_text_height(summary, 19) + 0.058
+	var takeover := bool(_state.get("usb_takeover_offer", false))
+	var button_offset := 0.14 + _error_text_height(summary, 19) + 0.058 + (0.075 if takeover else 0.0)
 	var detail_offset := button_offset + 0.058
 	var height := detail_offset + _error_text_height(detail, 14) + 0.055 if _error_details_open else button_offset + 0.093
 	var top := _settings_frame(height)
@@ -2216,6 +2271,8 @@ func _draw_failure_panel() -> void:
 	_info.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	_info.width = 0.98 / _info.pixel_size
 	_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	if takeover:
+		_button(USB_TAKEOVER, I18n.t("Open directly"), Vector2(0, top - button_offset + 0.075), Vector2(0.98, 0.065), true, "usb", true)
 	_button(ERROR_DETAILS, I18n.t("Error details") + ("  ▾" if _error_details_open else "  ▸"), Vector2(0, top - button_offset), Vector2(0.98, 0.065))
 	if _error_details_open:
 		var info := _label(detail, Vector3(-0.49, top - detail_offset, 0.004), 14)
@@ -2257,7 +2314,7 @@ func _settings_key() -> String:
 		_state.get("screen_edit_locked", false), _state.get("screen_default_locked", false), _state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("screen_scene_curve", true), _state.get("cinema_lights", "auto"),
 		_state.get("screen_curve_modes_available", false), _state.get("screen_curve_mode", "horizontal"),
 		_state.get("video_aspect_preset", "original"), _state.get("depth_requested", false),
-		_state.get("error", ""), _state.get("error_report", {}), _alpha_expanded])
+		_state.get("error", ""), _state.get("error_report", {}), _state.get("usb_takeover_offer", false), _alpha_expanded])
 
 func _setting_choices(operation: String) -> Dictionary:
 	if not _enabled(operation): return {}
@@ -2382,6 +2439,8 @@ func _activate(target: int) -> void:
 		action_requested.emit("space_lock"); return
 	if target == WATCH:
 		action_requested.emit("wrist_watch_toggle"); return
+	if target == HAND_LOCK:
+		action_requested.emit("hand_lock_toggle"); return
 	if _adjustment == "bar_transparency" and target in [BAR_DONE, SETTINGS_CLOSE, 400]:
 		_finish_adjustment(); _adjustment = ""; adjustment_committed.emit()
 		action_requested.emit("bar_appearance_done"); refresh(); return
@@ -2422,6 +2481,9 @@ func _activate(target: int) -> void:
 	if target == SETTINGS_CLOSE and _failure_open:
 		_failure_open = false; _error_details_open = false; refresh()
 		return
+	if target == USB_TAKEOVER and _failure_open and _state.get("usb_takeover_offer", false):
+		_failure_open = false; _error_details_open = false
+		action_requested.emit("usb_takeover"); return
 	if target == ERROR_DETAILS and (_failure_open or section == 2) and not str(_state.get("error", "")).is_empty():
 		_error_details_open = not _error_details_open
 		refresh()
@@ -2571,7 +2633,7 @@ func _activate(target: int) -> void:
 		_mode_open = not _mode_open
 		refresh()
 	elif target == MODE_REUSE:
-		if not _supports_native_passthrough() or _state.get("spatial_video", false) or _state.has("cast"): return
+		if not _supports_reuse_last_mode(): return
 		setting_requested.emit("reuse_last_mode", not bool(_state.get("reuse_last_mode", false)))
 		refresh()
 	elif _lit_modes.has(target):
@@ -2887,7 +2949,7 @@ func _draw_screen_settings() -> void:
 	var spatial_fov: bool = flat and _state.get("spatial_video", false) and _state.get("spatial_metadata", {}).has("horizontal_fov_degrees")
 	var cinema: bool = flat and _state.get("screen_cinema", false)
 	var curve_mode: bool = flat and not cinema and _state.get("screen_curve_modes_available", false)
-	var top := _settings_frame(0.24 + (0.835 if flat else 0.0) + (0.10 if cinema else 0.0) + (0.08 if spatial_fov else 0.0) + (0.09 if curve_mode else 0.0))
+	var top := _settings_frame(0.24 + (0.835 if flat else 0.0) + (0.10 if cinema else 0.0) + (0.08 if spatial_fov else 0.0) + (0.09 if curve_mode else 0.0) + (0.075 if flat and not cinema else 0.0))
 	_draw_settings_tabs(top - 0.055)
 	var y := top - 0.16
 	if flat:
@@ -2948,6 +3010,12 @@ func _draw_screen_settings() -> void:
 		if flat: _tips[452] = I18n.t("Point at the screen's lower-left corner to show the curved arrows; hold either end to keep turning, or drag to rotate, then release to snap to the nearest 90°.")
 		_slider_tick(452, 0, "0°", y)
 		_inline_reset(ROTATION_RESET, "Straighten", "screen_rotation", 0.0, y)
+		if flat:
+			y -= 0.075
+			for index in ROTATION_ANGLES.size():
+				var angle: float = ROTATION_ANGLES[index]
+				_button(ROTATION_PRESET + index, "%+.0f°" % angle if angle in [-90.0, 90.0] else "%.0f°" % angle, Vector2(-0.375 + index * 0.25, y), Vector2(0.235, 0.05))
+				set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
 	else: y += 0.09
 	if spatial_fov:
 		_button(SPATIAL_FOV, I18n.t("Match spatial video capture FOV"), Vector2(0, y - 0.09), Vector2(0.86, 0.055), bool(_state.get("spatial_fov_available", false)))
@@ -3212,6 +3280,9 @@ func _refresh_adjustments() -> void:
 		var size: Vector2 = _state.get("screen_dimensions", Vector2.ZERO)
 		_screen_measurement.text = "%.2f × %.2f m" % [size.x, size.y] if size.x > 0 and size.y > 0 else ""
 	for button in _buttons:
+		if button.target >= ROTATION_PRESET and button.target < ROTATION_PRESET + ROTATION_ANGLES.size():
+			var rotation := float(_state.get("screen_rotation", 0.0))
+			button.base_color = SELECTED if is_zero_approx(wrapf(rotation - ROTATION_ANGLES[button.target - ROTATION_PRESET], -180.0, 180.0)) else TILE
 		if button.target >= SCREEN_PRESET and button.target < SCREEN_PRESET + ScreenPresets.ITEMS.size():
 			button.base_color = SELECTED if _state.get("screen_preset", "") == ScreenPresets.ITEMS[button.target - SCREEN_PRESET].id else TILE
 		if button.target >= SCREEN_EYE_LEVEL and button.target < SCREEN_EYE_LEVEL + EYE_LEVELS.size():
@@ -3324,6 +3395,9 @@ func _activate_adjustment(target: int) -> void:
 		setting_requested.emit("spatial_match_fov", true)
 	elif _adjustment == "screen" and target == ROTATION_RESET:
 		adjustment_requested.emit("screen_rotation", 0.0)
+		adjustment_committed.emit()
+	elif _adjustment == "screen" and target >= ROTATION_PRESET and target < ROTATION_PRESET + ROTATION_ANGLES.size() and _state.get("has_video", false) and int(_state.get("geometry", 0)) == 0 and not _state.get("screen_cinema", false):
+		adjustment_requested.emit("screen_rotation", ROTATION_ANGLES[target - ROTATION_PRESET])
 		adjustment_committed.emit()
 	elif _adjustment == "color_grade":
 		if target >= 410 and target < 410 + Grade.PRESETS.size():

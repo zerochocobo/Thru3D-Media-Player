@@ -7,19 +7,19 @@ const script = fs.readFileSync(path.join(__dirname, '../../main/assets/web-brows
 function fixture(count = 1, blob = true, options = {}) {
   const event = () => { const listeners = []; return { addListener(f) { listeners.push(f); }, fire(value) { listeners.forEach(f => f(value)); } }; };
   const port = () => ({ messages: [], onMessage: event(), onDisconnect: event(), postMessage(m) { this.messages.push(JSON.parse(JSON.stringify(m))); }, disconnect() { this.onDisconnect.fire(); } });
-  const native = port(), network = port(); const timers = []; const events = {}, observers = [], resourceObservers = [];
+  const native = port(), network = port(); const timers = []; const events = {}, observers = [], resourceObservers = [],observedRoots=[];
   const videos = Array.from({ length: count }, (_, i) => ({ currentSrc: blob ? `blob:video-${i}` : 'https://cdn.test/movie.mp4', isConnected: true,
     parentElement: {},
     videoWidth: 3840, videoHeight: 2160, paused: false, ended: false, readyState: 4, currentTime: 3, duration: 100,
     events: {}, closest() { return null; }, addEventListener(name, f) { (this.events[name] ||= []).push(f); },
     emit(name) { (this.events[name] || []).forEach(f => f()); }, pause() { this.paused = true; },
     play() { this.playCalls = (this.playCalls || 0) + 1; if (!options.deferPlay) { this.paused = false; this.emit('play'); } return Promise.resolve(); } }));
-  const document = { nodeType: 9, querySelector: () => options.canonical ? {href: options.canonical} : null, querySelectorAll(s) { return s === 'video' ? videos : s === 'script:not([src])' ? options.scripts || [] : []; }, fullscreenElement: options.fullscreen === false ? null : videos[0] };
+  const document = { nodeType: 9, querySelector: () => options.canonical ? {href: options.canonical} : null, querySelectorAll(s) { return s === 'video' ? videos : s === '*'?options.customHosts||[]:s === 'rbup-video-tv-streaming'?options.shadowHosts||[]:s === 'script:not([src])' ? options.scripts || [] : []; }, fullscreenElement: options.fullscreen === false ? null : videos[0] };
   if(options.siteState)document.defaultView={wrappedJSObject:options.siteState};
   if(options.tencent||options.niconico||options.tiktok||options.dailymotion){document.body={append(node){node.parentElement=this;}};document.createElement=()=>({style:{},dataset:{},remove(){this.parentElement=null;}});}
   const location = { href: options.page || 'https://page.test/watch' }, clock = {now:Date.now()};
   const context = vm.createContext({ document, location, navigator: { userAgent: 'Fixture' }, URL, Date:class extends Date {static now(){return clock.now;}},
-    browser: { runtime: { connectNative: () => native, connect: () => network } }, MutationObserver: class { constructor(callback) { observers.push(callback); } observe() {} disconnect() {} },
+    browser: { runtime: { connectNative: () => native, connect: () => network } }, MutationObserver: class { constructor(callback) { observers.push(callback); } observe(root) {observedRoots.push(root);} disconnect() {} },
     performance: { now: () => 100 }, PerformanceObserver: class {constructor(callback){resourceObservers.push(callback);} observe(){}},
     setTimeout(f) { timers.push(f); }, addEventListener(name, f) { (events[name] ||= []).push(f); } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/bilibili.js'), 'utf8'), context);
@@ -37,7 +37,7 @@ function fixture(count = 1, blob = true, options = {}) {
     controls:(_,choose)=>{selectWeibo=choose;return {sync(){}};},
     binding:(v,requests)=>requests.some(r=>r.kind==='file'&&r.url===v.currentSrc) ? {page:v.publicPage||'https://weibo.com/123456/ABCDE',id:'ABCDE',source:v.currentSrc} : null
   };
-  if(options.iqiyi)context.Thru3DIqiyi={page:()=>({id:'v_current'}),matches:()=>false,
+  if(options.iqiyi)context.Thru3DIqiyi={page:()=>({id:'v_current'}),matches:()=>false,transport:data=>data,
     capture:()=>({ready:true,id:'v_current',revision:'a1',page:location.href,src:videos[0].currentSrc}),
     binding:(video,data)=>video===videos[0]&&video.currentSrc===data.src?data:null,
     restore:(_,video,data,time,play)=>{video.currentTime=time;if(play)video.play();else video.pause();return true;}};
@@ -59,9 +59,11 @@ function fixture(count = 1, blob = true, options = {}) {
     const source='blob:https://geo.dailymotion.com/current',root='https://related.test/current.m3u8';
     video.currentSrc=source;video.getBoundingClientRect=()=>({left:10,top:10,width:800,height:450});
     context.Thru3DDailymotion={frame:value=>value.startsWith('https://geo.dailymotion.com/player/'),
+      documentPage:value=>/^https:\/\/(?:www\.)?dailymotion\.com(?:\/|$)/.test(value||''),
       page:value=>/^https:\/\/www\.dailymotion\.com\/video\/([A-Za-z0-9]+)$/.exec(value||'')?.[1],
       declaration:()=>({id}),read:()=>({id}),binding:(v,requests,doc,live,bodies)=>v===video&&v.currentSrc===source&&requests.some(r=>r.url===root)&&bodies.length===1?{id,page,revision:'a1'}:null};
   }
+  if(options.redbull)context.Thru3DRedBull={documentPage:value=>value.startsWith('https://www.redbull.tv/'),read:()=>null,binding:()=>null};
   vm.runInContext(script, context);
   const flush = () => { for (let n = 0; timers.length && n < 10; n++) timers.splice(0).forEach(f => f()); };
   const report = () => native.messages.filter(m => m.type === 'media').at(-1)?.videos;
@@ -71,10 +73,42 @@ function fixture(count = 1, blob = true, options = {}) {
     const v = {...videos[0], events:{}, nodeType:1, matches:s=>s==='video', querySelectorAll:()=>[], ...values};
     videos.push(v); observers.forEach(f=>f([{addedNodes:[v],removedNodes:[]}])); flush(); return v;
   };
-  flush(); return { videos, native, network, capture, flush, report, location, addVideo, clock, selectWeibo, playButtons,tencent:context.tencent,
+  flush(); return { videos, native, network, capture, flush, report, location, addVideo, clock, selectWeibo, playButtons,tencent:context.tencent,observedRoots,
     resources(entries) { resourceObservers.forEach(f=>f({getEntries:()=>entries})); },
     emit(name,value={}) { (events[name] || []).forEach(f=>f(value)); } };
 }
+
+test('Red Bull discovers a root attached after all initial scans from an existing snapshot',()=>{
+  const host={isConnected:true,shadowRoot:null},f=fixture(1,true,{redbull:true,page:'https://www.redbull.tv/en_US/',shadowHosts:[host]});
+  const late={...f.videos[0],events:{},videoWidth:1280,videoHeight:720},root={nodeType:11,querySelectorAll:s=>s==='video'?[late]:[]};
+  host.shadowRoot=root;f.native.onMessage.fire({action:'snapshot'});f.flush();
+  assert.equal(f.report().filter(v=>v.width===1280).length,1);
+  f.native.onMessage.fire({action:'snapshot'});f.flush();
+  assert.equal(f.observedRoots.filter(v=>v===root).length,1);
+});
+
+test('late Red Bull discovery waits while suspended and resumes without a new page or pointer',()=>{
+  const host={isConnected:true,shadowRoot:null},f=fixture(1,true,{redbull:true,page:'https://www.redbull.tv/en_US/',shadowHosts:[host]});
+  f.native.onMessage.fire({action:'suspend'});f.flush();
+  const late={...f.videos[0],events:{},videoWidth:1280,videoHeight:720},root={nodeType:11,querySelectorAll:s=>s==='video'?[late]:[]};host.shadowRoot=root;
+  f.native.onMessage.fire({action:'snapshot'});f.flush();assert.equal(f.observedRoots.includes(root),false);
+  f.native.onMessage.fire({action:'resume'});f.flush();assert.equal(f.observedRoots.includes(root),true);
+});
+
+test('unrelated documents do not observe a Red Bull-shaped host',()=>{
+  const root={nodeType:11,querySelectorAll:()=>[]},host={isConnected:true,shadowRoot:root};
+  const f=fixture(1,true,{redbull:true,page:'https://other.test/',shadowHosts:[host]});
+  f.native.onMessage.fire({action:'snapshot'});f.flush();assert.equal(f.observedRoots.includes(root),false);
+});
+
+test('existing custom-element discovery still publishes video from a closed shadow root',()=>{
+  const video={currentSrc:'blob:closed',isConnected:true,videoWidth:1280,videoHeight:720,duration:120,currentTime:5,readyState:4,paused:true,
+    addEventListener(){},closest(){return null;},getBoundingClientRect:()=>({left:10,top:10,right:810,bottom:460,width:800,height:450})};
+  const root={nodeType:11,querySelectorAll:s=>s==='video'?[video]:[]},host={localName:'archive-player',openOrClosedShadowRoot:root};
+  const f=fixture(0,true,{customHosts:[host],fullscreen:false});
+  assert.equal(f.report().filter(v=>v.width===1280&&v.duration===120).length,1);
+  assert.equal(f.observedRoots.filter(v=>v===root).length,1);
+});
 
 function dailymotionFixture(owner='https://www.dailymotion.com/video/x5kesuj'){
   const f=fixture(1,true,{page:'https://geo.dailymotion.com/player/official.html',dailymotion:true,playButtons:true,fullscreen:false});
@@ -91,6 +125,14 @@ test('Dailymotion hosted action binds the native parent and accepts only a real 
   assert.equal(f.report()[0].dailymotion_ready,false);assert.equal(f.report()[0].dailymotion_request,0);
   const other=dailymotionFixture('https://www.dailymotion.com/video/another');
   assert.equal(other.report()[0].dailymotion_ready,false);assert.equal(other.playButtons.length,0);
+});
+test('a homepage-preloaded Dailymotion frame observes early media but exposes no Beta until the native parent ID matches',()=>{
+  const f=dailymotionFixture('https://www.dailymotion.com/');assert.equal(f.report()[0].dailymotion_ready,false);assert.equal(f.playButtons.length,0);
+  assert.equal(f.network.messages[0].dailymotion,true);
+  f.native.onMessage.fire({action:'network_policy',dailymotion:true,dailymotion_owner:'https://www.dailymotion.com/video/x5kesuj'});f.flush();
+  assert.equal(f.report()[0].dailymotion_ready,true);assert.ok(f.playButtons.find(b=>b.site==='dailymotion')?.ready);
+  f.native.onMessage.fire({action:'network_policy',dailymotion:true,dailymotion_owner:'https://www.dailymotion.com/video/another'});f.flush();
+  assert.equal(f.report()[0].dailymotion_ready,false);
 });
 test('Dailymotion return rejects stale identity and preserves the paused position until a real page gesture',()=>{
   const f=dailymotionFixture(),v=f.videos[0],message={action:'restore_dailymotion',id:'1',epoch:1,page:'https://www.dailymotion.com/video/x5kesuj',revision:'a1',time:50,play:false};

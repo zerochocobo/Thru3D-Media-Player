@@ -170,7 +170,8 @@ GLuint masked_copy_program() {
 }
 /** Alpha plan B: RVM's packed R8 mask (left | right model eyes) drawn over the whole frame layout into
  * the mask swapchain as (0, 0, 0, m), sampled exactly as video_rvm_pair.gdshader: eye UV -> model UV by
- * rect, nothing outside the model window (ROI), texel centres kept inside the content and this eye. */
+ * rect, nothing outside the model window (ROI), texel centres kept inside the content and this eye.
+ * A frame between two masks shows them mixed by blend (0: the first alone), each through its own window. */
 GLuint mask_program = 0;
 GLuint mask_draw_program() {
     if (mask_program && glIsProgram(mask_program)) return mask_program;
@@ -179,19 +180,24 @@ GLuint mask_draw_program() {
     static const char* fragment = "#version 300 es\n"
         "precision highp float;\n"
         "uniform sampler2D mask; uniform vec4 rect; uniform int frame_layout; uniform vec2 model_size; uniform vec2 target;\n"
+        "uniform sampler2D next_mask; uniform vec4 next_rect; uniform float blend;\n"
         "uniform vec2 edge; // the player's edge feather/shrink: mask values remapped from [edge.x, edge.y] to [0, 1]\n"
         "out vec4 result;\n"
+        "float cutout(sampler2D source, vec4 window, vec2 local, float eye) {\n"
+        "  vec2 model_p = window.xy + local * window.zw;\n"
+        "  if (any(lessThan(model_p, vec2(0.0))) || any(greaterThan(model_p, vec2(1.0)))) return 0.0;\n"
+        "  vec2 first_center = max((ceil(window.xy * model_size - vec2(0.5)) + vec2(0.5)) / model_size, vec2(0.5) / model_size);\n"
+        "  vec2 last_center = min((floor((window.xy + window.zw) * model_size - vec2(0.5)) + vec2(0.5)) / model_size, vec2(1.0) - vec2(0.5) / model_size);\n"
+        "  vec2 p = clamp(model_p, first_center, last_center);\n"
+        "  return clamp((texture(source, vec2((p.x + eye) * 0.5, p.y)).r - edge.x) / max(edge.y - edge.x, 0.001), 0.0, 1.0);\n"
+        "}\n"
         "void main() {\n"
         "  vec2 uv = gl_FragCoord.xy / target; // row 0 is the picture's top, as for every GL picture here\n"
         "  float eye = 0.0; vec2 local = uv;\n"
         "  if (frame_layout == 1) { eye = step(0.5, uv.x); local.x = uv.x * 2.0 - eye; }\n"
         "  else if (frame_layout == 2) { eye = step(0.5, uv.y); local.y = uv.y * 2.0 - eye; }\n"
-        "  vec2 model_p = rect.xy + local * rect.zw;\n"
-        "  if (any(lessThan(model_p, vec2(0.0))) || any(greaterThan(model_p, vec2(1.0)))) { result = vec4(0.0); return; }\n"
-        "  vec2 first_center = max((ceil(rect.xy * model_size - vec2(0.5)) + vec2(0.5)) / model_size, vec2(0.5) / model_size);\n"
-        "  vec2 last_center = min((floor((rect.xy + rect.zw) * model_size - vec2(0.5)) + vec2(0.5)) / model_size, vec2(1.0) - vec2(0.5) / model_size);\n"
-        "  vec2 p = clamp(model_p, first_center, last_center);\n"
-        "  float m = clamp((texture(mask, vec2((p.x + eye) * 0.5, p.y)).r - edge.x) / max(edge.y - edge.x, 0.001), 0.0, 1.0);\n"
+        "  float m = cutout(mask, rect, local, eye);\n"
+        "  if (blend > 0.0) m = mix(m, cutout(next_mask, next_rect, local, eye), blend);\n"
         "  result = vec4(0.0, 0.0, 0.0, m);\n"
         "}\n";
     const GLuint vs = compile(GL_VERTEX_SHADER, vertex), fs = compile(GL_FRAGMENT_SHADER, fragment);
@@ -461,6 +467,12 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_layerCount(JNIEnv*, jclass)
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_VideoLayerNative_colorScaleBias(JNIEnv*, jclass) {
     return thru3d_color_scale_bias_enabled() ? JNI_TRUE : JNI_FALSE;
+}
+
+/** Godot created its instance with XR_QIYU_passthrough (layer_extensions.cpp; diagnostics). */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_qiyuPassthrough(JNIEnv*, jclass) {
+    return thru3d_qiyu_passthrough_enabled() ? JNI_TRUE : JNI_FALSE;
 }
 
 /** The runtime's instance extensions, space separated (diagnostics: which layer features exist). */
@@ -1279,16 +1291,26 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_copyBandMasked(JNIEnv*, jcl
 
 /** Alpha plan B: draws RVM's mask texture (R8, 2 x model width: left | right) into the whole acquired
  * image of [slot] laid out as the video frame (0 mono, 1 side by side, 2 top-bottom); rect maps eye UV
- * to model UV (the pair's model_content_rect). */
+ * to model UV (the pair's model_content_rect). next_mask (0: none) is the following mask with its own
+ * next_rect; blend in (0, 1] mixes it in for a frame between the two. */
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_VideoLayerNative_drawMask(JNIEnv* env, jclass, jint slot, jint mask, jfloatArray rect,
-        jint frame_layout, jint model_width, jint model_height, jfloat edge_low, jfloat edge_high) {
+        jint frame_layout, jint model_width, jint model_height, jfloat edge_low, jfloat edge_high,
+        jint next_mask, jfloatArray next_rect, jfloat blend) {
     std::lock_guard<std::mutex> lock(mutex);
     Picture* target = picture(slot);
     if (!target || !target->acquired || mask <= 0 || !rect || env->GetArrayLength(rect) != 4 || model_width <= 0 || model_height <= 0
         || !glIsTexture(static_cast<GLuint>(mask))) return JNI_FALSE;
     std::array<float, 4> window{}; env->GetFloatArrayRegion(rect, 0, 4, window.data());
     for (float value : window) if (!std::isfinite(value)) return JNI_FALSE;
+    // A second mask that cannot be used leaves the first alone: never a failed draw.
+    std::array<float, 4> next_window = window;
+    bool mixed = next_mask > 0 && next_rect && env->GetArrayLength(next_rect) == 4 && std::isfinite(blend) && blend > 0.0f
+        && glIsTexture(static_cast<GLuint>(next_mask));
+    if (mixed) {
+        env->GetFloatArrayRegion(next_rect, 0, 4, next_window.data());
+        for (float value : next_window) if (!std::isfinite(value)) mixed = false;
+    }
     Picture& p = *target;
     while (glGetError() != GL_NO_ERROR) {}
     GLenum status = GL_FRAMEBUFFER_COMPLETE;
@@ -1311,6 +1333,10 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_drawMask(JNIEnv* env, jclas
             glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(mask)); glBindSampler(0, 0);
             glUniform1i(glGetUniformLocation(program, "mask"), 0);
             glUniform4f(glGetUniformLocation(program, "rect"), window[0], window[1], window[2], window[3]);
+            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(mixed ? next_mask : mask)); glBindSampler(1, 0);
+            glUniform1i(glGetUniformLocation(program, "next_mask"), 1);
+            glUniform4f(glGetUniformLocation(program, "next_rect"), next_window[0], next_window[1], next_window[2], next_window[3]);
+            glUniform1f(glGetUniformLocation(program, "blend"), mixed ? std::min(blend, 1.0f) : 0.0f);
             glUniform1i(glGetUniformLocation(program, "frame_layout"), frame_layout);
             glUniform2f(glGetUniformLocation(program, "model_size"), static_cast<float>(model_width), static_cast<float>(model_height));
             glUniform2f(glGetUniformLocation(program, "target"), static_cast<float>(p.width), static_cast<float>(p.height));

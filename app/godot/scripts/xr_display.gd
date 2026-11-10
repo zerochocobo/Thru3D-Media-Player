@@ -189,9 +189,36 @@ func set_scene_relief(enabled: bool) -> void:
 	if enabled == scene_relief: return
 	scene_relief = enabled
 	_apply_foveation()
-	if xr is OpenXRInterface and xr.is_initialized() and "render_target_size_multiplier" in xr:
-		xr.render_target_size_multiplier = minf(render_scale, relief_max_scale) if enabled else render_scale
+	_apply_render_scale()
 	DiagnosticLog.record("xr_scene_relief", {"enabled": enabled, "render_scale": render_scale, "relief_max_scale": relief_max_scale})
+
+## Keep the reduced eye buffers for the whole layer playback, including menus and seek generations.
+## Changing size on every menu toggle leaked GLES3 targets on Quest; a settle delay alone did not help.
+const LAYER_RELIEF_MAX_SCALE := 0.8
+const LAYER_RELIEF_SETTLE_MS := 1500
+var layer_relief := false
+var _layer_relief_since := -1
+func request_layer_relief(wanted: bool, now_ms: int, retain_for_playback: bool = false) -> void:
+	if layer_relief and retain_for_playback: return
+	if not wanted: _layer_relief_since = -1
+	elif layer_relief: return
+	elif _layer_relief_since < 0: _layer_relief_since = now_ms; return
+	elif now_ms - _layer_relief_since < LAYER_RELIEF_SETTLE_MS: return
+	if wanted == layer_relief: return
+	layer_relief = wanted
+	_apply_render_scale()
+	DiagnosticLog.record("xr_layer_relief", {"enabled": wanted, "scale": effective_render_scale()})
+
+func effective_render_scale() -> float:
+	var scale := render_scale
+	if scene_relief: scale = minf(scale, relief_max_scale)
+	if layer_relief: scale = minf(scale, LAYER_RELIEF_MAX_SCALE)
+	return scale
+
+func _apply_render_scale() -> void:
+	if xr is OpenXRInterface and xr.is_initialized() and "render_target_size_multiplier" in xr:
+		var wanted := effective_render_scale()
+		if not is_equal_approx(xr.render_target_size_multiplier, wanted): xr.render_target_size_multiplier = wanted
 ## Debug A/B only: one of PERFORMANCE_LEVELS' keys.
 var debug_performance_level := ""
 var performance_demand := false
@@ -320,6 +347,7 @@ func capabilities() -> Dictionary:
 		"foveation_level": foveation_level,
 		"render_scale": render_scale,
 		"relief_max_scale": relief_max_scale,
+		"layer_relief": layer_relief,
 		"menu_layers": menu_layers,
 		"browser_layer": browser_layer,
 		# Vendors can shrink the actual render region without changing the allocated eye buffers.

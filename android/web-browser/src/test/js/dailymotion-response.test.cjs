@@ -32,6 +32,13 @@ test('only successful HLS from the owned parent, frame, document and cookie cont
  }
  const h=setup();h.current.parentPage='https://other.test/video/x5kesuj';assert.equal(h.begin().s,undefined);
 });
+test('a player preloaded by the approved homepage can retain its actual bytes before a video ID is selected',()=>{
+  const h=setup();h.current.parentPage='https://www.dailymotion.com/';h.current.enabled=false;h.current.dailymotion=true;
+  const r=h.begin();h.complete(r);assert.equal(h.current.dailymotionBodies.get(root).body,body);
+  for(const parent of ['https://www.dailymotion.com.evil/','https://user@www.dailymotion.com/','https://other.test/']){
+    const other=setup();other.current.parentPage=parent;assert.equal(other.begin().s,undefined);
+  }
+});
 test('oversize, redirects, errors, navigation and timeouts release without altering page bytes',()=>{
  for(const mode of ['oversize','redirect','error','navigation','timeout','cancel']){
   const h=setup(),r=h.begin(),prefix='original-prefix';r.s.ondata({data:Uint8Array.from(Buffer.from(prefix)).buffer});

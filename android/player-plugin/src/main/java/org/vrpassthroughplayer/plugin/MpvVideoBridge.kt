@@ -290,17 +290,17 @@ internal class MpvVideoBridge(
         val inference get() = alpha || depth
         /** Alpha plan B: frames fan out from the layer surface to RVM; masks go to the mask layer. */
         val layerAlpha get() = alpha && host.layer && host.frames != null
-        var nextFanoutNs = 0L // GL thread
+        val cadence = LayerAlphaCadence(LayerAlphaCadence.debugLimit()) // GL thread
         var layerMasks = 0L // GL thread
         var debugTicks = 0L // GL thread
         var audioDelay = 0.0 // seconds MPV delays the audio by: the layer's measured hold for masks
-        /** The fanned-out frame RVM works on (capture time, ns): one at a time, so no frame waits in a queue
-         * while the held video waits for its mask. 0 when none. */
-        var maskInFlightNs = 0L // GL thread
         var maskLatencyMs = 0.0 // GL thread: capture -> mask on the layer, smoothed
         val captureNs = HashMap<Long, Long>() // GL thread: capture time of each Alpha layer token
-        /** GPU copy: finished masks waiting for their frame to be drawn (token to pair), oldest first. */
-        val pendingMasks = ArrayDeque<Pair<Long, JSONObject>>() // GL thread
+        /** GPU copy: finished masks waiting for their frame to be drawn, and the one on the layer. The
+         * memory saver holds no frames for the following mask, so it does not mix them. */
+        val masks = LayerMaskSchedule<JSONObject>() // GL thread
+        val masksMayBlend by lazy { !host.memorySaver && LayerMaskSchedule.debugBlend() }
+        var maskBlends = 0L // GL thread: draws that mixed two masks
         fun accepts(pair: JSONObject) = if (alpha) model?.acceptsPair(pair) == true else depthModel?.acceptsPair(pair) == true
         fun presented(pair: JSONObject) = if (alpha) model?.presented(pair) == true else depthModel?.presented(pair) == true
         @Volatile var roi: RoiController? = null // Alpha only; created with the renderer on the GL thread.
@@ -361,6 +361,8 @@ internal class MpvVideoBridge(
     @Volatile private var alphaFps = RVM_VIDEO_FPS
     /** The player's Alpha edge: mask values remapped from [low, high] to [0, 1] (0, 1: unchanged). */
     @Volatile private var alphaEdge = floatArrayOf(0f, 1f)
+    /** User setting: a frame between two masks mixes them (frames are then held one mask longer). */
+    @Volatile var alphaMaskBlend = true
     fun setAlphaEdge(low: Double, high: Double): Boolean {
         if (!low.isFinite() || !high.isFinite() || low < 0.0 || high > 1.0 || high - low < 0.01) return false
         alphaEdge = floatArrayOf(low.toFloat(), high.toFloat())
@@ -1257,10 +1259,9 @@ internal class MpvVideoBridge(
                 session.host.frames?.hold = session.layerAlpha
                 if (session.layerAlpha) session.host.frames?.releaseStale(HOLD_LIMIT_MS)
                 if (session.layerAlpha) showPresentedMasks(session)
-                if (session.layerAlpha && session.copying == null && session.maskInFlightNs == 0L && session.model?.isReady() == true)
+                if (session.layerAlpha && session.copying == null && session.cadence.hasRoom(System.nanoTime()) &&
+                    session.model?.isReady() == true)
                     captureFanout(session)
-                // A capture whose mask never comes (dropped by the model) frees the slot after a while.
-                if (session.maskInFlightNs != 0L && System.nanoTime() - session.maskInFlightNs > 1_000_000_000L) session.maskInFlightNs = 0L
                 if (System.nanoTime() >= session.host.nextStatusNs) {
                     session.host.nextStatusNs = System.nanoTime()+250_000_000L
                     Trace.beginSection("T3D.mpvStatus")
@@ -1286,7 +1287,8 @@ internal class MpvVideoBridge(
                     session.host.frames?.let { fanout ->
                         status.put(if (fanout is LayerCopy) "layer_copy" else "layer_fanout",
                             fanout.stats().put("masks", session.layerMasks).put("audio_delay", session.audioDelay)
-                            .put("mask_latency_ms", session.maskLatencyMs))
+                            .put("mask_latency_ms", session.maskLatencyMs).put("masks_in_flight", session.cadence.size)
+                            .put("mask_blends", session.maskBlends).put("mask_interval_ms", session.masks.intervalMs))
                     }
                     session.roi?.status()?.forEach { (key, value) -> status.put(key, if (value is List<*>) JSONArray(value) else value) }
                     session.model?.stats()?.forEach { (key, value) -> status.put(key, value) }
@@ -1455,11 +1457,9 @@ internal class MpvVideoBridge(
     /** Alpha plan B: the newest frame fanned out from the layer surface becomes the RVM input, as a decoder
      * capture does in MPV direct mode, at the Alpha rate. Its mask goes to the mask layer (finishUploads). */
     private fun captureFanout(session: Session) {
-        val now = System.nanoTime()
-        if (now < session.nextFanoutNs) return
         val frame = session.host.frames?.take() ?: return
         try {
-            session.nextFanoutNs = now + 1_000_000_000L / alphaFps.coerceAtLeast(1)
+            if (!session.cadence.due(frame.timestampNs, alphaFps)) return
             val width = frame.width; val height = frame.height
             check(!session.stereo || (if (session.topBottom) height else width) % 2 == 0)
             val eyeWidth = if (session.stereo && !session.topBottom) width / 2 else width
@@ -1499,23 +1499,21 @@ internal class MpvVideoBridge(
             if (plan != null) pair.put("roi_window_id", plan.windowId).put("roi_scout", plan.scout).put("roi_zoomed", plan.zoomed)
             session.copying = ticket to token; session.copyingPair = pair
             if (session.captureNs.size > 16) session.captureNs.clear() // tokens the model dropped
-            session.maskInFlightNs = System.nanoTime(); session.captureNs[token] = session.maskInFlightNs
+            val now = System.nanoTime()
+            session.cadence.captured(token, frame.timestampNs, now); session.captureNs[token] = now
         } finally { frame.release() } // the capture's EGLImage holds the buffer now
     }
     /** GPU copy: a finished mask goes up once the copy thread has drawn its frame; of several, the newest
-     * shown (the others are retired). Masks never wait for long: a stalled copy lets them through. */
+     * shown (the others are retired). A frame between two masks shows them mixed (LayerMaskSchedule). */
     private fun showPresentedMasks(session: Session) {
         val presented = session.host.frames?.presented ?: return
-        var latest: Pair<Long, JSONObject>? = null
-        while (session.pendingMasks.isNotEmpty() && (session.pendingMasks.first().second.getLong("frame_id") <= presented ||
-                session.pendingMasks.size > 4)) {
-            latest?.let { retire(session, it.first) }
-            latest = session.pendingMasks.removeFirst()
-        }
-        latest?.let { (token, pair) -> showLayerMask(session, token, pair); retire(session, token) }
+        session.masks.blend = alphaMaskBlend && session.masksMayBlend
+        val shown = session.masks.show(presented) { retire(session, it) } ?: return
+        showLayerMask(session, shown.mask.token, shown.mask.value, shown.next, shown.weight)
     }
-    /** Alpha plan B: the finished mask, drawn over the frame layout into the mask swapchain (slot 2). */
-    private fun showLayerMask(session: Session, token: Long, pair: JSONObject) {
+    /** Alpha plan B: the finished mask, drawn over the frame layout into the mask swapchain (slot 2);
+     * mixed with [next] by [weight] for a frame between the two. */
+    private fun showLayerMask(session: Session, token: Long, pair: JSONObject, next: LayerMaskSchedule.Mask<JSONObject>? = null, weight: Float = 0f) {
         val layout = if (!session.stereo) 0 else if (session.topBottom) 2 else 1
         val width = pair.getInt("width"); val height = pair.getInt("height")
         // An ROI window puts the model's pixels on a small part of the frame: a coarse mask swapchain blurred
@@ -1529,11 +1527,14 @@ internal class MpvVideoBridge(
         try {
             if (!VideoLayerNative.createImage(MASK_SLOT, maskWidth, maskHeight, 1, false) || VideoLayerNative.acquireImage(MASK_SLOT) <= 0) return
             val edge = alphaEdge
+            val nextRect = next?.value?.getJSONArray("model_content_rect")?.let { window -> FloatArray(4) { window.getDouble(it).toFloat() } }
             val drawn = VideoLayerNative.drawMask(MASK_SLOT, RenderBridgeNative.alphaTexture(session.renderer, token), rect, layout,
-                session.dims[0], session.dims[1], edge[0], edge[1])
+                session.dims[0], session.dims[1], edge[0], edge[1],
+                next?.let { RenderBridgeNative.alphaTexture(session.renderer, it.token) } ?: 0, nextRect, weight)
             if (VideoLayerNative.releaseImage(MASK_SLOT, false) && drawn) {
                 VideoLayerNative.maskDrawn()
-                session.layerMasks++
+                // layerMasks stays the count of masks from the model: a mixed draw is the same two again.
+                if (next == null) session.layerMasks++ else session.maskBlends++
                 layerMask = "${session.layerMasks} $maskWidth $maskHeight"
             }
         } finally {
@@ -1669,7 +1670,7 @@ internal class MpvVideoBridge(
     }
     private fun upload(session: Session, pair: JSONObject, left: ByteBuffer, right: ByteBuffer) {
         val token = pair.getLong("slot_token")
-        if (pair.optBoolean("layer_alpha")) session.maskInFlightNs = 0L // the model is free for the next frame
+        if (pair.optBoolean("layer_alpha")) session.cadence.finished(token) // room for the next frame
         check(session.leases.containsKey(token)) { "Alpha color lease unavailable" }
         if (session.depth) check(RenderBridgeNative.limitNear(session.renderer, 0L, session.depthShift))
         if (pair.optString("alpha_transport") == "zero_copy") check(RenderBridgeNative.commitZeroCopyAlpha(session.renderer, token))
@@ -1736,9 +1737,12 @@ internal class MpvVideoBridge(
                 session.captureNs.remove(token)?.let { captured ->
                     val latency = (System.nanoTime() - captured) / 1e6
                     session.maskLatencyMs = if (session.maskLatencyMs == 0.0) latency else session.maskLatencyMs * 0.9 + latency * 0.1
-                    session.host.frames?.maskLatency(session.maskLatencyMs)
                 }
-                if (session.host.frames?.presentsLater == true) session.pendingMasks.addLast(token to upload.pair)
+                if (session.host.frames?.presentsLater == true) {
+                    session.masks.add(token, upload.pair.getLong("frame_id"), upload.pair, System.nanoTime())
+                    if (session.maskLatencyMs > 0.0) session.host.frames?.maskLatency(session.maskLatencyMs,
+                        if (alphaMaskBlend && session.masksMayBlend) session.masks.intervalMs else 0.0)
+                }
                 else { showLayerMask(session, token, upload.pair); retire(session, token) }
                 continue
             }
@@ -1921,6 +1925,7 @@ internal class MpvVideoBridge(
         session.host.layer || (session.renderer > 0 && session.owner == EGL14.eglGetCurrentContext())
     private fun retire(session: Session, token: Long) {
         check(!session.display.owns(token)) { "Cannot retire a Godot display claim" }
+        session.cadence.finished(token) // a capture the model dropped frees its room at once
         val lease = session.leases.remove(token) ?: return
         session.pairs.remove(token)
         session.buffers.release(lease.left, lease.right)

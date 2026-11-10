@@ -21,6 +21,7 @@ func row(y: float) -> void:
 
 func protected_target(target: int) -> bool:
 	if target in [menu.SCREEN_SET_DEFAULT, menu.SCREEN_AUTO_DEFAULT, SAVE, menu.SCREEN_CINEMA, menu.SCREEN_CINEMA_OFF, menu.ROTATION_RESET, menu.SPATIAL_FOV]: return true
+	if target >= menu.ROTATION_PRESET and target < menu.ROTATION_PRESET + menu.ROTATION_ANGLES.size(): return true
 	if target >= menu.SCREEN_PRESET and target < menu.SCREEN_PRESET + menu.ScreenPresets.ITEMS.size(): return true
 	if target >= menu.SCREEN_EYE_LEVEL and target < menu.SCREEN_EYE_LEVEL + menu.EYE_LEVELS.size(): return true
 	if menu._adjust_rows.has(target): return menu._adjust_rows[target].key in Guard.KEYS

@@ -20,6 +20,8 @@ const HandPointer := preload("res://scripts/hand_pointer.gd")
 const InputVisuals := preload("res://scripts/input_visuals.gd")
 const ControllerFeedback := preload("res://scripts/controller_feedback.gd")
 const WristWatch := preload("res://scripts/wrist_watch.gd")
+const ViewingHandLock := preload("res://scripts/viewing_hand_lock.gd")
+var hand_lock := ViewingHandLock.new(self)
 ## Hand-tracking wrist watch; the control bar's watch toggle (watch/enabled) turns it off.
 var wrist_watch: Node3D
 var _watch_owned := false
@@ -447,6 +449,9 @@ func _ready() -> void:
 	photo.depth_position = photo.DepthPosition.load_value(settings, true)
 	photo.auto_depth = bool(settings.get_value("effects", "auto_3d", true))
 	photo.load_mode_lock(settings.get_value("photo", "mode_lock", {}))
+	photo.load_last_mode_preferences(settings)
+	photo.last_mode_changed.connect(_on_last_photo_mode_changed)
+	photo.reuse_last_mode_changed.connect(_on_reuse_last_photo_mode_changed)
 	photo.catalog = video.recent_files
 	photo.history_enabled = video.history_enabled
 	photo.changed.connect(_on_photo_changed)
@@ -516,6 +521,8 @@ func _ready() -> void:
 		_apply_memory_mode(plugin)
 		if PlatformMethods.supports(plugin, "set_mpv_alpha_fps"):
 			plugin.set_mpv_alpha_fps(_alpha_fps())
+		if PlatformMethods.supports(plugin, "set_mpv_alpha_mask_blend"):
+			plugin.set_mpv_alpha_mask_blend(_alpha_mask_blend())
 		if PlatformMethods.supports(plugin, "set_rvm_fp32"):
 			plugin.set_rvm_fp32(Quality.alpha_fp32(Quality.load_alpha_precision(settings)))
 		if PlatformMethods.supports(plugin, "set_depth_render_mode"):
@@ -600,6 +607,7 @@ func _ready() -> void:
 	screen_rotation_control = ScreenRotationControl.new(); add_child(screen_rotation_control)
 	menu_composition.register_companion(screen_rotation_control)
 	screen_edit_lock.setup()
+	hand_lock.setup()
 	mono_menu_capture = MonoMenuCapture.new(); add_child(mono_menu_capture)
 	mono_menu_capture.configure(camera, menu_composition, _mono_playback_menu, low_end_gpu)
 	background = Background.new()
@@ -825,6 +833,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 # Menus are ray + trigger only. A list row clicks on release unless the ray dragged to scroll.
 # Video triggers select controls or resize flat corners; grips move pictures. Photo/hand dragging is separate.
 func _on_controller_release(action: String, hand: String = "") -> void:
+	if hand_lock.blocked(hand):
+		controller_bindings.cancel_hand(hand); return
 	if action == "trigger_click" and _beach_prop_release(hand):
 		controller_bindings.release(hand,action); return
 	if action in ["trigger_click", "grip_click"] and beach_environment and beach_environment.scene_held(hand) and beach_environment.scene_input_matches(action) and beach_environment.scene_release(hand):
@@ -883,6 +893,7 @@ func _finish_interface_move() -> void:
 	interface_move.cancel(); stick_controls.suspend()
 
 func _on_pointer_release(action: String, hand: String) -> void:
+	if hand_lock.blocked(hand) or (action == "trigger_click" and hand_lock.release(hand)): return
 	if action == "trigger_click" and _beach_prop_release(hand): return
 	if action == "trigger_click" and beach_environment and beach_environment.scene_held(hand) and beach_environment.scene_input_matches(action) and beach_environment.scene_release(hand):
 		_vr_release_guard.erase(hand); stick_controls.suspend(); return
@@ -944,6 +955,7 @@ func _on_pointer_release(action: String, hand: String) -> void:
 		ray[1] if ray != null else Vector3.ZERO, ray != null)
 
 func _on_controller_button(action: String, hand: String = "") -> void:
+	if hand_lock.blocked(hand): return
 	if hand not in ControllerBindings.HANDS or not _controller_allowed(hand): return
 	if ChineseInput.active():
 		if action == "menu_button" or (action in ControllerBindings.BUTTONS and controller_bindings.press(hand, action)):
@@ -1213,6 +1225,7 @@ func _is_chord(id: String, hand: String, input: String) -> bool:
 	return controller_bindings.bindings(id).any(func(binding): return binding.hand == hand and binding.input == input and not binding.modifiers.is_empty() and binding.modifiers.all(func(mod): return controller_bindings.down[hand].has(mod)))
 
 func _move_pose(hand: String) -> Variant:
+	if hand_lock.blocked(hand): return null
 	var controller: XRController3D = left_controller if hand == "left_hand" else right_controller
 	return controller.global_transform if controller and controller.get_is_active() and controller.get_has_tracking_data() and _controller_allowed(hand) else null
 
@@ -1363,6 +1376,7 @@ func _update_interface_move() -> void:
 			photo._update_inspect()
 
 func _on_pointer_button(action: String, hand: String) -> void:
+	if hand_lock.press(action, hand): return
 	if ChineseInput.active():
 		if action == "trigger_click": _update_menu_pointer(hand, true)
 		elif action in ["by_button", "menu_button"]: ChineseInput.popup.navigate_back()
@@ -1480,6 +1494,7 @@ func _on_system_recentered() -> void:
 var subtitle_tasks: RefCounted
 
 func _process(delta: float) -> void:
+	hand_lock.sync_context()
 	preload("res://scripts/session_usage.gd").suspend("xr", not _input_focused())
 	_tick_photo_autoplay(delta)
 	if subtitle_tasks: subtitle_tasks.tick()
@@ -1616,6 +1631,13 @@ func _sync_display_policy() -> void:
 	# The cinema hall renders in the eye buffers: lighten it while playback runs above 90 Hz.
 	# The beach fills the whole view at every rate: 11.8 -> 9.0 ms from the centre lounger at night.
 	display.set_scene_relief(_cinema_scene_active() and not photo_active and (display.refresh_preference > 90.5 or _beach_active()))
+	# Menus keep the playback scale. A seek replaces the processing generation and briefly loses
+	# its playing/layer-ready state; retain the scale while that layer playback is still open.
+	# Repeated live OpenXR resizing retains GLES3 targets on Quest (2026-11-10 device regression).
+	var layer_playback: bool = video != null and not photo_active and not _vr_passthrough_active() \
+		and video.media.session_id > 0 and video.media.state not in ["closed", "failed"] \
+		and video.layer_capable() and not _cinema_scene_active() and display.scenery == null and not video.pip.active()
+	display.request_layer_relief(layer_playback and playing and video.video_layer_shown, now, layer_playback)
 	_sample_playback_diagnostics(playing and video.media.state == "playing")
 
 ## Once a second: playback windows for the exported log (see playback_diagnostics.gd).
@@ -1645,6 +1667,8 @@ func _playback_diagnostic_sample() -> Dictionary:
 		"inference": video.alpha_requested or video.depth_requested}
 
 func _process_sticks(left: Vector2, right: Vector2, delta: float) -> void:
+	if hand_lock.blocked("left_hand"): left = Vector2.ZERO
+	if hand_lock.blocked("right_hand"): right = Vector2.ZERO
 	if is_instance_valid(airplay_session) and airplay_session.pip.capturing():
 		airplay_session.adjust_distance(left, right, delta)
 		stick_controls.suspend(); return
@@ -1916,17 +1940,22 @@ func _update_hand_input(delta: float) -> void:
 				if hand_pose==null and sample.get("source")=="hand": hand_pose=sample.get("pose")
 		var event: Dictionary = hand_pointers[hand].update(sample, delta)
 		if event.cancelled: _cancel_pointer(hand)
-		if event.menu and hand == "left_hand" and controller_bindings.allows_picture_pinch(hand): _on_pointer_button("menu_button", hand)
 		var pointer: RefCounted = hand_pointers[hand]
 		inputs[hand] = event.merged({"source": pointer.source, "tracked": pointer.ray != null,
+			"sample_valid": sample.get("ray") != null,
 			"down": pointer.down, "position": point, "palm": palm, "pose": hand_pose,"reference_position":reference_position})
 		if hand_marks.has(hand):
 			var mark: MeshInstance3D = hand_marks[hand]
-			mark.visible = pointer.source == "hand" and pointer.ray != null and _input_feedback_visible()
+			mark.visible = pointer.source == "hand" and pointer.ray != null and _input_feedback_visible() and not hand_lock.blocked(hand)
 			if mark.visible:
 				# Joint rays start at the knuckle; the mark stays between the pinching fingers.
 				mark.global_position = point if point != null and pointer.provider == "joints" else pointer.ray[0]
 				mark.scale = Vector3.ONE * XRServer.world_scale * (0.65 if pointer.down else 1.0)
+	inputs = hand_lock.filter(inputs, delta)
+	for hand in hand_marks:
+		if hand_lock.blocked(hand): hand_marks[hand].visible = false
+	for hand in inputs:
+		if inputs[hand].get("menu", false) and hand == "left_hand" and controller_bindings.allows_picture_pinch(hand): _on_pointer_button("menu_button", hand)
 	_dispatch_hand_input(inputs, delta)
 
 # --- wrist watch -----------------------------------------------------------------------------
@@ -1941,13 +1970,16 @@ func _update_wrist_watch(delta: float) -> void:
 	var enabled: bool = video != null and not photo_active and _has_open_media() and _input_focused() and xr_camera != null \
 		and _head_tracked() and not (puzzle_game and puzzle_game.active) and interface_move.capture.is_empty() \
 		and (_active_menu() == null or _active_menu() == player_menu) and not _menu_captured(_active_menu()) \
-		and _watch_enabled()
+		and _watch_enabled() and hand_lock.watch_allowed()
 	var frame := {"enabled": enabled}
 	if enabled:
 		frame.head = xr_camera.global_transform
 		frame.wrist = _watch_wrist()
 		frame.tip = _watch_tip()
 		if wrist_watch.visible or frame.wrist != null: frame.media = _watch_media()
+		if not frame.has("media"): frame.media = {}
+		frame.media["hand_lock_available"] = hand_lock.context()
+		frame.media["hand_locked"] = hand_lock.effective()
 	var actions: Array[Dictionary] = wrist_watch.step(frame, delta)
 	var owned: bool = wrist_watch.owns_tip()
 	if owned and not _watch_owned: _cancel_pointer("right_hand")
@@ -2031,6 +2063,9 @@ func _watch_media() -> Dictionary:
 		"bookmarks": video.bookmarks_snapshot().get("bookmarks", [])}
 
 func _apply_watch_action(action: Dictionary) -> void:
+	if action.get("op", "") == "hand_lock":
+		hand_lock.set_locked(bool(action.locked), "watch"); return
+	if hand_lock.effective(): return
 	if _vr_passthrough_active(): return
 	var op := str(action.get("op", ""))
 	match op:
@@ -2145,6 +2180,7 @@ func _cancel_pointer(hand: String) -> void:
 		if is_instance_valid(menu) and menu.has_method("cancel_pointer"): menu.cancel_pointer(hand)
 
 func _on_input_session_changed() -> void:
+	if not _input_focused(): hand_lock.cancel_candidates()
 	immersive_sticks.suspend()
 	immersive_sticks.clear_feedback()
 	_finish_immersive_adjustment()
@@ -2306,6 +2342,7 @@ func _eye() -> Vector3:
 	return Vector3(0, 1.6, 0)
 
 func _ray(hand: String) -> Variant:
+	if hand_lock.blocked(hand): return null
 	if not _input_focused(): return null
 	if hand == "mouse":
 		if _screen_rotation_mouse_position == null or not _viewer() or not is_instance_valid(_viewer().view_camera): return null
@@ -2407,7 +2444,9 @@ func _update_controller_feedback(delta: float) -> void:
 		var watching: bool = wrist_watch != null and wrist_watch.visible
 		if watching:
 			for hand in ["left_hand", "right_hand"]: alphas[hand] = 1.0
-		input_visuals.update_visibility(focused, alphas, feedback_visible or watching)
+		var hidden_hands := {}
+		for hand in ["left_hand", "right_hand"]: hidden_hands[hand] = hand_lock.blocked(hand)
+		input_visuals.update_visibility(focused, alphas, feedback_visible or watching, hidden_hands)
 
 func _menu_pointer_owned(menu: Node3D, hand: String) -> bool:
 	if menu == null: return false
@@ -2907,6 +2946,7 @@ func _on_pip_zoom_changed(slot: int, zoom: float) -> void:
 	settings.save(settings_path)
 
 func _pip_pointer_press(action: String, hand: String) -> bool:
+	if hand_lock.blocked(hand): return false
 	if is_instance_valid(airplay_session) and airplay_session.press(hand, action): stick_controls.suspend(); return true
 	if photo_active or not video or not video.get("pip") or not video.pip.active() or not _input_focused(): return false
 	if not _grab.is_empty() or not interface_move.capture.is_empty(): return false
@@ -3436,6 +3476,9 @@ func _tick_photo_autoplay(delta: float) -> void:
 	photo.autoplay.tick(photo, delta, blocked)
 
 func _on_photo_adjustment(key: String, value: Variant) -> void:
+	if key == "reuse_last_mode":
+		if value is bool: photo.set_reuse_last_mode(value)
+		return
 	if key == "autoplay_interval":
 		if photo.autoplay.set_interval(value): photo.changed.emit()
 		settings.set_value("photo", key, photo.autoplay.interval)
@@ -4300,7 +4343,7 @@ func _library_settings() -> Dictionary:
 		"alpha_keep_background": _alpha_keep_background(),
 		"alpha_auto_from_filename": video.auto_passthrough_from_filename,
 		"alpha_cold": video.ALPHA_PROFILES.filter(func(p): return not video.profile_ready(p)),
-		"alpha_feather": _alpha_edge_value("alpha_feather"), "alpha_shrink": _alpha_edge_value("alpha_shrink"),
+		"alpha_feather": _alpha_edge_value("alpha_feather"), "alpha_shrink": _alpha_edge_value("alpha_shrink"), "alpha_mask_blend": _alpha_mask_blend(),
 		"show_status_info": bool(settings.get_value("ui", "show_status_info", true)),
 		"show_fps": fps_overlay != null and fps_overlay.visible,
 		"display_quality": display_quality, "display_quality_pending": not is_equal_approx(display.render_scale, Quality.render_scale(display_quality, low_end_gpu)),
@@ -4542,6 +4585,13 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 		"alpha_feather", "alpha_shrink":
 			_apply_alpha_edge(key, value)
 			settings.save(settings_path)
+		"alpha_mask_blend":
+			settings.set_value("video", "alpha_mask_blend", bool(value))
+			settings.save(settings_path)
+			if PlatformMethods.supports(platform_plugin, "set_mpv_alpha_mask_blend"):
+				platform_plugin.set_mpv_alpha_mask_blend(_alpha_mask_blend())
+			for menu in [recent_menu, player_menu]:
+				if is_instance_valid(menu) and menu.visible: menu.refresh()
 		"portrait_auto": video.set_portrait_auto(bool(value))
 		"portrait_enhanced": video.set_portrait_enhanced(bool(value))
 		"show_status_info":
@@ -4679,7 +4729,12 @@ func _on_menu_action(operation: String) -> void:
 		return
 	if operation == "space_lock": _toggle_controls_lock(); return
 	if operation == "wrist_watch_toggle": _toggle_wrist_watch(); return
+	if operation == "hand_lock_toggle": hand_lock.set_locked(not hand_lock.locked); return
 	if operation == "bar_appearance_done": _finish_bar_appearance(); return
+	if operation == "usb_takeover" and not photo_active and _usb_takeover_offer():
+		_close_current_media(false)
+		if recent_menu is LibraryMenu: recent_menu.open_usb_takeover()
+		return
 	if not photo_active and video and operation in ["capture_screenshot", "capture_record"]:
 		if operation == "capture_screenshot": video.captures.screenshot()
 		else: video.captures.toggle()
@@ -4836,7 +4891,7 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		"subtitle_delay", "secondary_subtitle_delay":
 			if value is Dictionary and not video.commit_subtitle_delay(float(value.value), str(value.source_uri), str(value.get("subtitle_key", "__current__"))):
 				if is_instance_valid(player_menu): player_menu.refresh()
-		"alpha_keep_background", "seek_mode", "depth_render", "video_auto_3d", "depth_text_protection", "subtitle_distance", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line": _on_setting_changed(key, value)
+		"alpha_keep_background", "alpha_mask_blend", "seek_mode", "depth_render", "video_auto_3d", "depth_text_protection", "subtitle_distance", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line": _on_setting_changed(key, value)
 		"viewing_eye": video.set_viewing_eye(int(value))
 		"spatial_auto_disparity": video.set_spatial_auto_disparity(bool(value))
 		"spatial_match_fov":
@@ -4947,6 +5002,14 @@ func _on_last_video_mode_changed(mode: Dictionary) -> void:
 	settings.set_value("video", "last_mode", mode)
 	settings.save(settings_path)
 
+func _on_last_photo_mode_changed(mode: Dictionary) -> void:
+	settings.set_value("photo", "last_mode", mode)
+	settings.save(settings_path)
+
+func _on_reuse_last_photo_mode_changed(enabled: bool) -> void:
+	settings.set_value("photo", "reuse_last_mode", enabled)
+	settings.save(settings_path)
+
 func _on_reuse_last_video_mode_changed(enabled: bool) -> void:
 	settings.set_value("video", "reuse_last_mode", enabled)
 	settings.save(settings_path)
@@ -5033,7 +5096,7 @@ func _menu_state() -> Dictionary:
 		"screen_eye_level": video.cinema.eye_level(video, _eye()),
 		"screen_scale": video.screen_scale * 100.0, "screen_rotation": video.screen_rotation, "playback_speed": video.playback_speed,
 		"video_aspect_preset": video.video_aspect_preset, "video_aspect_factor": video.video_aspect_factor,
-		"alpha_fps": _alpha_fps(), "alpha_feather": _alpha_edge_value("alpha_feather"), "alpha_shrink": _alpha_edge_value("alpha_shrink"),
+		"alpha_fps": _alpha_fps(), "alpha_feather": _alpha_edge_value("alpha_feather"), "alpha_shrink": _alpha_edge_value("alpha_shrink"), "alpha_mask_blend": _alpha_mask_blend(),
 		"alpha_keep_background": _alpha_keep_background(),
 		"show_status_info": bool(settings.get_value("ui", "show_status_info", true)),
 		"show_fps": fps_overlay != null and fps_overlay.visible,
@@ -5069,10 +5132,13 @@ func _menu_state() -> Dictionary:
 		"seek_feedback": seek_feedback.snapshot(),
 		"xr_state": "Desktop preview" if display.preview else display.session_state,
 		"capabilities_available": platform_plugin != null,
-		"error": _menu_error(), "error_report": video.media.error_report if video.picker_error.is_empty() else {}}
+		"error": _menu_error(), "error_report": video.media.error_report if video.picker_error.is_empty() else {},
+		"usb_takeover_offer": _usb_takeover_offer()}
 	result.merge(video.bookmarks_snapshot())
 	if seek_feedback.phase in ["preview", "waiting"]: result["bookmark_ready"] = false
 	result["watch_available"] = wrist_watch != null
+	result["hand_lock_available"] = hand_lock.context()
+	result["hand_locked"] = hand_lock.locked
 	result["depth_render"] = _depth_render_mode()
 	result["video_auto_3d"] = video.default_auto_depth
 	result["reuse_last_mode"] = video.reuse_last_mode
@@ -5124,6 +5190,15 @@ func _menu_error() -> String:
 		"TIMEOUT", "LOCAL_DOCUMENT_TIMEOUT": error = "File access timed out. Try opening again."
 		"UNREADABLE": error = "Unable to read the video. Select another file."
 	return I18n.t(error)
+
+## PICO lists a system-mounted USB disk but its file provider cannot hand files to apps;
+## the app's own USB entry can open the same disk after the user's explicit takeover.
+func _usb_takeover_offer() -> bool:
+	return usb_takeover_offer(OS.has_feature("pico"), video.local_uri, video.picker_error, video.media.error, video.media.error_report)
+
+static func usb_takeover_offer(pico: bool, uri: String, picker_error: String, error: String, report: Dictionary) -> bool:
+	if not pico or not uri.begins_with("content://com.android.externalstorage.documents/"): return false
+	return "LOCAL_DOCUMENT_PROVIDER_FAILED" in [picker_error, error] 		or (picker_error.is_empty() and str(report.get("reason", "")) == "storage_provider_failed")
 
 func _apply_stick_actions(actions: Array[Dictionary], delta: float = 1.0 / 72.0) -> void:
 	var mapped: Array[Dictionary] = actions.filter(func(action): return action.operation == "shortcut")
@@ -5375,6 +5450,7 @@ func _cinema_return_to_playback() -> void:
 	_show_player_menu()
 
 func _cinema_pointer_press(hand: String) -> bool:
+	if hand_lock.blocked(hand): return false
 	if not _cinema_interaction_owns() or _cinema_input_blocked(): return false
 	var ray: Variant = _ray(hand)
 	if ray == null: return false
@@ -5408,6 +5484,7 @@ func _sync_beach_trigger_release(hand: String,pressed: bool) -> void:
 		_on_controller_release("trigger_click",hand)
 
 func _beach_prop_press(hand: String) -> bool:
+	if hand_lock.blocked(hand): return false
 	if not _beach_active() or not _input_focused(): return false
 	if _beach_prop_inputs.has(hand): return true
 	var ray: Variant = _ray(hand)
@@ -5469,6 +5546,9 @@ func _update_beach_handhelds() -> void:
 		var space: Transform3D = xr_origin.global_transform * XRServer.get_reference_frame() if xr_origin else Transform3D.IDENTITY
 		for hand in ControllerBindings.HANDS:
 			var pose: Variant = _move_pose(hand)
+			if hand_lock.blocked(hand):
+				beach_environment.beach.aim_handheld(hand, null, null)
+				continue
 			var tracker := _hand_tracker(hand)
 			if pose == null and xr_origin and HandPointer.is_optical(tracker):
 				pose = HandPointer.grip_pose(tracker, space, XRServer.world_scale)
@@ -5957,7 +6037,8 @@ func _person_passthrough() -> bool:
 
 func _session_controls_state() -> Dictionary:
 	return {"follow": view_follow.enabled, "follow_enabled": not _cinema_scene_active() or photo_active,
-		"passthrough_visible": _active_background() != null and (_active_background().choice != "passthrough" or _vr_video_present()) and display.supports_passthrough(),
+		"passthrough_visible": _active_background() != null and (_active_background().choice != "passthrough" or _vr_video_present()),
+		"passthrough_supported": display.supports_passthrough(),
 		"passthrough": _vr_passthrough_active() if _vr_video_present() and not _person_passthrough() else display.applied_passthrough, "alpha": _person_passthrough(),
 		"cinema_visible": _cinema_scene_active() and not photo_active, "cinema_moving": _cinema_interaction_owns(),
 		"cinema_light_tip": _beach_time_tip() if _beach_active() else _cinema_light_tip(),
@@ -6522,6 +6603,10 @@ func _alpha_edge_value(key: String) -> float:
 	var fallback: float = AlphaEdge.FEATHER_DEFAULT if key == "alpha_feather" else AlphaEdge.SHRINK_DEFAULT
 	var value := float(settings.get_value("video", key, fallback))
 	return clampf(value, 0.0, 100.0) if is_finite(value) else fallback
+
+## A frame between two finished masks mixes them (on by default) or keeps the earlier one.
+func _alpha_mask_blend() -> bool:
+	return bool(settings.get_value("video", "alpha_mask_blend", true))
 
 func _apply_alpha_edge(key: String, value: Variant) -> void:
 	if not is_finite(float(value)): return

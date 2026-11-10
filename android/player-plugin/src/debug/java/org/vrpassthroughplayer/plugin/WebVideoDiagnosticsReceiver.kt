@@ -36,7 +36,7 @@ class WebVideoDiagnosticsReceiver : BroadcastReceiver() {
                     val source = JSONObject(plugin.web_browser_status())
                     val safe = JSONObject()
                     for (key in listOf("engine", "progress", "error", "active", "attached", "playing", "generation",
-                        "detached_through", "needs_surface", "extension", "videos", "tabs", "native_supported", "editing", "session_ready", "tab_id", "navigation", "focused_window", "operation_error", "live_tabs", "network_capture_enabled", "network_capture_available", "bilibili_beta_available", "douyin_beta_available", "weibo_beta_available", "tencent_beta_available", "mango_beta_available", "youku_beta_available", "iqiyi_beta_available", "niconico_beta_available", "twitch_beta_available", "tiktok_beta_available", "instagram_beta_available", "ted_beta_available", "redbull_beta_available", "streamable_beta_available", "archive_beta_available", "odysee_beta_available", "dailymotion_beta_available", "retained_for_playback", "weibo_request", "weibo_selection", "beta_request", "beta_selection", "pause_token", "pause_confirmed")) {
+                        "detached_through", "needs_surface", "extension", "videos", "tabs", "native_supported", "editing", "session_ready", "tab_id", "navigation", "focused_window", "operation_error", "live_tabs", "network_capture_enabled", "network_capture_available", "bilibili_beta_available", "douyin_beta_available", "weibo_beta_available", "tencent_beta_available", "mango_beta_available", "youku_beta_available", "iqiyi_beta_available", "niconico_beta_available", "twitch_beta_available", "tiktok_beta_available", "instagram_beta_available", "ted_beta_available", "redbull_beta_available", "streamable_beta_available", "reddit_beta_available", "naver_beta_available", "archive_beta_available", "odysee_beta_available", "dailymotion_beta_available", "retained_for_playback", "weibo_request", "weibo_selection", "beta_request", "beta_selection", "pause_token", "pause_confirmed")) {
                         if (source.has(key)) safe.put(key, source.get(key))
                     }
                     for (key in listOf("pause_ports", "pause_report_ports", "pause_media_ports", "pause_missing_media_ports", "media_report_age_ms")) {
@@ -44,7 +44,7 @@ class WebVideoDiagnosticsReceiver : BroadcastReceiver() {
                     }
                     safe.put("page", runCatching { WebVideoPage.parse(source.optString("url")).url }.getOrNull()
                         ?: WebVideoDouyinCapture.page(source.optString("url"))?.url
-                        ?: source.optString("url").takeIf { WebBrowserWeibo.document(it) || WebBrowserTencent.document(it) }?.let { java.net.URI(it).let { u -> "${u.scheme}://${u.host}${u.rawPath}" } }.orEmpty())
+                        ?: source.optString("url").takeIf { WebBrowserWeibo.document(it) || WebBrowserTencent.document(it) || WebBrowserTikTok.feed(it) || WebBrowserInstagram.feed(it) || WebBrowserReddit.enabled(it) || WebBrowserNaver.observing(it) }?.let { java.net.URI(it).let { u -> "${u.scheme}://${u.host}${u.rawPath}" } }.orEmpty())
                     val windows = org.json.JSONArray()
                     for (entry in source.optJSONArray("windows")?.let { array -> (0 until array.length()).map { array.getJSONObject(it) } }.orEmpty()) {
                         val item = JSONObject()

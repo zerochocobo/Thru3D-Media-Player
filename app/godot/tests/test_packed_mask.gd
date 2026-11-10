@@ -29,7 +29,7 @@ class Layers extends "res://scripts/video_layer.gd":
 
 class LayerVideo extends "res://scripts/mpv_video_display.gd":
 	var reopens: Array = []
-	func _reopen_on_eye_buffer(position_ms: int) -> void: reopens.append(position_ms)
+	func _reopen_on_eye_buffer(position_ms: int, _trigger: String = "") -> void: reopens.append(position_ms)
 
 func check(value: bool, message: String) -> void:
 	checks += 1

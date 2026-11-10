@@ -6,6 +6,11 @@ import org.json.JSONObject
 /** Official parent detail and its actually rendered hosted player. */
 object WebBrowserDailymotion {
     private const val ENABLED=true // Current detail verified with real button/native/audio/seek/retained return.
+    fun document(value: String): Boolean=runCatching {
+        val u=URI(value)
+        value.length<=8192 && u.scheme=="https" && u.host in setOf("www.dailymotion.com","dailymotion.com") && u.rawUserInfo==null && u.port in setOf(-1,443)
+    }.getOrDefault(false)
+    fun observing(value: String)=ENABLED && document(value)
     fun page(value: String): String?=runCatching {
         val u=URI(value)
         require(value.length<=8192 && u.scheme=="https" && u.host in setOf("www.dailymotion.com","dailymotion.com") && u.rawUserInfo==null && u.port in setOf(-1,443) && u.rawFragment==null)

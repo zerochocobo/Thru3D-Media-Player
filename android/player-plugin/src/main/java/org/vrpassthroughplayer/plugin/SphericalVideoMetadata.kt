@@ -88,6 +88,17 @@ internal object SphericalVideoMetadata {
 
     fun parse(bytes: ByteArray): JSONObject? {
         require(bytes.size <= PREFIX_LIMIT)
+        return parseBounded(bytes)
+    }
+    /** A sparse MP4 probe contains only ftyp and the validated moov, including
+     * large sample tables. Keep the general payload-prefix budget unchanged. */
+    internal fun parseSparseMp4Header(bytes: ByteArray): JSONObject? {
+        require(bytes.size<=WebVideoMp4Header.METADATA_LIMIT+4096)
+        val top=boxes(bytes,0,bytes.size,false)
+        require(top.map{it.type}==listOf("ftyp","moov") && top.last().end==bytes.size)
+        return parseBounded(bytes)
+    }
+    private fun parseBounded(bytes: ByteArray): JSONObject? {
         val s = State()
         if (bytes.size >= 8 && String(bytes, 4, 4, Charsets.US_ASCII) == "ftyp") mp4(bytes, 0, bytes.size, s, 0)
         else if (bytes.size >= 4 && uint(bytes, 0) == 0x1a45dfa3L) webm(bytes, 0, bytes.size, s, 0)

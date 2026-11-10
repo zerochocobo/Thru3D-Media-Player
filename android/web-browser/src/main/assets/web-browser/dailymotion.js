@@ -5,6 +5,7 @@ const Thru3DDailymotion=(()=>{
   const {own,revision,visible}=Thru3DTikTok;
   const address=(value,document=false)=>{try{const u=new URL(value);return typeof value==='string'&&value.length<=(document?8192:16384)&&u.protocol==='https:'&&!u.username&&!u.password&&(document||!u.hash)?u:null;}catch(_){return null;}};
   const transport=value=>{try{const u=new URL(value);if(typeof value!=='string'||value.length>16384||!['http:','https:'].includes(u.protocol)||u.username||u.password)return null;u.hash='';return u.href;}catch(_){return null;}};
+  const documentPage=value=>{const u=address(value,true);return !!u&&!u.port&&['www.dailymotion.com','dailymotion.com'].includes(u.hostname);};
   const page=value=>{
     const u=address(value);if(!u||!['www.dailymotion.com','dailymotion.com'].includes(u.hostname)||u.port)return null;
     return /^\/video\/([A-Za-z0-9]{1,20})\/?$/.exec(u.pathname)?.[1]||null;
@@ -62,5 +63,5 @@ const Thru3DDailymotion=(()=>{
     return {...data,manifests:graph,frame:document.location.href,width:video.videoWidth,height:video.videoHeight,duration:video.duration,
       revision:revision(data.id+'\n'+data.root+'\n'+video.videoWidth+'x'+video.videoHeight+'\n'+data.expected_duration+'\n'+JSON.stringify(graph))};
   };
-  return {address,transport,page,frame,declaration,read,manifests,binding};
+  return {address,transport,documentPage,page,frame,declaration,read,manifests,binding};
 })();

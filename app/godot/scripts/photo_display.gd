@@ -14,6 +14,12 @@ const Info := preload("res://scripts/image_info.gd")
 const Naming := preload("res://scripts/media_naming.gd")
 const Thumbnails := preload("res://scripts/thumbnail_cache.gd")
 const ModeMemory := preload("res://scripts/file_mode_memory.gd")
+const LastMode := preload("res://scripts/photo_mode_default.gd")
+signal last_mode_changed(mode: Dictionary)
+signal reuse_last_mode_changed(enabled: bool)
+var reuse_last_mode := false
+var last_mode := {}
+var _last_mode_dirty := false
 const SHADER := preload("res://shaders/photo.gdshader")
 const PLACEHOLDER_SHADER := preload("res://shaders/photo_placeholder.gdshader")
 const Methods := preload("res://scripts/platform_methods.gd")
@@ -1149,6 +1155,7 @@ func _process(delta: float) -> void:
 	_maybe_start_portrait()
 	_maybe_start_spatial()
 	_process_presentation()
+	_remember_last_mode()
 	if not spatial_requested and not loading and not _presentation_pending and not _transition_active and _reveal_seconds == 0 and (portrait_requested or not gallery.overview()):
 		# The next picture's 3D comes before the GPU copy kept for returning to this one: on 115 comics
 		# that copy took ~2 s (each large upload restarts the settle) and the next spread waited for it.
@@ -1485,6 +1492,9 @@ func _resolved_mode(target: int, info: Dictionary) -> Dictionary:
 		mode.stereo_sbs = int(mode_lock.layout) != 0
 		mode.top_bottom = int(mode_lock.layout) == 2
 		mode.fisheye_fov = int(mode_lock.fisheye_fov)
+	elif saved.is_empty() and reuse_last_mode and not last_mode.is_empty() and not archive_mode \
+		and not stated.has("geometry") and not stated.has("stereo") and not info.get("panorama", false) and not native_stereo:
+		mode = LastMode.resolved(last_mode)
 	return mode
 
 func _requires_depth(target: int, info: Dictionary) -> bool:
@@ -1749,6 +1759,8 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	_accept_timing["decode_ms"] = result.get("decode_ms", 0.0)
 	_accept_timing["spread_encode_ms"] = result.get("spread_encode_ms", 0.0)
 	DiagnosticLog.record("photo_accept_timing", _accept_timing)
+	_last_mode_dirty = reuse_last_mode
+	_remember_last_mode()
 
 func _update_transition() -> void:
 	var fraction := clampf(_transition_time / TRANSITION_SECONDS, 0.0, 1.0)
@@ -1798,6 +1810,7 @@ func _finish_presentation() -> void:
 	_reveal_seconds = 0.0
 	material.set_shader_parameter("reveal_progress", 1.0)
 	material.set_shader_parameter("presentation_opacity", 1.0)
+	_remember_last_mode()
 	changed.emit()
 
 func _process_presentation() -> void:
@@ -1910,6 +1923,8 @@ func set_fisheye_fov(value: int) -> void:
 
 func _remember_mode() -> void:
 	if local_uri.is_empty(): return
+	_last_mode_dirty = reuse_last_mode
+	_remember_last_mode()
 	mode_memory.remember(local_uri, {"geometry": geometry, "stereo_sbs": stereo_sbs, "top_bottom": top_bottom, "swap_eyes": swap_eyes,
 		"fisheye_fov": fisheye_fov, "profile": "320x320", "alpha_requested": false})
 	mode_memory.save()
@@ -1919,10 +1934,42 @@ func current_lock() -> Dictionary:
 		"depth": depth_requested and not stereo_sbs, "fisheye_fov": fisheye_fov}
 
 func toggle_mode_lock() -> void:
+	if reuse_last_mode: set_reuse_last_mode(false)
 	var current := current_lock()
 	mode_lock = {} if mode_lock == current else current
 	mode_lock_changed.emit(mode_lock.duplicate())
 	changed.emit()
+
+func load_last_mode_preferences(settings: ConfigFile) -> void:
+	var enabled: Variant = settings.get_value("photo", "reuse_last_mode", false)
+	reuse_last_mode = enabled is bool and enabled
+	last_mode = LastMode.clean(settings.get_value("photo", "last_mode", {}))
+	if reuse_last_mode: mode_lock = {}
+
+func set_reuse_last_mode(enabled: bool) -> void:
+	if reuse_last_mode == enabled: return
+	reuse_last_mode = enabled
+	_last_mode_dirty = enabled
+	if enabled:
+		_unlock_mode()
+		_remember_last_mode()
+	reuse_last_mode_changed.emit(enabled)
+	changed.emit()
+
+func _remember_last_mode() -> void:
+	if not _last_mode_dirty or not reuse_last_mode or loading or _presentation_pending or _transition_active or _reveal_seconds > 0 \
+		or pending_index >= 0 or _texture == null or _display_request <= 0 or _request != _display_request \
+		or index < 0 or index >= queue.size() or str(queue[index].uri) != local_uri or not error.is_empty() or not panel.visible: return
+	if gallery.mode in [Gallery.Layout.WALL, Gallery.Layout.FRAGMENTS] and (gallery.focus != index or gallery.returning or gallery.progress < 1): return
+	_last_mode_dirty = false
+	# Reading, captured spatial sources and retained frames have their own display rules.
+	if archive_mode or magazine.active() or _metadata.get("native_stereo", false) or queue[index].has("retained_source"): return
+	var current := current_lock()
+	current.swap_eyes = swap_eyes
+	current = LastMode.clean(current)
+	if current.is_empty() or current == last_mode: return
+	last_mode = current
+	last_mode_changed.emit(last_mode.duplicate())
 
 func load_mode_lock(value: Variant) -> void:
 	mode_lock = {}
@@ -2411,7 +2458,7 @@ func snapshot() -> Dictionary:
 		"can_background": can_background(), "background_issue":background_issue(), "panorama_detail_error": panorama_tiles.error,
 		"can_previous": (position > 0) if magazine.active() else queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or position > 0),
 		"can_next": (position >= 0 and magazine.target(1) < queue.size()) if magazine.active() else queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or (position >= 0 and position < queue.size() - 1)),
-		"geometry": geometry, "stereo": stereo_sbs, "top_bottom": top_bottom, "swap_eyes": swap_eyes, "fisheye_fov": fisheye_fov, "mode_lock": mode_lock.duplicate(),
+		"geometry": geometry, "stereo": stereo_sbs, "top_bottom": top_bottom, "swap_eyes": swap_eyes, "fisheye_fov": fisheye_fov, "mode_lock": mode_lock.duplicate(), "reuse_last_mode": reuse_last_mode,
 		"inspect": inspect, "zoom": magnification, "inspect_magnification": inspect_magnification,
 		"screen_distance": screen_distance, "screen_scale": screen_scale, "edge_feather_strength": edge_feather_strength,
 		"portrait_requested": portrait_requested, "portrait_enabled": portrait_enabled, "portrait_available": can_portrait(), "portrait_error": portrait_error,

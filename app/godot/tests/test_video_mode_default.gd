@@ -160,7 +160,7 @@ func _run() -> void:
 			check(menu._mode_open and menu._buttons.filter(func(b): return b.target == Menu.MODE_REUSE)[0].rect == rect, "Toggle keeps popup open and stationary")
 			check(ray_toggle(menu, "right") and video.reuse_last_mode == enabled_before, "Right ray toggles back")
 	var photo := PhotoMenu.new(); root.add_child(photo); photo.set_process(false); photo.visible = true; photo._mode_open = true; photo.refresh()
-	check(not photo._buttons.any(func(b): return b.target == Menu.MODE_REUSE), "Photos keep independent mode controls")
+	check(photo._buttons.any(func(b): return b.target == Menu.MODE_REUSE) and not photo._state.get("reuse_last_mode", false), "Photos expose their own independent default-off preference")
 	photo.free()
 	video._spatial_video = true; menu.refresh()
 	check(not menu._buttons.any(func(b): return b.target == Menu.MODE_REUSE), "Fixed spatial mode hides general default")

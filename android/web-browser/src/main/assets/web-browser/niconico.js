@@ -2,10 +2,15 @@
  * No API replay, signed-URL construction, account lookup or license handling. */
 const Thru3DNiconico = (() => {
   'use strict';
+  // Long VODs contain many signed segment URLs. Keep the master small and use
+  // the existing Native HLS reader's bounded 2 MiB budget for a media playlist.
+  const MASTER_LIMIT=160*1024,LEAF_LIMIT=2*1024*1024;
   const address=value=>{try{if(typeof value!=='string'||value.length>16384)return null;const u=new URL(value);
     return u.protocol==='https:'&&!u.username&&!u.password&&!u.hash?u:null;}catch(_){return null;}};
   const page=value=>{const u=address(value);return u&&!u.port&&u.hostname==='www.nicovideo.jp'?
     /^\/watch\/((?:sm|nm|so)[0-9]{1,20})\/?$/.exec(u.pathname)?.[1]||null:null;};
+  const documentPage=value=>{const u=address(value);return !!u&&!u.port&&u.hostname==='www.nicovideo.jp';};
+  const accessId=value=>{const u=address(value);return u? /^\/v[0-9]+\/watch\/((?:sm|nm|so)[0-9]{1,20})\/access-rights\/hls$/.exec(u.pathname)?.[1]||null:null;};
   const access=(value,document)=>{const u=address(value),id=page(document);
     return !!u&&!!id&&/^\/v[0-9]+\/watch\/((?:sm|nm|so)[0-9]{1,20})\/access-rights\/hls$/.exec(u.pathname)?.[1]===id;};
   const revision=value=>{let h=2166136261;for(let i=0;i<value.length;i++)h=Math.imul(h^value.charCodeAt(i),16777619);return(h>>>0).toString(16);};
@@ -21,7 +26,7 @@ const Thru3DNiconico = (() => {
     return result;
   };
   const target=(base,value)=>{try{return typeof value==='string'&&value.length>0&&!/[\x00-\x20\x7f]/.test(value)?address(new URL(value,base).href)?.href||null:null;}catch(_){return null;}};
-  const lines=body=>typeof body==='string'&&body.length<=160*1024?body.replace(/^\uFEFF/,'').trim().split(/\r?\n/).map(v=>v.trim()):[];
+  const lines=(body,limit=MASTER_LIMIT)=>typeof body==='string'&&body.length<=limit?body.replace(/^\uFEFF/,'').trim().split(/\r?\n/).map(v=>v.trim()):[];
   const master=(body,base)=>{
     const l=lines(body);if(l[0]!=='#EXTM3U'||!address(base)||l.some(v=>/^#EXT-X-(?:SESSION-KEY|DEFINE):/.test(v)))return null;
     const audios=[];
@@ -40,7 +45,7 @@ const Thru3DNiconico = (() => {
     return variants.length>0&&variants.length<=32?{variants,body}:null;
   };
   const leaf=(body,base)=>{
-    const l=lines(body);if(l[0]!=='#EXTM3U'||!address(base)||!l.includes('#EXT-X-ENDLIST')||
+    const l=lines(body,LEAF_LIMIT);if(l[0]!=='#EXTM3U'||!address(base)||!l.includes('#EXT-X-ENDLIST')||
       l.some(v=>/^#EXT-X-(?:STREAM-INF|SESSION-KEY|DEFINE):/.test(v)))return null;
     const resources=[];let duration=0,segments=0;
     for(const v of l){
@@ -83,14 +88,18 @@ const Thru3DNiconico = (() => {
     });
     return ad?null:main;
   };
-  const binding=(video,data,requests,document,live)=>{
+  const binding=(video,data,requests,document,live,dom=globalThis.document)=>{
     if(owner(data,document,live)!==video)return null;
     const record=data.find(d=>d.id===page(document)),observed=new Set(requests.filter(r=>r.kind==='hls').map(r=>r.url)),resources=new Set(requests.filter(r=>r.kind==='segment').map(r=>r.url));
+    if(record.binding==='rendered_player'){
+      const rendered=typeof Thru3DNiconicoPlayer!=='undefined'?Thru3DNiconicoPlayer.declaration(video,dom):null;
+      if(!rendered||rendered.id!==record.id||rendered.page!==document||rendered.root!==record.root)return null;
+    }
     const choices=record.variants.filter(t=>t.width===video.videoWidth&&t.height===video.videoHeight&&Math.abs(t.duration-video.duration)<=.5&&observed.has(record.root)&&observed.has(t.video)&&observed.has(t.audio)&&t.resources.every(url=>resources.has(url)));
     const unique=choices.filter((t,i,a)=>a.findIndex(o=>o.video===t.video&&o.audio===t.audio)===i);if(unique.length!==1)return null;
     const track=unique[0];return {id:record.id,page:document,revision:record.revision,root:record.root,master_playlist:record.master_playlist,video:track.video,audio:track.audio,
       width:video.videoWidth,height:video.videoHeight,duration:video.duration,expected_duration:track.duration,audio_duration:track.audio_duration,
       resources:track.resources,vcodec:track.vcodec,acodec:track.acodec};
   };
-  return {address,page,access,rights,attrs,master,leaf,records,owner,binding,revision};
+  return {address,page,documentPage,accessId,access,rights,attrs,master,leaf,records,visible,owner,binding,revision,MASTER_LIMIT,LEAF_LIMIT};
 })();

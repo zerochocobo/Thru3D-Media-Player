@@ -8,6 +8,45 @@ import java.util.concurrent.TimeUnit
 
 /** Private stdin only. Exercises current HLS discovery and the real production loopback lease. */
 object WebVideoCnDesktopProbe {
+    /** Local failed-file diagnosis only. Fixed box names, lengths and errors;
+     * no addresses, headers, response text or file bytes leave this process. */
+    private fun archiveHeaderShape(uri: java.net.URI,headers: Map<String,String>,prefix: ByteArray,check: () -> Unit): JSONObject {
+        val result=JSONObject();val reads=JSONArray();result.put("reads",reads)
+        val known=setOf("ftyp","moov","mdat","free","skip","wide","sidx","moof","pssh")
+        fun uint(data: ByteArray,at: Int,count: Int): Long {var n=0L;repeat(count){require(n<=Long.MAX_VALUE ushr 8);n=(n shl 8) or (data[at+it].toLong() and 255)};return n}
+        try {RemoteMediaHttp().use {http ->
+            val first=http.open(uri,"bytes=0-15",headers)
+            val total: Long;val finalUri: java.net.URI;val etag: String?
+            try {
+                first.readTimeout=5000;require(first.responseCode==206)
+                total=Regex("bytes 0-15/([0-9]+)").matchEntire(first.getHeaderField("Content-Range").orEmpty())!!.groupValues[1].toLong()
+                finalUri=first.url.toURI();etag=first.getHeaderField("ETag")?.takeIf{!it.startsWith("W/")}
+            }finally{http.release(first)}
+            result.put("file_bytes",total)
+            val inspected=WebVideoMp4Header.inspect(object:Mp4InterleavePolicy.Reader {
+                override val size=total
+                override fun read(offset: Long,length: Int): ByteArray {
+                    check();require(reads.length()<16)
+                    val row=JSONObject().put("offset",offset).put("length",length);reads.put(row)
+                    val connection=http.open(uri,"bytes=$offset-${offset+length-1}",headers)
+                    try {
+                        connection.readTimeout=5000
+                        row.put("status",connection.responseCode)
+                        require(connection.responseCode==206 && connection.url.toURI()==finalUri)
+                        val exact=connection.getHeaderField("Content-Range")=="bytes $offset-${offset+length-1}/$total"
+                        row.put("exact_range",exact);require(exact)
+                        require(etag==null||connection.getHeaderField("ETag")==etag)
+                        val bytes=connection.inputStream.use{it.readNBytes(length+1)};require(bytes.size==length)
+                        if(length==16){val type=String(bytes,4,4,Charsets.US_ASCII);row.put("box",if(type in known)type else "other")
+                            val size32=uint(bytes,0,4);row.put("box_bytes",if(size32==1L)uint(bytes,8,8) else size32)}
+                        return bytes
+                    }finally{http.release(connection)}
+                }
+            },prefix)
+            result.put("header_bytes",inspected.size).put("parsed",WebVideoContainer.parse(inspected)!=null)
+        }}catch(error:Exception){result.put("error_type",error.javaClass.simpleName)}
+        return result
+    }
     private data class Output(val code: Int, val bytes: ByteArray, val diagnostics: JSONObject)
     private fun run(arguments: List<String>, limit: Int = 65536): Output {
         val process = ProcessBuilder(arguments).start()
@@ -59,10 +98,15 @@ object WebVideoCnDesktopProbe {
             val archive=media.optBoolean("archive_ready") && media.optJSONObject("archive")!=null
             val odysee=media.optBoolean("odysee_ready") && media.optJSONObject("odysee")!=null
             val streamable=media.optBoolean("streamable_ready") && media.optJSONObject("streamable")!=null
+            val reddit=media.optBoolean("reddit_ready") && media.optJSONObject("reddit")!=null
+            val naver=media.optBoolean("naver_ready") && media.optJSONObject("naver")!=null
             if(twitch)media.put("twitch_enabled",true).put("capture_identity","desktop-selected")
             if(archive)media.put("archive_enabled",true).put("capture_identity","desktop-selected")
             if(odysee)media.put("odysee_enabled",true).put("capture_identity","desktop-selected")
             if(streamable)media.put("streamable_enabled",true).put("capture_identity","desktop-selected")
+            if(reddit)media.put("reddit_enabled",true).put("capture_identity","desktop-selected")
+            if(naver){media.put("naver_enabled",true).put("capture_identity","desktop-selected")
+                result.put("naver_checks",WebBrowserNaver.diagnostics(media,media.getString("frame")))}
             val tiktok=media.optBoolean("tiktok_ready") && media.optJSONObject("tiktok")!=null
             if(tiktok)media.put("tiktok_enabled",true).put("capture_identity","desktop-selected")
             val instagram=media.optBoolean("instagram_ready") && media.optJSONObject("instagram")!=null
@@ -87,6 +131,8 @@ object WebVideoCnDesktopProbe {
                 else if(archive)WebVideoArchiveCapture.page(media.getString("frame"),media) ?: error("Archive identity unavailable")
                 else if(odysee)WebVideoOdyseeCapture.page(media.getString("frame"),media) ?: error("Odysee identity unavailable")
                 else if(streamable)WebVideoStreamableCapture.page(media.getString("frame"),media) ?: error("Streamable identity unavailable")
+                else if(reddit)WebVideoRedditCapture.page(media.getString("frame"),media) ?: error("Reddit identity unavailable")
+                else if(naver)WebVideoNaverCapture.page(media.getString("frame"),media) ?: error("Naver identity unavailable")
                 else if(tiktok)WebVideoTikTokCapture.page(media.getString("frame"),media) ?: error("TikTok identity unavailable")
                 else if(instagram)WebVideoInstagramCapture.page(media.getString("frame"),media) ?: error("Instagram identity unavailable")
                 else if(ted)WebVideoTedCapture.page(media.getString("frame"),media) ?: error("Ted identity unavailable")
@@ -97,8 +143,8 @@ object WebVideoCnDesktopProbe {
                 else if (mango) WebVideoMangoCapture.page(media.getString("frame"),media) ?: error("Mango identity unavailable")
                 else if (tencent) WebVideoTencentCapture.page(media.getString("frame"),media) ?: error("Tencent identity unavailable")
                 else WebVideoPage.parse(media.getString("frame"))
-            require(page.site in setOf("mgtv","youku","weibo","tencent","iqiyi","douyin","niconico","twitch","tiktok","ted","instagram","dailymotion","redbull","streamable","archive","odysee"))
-            require(!media.optBoolean("protected") && (douyin || weibo || tencent || twitch || streamable || archive || odysee || tiktok || instagram || media.optBoolean("blob")))
+            require(page.site in setOf("mgtv","youku","weibo","tencent","iqiyi","douyin","niconico","twitch","tiktok","ted","instagram","dailymotion","redbull","naver","reddit","streamable","archive","odysee"))
+            require(!media.optBoolean("protected") && (douyin || weibo || tencent || twitch || naver || reddit || streamable || archive || odysee || tiktok || instagram || media.optBoolean("blob")))
             if (douyin) { result.put("bridge_metadata",WebBrowserDouyin.metadata(media,media.getString("frame"),true)!=null);check(result.getBoolean("bridge_metadata")) }
             if (weibo) { result.put("bridge_metadata",WebBrowserWeibo.metadata(media,media.getString("frame"))!=null);check(result.getBoolean("bridge_metadata")) }
             if (tencent) { result.put("bridge_metadata",WebBrowserTencent.metadata(media,media.getString("frame"))!=null);check(result.getBoolean("bridge_metadata")) }
@@ -110,6 +156,10 @@ object WebVideoCnDesktopProbe {
                 result.put("bridge_metadata",WebBrowserTwitch.metadata(media,media.getString("frame"))!=null);check(result.getBoolean("bridge_metadata"))}
             if(streamable){result.put("entry_enabled",WebBrowserStreamable.enabled(media.getString("frame")))
                 result.put("bridge_metadata",WebBrowserStreamable.metadata(media,media.getString("frame"))!=null);check(result.getBoolean("bridge_metadata"))}
+            if(reddit){result.put("entry_enabled",WebBrowserReddit.enabled(media.getString("frame")))
+                result.put("bridge_metadata",WebBrowserReddit.metadata(media,media.getString("frame"))!=null);check(result.getBoolean("bridge_metadata"))}
+            if(naver){result.put("entry_enabled",WebBrowserNaver.enabled(media.getString("frame")))
+                result.put("bridge_metadata",WebBrowserNaver.metadata(media,media.getString("frame"))!=null);check(result.getBoolean("bridge_metadata"))}
             if(archive){result.put("entry_enabled",WebBrowserArchive.enabled(media.getString("frame")))
                 result.put("bridge_metadata",WebBrowserArchive.metadata(media,media.getString("frame"))!=null);check(result.getBoolean("bridge_metadata"))}
             if(odysee){result.put("entry_enabled",WebBrowserOdysee.enabled(media.getString("frame")))
@@ -138,6 +188,8 @@ object WebVideoCnDesktopProbe {
                 try {
                     RemoteMediaHttp().use { http -> WebVideoBrowserResourceReader.read(uri,headers,prefix,http) { check(System.nanoTime()<deadline) } }.also { (_,body) ->
                         item.put("bytes",body.size)
+                        if(archive && prefix && WebVideoContainer.parse(body)==null)
+                            item.put("archive_header_shape",archiveHeaderShape(uri,headers,body){check(System.nanoTime()<deadline)})
                         if(!prefix && body.take(7).toByteArray().toString(Charsets.UTF_8)=="#EXTM3U") {
                             // Tag names only; no attribute values, URLs, hashes or response text.
                             val tags=body.toString(Charsets.UTF_8).lineSequence().filter { it.contains("URI=") }
@@ -172,7 +224,7 @@ object WebVideoCnDesktopProbe {
                         }
                         if(prefix) (WebVideoContainer.parse(body) ?: WebVideoContainer.transportStream(body))?.let {
                             item.put("width",it.width).put("height",it.height).put("video",it.video).put("audio",it.audio)
-                                .put("display_width",it.displayWidth).put("pixel_aspect",it.pixelAspect)
+                                .put("display_width",it.displayWidth).put("pixel_aspect",it.pixelAspect).put("duration",it.duration)
                         }
                     }
                 } catch(error:Exception) {
@@ -210,12 +262,12 @@ object WebVideoCnDesktopProbe {
                     .put("content_duration",data.optDouble("content_duration"))
                     .put("playlist_duration",data.optString("playlist").lineSequence().filter { it.startsWith("#EXTINF:") }.sumOf { it.substringAfter(':').substringBefore(',').toDouble() }))
             }
-            val info=(if(douyin) WebVideoDouyinCapture.resolve(page,media,capture) else if(weibo) WebVideoWeiboCapture.resolve(page,media,capture) else if(tencent) WebVideoTencentCapture.resolve(page,media,capture) else if(mango) WebVideoMangoCapture.resolve(page,media,capture) else if(dailymotion)WebVideoDailymotionCapture.resolve(page,media,capture) else if(ted)WebVideoTedCapture.resolve(page,media,capture) else if(redbull)WebVideoRedBullCapture.resolve(page,media,capture) else if(instagram)WebVideoInstagramCapture.resolve(page,media,capture) else if(tiktok)WebVideoTikTokCapture.resolve(page,media,capture) else if(streamable)WebVideoStreamableCapture.resolve(page,media,capture) else if(odysee)WebVideoOdyseeCapture.resolve(page,media,capture) else if(archive)WebVideoArchiveCapture.resolve(page,media,capture) else if(twitch)WebVideoTwitchCapture.resolve(page,media,capture) else if(niconico)WebVideoNiconicoCapture.resolve(page,media,capture) else if(youku) WebVideoYoukuCapture.resolve(page,media,capture) else if(iqiyi) WebVideoIqiyiCapture.resolve(page,media,capture) else capture.resolveCurrent(page,media)) ?: error("Current stream not bound")
+            val info=(if(douyin) WebVideoDouyinCapture.resolve(page,media,capture) else if(weibo) WebVideoWeiboCapture.resolve(page,media,capture) else if(tencent) WebVideoTencentCapture.resolve(page,media,capture) else if(mango) WebVideoMangoCapture.resolve(page,media,capture) else if(dailymotion)WebVideoDailymotionCapture.resolve(page,media,capture) else if(ted)WebVideoTedCapture.resolve(page,media,capture) else if(redbull)WebVideoRedBullCapture.resolve(page,media,capture) else if(instagram)WebVideoInstagramCapture.resolve(page,media,capture) else if(tiktok)WebVideoTikTokCapture.resolve(page,media,capture) else if(naver)WebVideoNaverCapture.resolve(page,media,capture) else if(reddit)WebVideoRedditCapture.resolve(page,media,capture) else if(streamable)WebVideoStreamableCapture.resolve(page,media,capture) else if(odysee)WebVideoOdyseeCapture.resolve(page,media,capture) else if(archive)WebVideoArchiveCapture.resolve(page,media,capture) else if(twitch)WebVideoTwitchCapture.resolve(page,media,capture) else if(niconico)WebVideoNiconicoCapture.resolve(page,media,capture) else if(youku) WebVideoYoukuCapture.resolve(page,media,capture) else if(iqiyi) WebVideoIqiyiCapture.resolve(page,media,capture) else capture.resolveCurrent(page,media)) ?: error("Current stream not bound")
             val selected=WebVideoFormats.select(page,info){true}
             result.put("site",page.site).put("width",selected.video.width).put("height",selected.video.height)
                 .put("video_codec",selected.video.videoCodec).put("audio_codec",selected.audio?.audioCodec ?: selected.video.audioCodec)
                 .put("transport",selected.video.transport).put("current_size",selected.video.width==media.optInt("width") && selected.video.height==media.optInt("height"))
-            check(result.getBoolean("current_size") && (douyin || weibo || tencent || twitch || streamable || archive || odysee || tiktok || instagram || selected.video.transport=="hls"))
+            check(result.getBoolean("current_size") && (douyin || weibo || tencent || twitch || naver || reddit || streamable || archive || odysee || tiktok || instagram || selected.video.transport=="hls"))
             stage="lease"
             LocalStreamServer().use { server -> WebVideoStreams { server }.use { streams ->
                 val local=streams.prepare(selected)
@@ -235,13 +287,15 @@ object WebVideoCnDesktopProbe {
                 val displayWidth=video.getInt("width").toLong()*numerator/denominator
                 result.put("decoded_display_width",displayWidth)
                 check((if(archive)displayWidth==media.optInt("width").toLong() else video.getInt("width")==media.optInt("width")) && video.getInt("height")==media.optInt("height"))
-                val explicitSilent=instagram && selected.silent && media.getJSONObject("instagram").get("has_audio")==false
+                val redditGif=reddit && media.getJSONObject("reddit").optString("binding")=="rendered_gif" && media.getJSONObject("reddit").opt("declared_gif")==true
+                val explicitSilent=selected.silent && (instagram && media.getJSONObject("instagram").get("has_audio")==false || redditGif)
+                if(reddit)result.put("reddit_gif_file",redditGif)
                 result.put("explicit_silent",explicitSilent).put("audio_absent_verified",explicitSilent && sound==null && audio==null)
                 check(sound!=null || audio!=null || result.getBoolean("audio_absent_verified"))
                 val duration=media.getDouble("duration")
                 // Resource-only iQIYI preflight covers the beginning and tail, separately
                 // from the future real-button resume-position acceptance.
-                val start=if(instagram)media.getJSONObject("instagram").getDouble("start_seconds").coerceIn(0.0,maxOf(0.0,duration-4.0)) else if(iqiyi && media.optLong("iqiyi_request")==0L)0.0 else media.optDouble("time").coerceIn(0.0,maxOf(0.0,duration-4.0))
+                val start=if(instagram || tiktok)media.getJSONObject(if(instagram)"instagram" else "tiktok").getDouble("start_seconds").coerceIn(0.0,maxOf(0.0,duration-4.0)) else if(iqiyi && media.optLong("iqiyi_request")==0L)0.0 else media.optDouble("time").coerceIn(0.0,maxOf(0.0,duration-4.0))
                 if (tencent && selected.video.transport == "hls") {
                     val lines = java.net.URI(local).toURL().openStream().use { it.readNBytes(256*1024) }.toString(Charsets.UTF_8).lines()
                     val parts = ArrayList<Triple<Int,Double,String>>();var position=0.0;var length=0.0
@@ -294,8 +348,9 @@ object WebVideoCnDesktopProbe {
                 val pcm=if(explicitSilent)null else run(listOf("ffmpeg","-v","error","-ss",(soundAt-audioPreroll).toString(),"-i",audio ?: local,"-ss",audioPreroll.toString(),"-t","3","-map","0:a:0","-vn","-ac","2","-ar","48000","-f","s16le","pipe:1"),1024*1024)
                 result.put("audio_samples_48k_stereo",(pcm?.bytes?.size ?: 0)/4).put("audio_nonzero",pcm?.bytes?.any{it!=0.toByte()} ?: false)
                     .put("audio_seconds",soundAt)
-                val seekAt=if(instagram)duration/2 else if(niconico && duration>120)duration/2 else if(douyin && duration>120)duration/2 else if(iqiyi && duration>120)duration-4 else minOf(start+20.0,maxOf(0.0,duration-4.0))
-                stage="seek_decode";result.put("seeked",decode(seekAt)).put("seek_seconds",seekAt).put("seek_distance_seconds",kotlin.math.abs(seekAt-start))
+                val usualSeekAt=if(instagram)duration/2 else if(niconico && duration>120)duration/2 else if(douyin && duration>120)duration/2 else if(iqiyi && duration>120)duration-4 else minOf(start+20.0,maxOf(0.0,duration-4.0))
+                val seekAt=if(kotlin.math.abs(usualSeekAt-start)<.1) { if(start>.1)0.0 else duration/2 } else usualSeekAt
+                stage="seek_decode";result.put("seeked",decode(seekAt,"seek")).put("seek_seconds",seekAt).put("seek_distance_seconds",kotlin.math.abs(seekAt-start))
                 // Check distant tail resources, then actually seek back to the middle
                 // before returning. iQIYI's normal skip-credits action can navigate to
                 // the next episode when a paused HTML video is restored into its outro.

@@ -22,6 +22,13 @@ class WebBrowserDailymotionTest {
         assertTrue(WebBrowserDailymotion.frame(frame));assertFalse(WebBrowserDailymotion.frame(frame.replace("geo.dailymotion.com","geo.dailymotion.com.evil")))
         assertEquals("x5kesuj",WebBrowserDailymotion.page(owner));assertNull(WebBrowserDailymotion.page(owner.replace("dailymotion.com","dailymotion.com.evil")))
     }
+    @Test fun observingTheApprovedHomepageDoesNotAuthorizeANativePlaybackTarget() {
+        val root="https://www.dailymotion.com/"
+        assertTrue(WebBrowserDailymotion.observing(root));assertFalse(WebBrowserDailymotion.enabled(root))
+        assertNull(WebBrowserDailymotion.metadata(media(),root))
+        for(value in listOf("http://www.dailymotion.com/","https://www.dailymotion.com.evil/","https://user@www.dailymotion.com/","https://www.dailymotion.com:8443/"))
+            assertFalse(WebBrowserDailymotion.observing(value))
+    }
     @Test fun protectionDifferentFrameOrTrackCannotBeValidatedByTheParentDomainAlone() {
         for(change in listOf<(JSONObject)->Unit>(
             {it.put("protected",true)},{it.put("frame",frame.replace("geo.dailymotion.com","unrelated.test"))},

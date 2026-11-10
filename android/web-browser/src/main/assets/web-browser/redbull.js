@@ -6,7 +6,7 @@ const Thru3DRedBull=(()=>{
   const address=value=>{try{const u=new URL(value);return typeof value==='string'&&value.length<=16384&&u.protocol==='https:'&&!u.username&&!u.password&&!u.hash?u:null;}catch(_){return null;}};
   const page=value=>{
     const u=address(value);if(!u||value.length>8192||!['www.redbull.tv','redbull.tv'].includes(u.hostname)||u.port)return null;
-    const match=/^\/([a-z]{2}(?:-[A-Z]{2})?)\/page\/(rrn:content:(?:films|videos|episodes):[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(?:\/[a-z0-9-]+)?\/?$/.exec(u.pathname);
+    const match=/^\/([a-z]{2}(?:-[A-Z]{2}|_[A-Z]{2,3})?)\/page\/(?:page:)?(rrn:content:(?:films|videos|episodes):[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(?:\/[a-z0-9-]+)?\/?$/.exec(u.pathname);
     return match?{id:match[2],page:value}:null;
   };
   const documentPage=value=>{try{const u=new URL(value);return typeof value==='string'&&value.length<=8192&&u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&['www.redbull.tv','redbull.tv'].includes(u.hostname);}catch(_){return false;}};

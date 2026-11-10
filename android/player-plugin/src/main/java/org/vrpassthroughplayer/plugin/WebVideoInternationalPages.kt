@@ -74,6 +74,10 @@ internal object WebVideoInternationalPages {
                 ?: error("Choose a Niconico video")
             return page("niconico", id, "https://www.nicovideo.jp/watch/$id")
         }
+        if(host=="m.naver.com" && path=="/shorts/") {
+            val id=WebBrowserNaver.page(uri.toString()) ?: error("Choose a Naver TV video")
+            return page("naver",id,WebBrowserNaver.canonicalPage(uri.toString()) ?: return null)
+        }
         if (host in setOf("tv.naver.com", "m.tv.naver.com", "tvcast.naver.com")) {
             val id = match("/(?:v|embed)/([0-9]+)/?")?.groupValues?.get(1) ?: error("Choose a Naver TV video")
             return page("naver", id, "https://tv.naver.com/v/$id")

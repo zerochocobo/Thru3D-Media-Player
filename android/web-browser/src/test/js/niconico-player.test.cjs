@@ -16,6 +16,23 @@ test('bound rendered SDK receives an absolute position through its own MSE loade
   assert.equal(ctx.sdk.restore(f.video,f.data,f.dom,50,false),true);
   assert.deepEqual(f.calls,['pause',['setCurrentTime',50],'pause']);assert.equal(f.video.currentTime,50);assert.equal(f.video.paused,true);
 });
+test('read-only content declaration uses only the current rendered stage and exact supplied URL',()=>{
+  const f=fixture();f.video.readyState=2;
+  const root='https://related.example/master.m3u8?signature=abc%2Fdef';
+  f.control.getContentURL=()=>root;
+  const d=ctx.sdk.declaration(f.video,f.dom);
+  assert.equal(d.id,'sm9');assert.equal(d.page,f.dom.location.href);assert.equal(d.root,root);
+  assert.deepEqual(f.calls,[],'Reading content must not pause, seek or start playback');
+  for(const change of [g=>{g.video.mediaKeys={};},g=>{g.video.ended=true;},g=>{g.control.stage={};},
+    g=>{g.control.getCurrentTime=()=>90;},g=>{g.control.getContentURL=()=> 'http://related.example/master.m3u8';}]){
+    const g=fixture();g.video.readyState=2;g.control.getContentURL=()=>root;change(g);
+    assert.equal(ctx.sdk.declaration(g.video,g.dom),null);assert.deepEqual(g.calls,[]);
+  }
+});
+test('content read rejects a source replaced synchronously by the facade',()=>{
+  const f=fixture();f.video.readyState=2;f.control.getContentURL=()=>{f.video.currentSrc='blob:https://www.nicovideo.jp/changed';return 'https://related.example/current.m3u8';};
+  assert.equal(ctx.sdk.declaration(f.video,f.dom),null);assert.deepEqual(f.calls,[]);
+});
 test('milliseconds are inferred from the programme duration and failure return may resume deliberately',()=>{
   const f=fixture(1000);assert.equal(ctx.sdk.restore(f.video,f.data,f.dom,50,true),true);
   assert.deepEqual(f.calls,['pause',['setCurrentTime',50000],'play']);assert.equal(f.video.currentTime,50);assert.equal(f.video.paused,false);

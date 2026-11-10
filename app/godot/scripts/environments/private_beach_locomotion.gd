@@ -3,6 +3,27 @@ extends "res://scripts/environments/cinema_locomotion.gd"
 ## Only the floor query and beach arc intersections differ from the auditorium.
 const Terrain := preload("res://scripts/environments/private_beach_navigation.gd")
 var terrain: RefCounted
+const SOURCE_RECOVERY_RADIUS := .75
+var _last_supported_source := Vector3.INF
+var _last_observed_source := Vector3.INF
+
+func observe_source(eye: Vector3) -> void:
+	if terrain==null or not eye.is_finite(): return
+	if _last_observed_source.is_finite() and Vector2(eye.x,eye.z).distance_squared_to(Vector2(_last_observed_source.x,_last_observed_source.z))<.0004: return
+	_last_observed_source=eye
+	var floor := Vector3(eye.x,terrain.ground(eye.x,eye.z),eye.z)
+	if _standing_at(floor,.04).is_finite() and _nav_components.has(_nav_anchor(floor)):
+		_last_supported_source=floor
+
+func _reachable(source: Vector3,target: Vector3) -> bool:
+	if _nav_components.has(_nav_anchor(source)): return super._reachable(source,target)
+	# A tracked head may drift into an obstacle after a valid landing. Keep
+	# its last local component for an explicit teleport, never move the rig
+	# automatically or allow a landing in another disconnected region.
+	if not _last_supported_source.is_finite() or not source.is_finite(): return false
+	if Vector2(source.x,source.z).distance_to(Vector2(_last_supported_source.x,_last_supported_source.z))>SOURCE_RECOVERY_RADIUS: return false
+	if not _standing_at(_last_supported_source,.04).is_finite(): return false
+	return super._reachable(_last_supported_source,target)
 
 static func valid_view_record(view: Dictionary) -> bool:
 	if view.get("schema",0)!=1 or view.get("mode","") not in ["watch","move"]: return false
@@ -39,6 +60,8 @@ func adopt_view(previous: RefCounted,seated := false) -> bool:
 	return true
 
 func configure_beach(description: Dictionary,config: Dictionary,colliders: Array) -> void:
+	_last_supported_source=Vector3.INF
+	_last_observed_source=Vector3.INF
 	terrain=Terrain.new(description,config)
 	var viewer: Dictionary = config.viewer
 	var floor_y: float = terrain.ground(viewer.x,viewer.z)
@@ -119,6 +142,9 @@ func _arc_segment(start: Vector3,end: Vector3) -> Dictionary:
 			for index in _collider_hash.get(Vector2i(x,z),[]): indices[index]=true
 	for index in indices:
 		var box: AABB = _colliders[index].grow(.035)
+		# The controller itself can start inside a virtual obstacle after a
+		# physical lean. Let that arc leave; entry from outside still collides.
+		if box.has_point(start): continue
 		var d := _ray_box(start,direction,box.position,box.end,distance)
 		if d>=0 and d<nearest:
 			nearest=d; result={"kind":"blocked","position":start+direction*d}

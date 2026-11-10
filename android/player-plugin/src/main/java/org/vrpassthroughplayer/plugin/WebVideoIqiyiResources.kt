@@ -16,7 +16,9 @@ internal class WebVideoIqiyiResources(plan: JSONObject,manifest: String) : Close
     private val resolved=HashMap<URI,URI>()
     @Volatile private var closed=false
     init {
-        require(plan.toString().length<=256*1024 && tvid.matches(Regex("[A-Za-z0-9]{1,64}")) && ff in setOf("ts","265ts"))
+        // The bridge stays compact; this is the already-restored internal plan
+        // of at most 2048 exact ranges from a bounded complete declaration.
+        require(plan.toString().length<=1024*1024 && tvid.matches(Regex("[A-Za-z0-9]{1,64}")) && ff in setOf("ts","265ts"))
         require(WebBrowserIqiyi.page(plan.getString("page"))!=null)
         val rows=plan.getJSONArray("files");require(rows.length() in 1..2048)
         files=(0 until rows.length()).map { i ->

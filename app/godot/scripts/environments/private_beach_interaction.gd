@@ -6,6 +6,7 @@ const Beach := preload("res://scripts/environments/private_beach_environment.gd"
 const FilmSampler := preload("res://scripts/environments/cinema_film_light.gd")
 const ScreenEdit := preload("res://scripts/environments/private_beach_screen_edit.gd")
 const BeachMovement := preload("res://scripts/environments/private_beach_locomotion.gd")
+const BeachLog := preload("res://scripts/diagnostic_log.gd")
 signal screen_committed(parameters: Dictionary)
 signal view_committed(view: Dictionary)
 signal hours_committed(hours: float)
@@ -226,6 +227,7 @@ func _sync_tracking() -> void:
 	# the rig itself retains the user's physical height, including crouching.
 	if interaction=="move": head.y=_movement.terrain.ground(head.x,head.z)+Locomotion.EYE_HEIGHT
 	_movement.eye_position=head; _movement.yaw=_head_yaw()
+	_movement.observe_source(head)
 	_movement.selected_seat=""
 	beach.viewer_seated=not seat_id.is_empty()
 
@@ -420,6 +422,23 @@ func update_pointer(hand: String,origin: Vector3,direction: Vector3,valid: bool 
 		return
 	super.update_pointer(hand,origin,direction,valid)
 
+func cancel_for_hand_lock(hand: String) -> void:
+	# Unlike the legacy focus/release path, do not commit a pending scene edit.
+	if not hand.is_empty() and _scene_hand == hand:
+		var kind := _scene_kind
+		_scene_hand = ""; _scene_kind = ""
+		if kind == "firework": beach.release_firework(hand)
+		elif kind in ["screen_resize", "screen_move"]:
+			var before: Dictionary = _screen_drag.get("before", {})
+			_screen_drag = {}
+			if not before.is_empty(): beach.request_screen(before)
+		else: beach.end_drag()
+	_scene_hover.erase(hand); _scene_marks.erase(hand)
+	if beach:
+		beach.show_screen_marks(_scene_marks.values()[0] if not _scene_marks.is_empty() else {})
+		_sync_scene_highlight()
+	super.cancel_pointer(hand)
+
 func cancel_pointer(hand: String) -> void:
 	scene_release(hand)
 	super.cancel_pointer(hand)
@@ -508,10 +527,14 @@ func pointer_release(hand: String,origin: Vector3,direction: Vector3,valid: bool
 		_sit(str(target.id))
 		return true
 	if target.get("valid",false) and _valid_destination(target.position):
+		var previous_eye := _camera.global_position
+		var source_key: Vector2i=_movement._nav_anchor(_movement.eye_position-Vector3.UP*Locomotion.EYE_HEIGHT)
+		var recovering: bool=not _movement._nav_components.has(source_key)
 		if _movement.teleport_floor(target.position):
 			seat_id=""
 			var heading := _head_yaw()
 			suspend(); _land(target.position,heading); _sync_tracking(); _remember_view(0,true,true); changed.emit()
+			BeachLog.record("beach_teleport",{"from":previous_eye,"to":_camera.global_position,"recovered_source":recovering})
 	return true
 
 func request_screen(changes: Dictionary) -> bool:

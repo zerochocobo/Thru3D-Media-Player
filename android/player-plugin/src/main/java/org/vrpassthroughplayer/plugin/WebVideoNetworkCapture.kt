@@ -107,6 +107,24 @@ internal class WebVideoNetworkCapture(
     /** Explicit site Beta must preserve the decoded representation, including parallel HLS leaves. */
     fun resolveCurrent(page: WebVideoPage, media: JSONObject): JSONObject? = resolve(page, media, null, true)
 
+    /** A GIF renderer explicitly names its current whole file. Inspect that exact
+     * received resource; a GIF marker or a muted element never proves no audio. */
+    internal fun resolveObservedRedditGifFile(page: WebVideoPage,media: JSONObject): JSONObject?=runCatching {
+        require(page.site=="reddit" && !media.optBoolean("protected"))
+        val data=WebBrowserReddit.metadata(media,media.optString("frame")) ?: error("Invalid current GIF")
+        require(data.getString("id")==page.id && data.getString("binding")=="rendered_gif" && data.opt("declared_gif")==true)
+        val observed=loadObserved(media,false) ?: error("Invalid scoped file")
+        val source=URI(data.getString("source"))
+        require(observed.length()==1 && observed.getJSONObject(0).getString("kind")=="file" &&
+            observed.getJSONObject(0).getString("url")==source.toString())
+        val file=resources[source] ?: error("Unobserved GIF file")
+        val checked=probe(file,media)
+        require(checked.info.video !in setOf("none","unknown","") && checked.info.audio !in setOf("unknown","") &&
+            checked.info.width==media.optInt("width") && checked.info.height==media.optInt("height") &&
+            kotlin.math.abs(checked.info.duration-media.getDouble("duration"))<=maxOf(.05,media.getDouble("duration")*.0001))
+        info(media,listOf(checked.format)).put("browser_reddit_gif",true).put("browser_explicit_silent",checked.info.audio=="none")
+    }.getOrNull()
+
     /** A validated rendered Instagram MPD explicitly declares these complete
      * files. They are new derived GETs, never relabelled as observed requests.
      * Only scoped sent cookies/public browser context apply; a range request's
@@ -130,7 +148,11 @@ internal class WebVideoNetworkCapture(
             val headers=resources[uri]?.headers ?: WebVideoRequestHeaders(emptyMap(),cookieJar).forUrl(uri,publicContext)
             val resource=Resource(uri,"file",headers);resources[uri]=resource
             return probe(resource,media).also{
-                require(it.info.duration>0 && kotlin.math.abs(it.info.duration-media.getDouble("duration"))<=maxOf(.1,media.getDouble("duration")*.0001))
+                // The exact current-post MPD and observed track already bind
+                // this audio file. Use probe's existing bounded whole-file
+                // duration check; real posts can end audio before video (679 ms).
+                // Keep the tighter decoded-video identity check unchanged.
+                if(track.kind!="audio")require(kotlin.math.abs(it.info.duration-media.getDouble("duration"))<=maxOf(.1,media.getDouble("duration")*.0001))
             }
         }
         val v=declared(video)
@@ -197,8 +219,8 @@ internal class WebVideoNetworkCapture(
      * These derived resources are not relabelled as browser observations. */
     internal fun resolveDeclaredHls(page: WebVideoPage,media: JSONObject,base: URI,body: String,
         reader: (URI,Map<String,String>,Boolean)->Pair<URI,ByteArray>): JSONObject? = runCatching {
-        require(!media.optBoolean("protected"))
-        require(body.startsWith("#EXTM3U") && body.toByteArray(Charsets.UTF_8).size<=160*1024)
+        require(page.site=="iqiyi" && !media.optBoolean("protected"))
+        require(body.startsWith("#EXTM3U") && body.toByteArray(Charsets.UTF_8).size<=1024*1024)
         require(loadObserved(media,true)!=null)
         val common=mapOf("user-agent" to media.optString("agent"),"referer" to media.getString("frame"),"origin" to "https://www.iqiyi.com")
         val root=Resource(base,"hls",common)
@@ -229,6 +251,22 @@ internal class WebVideoNetworkCapture(
         requests.put(JSONObject().put("url",base.toString()).put("kind","hls").put("headers",common))
         inlineManifests[base] = body; bodies[base] = base to body.toByteArray(Charsets.UTF_8)
         resolve(page, JSONObject(media.toString()).put("source", "").put("network",requests), null, true, true)
+    }.getOrNull()
+
+    /** A validated received Naver JSON-MPD timeline translated to HLS for our existing
+     * TS proxy. The export URL is a declaration, never a browser-observed HLS GET. */
+    internal fun resolveDeclaredNaverTimeline(page: WebVideoPage,media: JSONObject,plan: WebBrowserNaver.Timeline): JSONObject? = runCatching {
+        require(page.site=="naver" && !media.optBoolean("protected") && media.optString("source").isEmpty())
+        val observed=loadObserved(media,true) ?: error("Invalid scoped requests")
+        require(observed.length()>0 && (0 until observed.length()).all{val r=observed.getJSONObject(it);r.optString("kind")=="segment" && r.optString("url") in plan.refs})
+        val first=resources[URI(observed.getJSONObject(0).getString("url"))] ?: error("Missing segment")
+        val common=first.headers.filterKeys{it in setOf("user-agent","referer","origin","accept","accept-language")}
+        val root=Resource(plan.base,"hls",common)
+        resources[plan.base]=root;inlineManifests[plan.base]=plan.playlist;bodies[plan.base]=plan.base to plan.playlist.toByteArray(Charsets.UTF_8)
+        manifestInfo(page,media,listOf(root),true).also { info ->
+            info.put("browser_declared_timeline",true)
+            info.getJSONArray("formats").getJSONObject(0).getJSONObject("browser_headers").remove(plan.base.toString())
+        }
     }.getOrNull()
 
     /** Site adapters must first bind both exact observed URLs to one content identity.
@@ -317,7 +355,8 @@ internal class WebVideoNetworkCapture(
         val expected = media.optDouble("duration", 0.0)
         require(expected <= 0 || durationMatches(duration, expected))
         val checked = WebVideoContainer.Info(container.video, container.audio, container.width, container.height, duration,container.pixelAspect)
-        projections[uri] = SphericalVideoMetadata.parse(bytes)
+        projections[uri] = if(bytes.size>SphericalVideoMetadata.PREFIX_LIMIT) SphericalVideoMetadata.parseSparseMp4Header(bytes)
+            else SphericalVideoMetadata.parse(bytes)
         val f = format(resource, checked.video, checked.audio, checked.width, checked.height)
             .put("web_layout", media.optString("layout").take(64))
             .put("display_width",checked.displayWidth).put("display_height",checked.height)

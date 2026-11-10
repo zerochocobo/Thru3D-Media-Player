@@ -93,6 +93,7 @@ func capture_current() -> Dictionary:
 
 func _valid_target() -> bool:
 	if job.is_empty() or int(job.epoch) != photo._cache_epoch or not is_equal_approx(float(job.strength), photo.depth_strength): return false
+	if job.key != "ready_texture" and not photo._requires_depth(int(job.index), job.entry.get("info", {})): return false
 	if not is_equal_approx(float(job.get("convergence", 0.35)), photo.DepthPosition.convergence(photo.depth_position)): return false
 	if int(job.get("rotation", 0)) != photo._stereo_rotation(int(job.index)): return false
 	var entry: Dictionary = job.entry

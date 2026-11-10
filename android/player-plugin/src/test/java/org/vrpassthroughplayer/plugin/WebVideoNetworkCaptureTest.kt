@@ -8,29 +8,155 @@ import java.net.URI
 import java.nio.ByteBuffer
 
 class WebVideoNetworkCaptureTest {
+    @Test fun largeJavascriptIqiyiVectorSurvivesDeclaredHlsSelectionAndTheValidatedPlayerPlan() {
+        // The same checked-in vector is generated and compared by the browser's
+        // JS tests; AGP may run this test from the root, android, or module dir.
+        val relative="web-browser/src/test/resources/iqiyi-large-wire.json"
+        val fixture=listOf(java.io.File("../$relative"),java.io.File(relative),java.io.File("android/$relative")).single { it.isFile }
+        val m=JSONObject(fixture.readText());val p=WebVideoPage.parse(m.getString("frame"))
+        val plan=WebBrowserIqiyi.resourcePlan(m,p.url)!!;val body=plan.getString("playlist");plan.remove("playlist")
+        assertTrue(body.length>256*1024);assertTrue(plan.toString().length>256*1024)
+        val reads=mutableListOf<URI>()
+        fun resolve(input: JSONObject=m,bytes: ByteArray=mp4(width=1440,duration=436)) = resolver(emptyMap()).resolveDeclaredHls(p,input,URI(p.url),body) { uri,_,_ ->
+            reads.add(uri);uri to bytes
+        }
+        val info=resolve()!!;assertEquals(1,reads.size);assertTrue(reads.single().toString().contains("issued=UNIT%2bEXACT%3D"))
+        val plain=JSONObject(info.toString())
+        assertThrows(IllegalStateException::class.java) { WebVideoFormats.select(p,plain){true} }
+        info.getJSONArray("formats").getJSONObject(0).put("browser_iqiyi",plan)
+        val selected=WebVideoFormats.select(p,info){true};assertEquals(body,selected.video.browserManifest)
+        assertEquals(436,selected.video.browserIqiyi!!.getJSONArray("requests").length())
+        assertNull(resolve(JSONObject(m.toString()).put("protected",true)))
+        assertNull(resolve(bytes=mp4(width=1440,duration=436,protected=true)))
+        val wrong=JSONObject(plan.toString());wrong.getJSONArray("requests").getJSONObject(0).put("file",99)
+        info.getJSONArray("formats").getJSONObject(0).put("browser_iqiyi",wrong)
+        assertThrows(IllegalStateException::class.java) { WebVideoFormats.select(p,info){true} }
+    }
+    private fun redditGif(file: String,other: String="https://other.test/unused.mp4"): JSONObject {
+        val document="https://www.reddit.com/r/gifs/comments/abc123/title/"
+        return media(candidate(file,headers=JSONObject().put("Authorization","selected-file-only")),
+            candidate(other,headers=JSONObject().put("Authorization","unrelated-only")),direct=file)
+            .put("frame",document).put("reddit_source",file).put("reddit_enabled",true).put("reddit_ready",true).put("capture_identity","selected")
+            .put("reddit",JSONObject().put("id","abc123").put("active_id","abc123").put("page",document).put("document",document)
+                .put("binding","rendered_gif").put("declared_gif",true).put("source",file).put("revision","a1")
+                .put("width",1920).put("height",1080).put("duration",10).put("expected_duration",10))
+    }
+    @Test fun redditGifProbesOnlyItsReceivedWholeFileAndPreservesRealAudioWhenPresent() {
+        val file="https://related.test:8443/current.gif?format=EXACT";val m=redditGif(file)
+        val p=WebVideoRedditCapture.page(m.getString("frame"),m)!!
+        val reads=mutableListOf<Pair<URI,Map<String,String>>>()
+        val info=WebVideoRedditCapture.resolve(p,m,resolver(mapOf(file to mp4(audio=false)),reads))!!
+        assertEquals(listOf(URI(file)),reads.map{it.first});assertEquals("selected-file-only",reads.single().second["authorization"])
+        assertTrue(info.getBoolean("browser_explicit_silent"));assertTrue(info.getBoolean("browser_reddit_gif"))
+        val selected=WebVideoFormats.select(p,info){true};assertTrue(selected.silent)
+        assertEquals(file,selected.video.url.toString());assertTrue(WebVideoRedditCapture.keeps(p,m,m,selected.video))
+        val missingProof=JSONObject(info.toString());missingProof.remove("browser_reddit_gif")
+        assertThrows(IllegalStateException::class.java){WebVideoFormats.select(p,missingProof){true}}
+        assertThrows(IllegalStateException::class.java){WebVideoFormats.select(page,info){true}}
+        val voiced=WebVideoRedditCapture.resolve(p,m,resolver(mapOf(file to mp4())))!!
+        assertFalse(voiced.getBoolean("browser_explicit_silent"))
+        val actualAudio=WebVideoFormats.select(p,voiced){true};assertFalse(actualAudio.silent);assertTrue(actualAudio.video.hasAudio)
+    }
+    @Test fun redditGifCannotBorrowProtectionDimensionsDurationRequestsOrOrdinaryVideoSilence() {
+        val file="https://related.test/current.gif?format=EXACT";val m=redditGif(file);val p=WebVideoRedditCapture.page(m.getString("frame"),m)!!
+        for(bytes in listOf(mp4(audio=false,protected=true),mp4(audio=false,width=1280,height=720),mp4(audio=false,duration=12),mp4(video=false)))
+            assertNull(WebVideoRedditCapture.resolve(p,m,resolver(mapOf(file to bytes))))
+        for(change in listOf<(JSONObject)->Unit>({it.put("network",JSONArray())},{it.put("protected",true)},
+            {it.getJSONObject("reddit").put("declared_gif","true")},{it.getJSONObject("reddit").put("active_id","another")},
+            {it.getJSONObject("reddit").put("binding","rendered_post").remove("declared_gif")})) {
+            val changed=JSONObject(m.toString());change(changed)
+            assertNull(WebVideoRedditCapture.resolve(p,changed,resolver(mapOf(file to mp4(audio=false)))))
+        }
+        val info=WebVideoRedditCapture.resolve(p,m,resolver(mapOf(file to mp4(audio=false))))!!
+        val track=WebVideoFormats.select(p,info){true}.video
+        val changed=JSONObject(m.toString());changed.getJSONObject("reddit").put("binding","rendered_post").remove("declared_gif")
+        assertFalse(WebVideoRedditCapture.keeps(p,m,changed,track))
+    }
+
+    @Test fun declaredNaverTimelineNeverFetchesTheExportOrBorrowsAnotherSegmentsAuthorization() {
+        val root=URI("https://declared.test/current.m3u8?signature=ROOT")
+        val first="https://segments.test/current/0.ts?signature=EXACT"
+        val next="https://segments.test/current/1.ts?signature=EXACT"
+        val body="#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXTINF:5,\n$first\n#EXTINF:5,\n$next\n#EXT-X-ENDLIST\n"
+        val plan=WebBrowserNaver.Timeline(root,body,setOf(first,next),10.0)
+        val p=WebVideoPage("naver","A".repeat(36),WebBrowserNaver.canonical("A".repeat(36),"CLIP"))
+        val m=media(candidate(next,"segment",JSONObject().put("Authorization","next-only").put("Cookie","unscoped=next-only")
+            .put("Referer",p.url).put("Origin","https://m.naver.com")))
+        val reads=mutableListOf<Pair<URI,Map<String,String>>>()
+        val info=resolver(mapOf(first to mp4()),reads).resolveDeclaredNaverTimeline(p,m,plan)!!
+        assertEquals(listOf(URI(first)),reads.map{it.first});assertFalse(reads.single().second.containsKey("authorization"))
+        assertFalse(reads.single().second.containsKey("cookie"));assertEquals("https://m.naver.com",reads.single().second["origin"])
+        assertTrue(info.getBoolean("browser_declared_timeline"))
+        val format=info.getJSONArray("formats").getJSONObject(0)
+        assertEquals(root.toString(),format.getString("url"));assertEquals(body,format.getString("browser_manifest"))
+        assertFalse(format.getJSONObject("browser_headers").has(root.toString()))
+        assertNull(resolver(emptyMap()).resolveDeclaredNaverTimeline(p,media(),plan))
+        assertNull(resolver(emptyMap()).resolveDeclaredNaverTimeline(p,media(candidate(next+"&changed=1","segment")),plan))
+        assertNull(resolver(mapOf(first to mp4(protected=true))).resolveDeclaredNaverTimeline(p,m,plan))
+    }
     @Test fun odyseeUsesTheDeclaredCurrentClaimAndOnlyItsObservedFileRequest() {
         val document="https://odysee.com/@PublicChannel:2/PublicClip:1";val claim="1"+"a".repeat(39)
         val file="https://related.test:8443/v6/streams/$claim/abcdef.mp4?selection=exact"
         val declared="https://other-related.test/api/v3/streams/free/PublicClip/$claim/abcdef.mp4"
         val other="https://other.test/ad.mp4"
-        val m=media(candidate(file,headers=JSONObject().put("Authorization","actual-file-only")),candidate(other),direct=file)
+        val baseline=media(candidate(file,headers=JSONObject().put("Authorization","actual-file-only")),candidate(other),direct=file)
             .put("frame",document).put("odysee_source",file).put("odysee_enabled",true).put("odysee_ready",true).put("capture_identity","selected")
             .put("odysee",JSONObject().put("id","@PublicChannel:2/PublicClip:1").put("page",document).put("source",file).put("declared_source",declared)
                 .put("claim_id",claim).put("file_id","abcdef.mp4").put("revision","a1").put("width",1920).put("height",1080)
                 .put("duration",10).put("expected_duration",10).put("whole_seconds",true))
+        val rendered=JSONObject(baseline.toString()).also { it.getJSONObject("odysee").put("binding","rendered_file")
+            .put("declared_source",file).put("claim_uri","lbry://@PublicChannel#2/PublicClip#1") }
+        for(m in listOf(baseline,rendered)) {
+            val p=WebVideoOdyseeCapture.page(document,m)!!;val reads=mutableListOf<Pair<URI,Map<String,String>>>()
+            val info=WebVideoOdyseeCapture.resolve(p,m,resolver(mapOf(file to mp4()),reads))!!
+            val selected=WebVideoFormats.select(p,info){true}
+            assertEquals(file,selected.video.url.toString());assertEquals(listOf(URI(file)),reads.map{it.first})
+            assertEquals("actual-file-only",reads.single().second["authorization"])
+            assertTrue(WebVideoOdyseeCapture.keeps(p,m,m,selected.video))
+            val changed=JSONObject(m.toString());changed.getJSONObject("odysee").put("revision","a2")
+            assertFalse(WebVideoOdyseeCapture.keeps(p,m,changed,selected.video))
+            changed.getJSONObject("odysee").put("declared_source",declared.replace("abcdef","abcdee"))
+            assertNull(WebVideoOdyseeCapture.resolve(p,changed,resolver(mapOf(file to mp4()))))
+            assertNull(WebVideoOdyseeCapture.resolve(p,JSONObject(m.toString()).put("protected",true),resolver(mapOf(file to mp4()))))
+            assertNull(WebVideoOdyseeCapture.resolve(p,m,resolver(mapOf(file to mp4(protected=true)))))
+            assertNull(WebVideoOdyseeCapture.resolve(p,m,resolver(mapOf(file to mp4(width=1280,height=720)))))
+        }
+    }
+    @Test fun odyseeRenderedHlsUsesOnlyItsClaimRootAndObservedTracksWithTheirOwnCredentials() {
+        val document="https://odysee.com/@PublicChannel:2/PublicClip:1";val claim="1"+"a".repeat(39)
+        val root="https://root.test:8443/v6/streams/$claim/opaque/master.m3u8?actual=EXACT"
+        val video="https://video.related.test/selected.m3u8";val audio="https://audio.related.test/selected.m3u8"
+        val unrelated="https://another-player.test/master.m3u8"
+        val master="#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"en\",DEFAULT=YES,URI=\"$audio\"\n"+
+            "#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1920x1080,CODECS=\"avc1.640028,mp4a.40.2\",AUDIO=\"en\"\n$video\n"
+        val vod="#EXTM3U\n#EXTINF:10,\nsegment.ts\n#EXT-X-ENDLIST\n"
+        val resources=mapOf(root to master.toByteArray(),video to vod.toByteArray(),audio to vod.toByteArray())
+        val blob="blob:https://odysee.com/current"
+        val m=media(candidate(root,"hls",JSONObject().put("Authorization","root-only")),candidate(video,"hls"),
+            candidate(audio,"hls",JSONObject().put("Authorization","audio-only")),candidate(unrelated,"hls"))
+            .put("frame",document).put("blob",true).put("odysee_source",blob).put("odysee_enabled",true).put("odysee_ready",true).put("capture_identity","selected")
+            .put("odysee",JSONObject().put("id","@PublicChannel:2/PublicClip:1").put("page",document).put("source",blob).put("binding","rendered_hls")
+                .put("root",root).put("declared_source",root).put("claim_id",claim).put("claim_uri","lbry://@PublicChannel#2/PublicClip#1")
+                .put("revision","a1").put("width",1920).put("height",1080).put("duration",10).put("expected_duration",10).put("whole_seconds",true))
         val p=WebVideoOdyseeCapture.page(document,m)!!;val reads=mutableListOf<Pair<URI,Map<String,String>>>()
-        val info=WebVideoOdyseeCapture.resolve(p,m,resolver(mapOf(file to mp4()),reads))!!
+        val info=WebVideoOdyseeCapture.resolve(p,m,resolver(resources,reads))!!
         val selected=WebVideoFormats.select(p,info){true}
-        assertEquals(file,selected.video.url.toString());assertEquals(listOf(URI(file)),reads.map{it.first})
-        assertEquals("actual-file-only",reads.single().second["authorization"])
+        assertEquals(video,selected.video.url.toString());assertEquals(audio,selected.audio!!.url.toString())
+        assertFalse(reads.any{it.first.toString()==unrelated});assertEquals("root-only",reads.first{it.first.toString()==root}.second["authorization"])
+        assertEquals("audio-only",reads.first{it.first.toString()==audio}.second["authorization"])
+        assertFalse(reads.first{it.first.toString()==video}.second.containsKey("authorization"))
         assertTrue(WebVideoOdyseeCapture.keeps(p,m,m,selected.video))
-        val changed=JSONObject(m.toString());changed.getJSONObject("odysee").put("revision","a2")
-        assertFalse(WebVideoOdyseeCapture.keeps(p,m,changed,selected.video))
-        changed.getJSONObject("odysee").put("declared_source",declared.replace("abcdef","abcdee"))
-        assertNull(WebVideoOdyseeCapture.resolve(p,changed,resolver(mapOf(file to mp4()))))
-        assertNull(WebVideoOdyseeCapture.resolve(p,JSONObject(m.toString()).put("protected",true),resolver(mapOf(file to mp4()))))
-        assertNull(WebVideoOdyseeCapture.resolve(p,m,resolver(mapOf(file to mp4(protected=true)))))
-        assertNull(WebVideoOdyseeCapture.resolve(p,m,resolver(mapOf(file to mp4(width=1280,height=720)))))
+        val prefetch=JSONObject(m.toString());prefetch.getJSONArray("network").put(candidate("https://another.test/prefetch.m3u8","hls"))
+        assertTrue(WebVideoOdyseeCapture.keeps(p,m,prefetch,selected.video))
+        for (change in listOf<(JSONObject)->Unit>({it.put("protected",true)}, {it.put("odysee_source",blob+"-changed")},
+            {it.getJSONObject("odysee").put("revision","a2")},{it.getJSONObject("odysee").put("root",root+"&changed=1")},
+            {it.put("network",JSONArray().put(candidate(root,"hls")))})) {
+            val latest=JSONObject(m.toString());change(latest);assertFalse(WebVideoOdyseeCapture.keeps(p,m,latest,selected.video))
+        }
+        val protected=resources.toMutableMap();protected[video]=vod.replace("#EXTINF:","#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"key\"\n#EXTINF:").toByteArray()
+        assertNull(WebVideoOdyseeCapture.resolve(p,m,resolver(protected)))
+        val noRoot=JSONObject(m.toString()).put("network",JSONArray().put(candidate(video,"hls")).put(candidate(audio,"hls")))
+        assertNull(WebVideoOdyseeCapture.resolve(p,noRoot,resolver(resources)))
     }
     @Test fun archiveRequiresExactPresentationDimensionsFromTheSameFilesPixelAspectBox() {
         val document="https://archive.org/details/PublicFilm";val original="https://archive.org/download/PublicFilm/current.mp4"
@@ -135,6 +261,13 @@ class WebVideoNetworkCaptureTest {
         assertFalse(voicedSelection.silent);assertEquals(audio,voicedSelection.audio!!.url.toString())
         assertTrue(voicedReads.none{it.second.containsKey("authorization")})
         assertEquals("audio-context",voicedReads.single{it.first.toString()==audio}.second["user-agent"])
+        assertNotNull(resolver(mapOf(file to mp4(audio=false),audio to mp4(video=false,durationMs=9831))).resolveDeclaredInstagramFiles(p,voiced,URI(file),URI(audio),false))
+        assertNotNull(resolver(mapOf(file to mp4(audio=false),audio to mp4(video=false,durationMs=9749))).resolveDeclaredInstagramFiles(p,voiced,URI(file),URI(audio),false))
+        assertNotNull(resolver(mapOf(file to mp4(audio=false),audio to mp4(video=false,durationMs=9321))).resolveDeclaredInstagramFiles(p,voiced,URI(file),URI(audio),false))
+        assertNotNull(resolver(mapOf(file to mp4(audio=false),audio to mp4(video=false,durationMs=8000))).resolveDeclaredInstagramFiles(p,voiced,URI(file),URI(audio),false))
+        assertNull(resolver(mapOf(file to mp4(audio=false),audio to mp4(video=false,durationMs=7999))).resolveDeclaredInstagramFiles(p,voiced,URI(file),URI(audio),false))
+        assertNull(resolver(mapOf(file to mp4(audio=false),audio to mp4(video=false,durationMs=12001))).resolveDeclaredInstagramFiles(p,voiced,URI(file),URI(audio),false))
+        assertNull(resolver(mapOf(file to mp4(audio=false,durationMs=9831),audio to mp4(video=false))).resolveDeclaredInstagramFiles(p,voiced,URI(file),URI(audio),false))
         val missingAudio=JSONObject(voiced.toString());missingAudio.put("network",m.getJSONArray("network"))
         assertNull(resolver(mapOf(file to mp4(audio=false),audio to mp4(video=false))).resolveDeclaredInstagramFiles(p,missingAudio,URI(file),URI(audio),false))
     }
@@ -293,13 +426,13 @@ class WebVideoNetworkCaptureTest {
     }
     private val page = WebVideoPage("browser", "fixture", "webvideo://capture/fixture")
     private fun box(type: String, data: ByteArray) = ByteBuffer.allocate(8 + data.size).putInt(data.size + 8).put(type.toByteArray()).put(data).array()
-    private fun mp4(video: Boolean = true, audio: Boolean = true, duration: Int = 10, protected: Boolean = false, width: Int = 1920, height: Int = 1080, aspect: Pair<Int,Int>?=null, avcConfig: ByteArray?=null): ByteArray {
+    private fun mp4(video: Boolean = true, audio: Boolean = true, duration: Int = 10, protected: Boolean = false, width: Int = 1920, height: Int = 1080, aspect: Pair<Int,Int>?=null, avcConfig: ByteArray?=null,durationMs: Int=duration*1000): ByteArray {
         fun track(kind: String): ByteArray {
             val video = kind == "vide"
             val sample = if (video) ByteArray(78).also { ByteBuffer.wrap(it).putShort(24, width.toShort()).putShort(26, height.toShort()) } + box("avcC", avcConfig ?: byteArrayOf(1, 100, 0, 40)) +
                 (aspect?.let {box("pasp",ByteBuffer.allocate(8).putInt(it.first).putInt(it.second).array())} ?: byteArrayOf()) else ByteArray(28)
             val stsd = box("stsd", ByteBuffer.allocate(8).putInt(0).putInt(1).array() + box(if (protected) if (video) "encv" else "enca" else if (video) "avc1" else "mp4a", sample))
-            val mdhd = ByteBuffer.allocate(24).putInt(12, 1000).putInt(16, duration * 1000).array()
+            val mdhd = ByteBuffer.allocate(24).putInt(12, 1000).putInt(16, durationMs).array()
             val hdlr = ByteArray(24).also { kind.toByteArray().copyInto(it, 8) }
             return box("trak", box("mdia", box("mdhd", mdhd) + box("hdlr", hdlr) + box("minf", box("stbl", stsd))))
         }

@@ -25,4 +25,19 @@ class WebBrowserRedBullTest {
         )){val item=media();change(item);assertNull(WebBrowserRedBull.metadata(item,page))}
         assertFalse(WebBrowserRedBull.enabled(page))
     }
+    @Test fun officialHomepageLocalePreservesCurrentRrnAndExactDocumentBinding() {
+        for(locale in listOf("en_US","en_INT","es_LAT","en-US")) {
+          for(prefix in listOf("","page:")) {
+            val current=page.replace("/en/","/$locale/").replace("/page/","/page/$prefix")
+            val item=media().put("frame",current)
+            item.getJSONObject("redbull").put("page",current)
+            assertEquals(id,WebBrowserRedBull.page(current));assertNotNull(WebBrowserRedBull.metadata(item,current))
+            assertNull(WebBrowserRedBull.metadata(media(),current));assertFalse(WebBrowserRedBull.enabled(current))
+          }
+        }
+        for(current in listOf(page.replace("/en/","/en_us/"),page.replace("/en/","/en_US_extra/"),
+            page.replace("/page/","/page/page:page:"),page.replace("/page/","/page/other:"),
+            page.replace("https://","https://user@"),page.replace("redbull.tv","redbull.tv:8443"),page+"#other"))
+            assertNull(WebBrowserRedBull.page(current))
+    }
 }

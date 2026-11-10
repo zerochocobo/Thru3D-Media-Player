@@ -16,11 +16,47 @@ class WebBrowserOdyseeTest {
             .put("declared_source",declared).put("claim_id",claim).put("file_id","abcdef.mp4").put("revision","a1")
             .put("width",1280).put("height",720).put("duration",346.72).put("expected_duration",346).put("whole_seconds",true))
         .put("network",JSONArray().put(JSONObject().put("kind","file").put("url",source)))
+    private val root="https://associated.test:8443/v6/streams/$claim/opaque/master.m3u8?actual=EXACT"
+    private fun hls(): JSONObject=media().also { item ->
+        val blob="blob:https://odysee.com/current"
+        item.put("blob",true).put("source","").put("odysee_source",blob)
+        item.getJSONObject("odysee").put("binding","rendered_hls").put("source",blob).put("root",root)
+            .put("declared_source",root).put("claim_uri","lbry://@PublicChannel#2/PublicClip#1").remove("file_id")
+        item.put("network",JSONArray().put(JSONObject().put("kind","hls").put("url",root)))
+    }
+    @Test fun renderedHlsBindsTheCurrentBlobFullClaimAndExactRootObservation() {
+        assertNotNull(WebBrowserOdysee.metadata(hls(),page))
+        for (change in listOf<(JSONObject)->Unit>(
+            {it.put("blob",false)},{it.put("source",source)},{it.put("odysee_source","blob:https://other.test/current")},
+            {it.getJSONObject("odysee").put("root",root+"&other=1")},
+            {it.getJSONObject("odysee").put("claim_id","1"+"b".repeat(39))},
+            {it.getJSONObject("odysee").put("claim_uri","lbry://OtherClip#1")},
+            {it.getJSONObject("odysee").put("claim_uri","lbry://PublicClip#2")},
+            {it.getJSONArray("network").getJSONObject(0).put("kind","file")},
+            {it.getJSONArray("network").getJSONObject(0).put("url",root+"&different=1")},
+            {it.put("protected",true)}
+        )) { val item=hls();change(item);assertNull(WebBrowserOdysee.metadata(item,page)) }
+    }
     @Test fun exactCurrentClaimAndFileRemainBoundAcrossDeclaredAndActualRoutes() {
         assertNotNull(WebBrowserOdysee.metadata(media(),page))
         val item=media();item.put("source",declared).put("odysee_source",declared)
         item.getJSONObject("odysee").put("source",declared);item.getJSONArray("network").getJSONObject(0).put("url",declared)
         assertNotNull(WebBrowserOdysee.metadata(item,page))
+    }
+    @Test fun renderedFileNeedsItsPublicUriExactFileAndOwnedRequestWithoutAnSsrDeclaration() {
+        fun rendered()=media().also { item ->
+            item.getJSONObject("odysee").put("binding","rendered_file").put("declared_source",source)
+                .put("claim_uri","lbry://@PublicChannel#2/PublicClip#1")
+        }
+        assertNotNull(WebBrowserOdysee.metadata(rendered(),page))
+        for(change in listOf<(JSONObject)->Unit>({it.put("blob",true)},
+            {it.getJSONObject("odysee").put("root",root)},{it.getJSONObject("odysee").put("declared_source",declared)},
+            {it.getJSONObject("odysee").put("claim_uri","lbry://NextClip#1")},
+            {it.getJSONObject("odysee").put("file_id","abcdee.mp4")},
+            {it.getJSONArray("network").getJSONObject(0).put("url",source+"&other=1")},
+            {it.getJSONArray("network").getJSONObject(0).put("kind","hls")})) {
+            val item=rendered();change(item);assertNull(WebBrowserOdysee.metadata(item,page))
+        }
     }
     @Test fun anotherClaimFileDocumentOrUnobservedSelectorCannotBind() {
         for(change in listOf<(JSONObject)->Unit>(

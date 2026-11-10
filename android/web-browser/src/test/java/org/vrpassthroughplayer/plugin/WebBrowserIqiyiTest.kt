@@ -7,6 +7,35 @@ import org.junit.Test
 
 class WebBrowserIqiyiTest {
     private val page="https://www.iqiyi.com/v_current.html"
+    private fun largeWire(): JSONObject = javaClass.getResourceAsStream("/iqiyi-large-wire.json")!!.bufferedReader().use { JSONObject(it.readText()) }
+    @Test fun restoresTheActualJavascriptTransportVectorBeforeFullRangeValidation() {
+        val item=largeWire();val page=item.getString("frame")
+        assertTrue(item.toString().length<132*1024)
+        val plan=WebBrowserIqiyi.resourcePlan(item,page)!!
+        val text=plan.getString("playlist");assertTrue(text.length>256*1024)
+        assertEquals(436,plan.getJSONArray("requests").length())
+        for(i in 0 until 436) {
+            val expected="https://declared.test/current.ts?start=${i*188}&end=${(i+1)*188}&contentlength=188&sd=${i*1000}&qd_tvid=42&issued=UNIT%2bEXACT%3D&opaque=${"ab".repeat(256)}"
+            assertEquals(expected,plan.getJSONArray("requests").getJSONObject(i).getString("url"))
+            assertTrue(text.contains(expected+"\n"))
+        }
+    }
+    @Test fun corruptOrAmbiguousPackedTimelinesCannotPassTheNormalParser() {
+        val edits:List<(JSONObject)->Unit> = listOf(
+            { it.put("playlist","#EXTM3U") },
+            { it.getJSONObject("playlist_delta").put("chars",512*1024+1) },
+            { it.getJSONObject("playlist_delta").put("chars","300000") },
+            { it.getJSONObject("playlist_delta").put("version",1.0) },
+            { it.getJSONObject("playlist_delta").getJSONArray("rows").getJSONArray(0).put(0,1) },
+            { it.getJSONObject("playlist_delta").getJSONArray("rows").getJSONArray(2).put(1,999999) },
+            { it.getJSONObject("playlist_delta").getJSONArray("rows").getJSONArray(0).put(2,"#EXTM3U\n") },
+            { val d=it.getJSONObject("playlist_delta");d.put("chars",d.getInt("chars")-1) },
+            { val rows=it.getJSONObject("playlist_delta").getJSONArray("rows");rows.remove(rows.length()-2) }
+        )
+        for(edit in edits) {
+            val item=largeWire();edit(item.getJSONObject("iqiyi"));assertNull(WebBrowserIqiyi.metadata(item,item.getString("frame")))
+        }
+    }
     private fun url(start: Int,end: Int,host: String="new-cdn.test")="https://$host/current.ts?start=$start&end=$end&contentlength=${end-start}&sd=${if(start>=188)2000 else 0}&qd_tvid=42&signature=EXACT"
     private fun record(start: Int,end: Int,cookie: String)=JSONObject().put("url",url(start,end)).put("kind","segment")
         .put("at",System.currentTimeMillis()).put("mime","application/octet-stream").put("headers",JSONObject().put("cookie",cookie))

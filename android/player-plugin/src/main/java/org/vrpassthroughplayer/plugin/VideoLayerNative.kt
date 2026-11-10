@@ -42,7 +42,7 @@ internal object VideoLayerNative {
     /** Alpha plan B: RVM's packed R8 mask drawn over the frame layout (0 mono, 1 SBS, 2 TB) into the
      * acquired image of [slot] as alpha; rect maps eye UV to model UV (the pair's model_content_rect). */
     @JvmStatic external fun drawMask(slot: Int, mask: Int, rect: FloatArray, layout: Int, modelWidth: Int, modelHeight: Int,
-                                     edgeLow: Float, edgeHigh: Float): Boolean
+                                     edgeLow: Float, edgeHigh: Float, nextMask: Int, nextRect: FloatArray?, blend: Float): Boolean
     /** Counts a released mask; [maskVersion] is what Godot polls before it shows the mask layer. */
     @JvmStatic external fun maskDrawn(): Long
     @JvmStatic external fun maskVersion(): Long
@@ -63,6 +63,8 @@ internal object VideoLayerNative {
     @JvmStatic external fun runtimeExtensions(): String
     /** Layers can carry a colour scale/bias (the colour grade) instead of leaving the compositor. */
     @JvmStatic external fun colorScaleBias(): Boolean
+    /** The instance enabled XR_QIYU_passthrough (iQIYI QIYU community runtime). */
+    @JvmStatic external fun qiyuPassthrough(): Boolean
     @JvmStatic external fun layerCount(): Int
     @JvmStatic external fun layerAddress(index: Int): Long
 }

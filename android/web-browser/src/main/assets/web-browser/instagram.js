@@ -3,9 +3,10 @@
  * invent one, and ranged-request credentials are not copied to that new GET. */
 const Thru3DInstagram=(()=>{
   'use strict';
-  const {own,list,address,revision,visible}=Thru3DTikTok;
+  const {own,list,address,revision,presented}=Thru3DTikTok;
   const documentPage=value=>{const u=address(value);return !!u&&['www.instagram.com','instagram.com'].includes(u.hostname);};
-  const page=value=>{const u=address(value);if(!u||!documentPage(value))return null;return /^\/(?:reel|p|tv)\/([A-Za-z0-9_-]{5,64})\/?$/.exec(u.pathname)?.[1]||null;};
+  const page=value=>{const u=address(value);if(!u||!documentPage(value))return null;return /^\/(?:reels?|p|tv)\/([A-Za-z0-9_-]{5,64})\/?$/.exec(u.pathname)?.[1]||null;};
+  const feed=value=>{const u=address(value);return !!u&&documentPage(value)&&/^\/reels\/?$/.test(u.pathname);};
   const range=value=>{const m=/^(0|[1-9][0-9]{0,12})-(0|[1-9][0-9]{0,12})$/.exec(value||'');return m&&+m[1]<=+m[2]?[+m[1],+m[2]]:null;};
   const children=(node,name)=>[...node.children].filter(n=>n.localName===name);
   const manifestDocument=doc=>{
@@ -82,10 +83,29 @@ const Thru3DInstagram=(()=>{
       scan(own(o,'props'),depth+1);scan(own(o,'children'),depth+1);
     };scan(root,0);return found;
   };
+  let postCache=null;
+  const currentPost=(document,mediaId,xml)=>{
+    if(postCache?.mediaId===mediaId&&postCache.xml===xml&&postCache.script.isConnected&&postCache.script.textContent===postCache.text)return postCache.post;
+    let budget=0;const found=[];
+    const scan=(o,depth)=>{
+      if(!o||typeof o!=='object'||depth>22||++budget>24000)return;
+      if(own(o,'pk')===mediaId){
+        const code=own(o,'code'),audio=own(o,'has_audio');
+        if(typeof code==='string'&&/^[A-Za-z0-9_-]{5,64}$/.test(code)&&typeof audio==='boolean'&&own(o,'video_dash_manifest')===xml)found.push({id:code,has_audio:audio});
+      }
+      for(const k of Object.keys(o).slice(0,160))scan(own(o,k),depth+1);
+    };
+    for(const script of [...document.querySelectorAll('script[type="application/json"]')].slice(0,160)){
+      const text=script.textContent||'';if(text.length>10*1024*1024||!text.includes(mediaId))continue;
+      try{scan(JSON.parse(text),0);}catch(_){}
+      if(found.length){if(new Set(found.map(p=>JSON.stringify(p))).size!==1)return null;postCache={mediaId,xml,script,text,post:found[0]};return found[0];}
+    }
+    return null;
+  };
   const parsed=new WeakMap();
   const declaration=(video,url,document=globalThis.document)=>{
     try{
-      const id=page(url);if(!id)return null;
+      let id=page(url);if(!id&&!feed(url))return null;
       const publicIds=[...document.querySelectorAll('meta[property="al:ios:url"],meta[property="al:android:url"]')].flatMap(m=>{try{const u=new URL(m.content),v=u.searchParams.get('id');return u.protocol==='instagram:'&&/^\d{5,30}$/.test(v)?[v]:[];}catch(_){return [];}});
       let data=[];
       for(let n=video,d=0;n&&d<6;n=n.parentElement,d++){
@@ -93,25 +113,29 @@ const Thru3DInstagram=(()=>{
       }
       if(new Set(data).size!==1)return null;
       const model=data[0],meta=own(model,'coreVideoPlayerMetaData'),mediaId=own(meta,'videoFBID'),xml=own(model,'manifest');
-      if(typeof mediaId!=='string'||!publicIds.includes(mediaId)||own(meta,'isLiveStreaming')===true)return null;
-      const hasAudio=audioEvidence(document,id);if(typeof hasAudio!=='boolean')return null;
+      if(typeof mediaId!=='string'||!/^[0-9]{5,30}$/.test(mediaId)||own(meta,'isLiveStreaming')===true)return null;
+      const post=(!id||!publicIds.includes(mediaId))?currentPost(document,mediaId,xml):null;
+      if(post&&id&&post.id!==id)return null;
+      if(!post&&!publicIds.includes(mediaId))return null;
+      const inFeed=!id;if(inFeed)id=post?.id;if(!id)return null;
+      const hasAudio=post?post.has_audio:audioEvidence(document,id);if(typeof hasAudio!=='boolean')return null;
       let entry=parsed.get(video);
       if(!entry||entry.xml!==xml){entry={xml,graph:manifest(xml)};parsed.set(video,entry);}
       if(!entry.graph)return null;
-      return {id,media_id:mediaId,xml,has_audio:hasAudio,graph:entry.graph};
+      return {id,media_id:mediaId,xml,has_audio:hasAudio,graph:entry.graph,...(inFeed?{page:'https://www.instagram.com/reel/'+id+'/',document:url,binding:'rendered_card',active_id:id}:{})};
     }catch(_){return null;}
   };
   const read=(video,url,document=globalThis.document)=>{
-    if(!video.isConnected||video.mediaKeys||video.seeking||video.readyState<2||!visible(video)||!Number.isFinite(video.duration)||video.duration<=0||
+    if(!video.isConnected||video.mediaKeys||video.seeking||video.readyState<2||!presented(video)||!Number.isFinite(video.duration)||video.duration<=0||
       !video.currentSrc?.startsWith('blob:https://www.instagram.com/')&&!video.currentSrc?.startsWith('blob:https://instagram.com/'))return null;
     const data=declaration(video,url,document);
-    return data&&Math.abs(data.graph.duration-video.duration)<=Math.max(.1,data.graph.duration*.0001)?data:null;
+    return data&&Math.abs(data.graph.duration-video.duration)<=Math.max(.25,data.graph.duration*.0001)?data:null;
   };
   const binding=(video,requests,url,live,document=globalThis.document)=>{
-    const data=read(video,url,document);if(!data||!Array.isArray(requests)||!Array.isArray(live)||live.some(v=>v!==video&&v.isConnected&&v.readyState>=2&&v.videoWidth>0&&visible(v)))return null;
+    const data=read(video,url,document);if(!data||!Array.isArray(requests)||!Array.isArray(live)||live.some(v=>v!==video&&v.isConnected&&v.readyState>=2&&v.videoWidth>0&&presented(v)))return null;
     const selected=choose(data.graph,requests,video.videoWidth,video.videoHeight,data.has_audio);if(!selected)return null;
     const simplify=t=>t&&({...t,requests:[...new Set(t.requests)].slice(-8)});
-    return {id:data.id,page:url,media_id:data.media_id,manifest:data.xml,has_audio:data.has_audio,width:video.videoWidth,height:video.videoHeight,duration:video.duration,
+    return {id:data.id,page:data.page||url,...(data.binding?{document:data.document,binding:data.binding,active_id:data.active_id}:{}),media_id:data.media_id,manifest:data.xml,has_audio:data.has_audio,width:video.videoWidth,height:video.videoHeight,duration:video.duration,
       expected_duration:data.graph.duration,start_seconds:video.ended?0:video.currentTime,video:simplify(selected.video),audio:simplify(selected.audio),
       revision:revision(data.id+'\n'+data.media_id+'\n'+data.xml+'\n'+selected.video.url+'\n'+(selected.audio?.url||''))};
   };
@@ -122,5 +146,5 @@ const Thru3DInstagram=(()=>{
     const actual=identity(data);
     return ['id','page','media_id','manifest','revision','width','height','has_audio','video_url','audio_url'].every(k=>actual[k]===expected[k])&&Math.abs(actual.duration-expected.duration)<=.001;
   };
-  return {documentPage,page,range,manifestDocument,manifest,payloadRequest,choose,audioEvidence,declaration,read,binding,identity,matchesIdentity};
+  return {documentPage,page,feed,range,manifestDocument,manifest,payloadRequest,choose,audioEvidence,currentPost,declaration,read,binding,identity,matchesIdentity};
 })();

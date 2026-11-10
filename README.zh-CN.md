@@ -4,14 +4,17 @@
 
 面向 Meta Quest 和 PICO 的独立 VR/MR 媒体播放器，可直接在头显中观看视频和照片、浏览媒体库，并使用支持内容的透视与立体效果。
 
-当前源码版本：**0.17.4**，Android versionCode **83**；另提供实验性的标准 OpenXR Android 导出目标。
+当前源码版本：**0.17.5**，Android versionCode **85**；另提供实验性的标准 OpenXR Android 导出目标。
 
 最低兼容目标为 **Quest 2、PICO Neo3**。源码和构建兼容不等于所有机型的性能、显示及交互均已实机验收。
 
 ## 功能
 
+- 仅本次会话的观看手锁、图片独立默认／沿用上次模式及视频180度旋转预设。
+- 有界Alpha遮罩调度／插值及仅合成层播放时缩减XR眼缓冲，受设备、内存及片源条件限制。
+
 - AI优先OpenCL、可回退Vulkan GPU，无损内部图片传输、平面视频联动防误操作锁及可选被动状态显示，见[GPU／模型范围](docs/MODELS.md)。
-- 浏览器与全局共用控件；国外播放只保留网页内实验按钮，撤回精选／工具栏Beta宣传，爱奇艺／优酷也撤回待验目录标记，见[当前站点状态](docs/WEB_BROWSER.md)。
+- 浏览器与全局共用控件；只为已验Niconico／TikTok／Instagram Reels／Internet Archive路径恢复精选Beta，国外工具栏URL-only Beta继续撤回，爱奇艺／优酷也撤回待验目录标记，见[当前站点状态](docs/WEB_BROWSER.md)。
 
 - 浏览器历史快捷入口，以及带二次确认的重启／退出与会话使用信息。
 

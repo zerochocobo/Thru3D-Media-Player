@@ -4,6 +4,7 @@ extends RefCounted
 ## Either hand holds stock with trigger/pinch; release returns it to its slot.
 const Refreshments := preload("res://scripts/environments/private_beach_refreshments.gd")
 const TABLE_SPOT := Vector2(.82,8.92)
+const TABLE_YAW := PI*.5 # Counter-clockwise from above: launch cap faces the main seat.
 const SPARKLERS := 5
 const CANDLES := 4
 const SPARKLER_SECONDS := 30.0
@@ -64,6 +65,12 @@ static func build(parent: Node,table_source: MeshInstance3D,make: Callable,groun
 		var node := candle(paper,stripe)
 		root.add_child(node); node.transform=Transform3D(Basis.IDENTITY,top+Vector3(.02+index*.055,0,.02))
 		slots.append({"kind":"candle","node":node,"rest":node.transform,"available":true,"restock":0.0})
+	var turn := Basis(Vector3.UP,TABLE_YAW)
+	var arrangement := Transform3D(turn,top-turn*top)
+	cup_node.transform=arrangement*cup_node.transform
+	for slot in slots:
+		slot.node.transform=arrangement*slot.node.transform
+		slot.rest=slot.node.transform
 	var state := {"root":root,"slots":slots,"fixtures":[cup_node],"table":table,"top":top,"held":{},"balls":[],"materials":{"wire":wire,"coat":coat,"paper":paper,"stripe":stripe},
 		"ball_mesh":_ball_mesh(),"time":0.0}
 	Refreshments.build(state,top)
@@ -173,7 +180,7 @@ static func put_back(state: Dictionary,hand: String) -> bool:
 		if held.has(key): held[key].stop()
 	for key in ["ribbon","streaks","node"]:
 		if held.has(key): held[key].queue_free()
-	if held.kind in ["fruit","drink","skewer"]: state.snack_audio.stop()
+	# A mouth-triggered sip/chew finishes even when the hand immediately lets go.
 	state.held.erase(hand)
 	return true
 

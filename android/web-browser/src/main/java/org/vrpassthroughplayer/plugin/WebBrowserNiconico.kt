@@ -7,6 +7,10 @@ import org.json.JSONObject
 object WebBrowserNiconico {
     private const val ENABLED = true // Real Gecko button/HLS audio-video/seek/retained-return closure passed locally.
     fun enabled(value: String) = ENABLED && page(value)!=null
+    fun observing(value: String) = ENABLED && runCatching {
+        val u=URI(value)
+        value.length<=8192 && u.scheme=="https" && u.host=="www.nicovideo.jp" && u.rawUserInfo==null && u.port in setOf(-1,443) && u.rawFragment==null
+    }.getOrDefault(false)
     fun page(value: String): String? = runCatching {
         require(value.length<=8192)
         val u=URI(value)

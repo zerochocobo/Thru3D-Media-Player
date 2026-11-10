@@ -70,7 +70,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                         ?: throw ExtractionFailure(reason)
                 } else currentMedia()
                 if (media?.optBoolean("protected") == true) throw ExtractionFailure("protected_content")
-                val sourcePage = (if (selection.isNotEmpty()) publicPage?.takeIf { it.site == "bilibili" } ?: WebVideoDouyinCapture.page(url,media) ?: WebVideoIqiyiCapture.page(url,media) ?: WebVideoDailymotionCapture.page(url,media) ?: WebVideoOdyseeCapture.page(url,media) ?: WebVideoArchiveCapture.page(url,media) ?: WebVideoStreamableCapture.page(url,media) ?: WebVideoRedBullCapture.page(url,media) ?: WebVideoTedCapture.page(url,media) ?: WebVideoInstagramCapture.page(url,media) ?: WebVideoTikTokCapture.page(url,media) ?: WebVideoTwitchCapture.page(url,media) ?: WebVideoNiconicoCapture.page(url,media) ?: WebVideoYoukuCapture.page(url,media) ?: WebVideoMangoCapture.page(url,media) ?: WebVideoTencentCapture.page(url,media) ?: WebVideoWeiboCapture.page(url, media) else publicPage ?: media?.let { WebVideoBrowserCapture.serverPage(url, it) ?: WebVideoNetworkCapture.page(url, it) })
+                val sourcePage = (if (selection.isNotEmpty()) publicPage?.takeIf { it.site == "bilibili" } ?: WebVideoDouyinCapture.page(url,media) ?: WebVideoIqiyiCapture.page(url,media) ?: WebVideoDailymotionCapture.page(url,media) ?: WebVideoOdyseeCapture.page(url,media) ?: WebVideoArchiveCapture.page(url,media) ?: WebVideoNaverCapture.page(url,media) ?: WebVideoRedditCapture.page(url,media) ?: WebVideoStreamableCapture.page(url,media) ?: WebVideoRedBullCapture.page(url,media) ?: WebVideoTedCapture.page(url,media) ?: WebVideoInstagramCapture.page(url,media) ?: WebVideoTikTokCapture.page(url,media) ?: WebVideoTwitchCapture.page(url,media) ?: WebVideoNiconicoCapture.page(url,media) ?: WebVideoYoukuCapture.page(url,media) ?: WebVideoMangoCapture.page(url,media) ?: WebVideoTencentCapture.page(url,media) ?: WebVideoWeiboCapture.page(url, media) else publicPage ?: media?.let { WebVideoBrowserCapture.serverPage(url, it) ?: WebVideoNetworkCapture.page(url, it) })
                     ?: throw ExtractionFailure("unsupported_page")
                 val pgc = sourcePage.site == "bilibili" && sourcePage.id.matches(Regex("(?:ep|ss)[1-9][0-9]{0,19}:1"))
                 val page = if (pgc) WebVideoBilibiliCapture.episodePage(sourcePage, media)
@@ -102,6 +102,10 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     media.optString("capture_identity")==selection && WebVideoRedBullCapture.page(url,media)==page
                 val streamableEnabled=bilibiliBeta && selection.isNotEmpty() && page.site=="streamable" && media!=null &&
                     media.optString("capture_identity")==selection && WebVideoStreamableCapture.page(url,media)==page
+                val redditEnabled=bilibiliBeta && selection.isNotEmpty() && page.site=="reddit" && media!=null &&
+                    media.optString("capture_identity")==selection && WebVideoRedditCapture.page(url,media)==page
+                val naverEnabled=bilibiliBeta && selection.isNotEmpty() && page.site=="naver" && media!=null &&
+                    media.optString("capture_identity")==selection && WebVideoNaverCapture.page(url,media)==page
                 val archiveEnabled=bilibiliBeta && selection.isNotEmpty() && page.site=="archive" && media!=null &&
                     media.optString("capture_identity")==selection && WebVideoArchiveCapture.page(url,media)==page
                 val odyseeEnabled=bilibiliBeta && selection.isNotEmpty() && page.site=="odysee" && media!=null &&
@@ -110,9 +114,9 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     media.optString("capture_identity")==selection && WebVideoDailymotionCapture.page(url,media)==page
                 val iqiyiEnabled = bilibiliBeta && selection.isNotEmpty() && page.site == "iqiyi" && media != null &&
                     media.optString("capture_identity") == selection && WebVideoIqiyiCapture.page(url,media) == page
-                if (bilibiliBeta && !bilibiliEnabled && !douyinEnabled && !weiboEnabled && !tencentEnabled && !mangoEnabled && !youkuEnabled && !iqiyiEnabled && !niconicoEnabled && !twitchEnabled && !tiktokEnabled && !instagramEnabled && !tedEnabled && !redbullEnabled && !streamableEnabled && !archiveEnabled && !odyseeEnabled && !dailymotionEnabled)
+                if (bilibiliBeta && !bilibiliEnabled && !douyinEnabled && !weiboEnabled && !tencentEnabled && !mangoEnabled && !youkuEnabled && !iqiyiEnabled && !niconicoEnabled && !twitchEnabled && !tiktokEnabled && !instagramEnabled && !tedEnabled && !redbullEnabled && !naverEnabled && !redditEnabled && !streamableEnabled && !archiveEnabled && !odyseeEnabled && !dailymotionEnabled)
                     throw ExtractionFailure("browser_playback_required")
-                val browserQuality = networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled || youkuEnabled || iqiyiEnabled || niconicoEnabled || twitchEnabled || tiktokEnabled || instagramEnabled || tedEnabled || redbullEnabled || streamableEnabled || archiveEnabled || odyseeEnabled || dailymotionEnabled
+                val browserQuality = networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled || youkuEnabled || iqiyiEnabled || niconicoEnabled || twitchEnabled || tiktokEnabled || instagramEnabled || tedEnabled || redbullEnabled || naverEnabled || redditEnabled || streamableEnabled || archiveEnabled || odyseeEnabled || dailymotionEnabled
                 // The browser already selected this quality using the user's site session.
                 // Do not force its member/4K stream through the extractor's default 1080p cap.
                 val maxHeight = WebVideoBrowserCapture.maximumHeight(media, browserQuality, BuildConfig.DEBUG)
@@ -122,7 +126,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     readBrowserResource(uri, headers, prefix, attempt, deadline)
                 }, capabilities)
                 attempt.stage = "browser_capture"
-                var route = if(dailymotionEnabled) "browser_dailymotion" else if(instagramEnabled) "browser_instagram" else if(odyseeEnabled) "browser_odysee" else if(archiveEnabled) "browser_archive" else if(streamableEnabled) "browser_streamable" else if(redbullEnabled) "browser_redbull" else if(tedEnabled) "browser_ted" else if(tiktokEnabled) "browser_tiktok" else if(twitchEnabled) "browser_twitch" else if(niconicoEnabled) "browser_niconico" else if (iqiyiEnabled) "browser_iqiyi" else if (youkuEnabled) "browser_youku" else if (mangoEnabled) "browser_mgtv" else if (tencentEnabled) "browser_tencent" else if (weiboEnabled) "browser_weibo" else if (douyinEnabled) "browser_douyin" else if (bilibiliEnabled) "browser_bilibili" else if (networkEnabled) "browser_network" else "browser_direct"
+                var route = if(dailymotionEnabled) "browser_dailymotion" else if(instagramEnabled) "browser_instagram" else if(odyseeEnabled) "browser_odysee" else if(archiveEnabled) "browser_archive" else if(naverEnabled) "browser_naver" else if(redditEnabled) "browser_reddit" else if(streamableEnabled) "browser_streamable" else if(redbullEnabled) "browser_redbull" else if(tedEnabled) "browser_ted" else if(tiktokEnabled) "browser_tiktok" else if(twitchEnabled) "browser_twitch" else if(niconicoEnabled) "browser_niconico" else if (iqiyiEnabled) "browser_iqiyi" else if (youkuEnabled) "browser_youku" else if (mangoEnabled) "browser_mgtv" else if (tencentEnabled) "browser_tencent" else if (weiboEnabled) "browser_weibo" else if (douyinEnabled) "browser_douyin" else if (bilibiliEnabled) "browser_bilibili" else if (networkEnabled) "browser_network" else "browser_direct"
                 val session by lazy { attempt.stage = "session"; cookies(page.url) }
                 val legacy = if (!browserQuality || media.optBoolean("server")) media?.let {
                     WebVideoBrowserCapture.formats(it, if (it.optBoolean("server")) org.json.JSONArray() else session) { uri, headers ->
@@ -142,6 +146,8 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     else if(tedEnabled) WebVideoTedCapture.resolve(page,media,network)
                     else if(redbullEnabled) WebVideoRedBullCapture.resolve(page,media,network)
                     else if(streamableEnabled) WebVideoStreamableCapture.resolve(page,media,network)
+                    else if(redditEnabled) WebVideoRedditCapture.resolve(page,media,network)
+                    else if(naverEnabled) WebVideoNaverCapture.resolve(page,media,network)
                     else if(archiveEnabled) WebVideoArchiveCapture.resolve(page,media,network)
                     else if(odyseeEnabled) WebVideoOdyseeCapture.resolve(page,media,network)
                     else if(dailymotionEnabled) WebVideoDailymotionCapture.resolve(page,media,network)
@@ -224,6 +230,10 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     if(redbullEnabled && !WebVideoRedBullCapture.keeps(page,media,latest,selected.video))
                         throw ExtractionFailure("browser_playback_required")
                     if(streamableEnabled && !WebVideoStreamableCapture.keeps(page,media,latest,selected.video))
+                        throw ExtractionFailure("browser_playback_required")
+                    if(redditEnabled && !WebVideoRedditCapture.keeps(page,media,latest,selected.video))
+                        throw ExtractionFailure("browser_playback_required")
+                    if(naverEnabled && !WebVideoNaverCapture.keeps(page,media,latest,selected.video))
                         throw ExtractionFailure("browser_playback_required")
                     if(archiveEnabled && !WebVideoArchiveCapture.keeps(page,media,latest,selected.video))
                         throw ExtractionFailure("browser_playback_required")

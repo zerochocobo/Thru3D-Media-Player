@@ -86,7 +86,7 @@ try {
         if (-not $expected.Success -or $relative -cne $expected.Groups[1].Value) { throw "Beach texture mapping differs: $name" }
         Assert-EntryMatchesFile $relative (Join-Path $project $relative)
     }
-    foreach ($name in @($manifest.study.firework_streams) + @('sea-monster-roar.wav')) {
+    foreach ($name in @($manifest.study.firework_streams) + @('sea-monster-roar.wav','skewer-chew.wav','straw-sip.wav')) {
         $mapping = Read-EntryText ($directory + $name + '.import')
         $match = [regex]::Match($mapping, '(?m)^path="res://([^"]+\.sample)"')
         if (-not $match.Success) { throw "Beach audio has no exported mapping: $name" }

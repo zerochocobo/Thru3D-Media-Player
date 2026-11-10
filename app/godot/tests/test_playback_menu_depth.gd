@@ -14,6 +14,9 @@ func run() -> void:
 	layer.radius = INF
 	check(is_inf(layer.radius), "Installed engine accepts OpenXR infinite radius without approximation")
 	layer.free()
+	check(Mono.native_runtime("Oculus", "Oculus Quest2", false) and Mono.native_runtime("Meta Horizon", "", false), "Meta runtimes keep the native infinite-radius menu layer")
+	for pico in [["PICO OpenXR Runtime", "", false], ["pxr", "", false], ["", "PICO 4", false], ["Unknown", "", true]]:
+		check(not Mono.native_runtime(pico[0], pico[1], pico[2]), "PICO draws zero-parallax controls in the eye buffer")
 	for rect in [Rect2(-0.5,-0.7,1.0,0.3), Rect2(0.1,0.2,0.7,0.8), Rect2(-1,-1,2,2)]:
 		var angles := Mono.capture_angles(rect)
 		for point in [rect.position, rect.end, rect.get_center(), Vector2(rect.position.x,rect.end.y), Vector2(rect.end.x,rect.position.y)]:

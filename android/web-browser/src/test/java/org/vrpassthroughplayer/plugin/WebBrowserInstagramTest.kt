@@ -19,6 +19,9 @@ class WebBrowserInstagramTest {
     @Test fun explicitSilentPostRequiresARealMediaPayloadAndTheOriginalDeclaredFile() {
         val item=media()
         assertNotNull(WebBrowserInstagram.metadata(item,page))
+        val plural=media().put("frame",page.replace("/reel/","/reels/"))
+        plural.getJSONObject("instagram").put("page",page.replace("/reel/","/reels/"))
+        assertNotNull(WebBrowserInstagram.metadata(plural,page.replace("/reel/","/reels/")))
         val graph=WebBrowserInstagram.manifest(xml)!!
         assertEquals(file,graph.tracks.single().url);assertEquals(4.967,graph.duration,.0001)
         assertTrue(WebBrowserInstagram.payloadRequest(graph.tracks.single(),payload))
@@ -58,5 +61,23 @@ class WebBrowserInstagramTest {
             {it.getJSONObject("instagram").put("has_audio",true)}
         )){val changed=media();change(changed);assertFalse(WebBrowserInstagram.matchesIdentity(changed,identity,page))}
         assertFalse(identity.has("headers"));assertFalse(identity.has("instagram_source"))
+    }
+    @Test fun reelsKeepTheRealDocumentAndRequireTheCurrentRenderedPost() {
+        val root="https://www.instagram.com/reels/"
+        fun feedMedia()=media().put("frame",root).also{it.getJSONObject("instagram").put("document",root).put("binding","rendered_card").put("active_id","Chunk8-jurw")}
+        val item=feedMedia();assertNotNull(WebBrowserInstagram.metadata(item,root))
+        assertTrue(WebBrowserInstagram.matchesIdentity(item,WebBrowserInstagram.identity(WebBrowserInstagram.metadata(item,root)!!),root))
+        for(change in listOf<(JSONObject)->Unit>(
+            {it.getJSONObject("instagram").remove("document")},{it.getJSONObject("instagram").put("active_id","next_post")},
+            {it.getJSONObject("instagram").put("binding","guessed")},{it.getJSONObject("instagram").put("page",page.replace("instagram.com","other.test"))},
+            {it.put("frame",root+"?different=1")},{it.put("protected",true)}
+        )){val changed=feedMedia();change(changed);assertNull(WebBrowserInstagram.metadata(changed,root))}
+        assertNull(WebBrowserInstagram.metadata(feedMedia().put("frame","https://www.instagram.com/explore/"),"https://www.instagram.com/explore/"))
+    }
+    @Test fun samePostMpdTailIsBoundedToAQuarterSecond() {
+        val item=media().put("duration",5.136);item.getJSONObject("instagram").put("duration",5.136)
+        assertNotNull(WebBrowserInstagram.metadata(item,page))
+        item.put("duration",5.218).getJSONObject("instagram").put("duration",5.218)
+        assertNull(WebBrowserInstagram.metadata(item,page))
     }
 }

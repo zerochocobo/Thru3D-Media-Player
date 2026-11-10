@@ -13,3 +13,5 @@ Distributed builds include beach cinema, loungers/free movement, sun/moon and da
 0.17.3 adds lower-cost Adreno6xx beach shader paths, darker low-tier nighttime water, lounger adjustments and Traditional Chinese/Japanese labels. Low-tier compositor video sampling defaults to unfiltered. These changes do not establish Quest2/PICONeo3 scene/AI acceptance; external scenery payloads remain required and excluded from public Git.
 
 0.17.4 adds beach interaction/prop and shoreline/celestial source updates, corrected panel/controller ownership and shared inexpensive sky rendering. Raw scene/model/texture/audio payloads, celestial generated audio and tools/beach studies remain excluded. The public runtime integration is not a standalone licensed asset bundle or low-tier performance guarantee.
+
+0.17.5 retains beach teleport/tabletop/foley/meteor runtime updates without exporting model/scene/texture/audio payloads or modeling fixtures. External resources remain mandatory for complete builds; no personal audio samples are included.

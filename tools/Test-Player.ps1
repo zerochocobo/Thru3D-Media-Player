@@ -226,6 +226,8 @@ if ((Get-Content (Join-Path $logDirectory 'c04-host-regression.log') -Raw) -matc
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'video-layer-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Compositor video layer regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_mpv_rotation.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'mpv-rotation-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'mpv-rotation-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'MPV source rotation regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_layer_return_guard.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'layer-return-guard-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'layer-return-guard-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Layer return guard regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_frame_picture_layer.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'frame-picture-layer-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'frame-picture-layer-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Frame picture layer regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_subtitle_layers.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'subtitle-layers-host.log')

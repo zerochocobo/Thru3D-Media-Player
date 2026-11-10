@@ -10,7 +10,7 @@ object WebBrowserRedBull {
         val uri=URI(value)
         require(value.length<=8192 && uri.scheme=="https" && uri.host in setOf("www.redbull.tv","redbull.tv") &&
             uri.rawUserInfo==null && uri.port in setOf(-1,443) && uri.rawFragment==null)
-        Regex("/[a-z]{2}(?:-[A-Z]{2})?/page/(rrn:content:(?:films|videos|episodes):[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(?:/[a-z0-9-]+)?/?")
+        Regex("/[a-z]{2}(?:-[A-Z]{2}|_[A-Z]{2,3})?/page/(?:page:)?(rrn:content:(?:films|videos|episodes):[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})(?:/[a-z0-9-]+)?/?")
             .matchEntire(uri.rawPath.orEmpty())?.groupValues?.get(1)
     }.getOrNull()
     fun document(value: String): Boolean=runCatching {

@@ -9,10 +9,10 @@ enum Phase { HIDDEN, GLANCE, EXPANDED }
 enum Level { COARSE, MEDIUM, FINE }
 
 ## Nothing here is destructive: the keys only move within the current video or open the menu.
-const BUTTONS := ["rewind", "play", "forward", "menu"]
+const BUTTONS := ["rewind", "play", "forward", "menu", "hand_lock"]
 ## Keys sit symmetrically about the centre, the menu straight above play.
 const BUTTON_SPOTS := {"rewind": Vector2(-0.044, -0.006), "play": Vector2(0.0, -0.006),
-	"forward": Vector2(0.044, -0.006), "menu": Vector2(0.0, 0.046)}
+	"forward": Vector2(0.044, -0.006), "menu": Vector2(0.0, 0.046), "hand_lock": Vector2(-0.044, -0.056)}
 const BUTTON_RADIUS := 0.017
 const PLAY_RADIUS := 0.022
 const MENU_RADIUS := 0.014
@@ -96,6 +96,10 @@ var skip_total := 0
 ## Seconds since the last press, per target, for press ripples.
 var ripples := {}
 var media := {}
+var hand_lock_progress := 0.0
+var _lock_elapsed := 0.0
+var _lock_complete := false
+var _lock_unlock := false
 ## Last glance measurements, for diagnostics.
 var metrics := {}
 
@@ -214,6 +218,8 @@ func approach() -> float:
 	return clampf((ARM_DEPTH * 2.0 - tip_local.z) / (ARM_DEPTH * 2.0 - PRESS_DEPTH), 0.0, 1.0)
 
 func button_enabled(id: String) -> bool:
+	if id == "hand_lock": return bool(media.get("hand_lock_available", false))
+	if media.get("hand_locked", false): return false
 	return bool(media.get("has_video", true)) if id == "play" else true
 
 static func button_position(id: String) -> Vector2:
@@ -235,6 +241,7 @@ static func arc_point(fraction: float) -> Vector2:
 func _reset() -> void:
 	phase = Phase.HIDDEN
 	hover = ""; pressed = ""; scrub = {}; charge = 0.0; locked = false
+	hand_lock_progress = 0.0; _lock_elapsed = 0.0; _lock_complete = false
 	_glance_time = 0.0; _lost_time = 0.0; _idle_time = 0.0; _near_time = 0.0
 	_armed = false; _rearmed = true; _skip_target = -1; _skip_age = INF
 	face_valid = false; tip_valid = false
@@ -294,6 +301,7 @@ func _placement(head: Transform3D) -> Transform3D:
 func _collapse() -> void:
 	phase = Phase.GLANCE if face_valid else Phase.HIDDEN
 	hover = ""; pressed = ""; scrub = {}; _near_time = 0.0; locked = false
+	hand_lock_progress = 0.0; _lock_elapsed = 0.0; _lock_complete = false
 
 func _update_expanded(delta: float, actions: Array[Dictionary]) -> void:
 	_idle_time = 0.0 if owns_tip() or _lost_time == 0.0 else _idle_time + delta
@@ -301,6 +309,7 @@ func _update_expanded(delta: float, actions: Array[Dictionary]) -> void:
 		# Lost tracking cancels a drag instead of committing whatever the last frame showed.
 		if not scrub.is_empty(): actions.append({"op": "scrub_end"})
 		scrub = {}; pressed = ""; hover = ""; _armed = false
+		hand_lock_progress = 0.0; _lock_elapsed = 0.0; _lock_complete = false
 	else:
 		var planar := Vector2(tip_local.x, tip_local.y)
 		var depth := tip_local.z
@@ -309,7 +318,16 @@ func _update_expanded(delta: float, actions: Array[Dictionary]) -> void:
 		else:
 			hover = _target(planar) if depth < ARM_DEPTH * 2.0 and depth > -0.04 else ""
 			if not pressed.is_empty():
-				if depth > RELEASE_DEPTH or hover != pressed: _release()
+				if depth > RELEASE_DEPTH or hover != pressed:
+					if pressed == "hand_lock" and _lock_complete and _lock_unlock and depth > RELEASE_DEPTH and _target(planar) == "hand_lock":
+						actions.append({"op": "hand_lock", "locked": false})
+					_release()
+				elif pressed == "hand_lock":
+					_lock_elapsed += clampf(delta, 0.0, 0.05)
+					hand_lock_progress = minf(1.0, _lock_elapsed)
+					if _lock_elapsed >= 1.0 and not _lock_complete:
+						_lock_complete = true
+						if not _lock_unlock: actions.append({"op": "hand_lock", "locked": true})
 				elif pressed in ["rewind", "forward"]: _repeat(delta, actions)
 			elif depth > ARM_DEPTH:
 				_armed = true
@@ -323,10 +341,13 @@ func _target(planar: Vector2) -> String:
 	var best := ""
 	var best_gap := INF
 	for id in BUTTONS:
+		if id == "hand_lock" and not button_enabled(id): continue
+		if media.get("hand_locked", false) and id != "hand_lock": continue
 		var gap := planar.distance_to(button_position(id)) - button_radius(id)
 		if gap < CATCH_MARGIN and gap < best_gap:
 			best = id; best_gap = gap
 	if not best.is_empty(): return best
+	if media.get("hand_locked", false): return ""
 	var fraction := arc_fraction(planar)
 	if absf(planar.length() - PROGRESS_RING) < PROGRESS_BAND and fraction > -0.05 and fraction < 1.05: return "progress"
 	return ""
@@ -336,6 +357,9 @@ func _press(target: String, planar: Vector2, actions: Array[Dictionary]) -> void
 	pressed = target
 	ripples[target] = 0.0
 	match target:
+		"hand_lock":
+			_lock_elapsed = 0.0; _lock_complete = false; hand_lock_progress = 0.0
+			_lock_unlock = bool(media.get("hand_locked", false))
 		"progress":
 			var start := float(media.get("position_ms", 0))
 			scrub = {"start": start, "value": start, "angle": atan2(planar.x, planar.y), "slop": 0.0, "engaged": false}
@@ -353,6 +377,7 @@ func _press(target: String, planar: Vector2, actions: Array[Dictionary]) -> void
 
 func _release() -> void:
 	pressed = ""; _armed = false
+	hand_lock_progress = 0.0; _lock_elapsed = 0.0; _lock_complete = false
 
 func _repeat(delta: float, actions: Array[Dictionary]) -> void:
 	_repeat_time += delta

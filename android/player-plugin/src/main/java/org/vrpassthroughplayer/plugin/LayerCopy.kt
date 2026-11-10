@@ -61,6 +61,7 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
     @Volatile private var lastError = ""
     @Volatile private var closed = false
     @Volatile private var delayMs = DEFAULT_DELAY_MS
+    @Volatile private var blendDelayMs = 0L // the part of delayMs that waits for the following mask
 
     override val surface: Surface get() = reader.surface
     @Volatile override var keepFrames = false
@@ -240,12 +241,19 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
     override fun take(): LayerFrame? = synchronized(this) { latest.also { latest = null } }
     override fun releaseThrough(sequence: Long) {} // frames go at their own pace; masks wait for them
     override fun releaseStale(limitMs: Long) {}
-    override fun maskLatency(ms: Double) {
-        if (ms.isFinite()) delayMs = (ms + MARGIN_MS).toLong().coerceIn(MIN_DELAY_MS, MAX_DELAY_MS)
+    override fun maskLatency(ms: Double, blendMs: Double) {
+        if (!ms.isFinite()) return
+        // The wait for the following mask only while the reader holds that many frames (not the memory
+        // saver's packed copies): frames drawn early would show without either mask.
+        val fps = maxFps.takeIf { it > 0 } ?: UNCAPPED_FPS
+        val blend = blendMs.takeIf { it.isFinite() && it > 0 && !compact && ms + MARGIN_MS + it <= MAX_DELAY_MS &&
+            (ms + MARGIN_MS + it) * fps / 1000.0 <= heldLimit - 1 } ?: 0.0
+        blendDelayMs = blend.toLong()
+        delayMs = (ms + MARGIN_MS + blend).toLong().coerceIn(MIN_DELAY_MS, MAX_DELAY_MS)
     }
 
     override fun stats(): JSONObject = JSONObject().put("arrived", arrived.get()).put("drawn", drawn.get()).put("failed", failed.get())
-        .put("early", early.get()).put("held_limit", heldLimit).put("compact", compact).put("packed_slots", packedSlots).put("skipped", skipped.get()).put("max_fps", maxFps).put("hold", hold).put("delay_ms", delayMs).put("presented", presented)
+        .put("early", early.get()).put("held_limit", heldLimit).put("compact", compact).put("packed_slots", packedSlots).put("skipped", skipped.get()).put("max_fps", maxFps).put("hold", hold).put("delay_ms", delayMs).put("blend_delay_ms", blendDelayMs).put("presented", presented)
         .put("distinct_buffers", bufferIds.size).put("draw_ms", drawMs).put("size", lastSize).put("error", lastError)
 
     /** Waits (up to a second) for the copy thread to let go of the compositor surface, which its owner
@@ -284,5 +292,6 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
         private const val MIN_DELAY_MS = 40L
         private const val MAX_DELAY_MS = 250L
         private const val MARGIN_MS = 20.0
+        private const val UNCAPPED_FPS = 60 // frames a second to budget for when no Alpha rate is set
     }
 }

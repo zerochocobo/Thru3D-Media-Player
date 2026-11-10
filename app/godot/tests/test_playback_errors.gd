@@ -124,6 +124,24 @@ func _run() -> void:
 	video._access_pending = {"uri": "content://documents/movie.strm", "title": "movie.strm"}
 	video._on_local_access(42, JSON.stringify({"uri": "content://documents/movie.strm", "state": "error", "error": "LOCAL_DOCUMENT_MISSING"}))
 	check(menu.visible and menu._failure_open and video.picker_error == "LOCAL_DOCUMENT_MISSING", "A missing document grant is also reported visibly")
+	var usb_doc := "content://com.android.externalstorage.documents/tree/1234-ABCD%3A/document/1234-ABCD%3Amovie.mp4"
+	check(Main.usb_takeover_offer(true, usb_doc, "LOCAL_DOCUMENT_PROVIDER_FAILED", "", {}) 		and Main.usb_takeover_offer(true, usb_doc, "", "", {"reason": "storage_provider_failed"}), "PICO provider failures on system storage offer the USB takeover")
+	check(not Main.usb_takeover_offer(false, usb_doc, "LOCAL_DOCUMENT_PROVIDER_FAILED", "", {}) 		and not Main.usb_takeover_offer(true, "content://media/external/video/1", "LOCAL_DOCUMENT_PROVIDER_FAILED", "", {}) 		and not Main.usb_takeover_offer(true, usb_doc, "LOCAL_DOCUMENT_MISSING", "", {"reason": "not_found"}), "Other devices, sources and failures keep the plain error")
+	var offer_state: Callable = menu.state_provider
+	var requested: Array[String] = []
+	menu.action_requested.connect(func(operation): requested.append(operation))
+	menu.state_provider = func(): return offer_state.call().merged({"usb_takeover_offer": true}, true)
+	menu.show_playback_error()
+	var takeover: Array = menu._buttons.filter(func(button): return button.target == Menu.USB_TAKEOVER)
+	var details: Array = menu._buttons.filter(func(button): return button.target == Menu.ERROR_DETAILS)
+	check(takeover.size() == 1 and details.size() == 1 and takeover[0].node.position.y > details[0].node.position.y + 0.06, "The takeover sits above error details without overlap")
+	if takeover.size() == 1:
+		var hit := menu.ray_hit(takeover[0].node.global_position + menu.global_transform.basis.z, -menu.global_transform.basis.z)
+		if not hit.is_empty(): menu._activate_hit(hit)
+	check(requested == ["usb_takeover"] and not menu._failure_open, "One ray press requests the takeover and closes the failure dialog")
+	menu.state_provider = offer_state; menu.show_playback_error()
+	check(not menu._buttons.any(func(button): return button.target == Menu.USB_TAKEOVER), "Without the offer the failure dialog shows no takeover")
+	menu.dismiss()
 	video.picker_error = ""
 	# Ordinary files share visible failures, output and rebuffer deadlines with STRM.
 	video.local_uri = "smb://saved/ordinary.mkv"

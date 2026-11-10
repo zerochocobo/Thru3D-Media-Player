@@ -184,6 +184,8 @@ const PATHS := {
 	"bolt": '<path d="M14 2L7 13H11L10 22 17 10H13Z" fill="white" stroke="none"/>',
 	"watch": '<path d="M9 2H15L16 6M8 6L9 2M9 22H15L16 18M8 18L9 22"/><circle cx="12" cy="12" r="6"/><path d="M12 9V12L14 13"/>',
 	"watch_off": '<path d="M6 2H11L12 6M5 6L6 2M6 22H11L12 18M5 18L6 22"/><circle cx="8.5" cy="12" r="6"/><path d="M8.5 9V12L10.5 13M17 9L23 15M23 9L17 15"/>',
+	"hand_locked": '<path d="M9 20H7L3 13Q2 10 4 10L6 13V5Q6 3 8 4V10V3Q9 1 11 3V10V4Q13 2 14 4V10V6Q16 4 17 6V10" stroke-width="1.5"/><rect x="11" y="15" width="11" height="8" rx="2"/><path d="M13 15V12A3.5 3.5 0 0 1 20 12V15"/>',
+	"hand_unlocked": '<path d="M9 20H7L3 13Q2 10 4 10L6 13V5Q6 3 8 4V10V3Q9 1 11 3V10V4Q13 2 14 4V10V6Q16 4 17 6V10" stroke-width="1.5"/><rect x="11" y="15" width="11" height="8" rx="2"/><path d="M13 15V12A3.5 3.5 0 0 1 20 12"/>',
 	"lock": '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7A4 4 0 0 1 16 7V11"/>',
 	"unlock": '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7A4 4 0 0 1 15.5 5"/>',
 	"voice": '<circle cx="8" cy="8" r="3.5"/><path d="M2 21C2 15.5 14 15.5 14 21M17 6.5A4 4 0 0 1 17 12.5M20 4A8 8 0 0 1 20 15"/>'}

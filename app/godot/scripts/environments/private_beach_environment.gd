@@ -399,7 +399,8 @@ func _process(delta: float) -> void:
 		_apply_cloud_light()
 	_sync_shadow()
 	fireworks.advance(delta)
-	if celestial_eggs: celestial_eggs.advance(delta, _viewer_eye())
+	if celestial_eggs:
+		celestial_eggs.advance(delta, _viewer_eye(), _night_mix > .65)
 	if _busy_flash>0.0:
 		_busy_flash=maxf(0.0,_busy_flash-delta)
 		if _busy_flash==0.0: _update_control_indicator()
@@ -639,6 +640,7 @@ func _commit_screen(layout: Dictionary,final := true) -> void:
 			var name_ := str(mesh.name)
 			if name_.begins_with("Screen_") or name_.begins_with("Support_") or name_.begins_with("Foot_"): mesh.free()
 	_screen_node=node; _content.add_child(node); screen_layout=layout
+	if celestial_eggs: celestial_eggs.set_view_context(screen_layout,bundle.config.shore.points)
 	if final: _sync_screen_casters()
 	for material in _surfaces:
 		material.set_shader_parameter("screen_origin",layout.center)
@@ -826,7 +828,7 @@ func _install(loaded: Resource) -> void:
 	_control=FireworkControl.build(_content,navigation.ground(5.2,8.0),func() -> ShaderMaterial:
 		var material := _material(GRILL)
 		material.set_shader_parameter("wood_color",bundle.textures.wood_color)
-		return material,handheld.top)
+		return material,handheld.top,Handheld.TABLE_YAW)
 	_surf=AudioStreamPlayer.new(); _surf.name="Surf"; _content.add_child(_surf)
 	if ResourceLoader.exists(SURF_PATH): _surf.stream=load(SURF_PATH)
 	_surf_level=0.0
@@ -835,6 +837,7 @@ func _install(loaded: Resource) -> void:
 	fireworks.configure_audio_streams(null,bundle.firework_streams)
 	celestial_eggs=CelestialEggs.new(); celestial_eggs.name="CelestialEasterEggs"; _content.add_child(celestial_eggs)
 	celestial_eggs.configure(float(bundle.config.shore.sea_level),_optional_stream("sea-monster-roar.wav"))
+	celestial_eggs.set_view_context(screen_layout,bundle.config.shore.points)
 	_drag.hit_degrees=DRAG_HIT_DEGREES
 	_halo=MeshInstance3D.new(); _halo.name="CelestialHalo"; _halo.visible=false
 	var halo_mesh := QuadMesh.new()

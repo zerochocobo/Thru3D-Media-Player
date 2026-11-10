@@ -1,6 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
 const context=vm.createContext({URL});vm.runInContext(fs.readFileSync(__dirname+'/../../main/assets/web-browser/iqiyi.js','utf8')+';globalThis.capture=Thru3DIqiyi.capture;globalThis.matches=Thru3DIqiyi.matches;globalThis.bind=Thru3DIqiyi.binding;globalThis.restore=Thru3DIqiyi.restore;',context);
 const page='https://www.iqiyi.com/v_current123.html';
+const largeFixture=require('./iqiyi-large-fixture.cjs');
 function fixture(){
   const video={isConnected:true,readyState:4,videoWidth:1280,videoHeight:720,duration:25,currentSrc:'blob:unit-current',seeking:false};
   const track={_selected:true,vid:'currentstream',bid:500,ff:'ts',scrsz:'1280x720',duration:25,drmType:1,
@@ -9,10 +10,44 @@ function fixture(){
   const view={QiyiPlayerProphetData:{tvId:'42',dashData:{data:{tvid:'42',program:{video:[track]}}}},playback:{_element:video,playingPlayback:{_info:info}}};
   return {view,track,info,video,dom:{querySelectorAll:()=>[video]}};
 }
+
+test('large complete declarations use the checked JS-to-JVM lossless transport vector',()=>{
+  const f=largeFixture(),data=context.capture(f.view,page,f.dom);
+  assert.equal(data.ready,true);assert.ok(context.bind(f.video,data));
+  const wire=vm.runInContext('Thru3DIqiyi.transport',context)(data);
+  assert.ok(f.playlist.length>256*1024);assert.ok(f.playlist.length<512*1024);
+  assert.equal(wire.playlist,undefined);assert.equal(wire.playlist_delta.chars,f.playlist.length);
+  assert.ok(JSON.stringify(wire).length<128*1024);
+  const vector=JSON.parse(fs.readFileSync(__dirname+'/../resources/iqiyi-large-wire.json','utf8'));
+  assert.deepEqual(JSON.parse(JSON.stringify(wire)),vector.iqiyi);
+  assert.equal(context.matches(data,{kind:'segment',url:f.url(435),at:Date.now()}),true);
+  const old=wire.playlist_delta;f.track.m3u8=f.playlist.replace('UNIT%2bEXACT','CHANGED%2bEXACT');
+  const next=context.capture(f.view,page,f.dom),updated=vm.runInContext('Thru3DIqiyi.transport',context)(next);
+  assert.notEqual(updated.playlist_delta,old);assert.notEqual(next.revision,data.revision);
+});
+
+test('packing never truncates an oversized declaration or hides a protected tail',()=>{
+  const f=largeFixture();f.track.m3u8=f.playlist+'#EXT-X-KEY:METHOD=SAMPLE-AES,URI="PRIVATE"\n';
+  assert.equal(context.capture(f.view,page,f.dom).status,'protected_manifest');
+  f.track.m3u8='#EXTM3U\n#'+'x'.repeat(512*1024);
+  assert.equal(context.capture(f.view,page,f.dom).status,'oversize_playlist');
+});
 test('captures exactly the website-selected decoded item and track, but never grants protection clearance',()=>{
   const f=fixture(),c=context.capture(f.view,page,f.dom);assert.equal(c.ready,true);assert.equal(c.vid,'currentstream');assert.equal(c.bid,500);
   assert.equal(c.protection_unverified,true);assert.equal(c.drm_type,1);
   f.view.__lastAccJson={tvId:'next'};assert.equal(context.capture(f.view,page,f.dom).tvid,'42');
+});
+
+test('readiness diagnostics separate a current SDK declaration from the unchanged dispatch and timeline gates',()=>{
+  const f=fixture(),inspect=vm.runInContext('Thru3DIqiyi.diagnostics',context);
+  const data={ready:true,status:'bound',src:f.video.currentSrc,width:1280,height:720,duration:25,drm_type:1,
+    has_drm:false,has_root_drm:false,dispatch_status:'selected_level',dispatchers:[{}],dispatch_duration_ms:31000,
+    playlist:'PRIVATE_URL_OR_TOKEN'};
+  let d=inspect(f.video,data);assert.equal(d.capture_ready,true);assert.equal(d.binding_ready,false);assert.equal(d.timeline_matches,false);
+  assert.equal(d.dispatch_ready,true);assert.equal(d.dispatcher_count,1);assert.equal(JSON.stringify(d).includes('PRIVATE'),false);
+  data.dispatch_duration_ms=25000;d=inspect(f.video,data);assert.equal(d.binding_ready,true);assert.equal(d.timeline_matches,true);
+  data.drm_type=2;assert.equal(inspect(f.video,data).binding_ready,false);
+  assert.equal(inspect(f.video,{ready:false,status:'wrong_track'}).status,'wrong_track');
 });
 test('ads, replacement items, tracks, elements and dimensions cannot borrow the current declaration',()=>{
   for(const mutate of [f=>f.info.type='Ad',f=>f.info.id='43',f=>f.info.vid='next',f=>f.info._bid=100,
@@ -40,6 +75,27 @@ test('protected manifests and page getters do not become private capture input',
   let calls=0;Object.defineProperty(f.view,'QiyiPlayerProphetData',{get(){calls++;throw Error();}});
   assert.equal(context.capture(f.view,page,f.dom).ready,false);assert.equal(calls,0);
   assert.equal(context.capture(f.view,'https://evil.test/v_current123.html',f.dom).ready,false);
+});
+
+test('unsupported declarations keep the same rejection gates with fixed nonprivate reasons',()=>{
+  const inspect=vm.runInContext('Thru3DIqiyi.diagnostics',context);
+  for(const [change,status] of [
+    [{ff:'PRIVATE_FORMAT'},'unsupported_container'],
+    [{m3u8:{private:'PRIVATE_DECLARATION'}},'missing_playlist'],
+    [{m3u8:'#EXTM3U\n#'+'x'.repeat(128*1024)},'oversize_playlist'],
+    [{m3u8:'{"private":"PRIVATE_DECLARATION"}'},'non_hls_playlist']]){
+    const f=fixture();Object.assign(f.track,change);
+    const captured=context.capture(f.view,page,f.dom),d=inspect(f.video,captured);
+    assert.equal(captured.ready,false);assert.equal(captured.status,status);
+    assert.equal(Object.keys(captured).sort().join(','),'ready,status');
+    assert.equal(d.capture_ready,false);assert.equal(d.binding_ready,false);
+    assert.equal(JSON.stringify(d).includes('PRIVATE'),false);
+  }
+  const f=fixture(),base=f.track.m3u8;
+  f.track.m3u8=base+'\n#'+'x'.repeat(128*1024-base.length-2);
+  assert.equal(f.track.m3u8.length,128*1024);
+  assert.equal(context.capture(f.view,page,f.dom).ready,true);
+  f.track.m3u8+='x';assert.equal(context.capture(f.view,page,f.dom).status,'oversize_playlist');
 });
 test('actual current-file observations keep their signed URL and reject other files, items and stale requests',()=>{
   const f=fixture(),current=context.capture(f.view,page,f.dom);

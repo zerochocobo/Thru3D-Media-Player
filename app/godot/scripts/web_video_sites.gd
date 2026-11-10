@@ -34,9 +34,11 @@ const FEATURED := [
 const NATIVE_PLAYBACK := ["Bilibili", "YouTube", "Weibo", "Tencent Video", "Mango TV", "Youku",
 	"Twitch", "TikTok", "Instagram Reels", "TED", "Niconico", "iQIYI", "Douyin", "Dailymotion", "Streamable", "Internet Archive", "Odysee"]
 # Catalogue badges require the ordinary featured-site journey, not a fixed detail sample.
-# Foreign adapters stay enabled in Android and on their actual current-video buttons;
-# their broad catalogue badges are withdrawn while the reported entry failures are fixed.
-const BETA_PLAYBACK := ["Bilibili", "Weibo", "Tencent Video", "Mango TV", "Douyin"]
+# These four foreign entries have ordinary Featured selection, real device
+# playback/seek and retained-page return evidence from 2026-11-10.
+# Other foreign badges remain withdrawn; fixed detail samples do not qualify.
+const BETA_PLAYBACK := ["Bilibili", "Weibo", "Tencent Video", "Mango TV", "Douyin",
+	"Niconico", "TikTok", "Instagram Reels", "Internet Archive"]
 const BETA_ICON := "play" # Same triangle as the page's Play Beta action.
 # Only Chinese sites retain a URL-only presentation fallback. Foreign Beta
 # experiments remain inside the webpage instead of advertising an entire domain.

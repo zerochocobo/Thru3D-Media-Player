@@ -6,6 +6,26 @@ const Thru3DIqiyi = (() => {
   let cachedDeclaration=null;
   const page=value=>{try{const u=new URL(value);const id=/^\/([vw]_[A-Za-z0-9]+)\.html$/.exec(u.pathname)?.[1];return u.origin==='https://www.iqiyi.com'&&!u.username&&!u.password&&!u.hash&&id?{id}:null;}catch(_){return null;}};
   const revision=text=>{let h=2166136261;for(let i=0;i<text.length;i++)h=Math.imul(h^text.charCodeAt(i),16777619);return(h>>>0).toString(16);};
+  const playlistLimit=512*1024,wireLimit=128*1024;
+  // Consecutive HLS segment URLs normally differ only in their byte/time
+  // selectors. Copy exact UTF-16 prefixes/suffixes from the line two before;
+  // never parse, reorder or regenerate signed query parameters here.
+  const playlistPayload=text=>{
+    if(text.length<=wireLimit)return {playlist:text};
+    const lines=text.split('\n');if(lines.length>8192)return null;
+    const rows=lines.map((line,i)=>{
+      const previous=i>=2?lines[i-2]:'';let prefix=0,suffix=0;
+      while(prefix<Math.min(line.length,previous.length)&&line[prefix]===previous[prefix])prefix++;
+      while(suffix<Math.min(line.length,previous.length)-prefix&&line[line.length-1-suffix]===previous[previous.length-1-suffix])suffix++;
+      return [prefix,suffix,line.slice(prefix,line.length-suffix)];
+    });
+    const result={playlist_delta:{version:1,chars:text.length,rows}};
+    return JSON.stringify(result).length<=wireLimit?result:null;
+  };
+  const transport=data=>{
+    if(!data?.ready||cachedDeclaration?.text!==data.playlist)return null;
+    const {playlist,...rest}=data;return {...rest,...cachedDeclaration.payload};
+  };
   const capture=(view,page,dom)=>{
     const fail=status=>({ready:false,status});
     try{
@@ -33,12 +53,16 @@ const Thru3DIqiyi = (() => {
       const sdkDuration=own(info,'duration'),declaredDuration=own(track,'duration');
       if(own(track,'scrsz')!==width+'x'+height||!Number.isFinite(sdkDuration)||!Number.isFinite(declaredDuration)||Math.abs(sdkDuration/1000-duration)>2||Math.abs(declaredDuration-duration)>2)return fail('wrong_dimensions_or_duration');
       const playlist=own(track,'m3u8'),ff=own(track,'ff');
-      if(!['ts','265ts'].includes(ff)||typeof playlist!=='string'||playlist.length>128*1024||!playlist.trim().startsWith('#EXTM3U'))return fail('unsupported_declaration');
+      if(!['ts','265ts'].includes(ff))return fail('unsupported_container');
+      if(typeof playlist!=='string')return fail('missing_playlist');
+      if(playlist.length>playlistLimit)return fail('oversize_playlist');
+      if(!playlist.trim().startsWith('#EXTM3U'))return fail('non_hls_playlist');
       if(/#EXT-X-(?:SESSION-)?KEY:/i.test(playlist))return fail('protected_manifest');
       if(!cachedDeclaration||cachedDeclaration.text!==playlist||cachedDeclaration.page!==page){
+        const payload=playlistPayload(playlist);if(!payload)return fail('oversize_playlist');
         const refs=playlist.split(/\r?\n/).map(v=>v.trim()).filter(v=>v&&!v.startsWith('#')).map(v=>new URL(v,page));
         const seconds=[...playlist.matchAll(/^\s*#EXTINF:([0-9.]+)/gm)].reduce((sum,m)=>sum+Number(m[1]),0);
-        cachedDeclaration={page,text:playlist,refs,seconds,revision:revision(playlist)};
+        cachedDeclaration={page,text:playlist,refs,seconds,revision:revision(playlist),payload,payloadChars:JSON.stringify(payload).length};
       }
       const drm=own(track,'drmType');
       const next=own(view,'__lastAccJson');
@@ -54,13 +78,13 @@ const Thru3DIqiyi = (() => {
           const fragments=own(matching[0],'fragmentList');
           if(Array.isArray(fragments)&&fragments.length>0&&fragments.length<=2048){
             const declared=cachedDeclaration.refs;
-            const rows=[];let chars=playlist.length+4096;
+            const rows=[];let chars=cachedDeclaration.payloadChars+4096;
             for(let i=0;i<fragments.length;i++){
               const f=own(fragments,String(i)),raw=own(f,'dispatchUrl'),source=own(f,'sourceID'),start=own(f,'sPos'),end=own(f,'ePos');
               if(typeof raw!=='string'||raw.length>16384||typeof source!=='string'||!/^[A-Za-z0-9_-]{1,160}$/.test(source)||!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<0||end<=start)break;
               const uri=new URL(raw,page);
               if(!/^https?:$/.test(uri.protocol)||uri.username||uri.password||uri.hash||!declared.some(v=>v.pathname===uri.pathname&&v.pathname.split('/').pop()===source+'.'+ff))break;
-              chars+=uri.href.length+source.length+128;if(chars>128*1024)break;
+              chars+=uri.href.length+source.length+128;if(chars>wireLimit)break;
               rows.push({url:uri.href,source_id:source,start,end});
             }
             if(rows.length===fragments.length){dispatchers=rows;dispatchStatus='selected_level';}
@@ -68,11 +92,12 @@ const Thru3DIqiyi = (() => {
           }else dispatchStatus='no_fragments';
         }else dispatchStatus='no_unique_level';
       }
-      return {ready:true,status:'bound',id:/\/([vw]_[A-Za-z0-9]+)\.html$/.exec(url.pathname)[1],revision:revision([page,video.currentSrc,tvid,vid,bid,width,height,cachedDeclaration.revision].join('|')),page,src:video.currentSrc,tvid,vid,bid,width,height,duration,ff,playlist,prefetch_tvid:id(own(next,'tvId')??own(next,'tvid')),
+      const result={ready:true,status:'bound',id:/\/([vw]_[A-Za-z0-9]+)\.html$/.exec(url.pathname)[1],revision:revision([page,video.currentSrc,tvid,vid,bid,width,height,cachedDeclaration.revision].join('|')),page,src:video.currentSrc,tvid,vid,bid,width,height,duration,ff,playlist,prefetch_tvid:id(own(next,'tvId')??own(next,'tvid')),
         drm_type:Number.isInteger(drm)&&drm>=0&&drm<=32?drm:'unknown',has_drm:!!own(track,'drm'),has_root_drm:!!own(data,'drm'),
         signing_data_present:!!own(track,'ms')||!!own(track,'mk'),dispatchers,dispatch_status:dispatchStatus,dispatch_duration_ms:dispatchDuration,
         sdk_duration_ms:sdkDuration,playlist_duration:cachedDeclaration.seconds,
         dispatch_shape:{movie_fields:movie&&typeof movie==='object'?Object.getOwnPropertyNames(movie).filter(k=>/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(k)).slice(0,32):[],level_count:Array.isArray(levels)?levels.length:0},protection_unverified:true};
+      return JSON.stringify(transport(result)).length<=132*1024?result:fail('oversize_playlist');
     }catch(_){return fail('read_error');}
   };
   const matches=(current,record)=>{
@@ -117,5 +142,12 @@ const Thru3DIqiyi = (() => {
       return true;
     }catch(_){return false;}
   };
-  return {page,capture,matches,binding,restore};
+  const diagnostics=(video,data)=>({
+    status:data?.status||'missing',capture_ready:data?.ready===true,binding_ready:!!binding(video,data),
+    ...(data?.ready?{source_matches:data.src===video.currentSrc,dimensions_match:data.width===video.videoWidth&&data.height===video.videoHeight,
+      duration_matches:Math.abs(data.duration-video.duration)<.01,drm_type:Number.isInteger(data.drm_type)?data.drm_type:-1,
+      track_drm:!!data.has_drm,root_drm:!!data.has_root_drm,dispatch_ready:data.dispatch_status==='selected_level'&&data.dispatchers.length>0,
+      dispatcher_count:data.dispatchers.length,timeline_matches:timelineMatches(data)}:{})
+  });
+  return {page,capture,matches,binding,restore,diagnostics,transport};
 })();

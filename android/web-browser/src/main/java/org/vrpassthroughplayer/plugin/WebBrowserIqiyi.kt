@@ -7,6 +7,7 @@ import org.json.JSONObject
 
 /** Current SDK-selected TS declaration. Observed requests or the selected SDK file declarations supply each resource. */
 object WebBrowserIqiyi {
+    private const val PLAYLIST_LIMIT = 512 * 1024
     private const val ENABLED = true // Real Gecko button, HLS and retained-page preflight passed locally.
     fun enabled(value: String) = ENABLED && page(value) != null
     fun page(value: String): String? = runCatching {
@@ -26,6 +27,37 @@ object WebBrowserIqiyi {
     }
     private class Range(val uri: URI,val start: Long,val end: Long,val sd: Long)
     private class Part(val range: Range,val duration: Double)
+    private fun integer(value: Any?, maximum: Int): Int {
+        require(value is Int || value is Long)
+        val number=(value as Number).toLong();require(number in 0..maximum.toLong())
+        return number.toInt()
+    }
+    /** Lossless bridge representation only. All normal playlist, protection,
+     * identity and range validation runs on the complete restored declaration. */
+    private fun playlist(data: JSONObject): String {
+        if(data.has("playlist")) {
+            require(!data.has("playlist_delta"))
+            return (data.get("playlist") as String).also { require(it.length<=128*1024) }
+        }
+        val packed=data.getJSONObject("playlist_delta")
+        require(packed.opt("version")==1)
+        val size=integer(packed.get("chars"),PLAYLIST_LIMIT)
+        val rows=packed.getJSONArray("rows");require(rows.length() in 1..8192)
+        val lines=ArrayList<String>(rows.length());var count=0
+        for(i in 0 until rows.length()) {
+            val row=rows.getJSONArray(i);require(row.length()==3)
+            val previous=if(i>=2) lines[i-2] else ""
+            val prefix=integer(row.get(0),previous.length)
+            val suffix=integer(row.get(1),previous.length-prefix)
+            val middle=row.get(2) as String;require('\n' !in middle)
+            val length=prefix.toLong()+suffix+middle.length
+            require(length<=size-count-(if(i>0) 1 else 0))
+            val line=previous.substring(0,prefix)+middle+previous.substring(previous.length-suffix)
+            count+=line.length+(if(i>0) 1 else 0);lines.add(line)
+        }
+        require(count==size)
+        return lines.joinToString("\n")
+    }
     private fun range(uri: URI,tvid: String): Range {
         require(uri.path.endsWith(".ts",true) || uri.path.endsWith(".265ts",true))
         val q=query(uri)
@@ -36,7 +68,7 @@ object WebBrowserIqiyi {
         return Range(uri,start,end,number("sd"))
     }
     private fun parts(data: JSONObject): List<Part> {
-        val text=data.getString("playlist");require(text.length<=128*1024)
+        val text=playlist(data)
         val lines=text.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
         require(lines.firstOrNull()=="#EXTM3U" && lines.lastOrNull()=="#EXT-X-ENDLIST")
         val result=ArrayList<Part>();var duration: Double?=null

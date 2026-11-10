@@ -180,7 +180,7 @@ func poll() -> void:
 		if not pending_reopen.is_empty():
 			var next := pending_reopen
 			pending_reopen = {}
-			video._reopen_at(int(next.position), bool(next.layer))
+			video._reopen_at(int(next.position), bool(next.layer), "mode_transition")
 		return
 	if stage == "capturing" and Time.get_ticks_msec() >= deadline:
 		_capture_failed("Video frame capture timed out")
@@ -224,7 +224,7 @@ func recover() -> bool:
 
 func _rollback() -> void:
 	if stage != "held" or video.local_uri != source_uri: return
-	video._reopen_at(position_ms, source_layer)
+	video._reopen_at(position_ms, source_layer, "mode_rollback")
 
 func _restore_mode() -> void:
 	video.depth_requested = bool(source_mode.get("depth", false))

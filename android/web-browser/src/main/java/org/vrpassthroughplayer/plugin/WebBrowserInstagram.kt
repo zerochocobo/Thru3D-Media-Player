@@ -15,9 +15,10 @@ object WebBrowserInstagram {
         value.length<=8192 && u.scheme=="https" && u.host in setOf("www.instagram.com","instagram.com") && u.rawUserInfo==null && u.port in setOf(-1,443) && u.rawFragment==null
     }.getOrDefault(false)
     fun observing(value: String)=ENABLED && document(value)
-    fun enabled(value: String)=ENABLED && page(value)!=null
+    fun enabled(value: String)=ENABLED && (page(value)!=null || feed(value))
+    fun feed(value: String)=document(value) && runCatching{URI(value).rawPath in setOf("/reels", "/reels/")}.getOrDefault(false)
     fun page(value: String): String?=runCatching {
-        require(document(value));Regex("/(?:reel|p|tv)/([A-Za-z0-9_-]{5,64})/?").matchEntire(URI(value).rawPath.orEmpty())?.groupValues?.get(1)
+        require(document(value));Regex("/(?:reels?|p|tv)/([A-Za-z0-9_-]{5,64})/?").matchEntire(URI(value).rawPath.orEmpty())?.groupValues?.get(1)
     }.getOrNull()
     private fun range(value: String): Pair<Long,Long>?=runCatching {
         val m=Regex("(0|[1-9][0-9]{0,12})-(0|[1-9][0-9]{0,12})").matchEntire(value) ?: return null
@@ -85,18 +86,21 @@ object WebBrowserInstagram {
     }.getOrDefault(false)
 
     fun metadata(item: JSONObject,currentPage: String): JSONObject?=runCatching {
-        val id=page(currentPage) ?: return null
+        require(document(currentPage))
         require(item.optString("frame")==currentPage && !item.optBoolean("protected") && item.optBoolean("blob"))
         val source=item.getString("instagram_source")
         require(source.startsWith("blob:https://www.instagram.com/") || source.startsWith("blob:https://instagram.com/"))
         val data=item.getJSONObject("instagram")
-        require(data.toString().length<=192*1024 && data.getString("id")==id && data.getString("page")==currentPage &&
+        val id=page(data.getString("page")) ?: return null
+        require(data.toString().length<=192*1024 && data.getString("id")==id &&
             data.getString("media_id").matches(Regex("[0-9]{5,30}")) && data.getString("revision").matches(Regex("[a-f0-9]{1,8}")))
+        if(feed(currentPage))require(data.optString("document")==currentPage && data.optString("binding")=="rendered_card" && data.optString("active_id")==id)
+        else require(page(currentPage)==id && data.getString("page")==currentPage)
         val graph=manifest(data.getString("manifest")) ?: return null
         val width=item.getInt("width");val height=item.getInt("height");val duration=item.getDouble("duration")
         require(width in 1..8192 && height in 1..8192 && width==data.getInt("width") && height==data.getInt("height"))
         require(duration.isFinite() && duration>0 && kotlin.math.abs(duration-data.getDouble("duration"))<=.001 &&
-            kotlin.math.abs(duration-graph.duration)<=maxOf(.1,graph.duration*.0001) && kotlin.math.abs(graph.duration-data.getDouble("expected_duration"))<=.001)
+            kotlin.math.abs(duration-graph.duration)<=maxOf(.25,graph.duration*.0001) && kotlin.math.abs(graph.duration-data.getDouble("expected_duration"))<=.001)
         val time=item.optDouble("time",0.0);val start=data.optDouble("start_seconds",time)
         require(time.isFinite() && time>=0 && time<=duration+.1 && start.isFinite() && start>=0 && start<=duration)
         if(item.optBoolean("instagram_ended"))require(start==0.0 && kotlin.math.abs(time-duration)<=.1)

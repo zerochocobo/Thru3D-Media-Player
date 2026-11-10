@@ -52,5 +52,19 @@ const Thru3DNiconicoPlayer=(()=>{
       Reflect.apply(method(current.control,play===true?'play':'pause'),current.control,[]);return true;
     }catch(_){return false;}
   };
-  return {pause,restore};
+  /** The same rendered facade's read-only content URL. No API request, account
+   * state or URL construction; callers must still match actual HLS requests. */
+  const declaration=(video,dom)=>{
+    try{
+      const page=dom.location?.href,id=Thru3DNiconico.page(page);
+      if(!id||video.ended||video.readyState<2)return null;
+      const current=identify(video,{id,page,duration:video.duration},dom),source=video.currentSrc;
+      if(!current)return null;const fn=method(current.control,'getContentURL');if(!fn)return null;
+      const value=Reflect.apply(fn,current.control,[]),root=Thru3DNiconico.address(value);
+      if(!root||!video.isConnected||video.currentSrc!==source||dom.location?.href!==page||
+        !ancestors(video).includes(own(current.control,'stage'))||own(current.control,'isDisposed')===true)return null;
+      return {id,page,root:root.href};
+    }catch(_){return null;}
+  };
+  return {pause,restore,declaration};
 })();

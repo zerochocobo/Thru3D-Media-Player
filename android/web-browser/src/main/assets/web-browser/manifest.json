@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Thru3D video handoff",
-  "version": "1.69",
+  "version": "1.83",
   "browser_specific_settings": {
     "gecko": {
       "id": "web-video@thru3d.local"
@@ -75,12 +75,15 @@
       "ted.js",
       "redbull.js",
       "streamable.js",
+      "reddit.js",
+      "naver.js",
       "archive.js",
       "odysee.js",
       "dailymotion.js",
       "twitch.js",
       "twitch-response.js",
       "dailymotion-response.js",
+      "naver-response.js",
       "network.js"
     ],
     "persistent": true
@@ -103,6 +106,8 @@
         "ted.js",
         "redbull.js",
         "streamable.js",
+      "reddit.js",
+      "naver.js",
         "archive.js",
         "odysee.js",
         "dailymotion.js",

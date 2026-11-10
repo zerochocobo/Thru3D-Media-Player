@@ -6,6 +6,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WebBrowserNiconicoTest {
+    @Test fun mainSiteCanObservePrefetchButOnlyWatchPagesEnablePlayback() {
+        val home="https://www.nicovideo.jp/"
+        assertTrue(WebBrowserNiconico.observing(home));assertFalse(WebBrowserNiconico.enabled(home))
+        assertTrue(WebBrowserNiconico.observing("https://www.nicovideo.jp/watch/sm9"))
+        for(value in listOf("http://www.nicovideo.jp/","https://www.nicovideo.jp.evil/","https://other@www.nicovideo.jp/","https://www.nicovideo.jp:8443/","https://www.nicovideo.jp/#x"))
+            assertFalse(WebBrowserNiconico.observing(value))
+    }
     private val page="https://www.nicovideo.jp/watch/sm9"
     private fun item(): JSONObject {
         val root="https://related.test/master.m3u8?sig=root";val video="https://video.test/current.m3u8?sig=video";val audio="https://audio.test/current.m3u8?sig=audio"

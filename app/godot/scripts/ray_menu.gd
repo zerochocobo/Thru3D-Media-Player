@@ -453,7 +453,7 @@ func _activate_footer(target: int) -> bool:
 		if state.get("cinema_visible", false): session_control_requested.emit("cinema_move_toggle")
 	elif target == FOLLOW:
 		session_control_requested.emit("follow")
-	elif state.get("passthrough_visible", false) and not state.get("alpha", false):
+	elif state.get("passthrough_visible", false) and state.get("passthrough_supported", true) and not state.get("alpha", false):
 		session_control_requested.emit("temporary_passthrough")
 	refresh_session_controls(true)
 	return true
@@ -613,8 +613,11 @@ func refresh_session_controls(force: bool = false) -> void:
 		state.get("follow", false), state.get("follow_enabled", true), I18n.t("Disable follow" if state.get("follow", false) else "Enable follow"))
 	if show_passthrough:
 		var alpha: bool = state.get("alpha", false)
+		# Unsupported stays visible but disabled, so a missing runtime capability is not mistaken for a missing feature.
+		var supported: bool = state.get("passthrough_supported", true)
 		_footer_button(TEMP_PASSTHROUGH, "passthrough", Vector2(follow_left + FOOTER_DIAMETER * 1.5 + FOOTER_GAP, _footer_centre.y),
-			state.get("passthrough", false), not alpha, I18n.t("Cannot switch during person passthrough" if alpha else
+			state.get("passthrough", false) and supported, supported and not alpha, I18n.t("Passthrough unavailable on this headset right now" if not supported
+			else "Cannot switch during person passthrough" if alpha else
 			("Disable temporary passthrough" if state.get("passthrough", false) else "Enable temporary passthrough")))
 	_buttons_generation += 1
 	_update_highlights()

@@ -20,6 +20,19 @@ test('Red Bull binds the current full shadow player to its public RRN and exact 
  assert.equal(f.api.page('https://www.redbull.tv.evil/en/page/'+id+'/anytime'),null);
  f.requests[0].url=root.replace('selector=a%2Fb','selector=another');assert.equal(f.bind(),null);
 });
+
+test('official homepage region URLs bind the same public RRN without weakening the owner',()=>{
+ for(const locale of ['en_US','en_INT','es_LAT','en-US']){
+  for(const prefix of ['','page:']){
+  const f=setup();f.document.location.href=page.replace('/en/','/'+locale+'/').replace('/page/','/page/'+prefix);
+  assert.equal(f.api.page(f.document.location.href).id,id);assert.equal(f.bind().page,f.document.location.href);
+  }
+ }
+ const f=setup();
+ for(const value of [page.replace('/en/','/en_us/'),page.replace('/en/','/en_US_extra/'),page.replace('https://','https://user@'),
+  page.replace('/page/','/page/page:page:'),page.replace('/page/','/page/other:'),
+  page.replace('redbull.tv','redbull.tv:8443'),page+'#other'])assert.equal(f.api.page(value),null);
+});
 test('Red Bull refuses previews, ads, protection, other content, stale state and ambiguous rendered declarations',()=>{
  for(const change of [f=>f.host.getAttribute=()=>id.replace('f9d7','f9d8'),f=>f.video.getRootNode=()=>({}),
   f=>f.state.isShowingAd=true,f=>f.state.videoLoaded=false,f=>f.state.mediaMetaData.drm={license:'present'},

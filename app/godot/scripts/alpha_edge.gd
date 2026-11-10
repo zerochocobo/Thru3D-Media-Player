@@ -5,6 +5,9 @@ extends RefCounted
 
 const FEATHER_DEFAULT := 100.0 # percent: the model's own soft edge
 const SHRINK_DEFAULT := 40.0 # removes the usual fringe of the video's background at the edge
+## Cut-out interpolation (a frame between two masks mixes them): what each choice costs.
+const MASK_BLEND_ON_HINT := "A frame between two cut-outs blends them, so edges follow motion more closely. Adds about 50 ms of delay and moving edges look slightly softer."
+const MASK_BLEND_OFF_HINT := "A frame between two cut-outs keeps the earlier one: least delay and crisper edges, but edges trail fast motion."
 
 ## Mask values below x become transparent, above y opaque. Feather 100 % with shrink 0 % gives (0, 1):
 ## the mask unchanged.

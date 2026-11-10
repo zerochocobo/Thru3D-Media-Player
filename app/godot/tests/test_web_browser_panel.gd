@@ -335,12 +335,12 @@ func _run() -> void:
 		"Dailymotion restores its original document through the bound adapter")
 	menu.refresh()
 	check(menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 6), "Dailymotion keeps its original manual player action alongside Beta")
-	for hosted in [{"adapter":"streamable","url":"https://streamable.com/abc123"},{"adapter":"archive","url":"https://archive.org/details/PublicFilm"},{"adapter":"odysee","url":"https://odysee.com/@Public:1/PublicClip:1"}]:
+	for hosted in [{"adapter":"streamable","url":"https://streamable.com/abc123"},{"adapter":"archive","url":"https://archive.org/details/PublicFilm"},{"adapter":"odysee","url":"https://odysee.com/@Public:1/PublicClip:1"},{"adapter":"reddit","url":"https://www.reddit.com/r/aww/comments/1u8wxnn/title/"},{"adapter":"naver","url":"https://m.naver.com/shorts/?serviceType=NTV&seedMediaId=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]:
 		var adapter: String=hosted.adapter
 		var selected: String=adapter+":main:revision1"
 		var main := {"selection":selected,"time":5.0};main[adapter+"_ready"]=true
 		platform.browser={"url":hosted.url,"tab_id":22,"navigation":1,"focused_window":1,"active":true,
-			"pause_confirmed":true,"beta_request":15 if adapter=="streamable" else 16 if adapter=="archive" else 17,"beta_selection":selected,"videos":[main,{"width":640,"height":360,"playing":true,"time":3.0}]}
+			"pause_confirmed":true,"beta_request":15 if adapter=="streamable" else 16 if adapter=="archive" else 17 if adapter=="odysee" else 18 if adapter=="reddit" else 19,"beta_selection":selected,"videos":[main,{"width":640,"height":360,"playing":true,"time":3.0}]}
 		platform.browser[adapter+"_beta_available"]=true
 		check(menu.web_browser.beta_site_available(platform.browser) and menu.web_browser.beta_media_ready(platform.browser),adapter+" exposes the explicit current player")
 		var closed: Dictionary=platform.browser.duplicate(true);closed[adapter+"_beta_available"]=false

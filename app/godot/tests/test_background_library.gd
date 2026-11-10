@@ -104,6 +104,14 @@ func _run() -> void:
 	menu.session_controls_provider=func(): return {"cinema_visible":false}
 	menu.refresh_session_controls()
 	check(not menu._buttons.any(func(item): return item.target in [menu.CINEMA_LIGHTS,menu.FREE_MOVEMENT]),"Leaving cinema removes only cinema-specific shortcuts")
+	var requests:=[]
+	menu.session_control_requested.connect(func(operation): requests.append(operation))
+	menu.session_controls_provider=func(): return {"passthrough_visible":true,"passthrough_supported":false,"passthrough":true}
+	menu.refresh_session_controls()
+	var unsupported_pass: Array=menu._buttons.filter(func(item): return item.target==menu.TEMP_PASSTHROUGH)
+	check(unsupported_pass.size()==1 and not unsupported_pass[0].enabled,"Unsupported passthrough stays visible but disabled")
+	check(menu._tips.get(menu.TEMP_PASSTHROUGH,"")==menu.I18n.t("Passthrough unavailable on this headset right now"),"Unsupported passthrough explains itself")
+	check(menu._activate_footer(menu.TEMP_PASSTHROUGH) and requests.is_empty(),"Unsupported passthrough ignores activation")
 	check(library.remove_assets([id]),"Remove selected background")
 	check(library.bindings.global.id=="cinema" and library.bindings.image.id=="belfast","All mode references fall back")
 	check(FileAccess.file_exists(source) and FileAccess.file_exists(duplicate),"Original files remain")

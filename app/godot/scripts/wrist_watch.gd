@@ -26,7 +26,8 @@ var _glow := Color(0.54, 0.93, 0.77, 0.22)
 var color_choice := Palette.DEFAULT
 var _materials: Array[ShaderMaterial] = []
 const POLL_MS := 2000
-const ICONS := {"rewind": "back", "play": "pause", "forward": "forward", "menu": "menu"}
+const ICONS := {"rewind": "back", "play": "pause", "forward": "forward", "menu": "menu", "hand_lock": "hand_unlocked"}
+var _lock_ring: MeshInstance3D
 
 var logic := Logic.new()
 ## -> {"level": 0..100 or -1, "charging", "clock24"}; tests inject one.
@@ -98,6 +99,9 @@ func _ready() -> void:
 		var glyph := _icon(holder, ICONS[id], radius * (1.0 if id == "play" else 0.95), 32)
 		glyph.position.z = 0.0008
 		_buttons[id] = {"holder": holder, "disc": disc, "icon": glyph, "scale": 0.0, "icon_key": ICONS[id]}
+		if id == "hand_lock":
+			_lock_ring = preload("res://scripts/hand_lock_indicator.gd").make_ring(holder, radius * 2.6)
+			_lock_ring.material_override.render_priority = 33
 	# Readouts stand up out of the disc and turn to the viewer, like figures in a projector beam.
 	_readout_root = Node3D.new()
 	_holo_root.add_child(_readout_root)
@@ -145,12 +149,17 @@ func owns_tip() -> bool:
 	return visible and logic.owns_tip()
 
 func _present(head: Transform3D, delta: float) -> void:
+	# Restore only nodes suppressed by the lock; presenters own their normal visibility.
+	for node in [_clock, _remaining, _ring, _readout_root]: node.visible = true
+	for guide in _guides: guide.visible = true
 	_poll_status()
 	var media := logic.media
 	var progress := logic.progress()
 	var playing := bool(media.get("playing", false))
 	_update_marks(media)
 	_present_face(head, delta, media, playing)
+	if media.get("hand_locked", false):
+		for node in [_clock, _remaining, _state_icon]: node.visible = false
 	_holo_root.visible = expand > 0.0
 	if not _holo_root.visible: return
 	_holo_root.global_transform = logic.holo
@@ -176,6 +185,10 @@ func _present(head: Transform3D, delta: float) -> void:
 	_present_buttons(delta, clampf((expand - 0.3) / 0.7, 0.0, 1.0))
 	_present_readout(head, media, dragging, ring)
 	_present_cursor(disc)
+	var hands_locked: bool = media.get("hand_locked", false)
+	if hands_locked:
+		for node in [_clock, _remaining, _state_icon, _ring, _readout_root, _tag_root]: node.visible = false
+		for guide in _guides: guide.visible = false
 
 func _present_face(head: Transform3D, delta: float, media: Dictionary, playing: bool) -> void:
 	_face_root.visible = face_reveal > 0.0 and logic.face_valid
@@ -222,6 +235,7 @@ func _present_buttons(delta: float, keys: float) -> void:
 		var target := _ease_back(t) * (1.12 if hovered else 1.0)
 		entry.scale = lerpf(float(entry.scale), target, clampf(delta * 18.0, 0.0, 1.0)) if t >= 1.0 else _ease_back(t)
 		var holder: Node3D = entry.holder
+		holder.visible = bool(logic.media.get("hand_lock_available", false)) if id == "hand_lock" else not bool(logic.media.get("hand_locked", false))
 		var pos := Logic.button_position(id)
 		# Keys rise out of the disc as they arrive and sink a little when pressed.
 		holder.position = Vector3(pos.x, pos.y, (1.0 - t) * -0.02 + (-0.004 if logic.pressed == id else 0.0))
@@ -233,6 +247,10 @@ func _present_buttons(delta: float, keys: float) -> void:
 			"ripple": float(logic.ripples.get(id, 10.0)), "enabled": 1.0 if enabled else 0.0,
 			"active": 1.0 if logic.pressed == id else 0.0})
 		var key := ("pause" if bool(logic.media.get("playing", false)) else "play") if id == "play" else str(entry.icon_key)
+		if id == "hand_lock":
+			key = "hand_locked" if logic.media.get("hand_locked", false) else "hand_unlocked"
+			_lock_ring.visible = logic.hand_lock_progress > 0
+			_lock_ring.material_override.set_shader_parameter("progress", logic.hand_lock_progress)
 		_set_icon(entry.icon, key)
 		var tone := TEXT if enabled else _dim
 		(entry.icon.material_override as StandardMaterial3D).albedo_color = Color(tone, t * (1.0 if enabled else 0.35))

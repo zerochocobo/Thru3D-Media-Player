@@ -33,7 +33,7 @@ static func _glow_material(color: Color) -> StandardMaterial3D:
 	material.cull_mode=BaseMaterial3D.CULL_DISABLED; material.no_depth_test=false; material.albedo_color=color
 	return material
 
-static func build(parent: Node,ground_y: float,make_material: Callable,table_top := Vector3.INF) -> Dictionary:
+static func build(parent: Node,ground_y: float,make_material: Callable,table_top := Vector3.INF,table_yaw := 0.0) -> Dictionary:
 	var root := Node3D.new(); root.name="FireworksController"; parent.add_child(root)
 	# Lamp occupies the middle 19 cm; use the near edge of the existing 65 cm table.
 	var position := Vector3(5.2,ground_y+.535,7.77)
@@ -76,7 +76,10 @@ static func build(parent: Node,ground_y: float,make_material: Callable,table_top
 	var beacon := MeshInstance3D.new(); beacon.name="Study_Fireworks_Beacon"
 	var quad := QuadMesh.new(); quad.size=Vector2.ONE*BEACON_SIZE
 	beacon.mesh=quad; beacon.material_override=beacon_material; root.add_child(beacon); beacon.position=position+Vector3(0,.09,0)
-	return {"root":root,"point":position+Vector3(0,.067,0),"indicator":ink,"cap":cap,"cap_rest":cap.position,"ring":ring_material,"beacon":beacon,"beacon_material":beacon_material,"bounds":AABB(position+Vector3(-.12,0,-.07),Vector3(.24,.068,.14))}
+	if table_top.is_finite():
+		var turn := Basis(Vector3.UP,table_yaw)
+		root.transform=Transform3D(turn,table_top-turn*table_top)
+	return {"root":root,"point":root.transform*(position+Vector3(0,.067,0)),"indicator":ink,"cap":cap,"cap_rest":cap.position,"ring":ring_material,"beacon":beacon,"beacon_material":beacon_material,"bounds":root.transform*AABB(position+Vector3(-.12,0,-.07),Vector3(.24,.068,.14))}
 
 static func _beacon_texture() -> GradientTexture2D:
 	var gradient := Gradient.new()

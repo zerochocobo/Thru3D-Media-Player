@@ -280,7 +280,8 @@ func _run() -> void:
 	check(button(main.recent_menu, Menu.TEMP_PASSTHROUGH).is_empty() and not button(main.recent_menu, Menu.FOLLOW).is_empty(), "Saved passthrough hides only temporary control")
 	main._on_setting_changed("background", "dark")
 	main.display.supported = false; main._update_background()
-	check(button(main.recent_menu, Menu.TEMP_PASSTHROUGH).is_empty(), "Unsupported platforms hide passthrough control")
+	var unavailable := button(main.recent_menu, Menu.TEMP_PASSTHROUGH)
+	check(not unavailable.is_empty() and not unavailable.enabled, "Unsupported runtimes keep a disabled passthrough control")
 	main.display.supported = true; main._update_background()
 	if not main.view_follow.enabled: main._on_session_control("follow")
 	main.display.preview = false; main.tracked = false

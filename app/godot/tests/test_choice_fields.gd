@@ -79,7 +79,7 @@ func _run() -> void:
 	menu.release_pointer("left_hand", alpha_point, -menu.global_basis.z, true)
 	check(menu.rows.size() == 11, "Cancelled group click stays collapsed")
 	tap(menu, Library.ROW_BASE + 9 - menu._first_line())
-	check(menu.rows.size() == 15 and menu.rows[9].icon == "chevron_down" and not menu.collections.privacy_expanded,
+	check(menu.rows.size() == 16 and menu.rows[9].icon == "chevron_down" and not menu.collections.privacy_expanded,
 		"Ray expands only Alpha without changing the privacy group")
 	var alpha_row: Dictionary = menu.rows[10]
 	check(alpha_row.key == "alpha_profile" and alpha_row.compact and alpha_row.value == "320x320"
@@ -96,12 +96,15 @@ func _run() -> void:
 	check(menu.rows[11].key == "alpha_fps" and menu.rows[11].slider and menu.rows[11].span == Vector3(10, 40, 1) and menu.rows[11].value == 30 and not str(menu.rows[11].hint).is_empty(), "Alpha frame rate is a 10-40 FPS slider defaulting to 30 with a passthrough hint")
 	check(menu.rows[12].key == "alpha_feather" and menu.rows[12].value == 100 and menu.rows[13].key == "alpha_shrink" and menu.rows[13].value == 40
 		and menu.rows[13].span == Vector3(0, 100, 1), "Alpha feather and edge shrink follow the frame rate, as in the player settings")
+	check(menu.rows[14].key == "alpha_mask_blend" and menu.rows[14].value == true and menu.rows[14].choices.size() == 2
+		and not str(menu.rows[14].choices[0].hint).is_empty() and menu.rows[14].choices[0].hint != menu.rows[14].choices[1].hint,
+		"Cut-out interpolation follows the edge sliders: on by default, each choice explains its cost")
 	check(not menu.rows.any(func(row): return row.get("key", "") == "alpha_precision"), "AI precision stays hidden")
 	check(alpha_row.choices[1].label.begins_with("320 ") and alpha_row.choices.filter(func(o): return o.label.contains(" ")).size() == 1,
 		"Only the 320 size is marked as the default")
 	menu._set_scroll(menu._max_scroll())
-	tap(menu, Library.ROW_BASE + 14 - menu._first_line())
-	check(menu.rows.size() == 17 and menu._video_settings_expanded.get("alpha") and menu._video_settings_expanded.get("subtitles"), "Subtitle group opens with two collapsed categories beside Alpha")
+	tap(menu, Library.ROW_BASE + 15 - menu._first_line())
+	check(menu.rows.size() == 18 and menu._video_settings_expanded.get("alpha") and menu._video_settings_expanded.get("subtitles"), "Subtitle group opens with two collapsed categories beside Alpha")
 	var saved_events := events.size()
 	menu._set_scroll(4.0); tap(menu, Library.ROW_BASE + 9 - menu._first_line())
 	check(menu.rows.size() == 13 and menu._video_settings_expanded.get("subtitles") and not menu._video_settings_expanded.get("alpha"), "Collapsing Alpha keeps the subtitle category entries visible")

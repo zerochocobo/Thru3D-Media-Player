@@ -113,3 +113,7 @@ From 0.13.2, archive pages use bounded local/stream indexers and encrypted app-p
 ## Document and comic pipelines
 
 `PdfDocuments`/`PdfReadCache` and `ReadingPageCache` provide bounded pages/spreads. `photo_comic_reader.gd` owns selection/cancellation, `ComicReaderController` owns OCR jobs, and `ComicSpeechPrefetch` leases shared narration. `comic_translation.gd` owns online batches and memory caches; its overlay composes an atlas through the photo shader. See [data boundaries](COMIC_READING.md) and [documents](PDF_READING.md).
+
+## 0.17.5 Alpha scheduling and eye buffers
+
+A bounded capture pipeline and frame-associated mask scheduler retain ownership/cancellation boundaries and expose optional cut-out interpolation around a frame without its own mask. Compositor-only video may use reduced XR eye buffers; menu/seek transitions avoid repeated buffer resizing. Neither mechanism changes the existing depth-capture cadence or promises universal memory/performance acceptance. Failed layer-return retries are bounded while later valid recovery remains possible.

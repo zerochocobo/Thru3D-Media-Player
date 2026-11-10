@@ -232,7 +232,8 @@ func update_session() -> void:
 		# Layer features the runtime offers (colour scale, blending, swapchain state...): one short line.
 		var layer_extensions := Array(str(platform.video_layer_runtime_extensions()).split(" ", false)).filter(func(name: String):
 			return name.contains("composition_layer") or name.contains("swapchain") or name.contains("passthrough") or name.contains("color") or name.contains("space_warp"))
-		DiagnosticLog.record("xr_layer_extensions", {"names": " ".join(PackedStringArray(layer_extensions))})
+		var qiyu_passthrough := PlatformMethods.supports(platform, "video_layer_qiyu_passthrough") and bool(platform.video_layer_qiyu_passthrough())
+		DiagnosticLog.record("xr_layer_extensions", {"names": " ".join(PackedStringArray(layer_extensions)), "qiyu_passthrough_enabled": qiyu_passthrough})
 
 ## A picture swapchain was replaced: the native layers were dropped, send them again.
 func invalidate() -> void:

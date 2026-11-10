@@ -28,7 +28,9 @@ const Thru3DTed=(()=>{
         // Only this rendered hlsUrl and its actual request are used; no external
         // service/code/URL is followed or treated as a protection decision.
         if(!Number.isInteger(duration)||duration<=0||duration>86400||!address(root)||!new URL(root).pathname.endsWith('.m3u8'))return null;
-        data.push({id:slug,talk_id:String(id),player_id:String(playerId),duration,root});
+        const playerDuration=own(player,'duration');
+        data.push({id:slug,talk_id:String(id),player_id:String(playerId),duration,
+          player_duration:Number.isInteger(playerDuration)&&playerDuration>0&&playerDuration<=86400?playerDuration:0,root});
       }
       const unique=[...new Map(data.map(d=>[JSON.stringify(d),d])).values()];return unique.length===1?unique[0]:null;
     }catch(_){return null;}
@@ -38,7 +40,13 @@ const Thru3DTed=(()=>{
       !Number.isInteger(video.videoWidth)||!Number.isInteger(video.videoHeight)||video.videoWidth<=0||video.videoHeight<=0||video.videoWidth>8192||video.videoHeight>8192)return null;
     const source=video.currentSrc||'';
     if(!source.startsWith('blob:https://www.ted.com/')&&!source.startsWith('blob:https://ted.com/'))return null;
-    const data=declaration(video,document);return data&&Math.floor(video.duration)===data.duration?data:null;
+    const data=declaration(video,document);if(!data)return null;
+    const actual=Math.floor(video.duration);
+    if(actual===data.duration)return {...data,catalog_duration:data.duration,duration_source:'catalog'};
+    // Current talks can declare a player duration three seconds below catalogue.
+    // Match its explicit duration exactly; do not widen the decoded-time check.
+    return data.duration-data.player_duration===3&&actual===data.player_duration?
+      {...data,catalog_duration:data.duration,duration:data.player_duration,duration_source:'player'}:null;
   };
   const binding=(video,requests,document,live)=>{
     const data=read(video,document);if(!data||!Array.isArray(requests)||!Array.isArray(live))return null;

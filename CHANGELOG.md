@@ -4,6 +4,15 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.17.5 — 2026-11-10
+
+- Restore Featured Beta badges for Niconico, TikTok, Instagram Reels and Internet Archive after the recorded Quest ordinary featured-entry/video-selection/page-button/audio-video/seek/retained-return journeys. Scope remains limited to those paths and formats; this does not establish all-content or PICO acceptance. Keep foreign manual playback and fullscreen behavior, without restoring URL-only foreign toolbar Beta entries. Other overseas badges and pending iQIYI/Youku badges remain withheld; China-store Featured stays seven CN sites.
+- Add a session-only viewing-hand lock with guarded recovery, distinct from persistent screen-edit locking; improve lock input ownership and close conflicting submenus. Add independent photo default/last-mode preferences and an explicit 180-degree video-rotation preset.
+- Pipeline bounded Alpha mask capture and schedule masks against their video frames, with a cut-out interpolation option. Reduce XR eye-buffer work when only the compositor video layer is visible and keep the reduced buffers stable through menus/seeks. Preserve the existing video/depth cadence; measured scope is not a universal smoothness, memory or thermal guarantee.
+- Improve Niconico SPA/long-playlist ownership, ordinary TikTok/Instagram rendered-player selection and audio-tail handling, Archive file identity, bounded large MP4 sample tables and complete iQIYI playlist transport. iQIYI headset readiness/1080p validation remains incomplete; Naver/Reddit have no accepted Featured-entry chain and are not promoted to Featured acceptance; other adapters retain their own validation limits.
+- Stop repeatedly retrying a failed layer return while preserving later valid recovery. Improve PICO projected-control handling, offer direct USB access when its system provider cannot play a file, and request QIYU passthrough only through available platform capability. Beach interaction/foley/meteor source updates are included; model/scene/texture/audio payloads remain separately supplied and excluded from Git.
+- Keep private keys, credentials, user backups/media, weights, internal development records and promotion excluded. Miracast remains hidden/detached. Current source follows the recorded release input cut, including exact pinned TED files; that inclusion is not TED headset acceptance or a new badge.
+
 ## 0.17.4 — 2026-11-09
 
 - Expand AI GPU compatibility with a Vulkan fallback when OpenCL cannot initialize, plus portable RVM activation restoration and Vulkan scheduling/transfer improvements. Keep the existing video 28 ms capture policy and browser cadence; do not trade fewer depth updates for XR frame rate. Reported Quest 2 video/base-portrait and browser-effect checks do not establish all-device, photo/enhanced-portrait or sustained 72 FPS/30 Hz acceptance.

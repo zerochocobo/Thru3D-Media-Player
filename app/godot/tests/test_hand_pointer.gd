@@ -17,11 +17,15 @@ class Catalog extends RefCounted:
 class Cinema extends RefCounted:
 	func active(_viewer: Node) -> bool: return false
 
+class Passthrough extends RefCounted:
+	func active() -> bool: return false
+
 class Viewer extends Node3D:
 	var local_uri := "content://hand/video"
 	var media := {"state": "playing", "session_id": 1}
 	var disc := preload("res://scripts/disc_titles.gd").new()
 	var cinema := Cinema.new()
+	var vr_passthrough := Passthrough.new()
 	var geometry := 1
 	var view_camera: XRCamera3D
 	var turned := Vector2.ZERO

@@ -23,3 +23,7 @@ Footer restart/quit use a second confirmation and show session usage; action ico
 ## 0.17.4 editing lock and status
 
 Persistent screen/edit_locked defaults off, links the flat-video corner and screen-menu controls, and applies to free/cinema/beach flat screens, independently of control-bar spatial locking or saved recenter settings. It blocks user geometry edits while allowing explicit rescue recenter, playback/seek/volume/subtitles/depth strength; photos, immersive projections, browser/PiP own operations are outside its scope. Feedback/haptics are rate-limited. Passive playback status can be hidden globally without suppressing actionable errors/confirmations. Browser floating/projected controls reuse the compact global footer.
+
+## 0.17.5 viewing-hand and photo defaults
+
+Viewing-hand lock is session-only with guarded recovery and separate gesture ownership; it is distinct from persistent screen/edit_locked. Locking can close conflicting submenus without lifting unrelated locks. Photos independently select a fixed default or last playback mode, with format/native-result gates preserved. Video settings add an explicit180-degree preset. PICO projected controls/direct USB fallback and capability-gated QIYU passthrough do not establish every device/provider behavior.

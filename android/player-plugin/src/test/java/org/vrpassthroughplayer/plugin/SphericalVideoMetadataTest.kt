@@ -35,6 +35,24 @@ class SphericalVideoMetadataTest {
         assertNull(SphericalVideoMetadata.parse(byteArrayOf()))
     }
 
+    @Test fun sparseLargeMoovKeepsProjectionWithoutExpandingTheGeneralPrefixBudget() {
+        val original=fixture("youtube-vr180-avc.mp4")
+        fun size(at:Int)=java.nio.ByteBuffer.wrap(original,at,4).int
+        val ftyp=original.copyOfRange(0,size(0))
+        val at=original.toString(Charsets.ISO_8859_1).indexOf("moov")-4
+        assertTrue(at>=ftyp.size)
+        val free=java.nio.ByteBuffer.allocate(3*1024*1024).putInt(3*1024*1024).put("free".toByteArray()).array()
+        val content=original.copyOfRange(at+8,at+size(at))+free
+        val moov=java.nio.ByteBuffer.allocate(content.size+8).putInt(content.size+8).put("moov".toByteArray()).put(content).array()
+        val header=ftyp+moov
+        val before=SphericalVideoMetadata.parse(original)!!
+        val after=SphericalVideoMetadata.parseSparseMp4Header(header)!!
+        for(key in listOf("kind","geometry","stereo_mode"))assertEquals(before.get(key),after.get(key))
+        assertThrows(IllegalArgumentException::class.java){SphericalVideoMetadata.parse(header)}
+        assertThrows(IllegalArgumentException::class.java){SphericalVideoMetadata.parseSparseMp4Header(header+byteArrayOf(0))}
+        assertThrows(IllegalArgumentException::class.java){SphericalVideoMetadata.parseSparseMp4Header(ByteArray(WebVideoMp4Header.METADATA_LIMIT+4097))}
+    }
+
     @Test fun headerProbeStopsAtMediaWithoutLosingProjection() {
         for (file in listOf("youtube-vr180-avc.mp4", "youtube-vr180-av1.mp4", "youtube-360-tb.mp4",
             "youtube-vr180-vp9.webm", "youtube-eac-vp9.webm")) {

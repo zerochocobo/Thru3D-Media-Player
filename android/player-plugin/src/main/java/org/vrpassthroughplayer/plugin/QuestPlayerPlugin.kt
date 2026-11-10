@@ -663,6 +663,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun set_mpv_alpha_fps(fps: Int): Boolean = !closed.get() && mpv.setAlphaFps(fps)
     /** Alpha mask edge (feather/shrink) as the mask value range mapped to [0, 1]. */
     @UsedByGodot fun set_mpv_alpha_edge(low: Double, high: Double): Boolean = !closed.get() && mpv.setAlphaEdge(low, high)
+    @UsedByGodot fun set_mpv_alpha_mask_blend(enabled: Boolean): Boolean { if (closed.get()) return false; mpv.alphaMaskBlend = enabled; return true }
     // Library sources: each returns a request id; the result arrives as media_list(id, json).
     /** Headset storage: path "" lists the volumes, otherwise one folder's subfolders and videos. */
     @UsedByGodot fun media_local_browse(path: String): Int {
@@ -857,6 +858,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun release_layer_image(slot: Int, mipmaps: Boolean): Boolean =
         runCatching { VideoLayerNative.releaseImage(slot, mipmaps) }.getOrDefault(false)
     @UsedByGodot fun video_layer_color_scale_bias(): Boolean = runCatching { VideoLayerNative.colorScaleBias() }.getOrDefault(false)
+    @UsedByGodot fun video_layer_qiyu_passthrough(): Boolean = runCatching { VideoLayerNative.qiyuPassthrough() }.getOrDefault(false)
     @UsedByGodot fun video_layer_runtime_extensions(): String = runCatching { VideoLayerNative.runtimeExtensions() }.getOrDefault("")
     @UsedByGodot fun video_layer_count(): Int = runCatching { VideoLayerNative.layerCount() }.getOrDefault(0)
     @UsedByGodot fun video_layer_address(index: Int): Long = runCatching { VideoLayerNative.layerAddress(index) }.getOrDefault(0L)

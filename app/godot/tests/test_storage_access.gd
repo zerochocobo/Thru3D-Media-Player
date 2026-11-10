@@ -146,6 +146,13 @@ func _run() -> void:
 	platform.raw_error = true; platform.raw_error_message = "USB device is in use; open a system-mounted entry"
 	menu._activate(Menu.REFRESH); await settle()
 	check(not menu._buttons.any(func(b): return b.target == Menu.TAKEOVER_USB), "Headsets without the PICO guidance never show takeover")
+	platform.takeovers.clear(); platform.raw_error = true; platform.raw_error_message = Menu.USB_BUSY_EJECT
+	menu.section = Menu.Section.RECENT; menu.open_usb_takeover(); await settle()
+	check(platform.takeovers == [RAW] and menu.section == Menu.Section.LOCAL and menu._local_path() == RAW and menu.rows.size() == 2,
+		"A playback provider failure opens the single app-managed USB entry with one takeover")
+	platform.takeovers.clear(); menu.open_usb_takeover(); menu._activate(Menu.REFRESH); await settle()
+	check(platform.takeovers.is_empty() and menu._local_path().is_empty(), "Any library action before the volume list arrives cancels the pending takeover")
+	menu._activate(Menu.ROW_BASE+3); await settle()
 	menu.compact = false; menu.refresh()
 	platform.raw_error = false; menu._activate(Menu.REFRESH); await settle()
 	check(menu.rows.size() == 2 and menu.rows[0].title == "exFAT · 1" and menu.rows[1].title == "FAT32 · 2", "Both direct partitions survive normal listing and media filtering")

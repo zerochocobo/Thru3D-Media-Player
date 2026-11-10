@@ -9,12 +9,16 @@ let observer;
 function video(width, height, duration) {
   const events = {};
   return {isConnected: true, currentSrc: 'blob:local-' + width, readyState: 4, videoWidth: width, videoHeight: height,
-    duration, currentTime: 1, paused: false, ended: false, events,
+    duration, currentTime: 1, paused: false, ended: false, events, getAttribute:()=>null, parentElement:null,
     addEventListener(name, fn) { (events[name] ??= []).push(fn); },
     pause() { this.paused = true; for (const fn of events.pause || []) fn(); },
     play() { this.paused = false; for (const fn of events.play || []) fn(); }};
 }
 const main = video(576, 1024, 19.735), auxiliary = video(0, 0, NaN);
+const publicId=page.split('/').at(-1);
+const rendered={aweme_id:publicId,video:{duration:19782,play_addr:{width:576,height:1024,url_list:[file]}}};
+main.parentElement={parentElement:null,getAttribute:k=>k==='data-e2e-vid'?publicId:null,
+  '__reactProps$fixture':{item:rendered}};
 const players = [auxiliary, main];
 const context = vm.createContext({URL, Date: {now: () => 10000}, performance: {now: () => 10000}, location: {href: page}, navigator: {userAgent: 'fixture'},
   document: {nodeType: 9, querySelectorAll: selector => selector === 'video' ? players : []},
@@ -26,7 +30,7 @@ const context = vm.createContext({URL, Date: {now: () => 10000}, performance: {n
       postMessage(value) { this.messages.push(JSON.parse(JSON.stringify(value))); }, disconnect() {}}; ports.push(port); return port; }
   }}
 });
-for (const name of ['douyin.js', 'media.js']) vm.runInContext(fs.readFileSync(path.join(source, name), 'utf8'), context);
+for (const name of ['douyin.js', 'douyin-current.js', 'media.js']) vm.runInContext(fs.readFileSync(path.join(source, name), 'utf8'), context);
 function flush() { let count = 0; while (timers.length) { assert.ok(++count < 100); timers.shift()(); } }
 flush();
 for (const fn of main.events.loadstart) fn(); // The site's MSE source is assigned after its file fetch.
@@ -44,9 +48,14 @@ assert.equal(snapshot.douyin.observed_file, file);
 assert.equal(snapshot.network[0].headers.referer, page);
 const audio='https://cdn.test/current.m4a?signature=synthetic';
 const pairData={...data,audio:[{id:'current-audio',urls:[audio]}]};
+rendered.video.bit_rate_audio=[{audio_meta:{file_id:'current-audio',url_list:[audio]}}];
 const request={kind:'file',url:file,at:9970,headers:{referer:page}};
 networkPorts[0].onMessage.emit({type:'network',page,douyin:[pairData],candidates:[request]});flush();
-assert.equal(ports[0].messages.at(-1).videos.find(v=>v.width===576).douyin_ready,false,'MSE cannot announce readiness while its declared audio is still missing');
+snapshot=ports[0].messages.at(-1).videos.find(v=>v.width===576);
+// The native container probe distinguishes a muxed file from a video-only file.
+// This webpage must never invent the still-unobserved separate audio request.
+assert.equal(snapshot.douyin.observed_audio,undefined);
+assert.equal(snapshot.douyin.audio,undefined);
 networkPorts[0].onMessage.emit({type:'network',page,douyin:[pairData],candidates:[request,{kind:'file',url:audio,at:9970,headers:{referer:page}}]});flush();
 snapshot=ports[0].messages.at(-1).videos.find(v=>v.width===576);
 assert.equal(snapshot.douyin_ready,true);assert.equal(snapshot.douyin.observed_audio,audio);
@@ -57,7 +66,11 @@ assert.equal(snapshot.douyin_api_paths[0],'/aweme/v1/web/mix/aweme/');
 assert.equal(snapshot.douyin_dom.flight_scripts,0,'DOM diagnostics expose counts, not inline script text');
 const duplicate = video(576, 1024, 19.735); players.push(duplicate);
 observer([{addedNodes: [{nodeType: 1, querySelectorAll: () => [duplicate]}]}]); flush();
-assert.ok(ports[0].messages.at(-1).videos.every(v => !v.douyin_ready), 'Ambiguous decoded owners cannot adopt a request');
+assert.equal(ports[0].messages.at(-1).videos.find(v=>v.id===snapshot.id).douyin_ready,true,'An unlabelled same-size preload cannot displace the explicitly rendered current owner');
+assert.equal(ports[0].messages.at(-1).videos.filter(v=>v.douyin_ready).length,1,'The unowned duplicate cannot adopt the current request');
+rendered.aweme_id='6961737553342991652';ports[0].onMessage.emit({action:'snapshot'});flush();
+assert.ok(ports[0].messages.at(-1).videos.every(v=>!v.douyin_ready),'An old API declaration cannot override changed rendered-card identity');
+rendered.aweme_id=publicId;
 duplicate.isConnected = false; main.mediaKeys = {};
 ports[0].onMessage.emit({action: 'snapshot'}); flush();
 assert.ok(ports[0].messages.at(-1).videos.every(v => !v.douyin_ready), 'Protected media cannot adopt the observed whole file');

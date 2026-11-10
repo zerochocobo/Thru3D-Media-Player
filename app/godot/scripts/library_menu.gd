@@ -188,6 +188,7 @@ const EXPAND_LIBRARY := 90
 const STORAGE_ROOT := 91
 const RETRY_USB := 92
 const TAKEOVER_USB := 93
+var _usb_takeover_pending := false
 const USB_BUSY_EJECT := "USB device is in use; eject it in system settings, then retry"
 var view_mode := "grid"
 var _position_to_restore := {}
@@ -288,6 +289,7 @@ var restore_directory_position := true
 var _browse_return_restore := false
 var _browse_parent_filters := {}
 const BROWSE_POSITION_HINT := "Resume where you left off, separately for each folder and file type filter. When off, folders open at the top; returning to a parent keeps its position. Position memory follows history privacy settings."
+const AlphaEdgeSettings := preload("res://scripts/alpha_edge.gd")
 const AUTO_PASSTHROUGH_HINT := "Automatically enable passthrough when the filename contains alpha or passthrough. When off, you can enable it manually from the playback menu."
 var _restore_folder_key := ""
 var _editor := {}                  # SMB or DLNA server; empty when not editing
@@ -1674,6 +1676,7 @@ func _on_media_list(id: int, payload: String) -> void:
 					_local_all_files = bool(result.get("all_files", true))
 					_restore_folder_position()
 					if not _local_release_notice.is_empty() and section == Section.LOCAL: status = _local_release_notice
+					if _usb_takeover_pending and _local_path().is_empty() and section == Section.LOCAL: _continue_usb_takeover()
 			"smb_servers":
 				_smb_servers = result.get("servers", [])
 			"smb_found":
@@ -1751,6 +1754,23 @@ func _takeover_usb() -> void:
 	file_actions.reset()
 	_request("local", platform.media_local_usb_takeover(_local_path()))
 	refresh()
+
+## From a PICO provider failure: list the volumes, then take over the app's own USB entry once.
+func open_usb_takeover() -> void:
+	file_actions.reset()
+	section = Section.LOCAL
+	scroll = 0.0; status = ""
+	_local_stack.clear(); _local_entries = []
+	_usb_takeover_pending = true
+	_load_section(); refresh()
+
+func _continue_usb_takeover() -> void:
+	_usb_takeover_pending = false
+	var usb := _local_volumes.filter(func(volume): return bool(volume.get("managed_usb", false)))
+	# Several disks: the user picks one; its busy state still offers the takeover.
+	if usb.size() != 1 or not PlatformMethods.supports(platform, "media_local_usb_takeover"): return
+	_local_stack.append(usb[0].duplicate(true)); _local_entries = []; scroll = 0
+	_request("local", platform.media_local_usb_takeover(_local_path()))
 
 func _open_storage_root() -> void:
 	# Keep the partitions explicit; a USB product name cannot identify the mounted UUID.
@@ -1963,6 +1983,8 @@ func _rebuild_rows() -> void:
 						"slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 100.0})
 					rows.append({"title": I18n.t("Alpha edge shrink"), "key": "alpha_shrink", "value": int(settings.get("alpha_shrink", 40)),
 						"slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 40.0})
+					rows.append(_choice_row("Cut-out interpolation", "alpha_mask_blend", bool(settings.get("alpha_mask_blend", true)),
+						[{"value": false, "label": "Off", "hint": AlphaEdgeSettings.MASK_BLEND_OFF_HINT}, {"value": true, "label": "On", "hint": AlphaEdgeSettings.MASK_BLEND_ON_HINT}]))
 					if Quality.ALPHA_PRECISION_SHOWN:
 						var precisions: Array = []
 						for option in [[Quality.ALPHA_PRECISION_AUTO, "Auto"], [Quality.ALPHA_PRECISION_FAST, "Fast"], [Quality.ALPHA_PRECISION_PRECISE, "Precise"]]:
@@ -2389,6 +2411,7 @@ func _activate(target: int) -> void:
 		if files.is_empty(): return
 		_restore_audio_import_context(); dismiss(); audio_import_selected.emit(files); return
 	_local_release_notice = ""
+	_usb_takeover_pending = false
 	if archives.action(target): return
 	if collections.action(target): return
 	if _activate_footer(target): return

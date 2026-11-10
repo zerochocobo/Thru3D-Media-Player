@@ -37,12 +37,23 @@ func configure(viewer: Camera3D, compositor: Node, provider: Callable, low: bool
 	var xr := XRServer.find_interface("OpenXR")
 	native_supported = xr != null and xr.is_initialized() and xr.get_view_count() == 2 and probe.is_natively_supported()
 	probe.free()
+	if native_supported:
+		var info: Dictionary = xr.get_system_info()
+		native_supported = native_runtime(str(info.get("XRRuntimeName", "")), str(info.get("OpenXRSystemName", "")), OS.has_feature("pico"))
+	DiagnosticLog.record("mono_menu_path", {"native": native_supported})
 	# See MenuComposition: a session stop must not leave the layer's render target for the next one.
 	if native_supported and not xr.session_stopping.is_connected(_renew_submit):
 		xr.session_stopping.connect(_renew_submit)
 	if not RenderingServer.frame_post_draw.is_connected(_restore_visual_planes):
 		RenderingServer.frame_post_draw.connect(_restore_visual_planes)
 	process_priority = 99 # after input, before the existing compositor
+
+## PICO 4 user report (0.17.4): a VR180 control bar on the infinite-radius equirect layer stayed
+## invisible while its hit geometry still answered the rays, so PICO draws it in the eye buffer.
+## The same vendor tests as VideoLayer's surface orientation policy.
+static func native_runtime(runtime_name: String, system_name: String, pico_build: bool) -> bool:
+	var runtime := runtime_name.strip_edges().to_lower()
+	return not (pico_build or runtime.contains("pico") or runtime.begins_with("pxr") or system_name.to_lower().contains("pico"))
 
 func layer_reservation() -> int:
 	# Reserve before first use, and after closing: the swapchain stays attached.

@@ -120,3 +120,9 @@ In 0.17.3 an observed Quest 2 session could not initialize the MNN OpenCL backen
 ## 0.17.4 GPU selection and cadence
 
 OpenCL remains preferred; when runtime initialization fails, use MNN Vulkan and reject CPU execution. Runtime graph restoration removes the OpenCL-specific fused HardSwish representation for the fallback without distributing weights. The build requires an MNN archive with Vulkan symbols, schema/current and flatbuffers headers; the public Build-MnnAndroid.sh retains both backend flags. Reported Quest 2 checks cover video depth/base portrait and browser depth/portrait combinations, not every headset, photos, enhanced portrait or long thermal windows. Video capture stays28ms and browser depth keeps its prior strategy;120/180ms diagnostic experiments are not delivery settings. Scheduling/command reuse and lossless pixel handoffs improve processing without a universal72FPS/30Hz promise. No private benchmark samples, credentials or weights are exported.
+
+## 0.17.5 required external beach audio
+
+The refreshment runtime now loads `res://environments/private_beach/straw-sip.wav` and `res://environments/private_beach/skewer-chew.wav`. These generated audio inputs are deliberately not published with the source, alongside the rest of the private scenery payload. They are required external resources, not optional source files: provide version-matched licensed audio/import mappings before packaging. Assert-PrivateBeachPackaged.ps1 requires both entries; do not suppress that gate or add dummy sounds to claim a complete build. This Git tree alone does not supply the beach assets.
+
+这两份拟音属于须另行提供的沙滩资源，继续排除；正常完整打包必须校验，不以假音频或关闭门禁代替。

@@ -169,3 +169,7 @@ Meta `-QuestStore` builds temporarily use the application display name `Thru3D M
 ## 0.17.4 source/package correspondence
 
 This source snapshot includes the latest committed0.17.4 source. Four delivered packages shared the recorded build inputs; the existing signed OpenXR package was accepted with two changed source inputs(main.gd/xr_display.gd), so inclusion of the later seek-performance change was not guaranteed. A subsequent MPV closing-source wait is also included in current source and was not rebuilt into that batch. Do not claim identical content for all delivered APKs. Model/scenery payloads and original signing identities remain separately supplied; missing resources must stop builds.
+
+## 0.17.5 release input cut
+
+This source follows the fixed release input records, not temporary channel overrides or later experiments. Three TED manifest/script/test files are captured by exact recorded hashes despite being uncommitted in the private worktree; this is source correspondence, not site acceptance. Generated test UID metadata is separately identified. Build completion/progress is recorded independently; source-only checks do not create an APK, signing identity or headset acceptance.

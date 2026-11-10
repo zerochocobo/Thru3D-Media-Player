@@ -33,11 +33,6 @@ func _run() -> void:
 		trackers.append(tracker)
 	await process_frame
 	visuals.update_visibility(true)
-	visuals.set_cinema_move_hint(true)
-	check(visuals.cinema_move_hint != null and visuals.cinema_move_hint.get_parent() == visuals.hands.right_hand.grip, "Movement A hint follows the right controller grip")
-	check(visuals.cinema_move_hint.is_visible_in_tree(), "Tracked right controller displays the movement hint")
-	visuals.set_cinema_move_hint(false)
-	check(not visuals.cinema_move_hint.visible, "Menu/playback hides the movement hint")
 	for hand in visuals.hands:
 		var entry: Dictionary = visuals.hands[hand]
 		check(entry.controller_gate.visible and not entry.hand_gate.visible, hand + " shows controller only")
@@ -53,6 +48,12 @@ func _run() -> void:
 	visuals.update_visibility(true)
 	check(visuals.hands.right_hand.hand_gate.visible and not visuals.hands.right_hand.controller_gate.visible, "Optical hand suppresses controller duplicate")
 	check(visuals.hands.left_hand.controller_gate.visible, "Other hand ownership is independent")
+	visuals.update_visibility(true, {}, true, {"right_hand": true})
+	check(not visuals.hands.right_hand.hand_gate.visible and not visuals.hands.right_hand.controller_gate.visible, "Hand lock hides optical mesh without exposing the emulated controller")
+	check(visuals.hands.left_hand.controller_gate.visible, "Hand lock leaves the physical controller visible")
+	check(trackers[1].has_tracking_data, "Hand lock preserves tracking for recovery")
+	visuals.update_visibility(true)
+	check(visuals.hands.right_hand.hand_gate.visible, "Default call restores original unlocked visual behavior")
 	check(visuals.snapshot().right_hand.controller_hidden_reason == "optical_hand", "Diagnostic explains hand ownership")
 	visuals.update_visibility(true, {"left_hand": 1.0, "right_hand": 1.0}, false)
 	check(not visuals.hands.left_hand.controller_gate.visible and not visuals.hands.right_hand.hand_gate.visible, "Hidden panels suppress both controller and optical-hand models without disabling tracking")

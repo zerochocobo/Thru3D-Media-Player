@@ -21,10 +21,16 @@ struct Text { uint8_t data[8]; };
 struct Value { uint8_t data[24]; };
 
 constexpr const char* kColorScaleBias = "XR_KHR_composition_layer_color_scale_bias";
+// Undocumented; the community Monado runtime for iQIYI QIYU (A091, "Monado: QIYIVR") offers it beside
+// ALPHA_BLEND, which alone composites over black. The ALVR-OpenXR fork enables it and then only
+// switches to ALPHA_BLEND for passthrough; Thru3D already does the switch.
+constexpr const char* kQiyuPassthrough = "XR_QIYU_passthrough";
 // OpenXRExtensionWrapper.register_extension_wrapper() in Godot 4.7's extension API.
 constexpr GDExtensionInt kRegisterHash = 3218959716;
 
-bool color_scale_bias = false; // written by Godot when it creates the instance
+// Written by Godot when it creates the instance.
+bool color_scale_bias = false;
+bool qiyu_passthrough = false;
 
 GDExtensionClassLibraryPtr library = nullptr;
 GDExtensionInterfaceStringNameNewWithLatin1Chars string_name_new = nullptr;
@@ -64,14 +70,13 @@ void* virtual_data(void*, GDExtensionConstStringNamePtr method, uint32_t) {
     return std::memcmp(method, &requested_name, sizeof(Name)) == 0 ? &requested_name : nullptr;
 }
 
-// _get_requested_extensions(xr_version) -> Dictionary {name: pointer to the bool Godot sets}.
-void call_virtual(GDExtensionClassInstancePtr, GDExtensionConstStringNamePtr, void*, const GDExtensionConstTypePtr*, GDExtensionTypePtr result) {
+void request(GDExtensionTypePtr result, const char* extension, bool* enabled) {
     Text text{};
-    string_new(&text, kColorScaleBias);
+    string_new(&text, extension);
     Value key{};
     variant_from_type(GDEXTENSION_VARIANT_TYPE_STRING)(&key, &text);
     destructor(GDEXTENSION_VARIANT_TYPE_STRING)(&text);
-    int64_t address = static_cast<int64_t>(reinterpret_cast<uintptr_t>(&color_scale_bias));
+    int64_t address = static_cast<int64_t>(reinterpret_cast<uintptr_t>(enabled));
     Value pointer{};
     variant_from_type(GDEXTENSION_VARIANT_TYPE_INT)(&pointer, &address);
     GDExtensionVariantPtr slot = dictionary_index(result, &key);
@@ -79,6 +84,13 @@ void call_virtual(GDExtensionClassInstancePtr, GDExtensionConstStringNamePtr, vo
     variant_copy(slot, &pointer);
     variant_destroy(&pointer);
     variant_destroy(&key);
+}
+
+// _get_requested_extensions(xr_version) -> Dictionary {name: pointer to the bool Godot sets}.
+// All optional: Godot enables only those the runtime offers.
+void call_virtual(GDExtensionClassInstancePtr, GDExtensionConstStringNamePtr, void*, const GDExtensionConstTypePtr*, GDExtensionTypePtr result) {
+    request(result, kColorScaleBias, &color_scale_bias);
+    request(result, kQiyuPassthrough, &qiyu_passthrough);
 }
 
 void initialize(void*, GDExtensionInitializationLevel level) {
@@ -115,6 +127,7 @@ bool load(GDExtensionInterfaceGetProcAddress get, T& function, const char* symbo
 } // namespace
 
 bool thru3d_color_scale_bias_enabled() { return color_scale_bias; }
+bool thru3d_qiyu_passthrough_enabled() { return qiyu_passthrough; }
 
 extern "C" THRU3D_EXPORT GDExtensionBool thru3d_layer_extensions_init(GDExtensionInterfaceGetProcAddress get,
         GDExtensionClassLibraryPtr p_library, GDExtensionInitialization* initialization) {
