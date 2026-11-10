@@ -172,4 +172,4 @@ This source snapshot includes the latest committed0.17.4 source. Four delivered 
 
 ## 0.17.5 release input cut
 
-This source follows the fixed release input records, not temporary channel overrides or later experiments. Three TED manifest/script/test files are captured by exact recorded hashes despite being uncommitted in the private worktree; this is source correspondence, not site acceptance. Generated test UID metadata is separately identified. Build completion/progress is recorded independently; source-only checks do not create an APK, signing identity or headset acceptance.
+This source follows the fixed release input records, not temporary channel overrides or later experiments. TED manifest/script/test inputs match the recorded release hashes; this establishes source correspondence, not site acceptance. Required source metadata is retained. Build completion/progress is recorded independently; source-only checks do not create an APK, signing identity or headset acceptance.
