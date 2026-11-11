@@ -73,6 +73,8 @@ func run() -> void:
 	for uri in ["https://server/file.srt", "smb://user:secret@server/file.srt", "cloud://saved/../file.srt", "cloud://saved/%2e%2e/file.srt", "cloud://saved/file.mp4", "file:///storage/file.sup", "cloud://saved/file.srt?token=secret", "cloud://saved", "content://foreign/file.srt"]:
 		check(not Sources.valid_uri(uri), "Unsupported or unstable fixture source is rejected: " + uri)
 	check(Sources.filename("smb://saved/share/%e5%ad%97%e5%b9%95%20%231.srt") == "字幕 #1.srt", "Lowercase URI escapes retain Unicode, spaces and hash characters")
+	check(Sources.filename("smb://saved/share/clip+%252f%23%3f.srt") == "clip+%2f#?.srt", "Encoded subtitle selections retain literal plus and percent text")
+	check(Video._subtitle_filename("smb://saved/share/clip+%25#1?.en.srt") == "clip+%25#1?.en.srt", "SMB sidecar matching uses the literal basename")
 	Privacy.configure(Privacy.ALL); Privacy.configure_file_settings(Privacy.ALL)
 	var folder := ProjectSettings.globalize_path("res://../../build/output/subtitle-recovery/picker-%d" % Time.get_ticks_usec())
 	DirAccess.make_dir_recursive_absolute(folder)

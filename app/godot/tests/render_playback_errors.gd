@@ -78,6 +78,29 @@ func _run() -> void:
 				check(details_found == expanded, "Diagnostic codes only appear after expansion")
 				check(viewport.get_texture().get_image().save_png(output.path_join(language + "-detail-" + reason + ("-open" if expanded else "-closed") + ".png")) == OK, "Details preview saved")
 			menu.dismiss(); menu.visible = true
+		# The Quest 3 report for an AV1 7680x7680 file: summary and details carry the numbers.
+		var decoder := {"hardware": true, "decoder": "c2.qti.av1.decoder", "mime": "video/av01", "device": "Quest 3", "exceeded": true,
+			"max_width": 8192, "max_height": 8192, "peak_width": 8192, "peak_height": 4320, "peak_fps": 48, "max_height_at_width": 4608}
+		for reason in ["resolution_unsupported", "decoder_capacity_exceeded"]:
+			var report := Errors.clean({"code": "MPV_FRAME_PIPELINE_FAILED", "reason": reason, "stage": "decoding",
+				"detail": "MPV source dimensions exceed the current GPU slot contract", "decoder": decoder,
+				"video": {"codec": "av1", "width": 7680, "height": 7680, "fps": 59.94}})
+			state = {"title": "Greece - Santorini.mp4", "error": I18n.t(Errors.message(report)), "error_report": report}
+			menu.position.y = -0.48; menu.position.z = -1.9
+			menu.show_playback_error()
+			check(menu._info.text.contains("7680×7680"), "The short reason names the video size: " + language + reason)
+			for expanded in [false, true]:
+				if expanded: menu._activate(Menu.ERROR_DETAILS)
+				await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
+				var limits_found := false
+				for label in menu._labels:
+					if label.text.contains("7680×4608"):
+						limits_found = true
+						check(label.get_aabb().size.y < 0.51, "Decoder limits fit the expanded panel: " + language + reason)
+						check(label.position.y - label.get_aabb().size.y >= Menu.POPUP_BOTTOM + 0.015, "Decoder limits stay within the panel")
+				check(limits_found == expanded, "Decoder limits only appear after expansion")
+				check(viewport.get_texture().get_image().save_png(output.path_join(language + "-detail-" + reason + ("-open" if expanded else "-closed") + ".png")) == OK, "Decoder preview saved")
+			menu.dismiss(); menu.visible = true
 		menu.position.y = 0; menu.position.z = -1.55
 		menu.visible = false; photo.visible = true
 		state = {"loading": true, "count": 1, "title": "照片.jpg", "loading_caption": Loading.caption({"remote": true, "phase": "reading", "elapsed_ms": 15000, "bytes_per_second": 2400000})}

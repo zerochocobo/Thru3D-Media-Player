@@ -4,16 +4,26 @@ const Thru3DOdysee=(()=>{
   'use strict';
   const {own,revision,visible}=Thru3DTikTok;
   const {address,seconds}=Thru3DStreamable;
+  const slug=value=>{
+    try{
+      const decoded=decodeURIComponent(value);
+      return /^[\p{L}\p{M}\p{N}_.-]+$/u.test(decoded)&&!decoded.includes('..')?decoded:null;
+    }catch(_){return null;}
+  };
   const documentPage=value=>{const u=address(value);return !!u&&value.length<=8192&&!u.port&&['odysee.com','www.odysee.com'].includes(u.hostname);};
   const page=value=>{
     const u=address(value);if(!u||!documentPage(value)||u.pathname.includes('..'))return null;
-    const m=/^\/(?:@[A-Za-z0-9_.-]+(?::[a-fA-F0-9]{1,40})?\/)?([A-Za-z0-9_.-]+):([a-fA-F0-9]{1,40})\/?$/.exec(u.pathname);
-    return m?{id:u.pathname.replace(/^\/|\/$/g,''),slug:m[1],prefix:m[2].toLowerCase(),page:value}:null;
+    const m=/^\/(?:@[A-Za-z0-9_.-]+(?::[a-fA-F0-9]{1,40})?\/)?([^/:]+):([a-fA-F0-9]{1,40})\/?$/.exec(u.pathname);
+    const name=m&&slug(m[1]);
+    return name?{id:u.pathname.replace(/^\/|\/$/g,''),slug:name,prefix:m[2].toLowerCase(),page:value}:null;
   };
   const file=value=>{
     const u=address(value);if(!u)return null;
-    const legacy=/^\/api\/v[34]\/streams\/free\/([A-Za-z0-9_.-]+)\/([a-fA-F0-9]{40})\/([a-fA-F0-9]{6}\.mp4)$/.exec(u.pathname);
-    if(legacy)return {slug:legacy[1],claim:legacy[2].toLowerCase(),file:legacy[3].toLowerCase(),free:true};
+    const legacy=/^\/api\/v[34]\/streams\/free\/([^/]+)\/([a-fA-F0-9]{40})\/([a-fA-F0-9]{6}\.mp4)$/.exec(u.pathname);
+    if(legacy){
+      const name=slug(legacy[1]);
+      return name?{slug:name,claim:legacy[2].toLowerCase(),file:legacy[3].toLowerCase(),free:true}:null;
+    }
     const current=/^\/v6\/streams\/([a-fA-F0-9]{40})\/([a-fA-F0-9]{6}\.mp4)$/.exec(u.pathname);
     return current?{claim:current[1].toLowerCase(),file:current[2].toLowerCase(),free:false}:null;
   };
@@ -40,8 +50,8 @@ const Thru3DOdysee=(()=>{
           const claim=own(p,'claimId'),uri=own(p,'uri'),values=own(p,'claimValues'),info=own(values,'video'),expected=own(info,'duration');
           if(typeof claim==='string'&&/^[a-fA-F0-9]{40}$/.test(claim)&&typeof uri==='string'&&uri.length<=8192&&
             typeof expected==='number'&&Number.isFinite(expected)&&expected>0&&expected<=86400){
-            const id=claim.toLowerCase(),identity=/^lbry:\/\/(?:@[A-Za-z0-9_.-]+[#:]([a-fA-F0-9]{1,40})\/)?([A-Za-z0-9_.-]+)[#:]([a-fA-F0-9]{1,40})\/?$/.exec(uri);
-            if(identity&&identity[2]===current.slug&&id.startsWith(identity[3].toLowerCase())&&id.startsWith(current.prefix)&&
+            const id=claim.toLowerCase(),identity=/^lbry:\/\/(?:@[A-Za-z0-9_.-]+[#:]([a-fA-F0-9]{1,40})\/)?([^/#:]+)[#:]([a-fA-F0-9]{1,40})\/?$/.exec(uri);
+            if(identity&&slug(identity[2])===current.slug&&id.startsWith(identity[3].toLowerCase())&&id.startsWith(current.prefix)&&
               new URL(root).pathname.split('/').some(p=>p.toLowerCase()===id)&&(!actual||actual.claim===id&&(!actual.slug||actual.slug===current.slug))){
               if(own(p,'isLivestreamClaim')===true||own(p,'isProtectedContent')===true){if(diagnostics)diagnostics.denied=true;return;}
               if(own(p,'isLivestreamClaim')===false&&own(p,'isProtectedContent')===false)models.push({...current,

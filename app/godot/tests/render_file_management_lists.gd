@@ -86,7 +86,7 @@ func _run() -> void:
 				check(menu._tooltip != null and menu._tooltip.visible, label + " toggle tooltip is visible")
 				check(menu._tooltip.mesh.size.x <= 0.91, label + " tooltip wraps within the menu")
 			if view == "rename":
-				check(not menu.file_actions.rename.selected_all, label + " keeps input text")
+				check(menu.system_text_input.active("file_rename") and not menu.system_text_input.editor.has_selection(), label + " keeps input text")
 				check(menu.text_snapshot().contains(".mp4"), label + " read-only extension is visible")
 			for node in menu.find_children("*", "Label3D", true, false):
 				if node.text == menu.I18n.t("Also rename files with the same basename"):

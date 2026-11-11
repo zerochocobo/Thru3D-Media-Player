@@ -41,4 +41,20 @@ class WebBrowserTwitchTest {
             "https://www.twitch.tv/ea", "https://www.twitch.tv/videos/123", "https://clips.twitch.tv/Bad%2FClip", page + "#other"))
             assertNull(WebBrowserTwitch.page(bad))
     }
+
+    @Test fun integerCatalogueDurationCanContainTheSameDecodedSecond() {
+        val item = media().put("duration", 15.782942)
+        item.getJSONObject("twitch").put("duration", 15.782942).put("expected_duration", 15.0)
+        assertNotNull(WebBrowserTwitch.metadata(item, page))
+        item.getJSONObject("twitch").put("expected_duration", 15.1)
+        assertNull(WebBrowserTwitch.metadata(item, page))
+        item.getJSONObject("twitch").put("expected_duration", 15.6)
+        assertNotNull(WebBrowserTwitch.metadata(item, page))
+        item.getJSONObject("twitch").put("expected_duration", 15.0).put("duration", 16.0)
+        item.put("duration", 16.0)
+        assertNull(WebBrowserTwitch.metadata(item, page))
+        item.getJSONObject("twitch").put("duration", 6.0)
+        item.put("duration", 6.0)
+        assertNull(WebBrowserTwitch.metadata(item, page))
+    }
 }

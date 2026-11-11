@@ -44,11 +44,14 @@ class GeckoFixtureActivity : Activity() {
     private var bridge: FixtureMemoryBridge? = null
     private var owner: WebExtension.Port? = null
     private var selected: JSONObject? = null
+    private var selectedAdapter: String? = null
     private var selectedNavigation = 0
     private var phase = "idle"
     private var token = 0
     private var observedRequest = 0
     private var returnTime = 0.0
+    private var returnStarted = 0L
+    private var seekWaitReports = 0
     private var suspendConfirmed = false
     private val ticker = object : Runnable {
             override fun run() { updateHandoff();publish(); handler.postDelayed(this, 1000) }
@@ -136,22 +139,26 @@ class GeckoFixtureActivity : Activity() {
                         for (i in 0 until minOf(16,list.length())) {
                             val item=list.optJSONObject(i) ?: continue
                             val captured=WebBrowserMango.captureDiagnostics(data)
-                            val valid=WebBrowserMango.metadata(item,page)!=null
+                            val kind=FixtureMediaBinding.adapter(page)
+                            val valid=FixtureMediaBinding.metadata(item,page)!=null
                             val iqiyiValid=WebBrowserIqiyi.metadata(item,page)!=null
-                            captured.put("frame_matches",item.optString("frame")==page).put("binding_valid",valid)
+                            captured.put("frame_matches",item.optString("frame")==page).put("binding_valid",WebBrowserMango.metadata(item,page)!=null)
                             safe.put(JSONObject().put("id",item.optString("id").takeIf { it.matches(Regex("[0-9]{1,8}")) }.orEmpty())
                                 .put("width",item.optInt("width").coerceIn(0,32768)).put("height",item.optInt("height").coerceIn(0,32768))
                                 .put("duration",item.optDouble("duration",0.0).takeIf { it.isFinite() && it in 0.0..172800.0 } ?: 0.0)
                                 .put("time",item.optDouble("time",0.0).takeIf { it.isFinite() && it in 0.0..172800.0 } ?: 0.0)
                                 .put("playing",item.optBoolean("playing")).put("protected",item.optBoolean("protected"))
-                                .put("blob",item.optBoolean("blob")).put("js_ready",item.optBoolean("mango_ready"))
+                                .put("blob",item.optBoolean("blob")).put("adapter",kind.orEmpty()).put("js_ready",kind!=null && item.optBoolean("${kind}_ready"))
                                 .put("java_ready",valid).put("mango_capture",captured)
+                                .put("twitch_ready",item.optBoolean("twitch_ready")).put("twitch_binding",WebBrowserTwitch.metadata(item,page)!=null)
+                                .put("ted_ready",item.optBoolean("ted_ready")).put("ted_binding",WebBrowserTed.metadata(item,page)!=null)
                                 .put("iqiyi_ready",item.optBoolean("iqiyi_ready")).put("iqiyi_binding",iqiyiValid))
                         }
                         media[port]=safe;lastReport=SystemClock.uptimeMillis()
                         if (bridge!=null && owner==null && active && phase in setOf("idle","returned","invalid")) {
+                            val kind=FixtureMediaBinding.adapter(page)
                             val clicked=(0 until list.length()).mapNotNull { list.optJSONObject(it) }.filter {
-                                it.optInt("mango_request")>observedRequest && it.optBoolean("mango_ready") && WebBrowserMango.metadata(it,page)!=null
+                                kind!=null && it.optInt("${kind}_request")>observedRequest && it.optBoolean("${kind}_ready") && FixtureMediaBinding.metadata(it,page,kind)!=null
                             }
                             if(clicked.size==1) beginHandoff(port,clicked.single())
                         }
@@ -166,7 +173,8 @@ class GeckoFixtureActivity : Activity() {
     private fun policy(port: WebExtension.Port) {
         port.postMessage(JSONObject().put("action","network_policy").put("enabled",false).put("bilibili",false)
             .put("douyin",false).put("weibo",false).put("tencent",false).put("mango",WebBrowserMango.enabled(page))
-            .put("iqiyi",WebBrowserIqiyi.enabled(page)).put("diagnostics",true))
+            .put("iqiyi",WebBrowserIqiyi.enabled(page)).put("twitch",WebBrowserTwitch.enabled(page))
+            .put("ted",WebBrowserTed.observing(page)).put("diagnostics",true))
     }
     private fun sendPolicy() { ports.filter { portNavigation[it]==navigation }.forEach { runCatching { policy(it) } } }
     override fun onNewIntent(value: Intent) { super.onNewIntent(value);intent=value;command(value) }
@@ -175,24 +183,25 @@ class GeckoFixtureActivity : Activity() {
         when(value.getStringExtra("operation") ?: "open") {
             "open" -> {
                 val url=value.getStringExtra("url") ?: "https://www.mgtv.com/b/427837/15588271.html"
-                if (!WebBrowserMango.enabled(url) && !WebBrowserIqiyi.enabled(url)) { error="unsupported_public_page";publish();return }
+                if (FixtureMediaBinding.adapter(url)==null && !WebBrowserIqiyi.enabled(url)) { error="unsupported_public_page";publish();return }
                 page=url;error="";session.loadUri(url)
             }
             "reload" -> session.reload()
             "inactive" -> { active=false;ports.toList().forEach { it.postMessage(JSONObject().put("action","suspend")) };session.setActive(false) }
             "active" -> { active=true;session.setActive(true);ports.toList().forEach { it.postMessage(JSONObject().put("action","resume")) } }
-            "snapshot" -> Unit
+            "snapshot" -> postAll(JSONObject().put("action","snapshot"))
             "bridge" -> {
-                if (!WebBrowserMango.enabled(page)) { error="native_bridge_requires_mango";publish();return }
+                val kind=FixtureMediaBinding.adapter(page)
+                if (kind==null) { error="unsupported_native_bridge_page";publish();return }
                 val name=value.getStringExtra("channel").orEmpty()
                 if(!name.matches(Regex("thru3d_fixture_[a-f0-9]{32}")) || android.os.Build.HARDWARE !in setOf("ranchu","goldfish")) {
                     error="invalid_local_channel";publish();return
                 }
                 if(owner!=null && phase!="returned") invalidateHandoff()
-                owner=null;selected=null;phase="idle"
+                owner=null;selected=null;selectedAdapter=null;phase="idle"
                 observedRequest=reports.values.flatMap { report ->
                     val list=report.optJSONArray("videos") ?: JSONArray()
-                    (0 until list.length()).map { list.optJSONObject(it)?.optInt("mango_request") ?: 0 }
+                    (0 until list.length()).map { list.optJSONObject(it)?.optInt("${kind}_request") ?: 0 }
                 }.maxOrNull() ?: 0
                 bridge?.close();bridge=FixtureMemoryBridge(name,handler,::bridgeRequest)
             }
@@ -202,18 +211,19 @@ class GeckoFixtureActivity : Activity() {
     }
     private fun currentSelected(): JSONObject? {
         val original=selected ?: return null
+        val kind=selectedAdapter ?: return null
         if(selectedNavigation!=navigation || portNavigation[owner]!=navigation) return null
         val list=reports[owner]?.optJSONArray("videos") ?: return null
         return (0 until list.length()).mapNotNull { list.optJSONObject(it) }.singleOrNull {
-            listOf("id","frame","source","network_epoch","width","height").all { key -> it.opt(key)==original.opt(key) } &&
-                it.optJSONObject("mango")?.optString("revision")==original.optJSONObject("mango")?.optString("revision") &&
-                WebBrowserMango.metadata(it,page)!=null
+            if(phase in setOf("returning","returned")) FixtureMediaBinding.sameReturned(original,it,page,kind)
+            else FixtureMediaBinding.same(original,it,page,kind)
         }
     }
     private fun currentPorts() = ports.filter { portNavigation[it]==navigation }
     private fun postAll(message: JSONObject) { currentPorts().forEach { runCatching { it.postMessage(message) } } }
     private fun beginHandoff(port: WebExtension.Port,item: JSONObject) {
-        observedRequest=item.getInt("mango_request");owner=port;selected=JSONObject(item.toString());selectedNavigation=navigation
+        val kind=FixtureMediaBinding.adapter(page) ?: return
+        observedRequest=item.getInt("${kind}_request");owner=port;selected=JSONObject(item.toString());selectedAdapter=kind;selectedNavigation=navigation
         returnTime=item.optDouble("time",0.0);phase="pausing";suspendConfirmed=false;token++
         for(p in currentPorts()) {
             val list=reports[p]?.optJSONArray("videos") ?: JSONArray()
@@ -232,7 +242,17 @@ class GeckoFixtureActivity : Activity() {
     private fun updateHandoff() {
         if(owner==null) return
         val current=currentSelected()
-        if(current==null) { invalidateHandoff();return }
+        if(current==null) {
+            val original=selected
+            val kind=selectedAdapter
+            val list=reports[owner]?.optJSONArray("videos") ?: JSONArray()
+            val waiting=original!=null && kind!=null && selectedNavigation==navigation && portNavigation[owner]==navigation &&
+                (0 until list.length()).mapNotNull { list.optJSONObject(it) }.count { FixtureMediaBinding.waitingForSeek(original,it,page,kind) }==1
+            if(phase in setOf("returning","returned") && SystemClock.uptimeMillis()-returnStarted in 0..3000 && waiting) {
+                phase="returning";seekWaitReports++;return
+            }
+            invalidateHandoff();return
+        }
         if(phase=="pausing" && allPaused()) phase="held"
         if(phase=="inactive" && allPaused(true)) suspendConfirmed=true
         if(phase=="returning" && reports[owner]?.optInt("pause_token")==0 && reports[owner]?.optBoolean("suspended")==false &&
@@ -240,12 +260,13 @@ class GeckoFixtureActivity : Activity() {
     }
     private fun restoreOriginal(position: Double) {
         val original=selected ?: return
-        returnTime=position;active=true;session.setActive(true)
+        val kind=selectedAdapter ?: return
+        returnTime=position;returnStarted=SystemClock.uptimeMillis();seekWaitReports=0;active=true;session.setActive(true)
         postAll(JSONObject().put("action","resume"))
         postAll(JSONObject().put("action","release_pause_media").put("token",token).put("play",false))
-        owner?.postMessage(JSONObject().put("action","restore_mango").put("id",original.getString("id"))
+        owner?.postMessage(JSONObject().put("action","restore_$kind").put("id",original.getString("id"))
             .put("epoch",original.get("network_epoch")).put("page",original.getString("frame"))
-            .put("revision",original.getJSONObject("mango").getString("revision")).put("time",position).put("play",false))
+            .put("revision",original.getJSONObject(kind).getString("revision")).put("time",position).put("play",false))
         phase="returning"
     }
     private fun invalidateHandoff() {
@@ -253,14 +274,22 @@ class GeckoFixtureActivity : Activity() {
             active=true;session.setActive(true);postAll(JSONObject().put("action","resume"))
             postAll(JSONObject().put("action","release_pause_media").put("token",token).put("play",false))
         }
-        owner=null;selected=null;phase="invalid";suspendConfirmed=false
+        owner=null;selected=null;selectedAdapter=null;phase="invalid";suspendConfirmed=false
     }
-    private fun handoffStatus() = JSONObject().put("phase",phase).put("navigation",selectedNavigation).put("token",token)
-        .put("same_binding",owner!=null && currentSelected()!=null).put("suspend_confirmed",suspendConfirmed)
-        .put("original_port_connected",owner!=null && owner in ports).put("return_time",returnTime)
+    private fun handoffStatus(): JSONObject {
+        val current=currentSelected()
+        return JSONObject().put("phase",phase).put("navigation",selectedNavigation).put("token",token)
+            .put("same_binding",owner!=null && current!=null).put("suspend_confirmed",suspendConfirmed)
+            .put("original_port_connected",owner!=null && owner in ports).put("return_time",returnTime).put("seek_wait_reports",seekWaitReports)
+            .put("current_width",current?.optInt("width") ?: 0).put("current_height",current?.optInt("height") ?: 0)
+            .put("return_quality_changed",phase in setOf("returning","returned") && selectedAdapter=="ted" && current!=null &&
+                (current.opt("width")!=selected?.opt("width") || current.opt("height")!=selected?.opt("height")))
+    }
     private fun bridgeRequest(request: JSONObject): JSONObject {
         when(request.optString("action")) {
-            "status" -> Unit
+            // Media reports are event driven. Ask the original ports for fresh
+            // read-only snapshots rather than treating an old paused report as live.
+            "status" -> postAll(JSONObject().put("action","snapshot"))
             "inactive" -> {
                 check(phase=="held" && allPaused() && currentSelected()!=null)
                 active=false;phase="inactive";session.setActive(false)
@@ -278,7 +307,7 @@ class GeckoFixtureActivity : Activity() {
                 check(value.isFinite() && value in 0.0..duration)
                 restoreOriginal(value)
             }
-            "close" -> { if(owner!=null && phase!="returned") invalidateHandoff();owner=null;selected=null;bridge?.close();bridge=null }
+            "close" -> { if(owner!=null && phase!="returned") invalidateHandoff();owner=null;selected=null;selectedAdapter=null;bridge?.close();bridge=null }
             else -> return JSONObject().put("ok",false)
         }
         updateHandoff();publish()
@@ -287,8 +316,11 @@ class GeckoFixtureActivity : Activity() {
     private fun recordNavigation(event: String,value: String) {
         val uri=runCatching { java.net.URI(value) }.getOrNull()
         val host=uri?.host.orEmpty()
-        val site=when(host) { "www.iqiyi.com" -> "iqiyi";"www.mgtv.com","w.mgtv.com","mgtv.com" -> "mgtv";else -> "other" }
-        val id=if(site=="iqiyi") Regex("/([vw]_[A-Za-z0-9]+)\\.html").matchEntire(uri?.rawPath.orEmpty())?.groupValues?.get(1) else null
+        val site=when(host) {
+            "www.iqiyi.com" -> "iqiyi";"www.mgtv.com","w.mgtv.com","mgtv.com" -> "mgtv"
+            "www.twitch.tv","twitch.tv","clips.twitch.tv" -> "twitch";"www.ted.com","ted.com" -> "ted";else -> "other"
+        }
+        val id=WebBrowserIqiyi.page(value) ?: WebBrowserMango.page(value) ?: WebBrowserTwitch.page(value) ?: WebBrowserTed.page(value)
         navigationShapes.addLast(JSONObject().put("event",event).put("site",site)
             .put("scheme",uri?.scheme?.takeIf { it in setOf("http","https","about") } ?: "other")
             .put("public_id",id.orEmpty()).put("about_blank",value=="about:blank")
@@ -299,8 +331,8 @@ class GeckoFixtureActivity : Activity() {
         val list=JSONArray();for (items in media.values) for (i in 0 until items.length()) if(list.length()<16) list.put(items.getJSONObject(i))
         val result=JSONObject().put("schema",1).put("scope","android_gecko_request_diagnostics_not_device_acceptance")
             .put("instance",instance).put("sequence",++sequence).put("state",state).put("error",error).put("navigation",navigation).put("progress",progress)
-            .put("active",active).put("page_id",WebBrowserMango.page(page) ?: WebBrowserIqiyi.page(page).orEmpty())
-            .put("site",if(WebBrowserMango.enabled(page)) "mgtv" else if(WebBrowserIqiyi.enabled(page)) "iqiyi" else "unsupported")
+            .put("active",active).put("page_id",WebBrowserMango.page(page) ?: WebBrowserIqiyi.page(page) ?: WebBrowserTwitch.page(page) ?: WebBrowserTed.page(page).orEmpty())
+            .put("site",if(WebBrowserIqiyi.enabled(page)) "iqiyi" else when(FixtureMediaBinding.adapter(page)) { "mango" -> "mgtv";null -> "unsupported";else -> FixtureMediaBinding.adapter(page) })
             .put("iqiyi_schema",iqiyiSchema).put("extension_ready",extension!=null)
             .put("rejected_navigations",rejectedNavigations)
             .put("navigation_shapes",JSONArray(navigationShapes.toList()))

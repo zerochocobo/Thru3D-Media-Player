@@ -25,13 +25,21 @@ var _state_key := ""
 var layer: RefCounted
 var pending_layer: RefCounted
 var ending := false
-var _layer_budget := false
 var _presenting := true
 var _display_attached := false
 var _display_stopping := false
 var _attached_at := 0
 var _display_diagnostic_key := ""
 var _display_diagnostic_at := 0
+var player_mode := false
+var _player_opening := false
+var _player_deadline := 0
+
+func player_uri() -> String:
+	return "airplayvideo://" + str(epoch)
+
+func layer_reservation() -> int:
+	return 1 if layer else 0
 
 func bind(owner_node: Node, bridge: Object) -> void:
 	host = owner_node; platform = bridge
@@ -65,6 +73,19 @@ func tick() -> void:
 	if ending and not _clear(): return
 	if _display_stopping and not _park_display(): return
 	var active := int(data.get("active", 0))
+	if player_mode:
+		# A local/DLNA selection may replace the player before the next mirror poll.
+		# Never let a late sender failure close that newer ordinary source.
+		if host.video.local_uri != player_uri():
+			return_to_pip()
+			return
+		if active != epoch or not data.get("foreground", true) or not data.get("player_active", false):
+			host._close_current_media()
+			return
+		if host.video.media.state == "failed" or host.video.media.state == "ended" or not host.video.requested_play or (_player_opening and Time.get_ticks_msec() >= _player_deadline):
+			host._close_current_media()
+		elif host.video.media.frame_counter > 0: _player_opening = false
+		return
 	if epoch > 0 and active != epoch and not _clear(): return
 	if _display_attached and (not data.get("foreground", true) or (data.get("suspended", false) and Time.get_ticks_msec() - _attached_at > 500)):
 		_display_stopping = true
@@ -144,7 +165,7 @@ func _attach_layer(data: Dictionary) -> bool:
 	var candidate := _make_layer(6, _target_size(data))
 	if not candidate: return false
 	if not _bind_layer(candidate): candidate.destroy(); return false
-	layer = candidate; _reserve_layer(true)
+	layer = candidate
 	return true
 
 static func _target_size(data: Dictionary) -> Vector2i:
@@ -206,13 +227,6 @@ static func fit_source(window: Node3D, width: int, height: int) -> void:
 		var extent: float = maxf(window.size.x, window.size.y)
 		window.set_size(Vector2(extent, extent / ratio) if ratio >= 1 else Vector2(extent * ratio, extent))
 
-func _reserve_layer(value: bool) -> void:
-	if _layer_budget == value: return
-	var video: Object = host.get("video")
-	if video and video.get("video_layer"):
-		video.video_layer.reserved_layers += 1 if value else -1
-		_layer_budget = value
-
 func _clear() -> bool:
 	ending = true
 	if layer or pending_layer:
@@ -230,6 +244,25 @@ func _clear() -> bool:
 
 func _live_action(_slot: int, operation: String, value: float) -> void:
 	if operation == "mute" and supported(): platform.airplay_receiver_muted(value > 0.5)
+	if operation == "player": _open_player.call_deferred()
+
+func _open_player() -> void:
+	if player_mode or epoch <= 0 or not Methods.supports(platform, "airplay_receiver_open_player"): return
+	if host.cast_session.busy_editor(): return
+	# Stop the PiP producer before the ordinary player claims the same sender's stream.
+	if not _park_display(): return
+	if not platform.airplay_receiver_open_player(epoch): return
+	player_mode = true; _player_opening = true; _player_deadline = Time.get_ticks_msec() + 15000
+	pip.cancel_interaction()
+	for window in pip.windows.values(): window.visible = false
+	host.cast_session.open_mirror(player_uri(), epoch)
+
+func return_to_pip() -> void:
+	if not player_mode: return
+	player_mode = false; _player_opening = false
+	if Methods.supports(platform, "airplay_receiver_captions"): platform.airplay_receiver_captions(epoch, "")
+	platform.airplay_receiver_suspend(epoch)
+	for window in pip.windows.values(): window.visible = true
 
 func disconnect_sender() -> void:
 	var old := epoch; dismissed_epoch = old; pairing_code = ""
@@ -255,17 +288,17 @@ func _park_display() -> bool:
 func _destroy_layers() -> void:
 	if pending_layer: pending_layer.destroy(); pending_layer = null
 	if layer: layer.destroy(); layer = null
-	_reserve_layer(false)
 
 func _resume_display() -> void:
 	_presenting = true
 
 func close() -> void:
+	return_to_pip()
 	if epoch > 0 and supported(): platform.airplay_receiver_disconnect(epoch)
 	_clear()
 
 func input_enabled() -> bool:
-	return host._input_focused() and host._grab.is_empty() and host.interface_move.capture.is_empty()
+	return not player_mode and host._input_focused() and host._grab.is_empty() and host.interface_move.capture.is_empty()
 
 func adjust_distance(left: Vector2, right: Vector2, delta: float) -> bool:
 	var capture: Dictionary = pip.movement.capture

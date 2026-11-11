@@ -1,7 +1,7 @@
 extends Node
 ## Read-only Windows/local browsing through the production LibraryMenu protocol.
 signal media_list(id: int, payload: String)
-const VIDEO_EXTENSIONS := ["mp4", "mkv", "mk3d", "mov", "m4v", "avi", "webm", "mpeg", "mpg", "ts", "m2ts", "mts", "wmv", "flv", "ogv", "ogg"]
+const VIDEO_EXTENSIONS := ["mp4", "mkv", "mk3d", "mov", "m4v", "avi", "webm", "mpeg", "mpg", "vob", "ts", "m2ts", "mts", "wmv", "flv", "ogv", "ogg"]
 const MAX_ENTRIES := 10000
 var _serial := 0
 var _workers := {}
@@ -34,9 +34,8 @@ func _read(id: int, path: String) -> void:
 					if directory.current_is_dir():
 						result.entries.append({"id": full_path, "title": name, "container": true, "can_delete": false, "can_rename": false})
 					elif name.get_extension().to_lower() in VIDEO_EXTENSIONS:
-						var file := FileAccess.open(full_path, FileAccess.READ)
 						result.entries.append({"id": full_path, "title": name, "container": false, "kind": "video",
-							"uri": video_uri(full_path), "size": file.get_length() if file else 0,
+							"uri": video_uri(full_path), "size": maxi(0, FileAccess.get_size(full_path)),
 							"can_delete": false, "can_rename": false})
 					if result.entries.size() > MAX_ENTRIES:
 						result.state = "error"; result.error = "Too many files in this folder"; result.entries.clear(); break

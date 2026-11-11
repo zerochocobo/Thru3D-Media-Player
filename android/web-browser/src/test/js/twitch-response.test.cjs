@@ -45,6 +45,26 @@ test('cancellation prevents a late old response from repopulating the graph',()=
   const h=setup(),r=h.begin();h.headers(r);h.bytes(r,[identity,quality]);h.observer.cancel(h.current);r.stream.onstop();h.media();
   assert.equal(h.current.twitchData.size,0);assert.equal(r.stream.disconnected,true);
 });
+test('same-document clip reentry needs a fresh exact media request to reuse declarations',()=>{
+  const h=setup();h.respond(h.begin(),[identity,quality]);h.media();
+  assert.equal(h.current.twitchData.size,1);
+  h.observer.cancel(h.current,true);h.current.items.clear();
+  h.current.page='https://clips.twitch.tv/OtherClip';h.media();
+  assert.equal(h.current.twitchData.size,0);
+  h.current.items.clear();h.current.page=page;
+  h.respond(h.begin(),quality);
+  assert.equal(h.current.twitchData.size,0);
+  const wrong=file.replace('sig=exact','sig=changed');
+  h.current.items.set(wrong,{url:wrong,kind:'file',at:Date.now()});
+  h.observer.observeMedia(h.current);
+  assert.equal(h.current.twitchData.size,0);
+  h.media();
+  assert.equal(h.current.twitchData.size,1);
+  assert.equal(h.current.twitchData.get(file).id,'PublicClip');
+  assert.equal(h.current.twitchData.get(file).headers,undefined);
+  h.observer.cancel(h.current);h.current.items.clear();h.media();
+  assert.equal(h.current.twitchData.size,0);
+});
 test('oversized or invalid responses still pass through and remain unbound',()=>{
   const h=setup(),r=h.begin();h.headers(r);h.bytes(r,'x'.repeat(2*1024*1024+1));assert.equal(r.stream.disconnected,true);h.media();assert.equal(h.current.twitchData.size,0);
   const invalid=h.begin();h.respond(invalid,'not JSON');h.media();assert.equal(h.current.twitchData.size,0);

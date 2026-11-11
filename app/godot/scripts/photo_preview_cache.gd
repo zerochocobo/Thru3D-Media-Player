@@ -83,7 +83,7 @@ func _process(_delta: float) -> void:
 				_request = int(platform.open_photo_preview(uri))
 				if _request <= 0: _failed[uri] = true; _active = {}
 			else:
-				_start({"path": uri.trim_prefix("file://").uri_decode()}, 0)
+				_start({"path": preload("res://scripts/media_uri.gd").decode_path(uri.trim_prefix("file://"))}, 0)
 			break
 
 func _on_ready(id: int, payload: String) -> void:

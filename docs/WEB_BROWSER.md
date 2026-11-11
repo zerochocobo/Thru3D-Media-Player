@@ -1,10 +1,12 @@
 # Browser and web-video scope
 
-## Current 0.17.5 site status
+## Current 0.17.6 site status
 
-Featured Beta badges are restored only for the recorded Quest ordinary-entry journeys of Niconico, TikTok, Instagram Reels and Internet Archive: select from Featured, choose/play a video, use the actual page button, verify native audio/video/seek and return to the same paused page. Historical failures remain part of their scope, and neither all-content nor PICO compatibility follows. Foreign URL-only toolbar Beta is still withdrawn; manual playback and experimental in-page buttons/cancellation remain. TED/Twitch/Dailymotion/Streamable/Odysee keep no Featured badge based only on fixed-detail or local checks. Naver Clip and Reddit have no accepted Featured-entry chain and get no new catalog badge. Pending iQIYI/Youku badges remain withdrawn. China-store Featured is exactly the original seven CN sites, independent of language. This source synchronization does not resume paused device/site work.
+Featured Beta covers the recorded Quest paths for Niconico, TikTok, Instagram Reels, Internet Archive, TED Talks and Dailymotion. Each validated path starts in Featured, selects a video on the site, uses the real page button, checks native audio/video and seeking, then returns to the same paused page. For Dailymotion, the button appears after the main video starts. Coverage is limited to the tested paths and media on Quest. Foreign sites keep the manual playback button and supported in-page Beta controls. The foreign toolbar URL-only Beta route remains disabled.
 
-0.17.5只为已记录完整普通精选链路的四站恢复标记，其他海外及爱奇艺／优酷不扩标；国外旧手动和网页内实验保留，工具栏URL-only Beta不恢复。既有失败、未覆盖格式与PICO未验范围保留，不能推为整站支持。
+Naver Clip has an international Featured entry. iQIYI, Youku, Twitch, Streamable, Odysee and Naver Clip remain unmarked pending the required site paths. The China-store catalog retains the original seven domestic sites regardless of UI language.
+
+Quest 精选播放 Beta 的已验路径涵盖 Niconico、TikTok、Instagram Reels、Internet Archive、TED Talks 和 Dailymotion，范围限于实测选片、原生音画、定位及原页暂停返回。国际精选新增 Naver Clip 入口，国外手动播放保留，Beta 由受支持的网页内按钮启动。PICO 中国商店精选保持 7 个国内站点。
 
 The standard channel includes a GeckoView browser (Beta), with up to four tabs and four visible windows on the higher-performance tier (two on the lower tier). Floating/cinema placement, draggable chrome, title/close/navigation controls, system/ray keyboard input and recovery share the player UI. Inactive sessions are unloaded/recovered to bound work. Normal exit coordinates profile shutdown; website state is not guaranteed after force termination. Bookmarks/history are separate from website login; clearing history does not sign out. Cookies, logins, profile directories, URLs and user libraries stay outside this Git source.
 
@@ -12,7 +14,7 @@ Eligible explicitly requested web video can hand off to native playback and retu
 
 Site adapters, login permissions, geoblocks, DRM, codecs, expiring links and network conditions can prevent handoff. Subscription pages staying in the website do not establish working premium playback or permission to extract it. Historical disabled/incomplete adapter states are described by dated sections; current availability follows the status above. No bypass of DRM/paywalls or universal website playback is claimed. Browser navigation and native media extraction remain distinct operations.
 
-Featured sites use horizontal icon/name cards with catalog pagination. In 0.17.5 only the four scoped overseas Featured journeys above and validated domestic branches have directory markers; iQIYI/Youku and other foreign entries remain unmarked. Badges are not all-site guarantees, and merely appearing in the catalog is not playback acceptance. Changing language or distribution channel returns to the first page.
+Featured sites use horizontal icon/name cards with catalog pagination. In 0.17.6 the six scoped overseas Featured journeys above and validated domestic branches have directory markers. Badges are not all-site guarantees, and merely appearing in the catalog is not playback acceptance. Changing language or distribution channel returns to the first page.
 
 ## Optional LAN management
 

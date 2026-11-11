@@ -29,9 +29,18 @@ inline PlaybackFailure playback_end_failure(int code, const PlaybackFailure& hin
     return {"unknown", "opening", ""};
 }
 
+// The shared GPU slots hold at most 8192 on a side and 8192x4320 pixels, whatever the decoder.
+constexpr long long kSourceMaxSide = 8192, kSourceMaxPixels = 8192LL * 4320;
+inline bool source_dimensions_supported(long long width, long long height) {
+    return width > 0 && height > 0 && width <= kSourceMaxSide && height <= kSourceMaxSide && width * height <= kSourceMaxPixels;
+}
+constexpr const char* kSourceDimensionsExceeded = "MPV source dimensions exceed the current GPU slot contract";
+
 inline PlaybackFailure playback_exception_failure(const std::string& text) {
     if (text == "MPV video output format did not become ready within 15 seconds")
         return {"output_timeout", "output", ""};
+    if (text == kSourceDimensionsExceeded)
+        return {"resolution_unsupported", "decoding", ""};
     if (text == "MPV shared renderer failed to initialize")
         return {"video_output_failed", "output", ""};
     return {"unknown", "opening", ""};

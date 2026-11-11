@@ -17,6 +17,8 @@ void fragment() {
     else if (rotation_degrees == 180) { p = vec2(1.0) - p; }
     else if (rotation_degrees == 270) { p = vec2(1.0 - p.y, p.x); }
     vec4 result = caption_composite(vec3(0.0), 0.0, projected_caption());
-    result = caption_composite(result.rgb, result.a, bitmap_caption(p));
+    if (all(greaterThanEqual(p, vec2(0.0))) && all(lessThanEqual(p, vec2(1.0)))) {
+        result = caption_composite(result.rgb, result.a, bitmap_caption(p));
+    }
     ALBEDO = result.rgb; ALPHA = result.a;
 }

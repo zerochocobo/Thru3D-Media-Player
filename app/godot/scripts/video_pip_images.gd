@@ -85,7 +85,7 @@ func _process(_delta: float) -> void:
 			if Methods.supports(platform, "open_pip_image"):
 				request = int(platform.open_pip_image(str(active.uri)))
 				if request <= 0: _failed()
-			else: _start({"path": str(active.uri).trim_prefix("file://").uri_decode()})
+			else: _start({"path": preload("res://scripts/media_uri.gd").decode_path(str(active.uri).trim_prefix("file://"))})
 			break
 
 func _on_ready(id: int, payload: String) -> void:

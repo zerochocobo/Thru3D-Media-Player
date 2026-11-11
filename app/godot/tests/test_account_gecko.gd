@@ -85,6 +85,13 @@ func _run() -> void:
 	menu.press_pointer("right_hand", origin(menu, Vector2.ZERO), dir, true)
 	check(platform.web_calls.size() == count and panel.web_hand.is_empty(), "Unavailable page cannot capture or receive a press")
 	state.web.failed = false; panel.poll()
+	state.error = "Cloud connection failed"; state.error_code = "AUTH-ROOT API 500"
+	state.revision += 1; panel.poll()
+	check(menu.text_snapshot().contains("AUTH-ROOT API 500") and menu.text_snapshot().contains(state.error),
+		"Failed mount verification surfaces its diagnostic below the webpage")
+	check(menu._buttons.any(func(b): return b.target == Accounts.WEB and not b.enabled), "Failed verification leaves the webpage inactive")
+	state.error = ""; state.error_code = ""; state.revision += 1; panel.poll()
+	check(not menu.text_snapshot().contains("AUTH-ROOT"), "A new attempt clears the old diagnostic")
 	state.web.editing = true; panel.poll()
 	check(panel.web_rect() == rect, "Keyboard focus cannot move or resize the webpage")
 	var refresh: Dictionary = menu._buttons.filter(func(b): return b.target == Accounts.BASE + 18).front()

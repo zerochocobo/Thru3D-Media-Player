@@ -40,6 +40,13 @@ func settled(photo: Node) -> void:
 	while photo.loading and Time.get_ticks_msec()<until: await create_timer(.01).timeout
 	check(not photo.loading,"Reader finishes request")
 func run() -> void:
+	check(Location.infer("smb://saved/Share/Season+%25#2/clip.mp4").path == "Share/Season+%25#2", "SMB returns to the literal parent")
+	check(Location.infer("cloud://saved/Season+%2525%23%3f/clip.mp4").path == "/saved/Season+%25#?", "Cloud returns to a once-decoded parent")
+	check(Location.infer("file:///storage/Movies+%252F/clip.mp4").path == "/storage/Movies+%2F", "File URI plus and literal percent escape survive parent inference")
+	check(preload("res://scripts/archive_panel.gd").named("smb://saved/Share/book+?#.cbz"), "SMB archive is recognized from its literal URI without a title")
+	check(preload("res://scripts/pdf_pages.gd").named("smb://saved/Share/book+?#.pdf"), "SMB PDF is recognized from its literal URI without a title")
+	check(preload("res://scripts/image_info.gd").is_image("smb://saved/Share/photo+?#.jpg"), "SMB picture is recognized from its literal URI without a title")
+	check(not preload("res://scripts/image_info.gd").is_image("https://nas/video.mp4?poster=a.jpg#poster.jpg"), "URL query and fragment do not become a media suffix")
 	var output := ProjectSettings.globalize_path("res://../../build/output/container-locations/"+str(Time.get_ticks_usec()))
 	DirAccess.make_dir_recursive_absolute(output)
 	var host := Host.new(); host.path=output.path_join("page.png")

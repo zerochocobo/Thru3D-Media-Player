@@ -76,4 +76,21 @@ class WebBrowserOdyseeTest {
         for(bad in listOf(page.replace("https:","http:"),page.replace("odysee.com","odysee.com.evil"),page+"#other",page.replace("https://","https://user@")))assertNull(WebBrowserOdysee.page(bad))
         assertTrue(WebBrowserOdysee.enabled(page))
     }
+    @Test fun encodedSlugBindsOnlyToTheSameDecodedClaimAndObservedRoot() {
+        val name="太祖拳雙肩"
+        val encoded="%E5%A4%AA%E7%A5%96%E6%8B%B3%E9%9B%99%E8%82%A9"
+        val current=page.replace("PublicClip",encoded)
+        val item=hls().put("frame",current)
+        val metadata=item.getJSONObject("odysee").put("id","@PublicChannel:2/$encoded:1").put("page",current)
+        for(variant in listOf(name,encoded)) {
+            metadata.put("claim_uri","lbry://@PublicChannel#2/$variant#1")
+            assertNotNull(WebBrowserOdysee.metadata(item,current))
+        }
+        metadata.put("claim_uri","lbry://@PublicChannel#2/$name-其他#1")
+        assertNull(WebBrowserOdysee.metadata(item,current))
+    }
+    @Test fun escapedPathSyntaxMalformedUtf8AndDoubleEncodingAreNotNames() {
+        for(bad in listOf("%2FOther","%3A1","%23Other","%5COther","%2E%2E-hidden","%E8%FF","%25E8","Title%00"))
+            assertNull(bad,WebBrowserOdysee.page(page.replace("PublicClip",bad)))
+    }
 }

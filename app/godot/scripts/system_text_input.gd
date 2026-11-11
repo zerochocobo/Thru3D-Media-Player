@@ -2,6 +2,7 @@ extends RefCounted
 const ChineseInput := preload("res://scripts/chinese_input.gd")
 const CUSTOM_CONTEXTS := ["cloud_search", "media_server_search", "web_library_search", "web_library_title", "subtitle_filter",
 	"voice-name", "background_name", "file_rename", "playlist_name", "smb_name", "smb_user", "account_name", "account_username", "archive_password"]
+const OPENXR_CUSTOM_CONTEXTS := ["smb_user", "file_rename", "playlist_name"]
 const LATIN_CONTEXTS := ["smb_user", "account_username", "archive_password"]
 ## A standard engine editor supplies Unicode, selection and IME composition.
 ## Android's engine bridge opens the installed system keyboard; OpenXR has no
@@ -17,7 +18,8 @@ var custom := false
 var current: Callable
 
 static func uses_custom(tag: String) -> bool:
-	return ChineseInput.enabled() and tag in CUSTOM_CONTEXTS
+	if not ChineseInput.enabled(): return false
+	return tag in (OPENXR_CUSTOM_CONTEXTS if ChineseInput.is_generic_openxr() else CUSTOM_CONTEXTS)
 
 func keyboard_id() -> String: return "text:" + str(get_instance_id())
 
@@ -29,7 +31,7 @@ func active(tag: String = "") -> bool:
 static func clean(value: String, limit: int) -> String:
 	return value.replace("\r", " ").replace("\n", " ").strip_escapes().left(limit)
 
-func begin(tag: String, value: String, limit: int, on_change: Callable, on_submit: Callable, on_cancel: Callable = Callable(), is_current: Callable = Callable()) -> void:
+func begin(tag: String, value: String, limit: int, on_change: Callable, on_submit: Callable, on_cancel: Callable = Callable(), is_current: Callable = Callable(), force_system: bool = false, secret: bool = false) -> void:
 	cancel()
 	if not is_instance_valid(editor):
 		editor = LineEdit.new()
@@ -38,7 +40,6 @@ func begin(tag: String, value: String, limit: int, on_change: Callable, on_submi
 		# field over the XR view. The ray menu mirrors committed draft changes.
 		editor.modulate.a = 0.0
 		editor.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		editor.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_DEFAULT
 		editor.virtual_keyboard_show_on_focus = true
 		editor.text_changed.connect(_changed)
 		editor.text_submitted.connect(_submitted)
@@ -46,7 +47,9 @@ func begin(tag: String, value: String, limit: int, on_change: Callable, on_submi
 		host.add_child(editor)
 	context = tag; changed = on_change; submitted = on_submit; cancelled = on_cancel
 	current = is_current
-	custom = uses_custom(tag)
+	custom = uses_custom(tag) and not force_system
+	editor.secret = secret
+	editor.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_PASSWORD if secret else LineEdit.KEYBOARD_TYPE_DEFAULT
 	editor.focus_mode = Control.FOCUS_ALL
 	editor.virtual_keyboard_enabled = not custom
 	editor.virtual_keyboard_show_on_focus = not custom
@@ -61,20 +64,35 @@ func begin(tag: String, value: String, limit: int, on_change: Callable, on_submi
 
 func _focus(id: int) -> void:
 	if id != generation or not active() or not is_instance_valid(editor) or not host.is_inside_tree(): return
+	if current.is_valid() and not current.call(): cancel(); return
 	if custom:
 		# The ray popup owns keys; retain the standard editor's caret/selection model.
 		if not _custom_alive(id): return
+		var start_latin := context in LATIN_CONTEXTS and not (context == "smb_user" and ChineseInput.is_generic_openxr())
 		ChineseInput.open(host, keyboard_id(),
 			func(operation, value): return _custom_action(operation, value) if _custom_alive(id) else false,
 			func(): return _custom_alive(id),
-			func(): return editor.text.insert(editor.caret_column, "│"), context in LATIN_CONTEXTS)
+			func(): return ("•".repeat(editor.text.length()) if editor.secret else editor.text).insert(editor.caret_column, "│"), start_latin, true)
 		return
 	editor.grab_focus()
 	editor.edit()
 
+func use_system_keyboard() -> bool:
+	if not active() or not is_instance_valid(editor): return false
+	if current.is_valid() and not current.call(): cancel(); return false
+	ChineseInput.close(keyboard_id())
+	custom = false
+	editor.apply_ime()
+	editor.release_focus()
+	editor.virtual_keyboard_enabled = true
+	editor.virtual_keyboard_show_on_focus = true
+	generation += 1
+	_focus.call_deferred(generation)
+	return true
+
 func _custom_alive(id: int) -> bool:
 	if id != generation or not active() or not custom: return false
-	if not is_instance_valid(host) or not host.is_inside_tree() or not ChineseInput.enabled() or (current.is_valid() and not current.call()):
+	if not is_instance_valid(host) or not host.is_inside_tree() or not uses_custom(context) or (current.is_valid() and not current.call()):
 		cancel(); return false
 	return true
 
@@ -146,6 +164,7 @@ func _custom_action(operation: String, value: String) -> bool:
 	if not active() or not custom: return false
 	match operation:
 		"close": cancel("", true); return true
+		"system_keyboard": return use_system_keyboard()
 		"enter": _submitted(editor.text); return true
 		"text", "backspace":
 			var start := editor.get_selection_from_column() if editor.has_selection() else editor.caret_column

@@ -88,6 +88,7 @@ $inputs = @(
     'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserTencent.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoNetworkCapture.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoDescriptor.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoInternationalPages.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoContainer.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoTsDimensions.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoStreams.kt',

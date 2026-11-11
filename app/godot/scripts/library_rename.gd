@@ -5,13 +5,11 @@ const APPLY := 9162
 const PREVIOUS := 9163
 const NEXT := 9164
 const SAME_NAME := 9165
+const NAME_FIELD := 9190
 var menu: Node3D
 var phase := ""
 var name := ""
 var moves: Array = []
-var shifted := false
-var symbols := false
-var selected_all := false
 var include_same_name := true
 var request_id := 0
 var page := 0
@@ -48,30 +46,31 @@ func companions_allowed() -> bool:
 	return menu.file_actions.target.get("kind", "") == "video" and not menu.file_actions.target.get("folder", false)
 
 func input_text(width: float) -> String:
-	if selected_all: return menu._fit_title(name, "", width, 22)
 	var shown := name
-	if menu.text_width(shown + "│", 22) <= width: return shown + "│"
-	while not shown.is_empty() and menu.text_width("…" + shown + "│", 22) > width: shown = shown.substr(1)
-	return "…" + shown + "│"
+	if menu.text_width(shown, 22) <= width: return shown
+	while not shown.is_empty() and menu.text_width("…" + shown, 22) > width: shown = shown.substr(1)
+	return "…" + shown
 
-func custom_input() -> bool: return menu.SystemTextInput.uses_custom("file_rename")
-
-func edit_name() -> void:
-	if not custom_input() or phase != "input" or menu.file_actions.pending > 0: return
-	menu.system_text_input.begin("file_rename", name, 160,
-		func(value): name = value; selected_all = false; menu.refresh_file_selection(),
-		func(value): name = value; action(PREVIEW), Callable(),
+func edit_name(select_all: bool = true) -> void:
+	if phase != "input" or menu.file_actions.pending > 0: return
+	var editor: RefCounted = menu.system_text_input
+	var update := func(value):
+		name = value
+		menu.refresh_file_selection()
+	name = editor.finish("file_rename", name)
+	editor.begin("file_rename", name, 160, update,
+		func(value): name = value; action(PREVIEW), update,
 		func(): return menu.visible and menu.file_actions.modal == "rename" and phase == "input" and menu.file_actions.pending == 0 and context() == location)
-	menu.system_text_input.editor.select_all()
+	if select_all or editor.custom: editor.editor.select_all()
 
 func open(row: Dictionary) -> void:
 	menu.system_text_input.cancel("file_rename")
 	menu.file_actions.target = row.duplicate(true)
 	menu.file_actions.target.uri = menu.file_actions.row_uri(row)
 	location = context(); result_error = ""
-	phase = "input"; moves = []; page = 0; name = original_name(); shifted = false; symbols = false; selected_all = false; include_same_name = true
+	phase = "input"; moves = []; page = 0; name = original_name(); include_same_name = true
 	menu.file_actions.modal = "rename"; menu.refresh_file_selection()
-	edit_name()
+	edit_name(false)
 func action(id: int) -> void:
 	var actions: RefCounted = menu.file_actions
 	if id == actions.CANCEL:
@@ -83,28 +82,14 @@ func action(id: int) -> void:
 	if id == PREVIOUS: page = maxi(0, page - 1)
 	if id == NEXT: page = mini(maxi(0, ceili(moves.size() / 5.0) - 1), page + 1)
 	if phase == "input":
-		if custom_input() and id == 9190: edit_name()
-		elif custom_input() and (id in [menu.BACKSPACE, menu.SPACE, menu.SHIFT, menu.SYMBOL_LAYER] or (id >= menu.KEY_BASE and id < menu.KEY_BASE + 40)): return
-		elif id >= menu.KEY_BASE and id < menu.KEY_BASE + 40:
-			if selected_all: name = ""; selected_all = false
-			var layer: Array = menu.SYMBOLS if symbols else menu.KEYS
-			var character: String = layer[(id - menu.KEY_BASE) / 10][(id - menu.KEY_BASE) % 10]
-			if name.length() < 160: name += character.to_upper() if shifted else character
-			shifted = false
-		elif id == menu.BACKSPACE:
-			name = "" if selected_all else name.left(-1); selected_all = false
-		elif id == menu.SPACE:
-			if selected_all: name = ""; selected_all = false
-			name += " "
-		elif id == menu.SHIFT: shifted = not shifted
-		elif id == menu.SYMBOL_LAYER: symbols = not symbols
-		elif id == 9190: selected_all = not selected_all
+		if id == NAME_FIELD: edit_name()
 		elif id == SAME_NAME and companions_allowed(): include_same_name = not include_same_name
-		elif id == PREVIEW and not name.is_empty() and name != original_name(): dispatch(true)
+		elif id == PREVIEW:
+			name = menu.system_text_input.finish("file_rename", name)
+			if not name.is_empty() and name != original_name(): dispatch(true)
 	elif phase == "preview" and id == APPLY and actions.enabled: dispatch(false)
 	menu.refresh_file_selection()
 func dispatch(prepare: bool) -> void:
-	name = menu.system_text_input.finish("file_rename", name)
 	var actions: RefCounted = menu.file_actions
 	actions.target["new_name"] = name
 	actions.target["include_same_name"] = include_same_name and companions_allowed()
@@ -168,7 +153,7 @@ func receive(id: int, payload: String) -> bool:
 	return true
 func draw() -> void:
 	var actions: RefCounted = menu.file_actions
-	var compact := phase == "input" and custom_input()
+	var compact := phase == "input"
 	var footer := 0.11 if compact else -0.50
 	menu._set_backdrop(Vector2(1.46, 0.56 if compact else 1.28), Vector2(0.13, 0.32 if compact else 0.0))
 	var heading := "Rename folder" if actions.target.get("folder", false) else "Rename file"
@@ -176,23 +161,13 @@ func draw() -> void:
 	menu._label(menu._fit_title(str(actions.target.get("title", "")), "", 1.20, 18), Vector3(0.13, 0.43, 0.004), 18).modulate = menu.MUTED
 	if phase == "input":
 		var extension := str(actions.target.get("title", "")).get_extension() if not actions.target.get("folder", false) else ""
-		menu._button(9190, input_text(1.0 if not extension.is_empty() else 1.18), Vector2(0.02 if not extension.is_empty() else 0.13, 0.32), Vector2(1.02 if not extension.is_empty() else 1.24, 0.095), actions.pending == 0, "", selected_all)
+		menu._button(NAME_FIELD, input_text(1.0 if not extension.is_empty() else 1.18), Vector2(0.02 if not extension.is_empty() else 0.13, 0.32), Vector2(1.02 if not extension.is_empty() else 1.24, 0.095), actions.pending == 0)
 		if not extension.is_empty():
 			menu._label("." + extension, Vector3(0.64, 0.32, 0.004), 18).modulate = menu.MUTED
 		if companions_allowed():
 			menu._button(SAME_NAME, "", Vector2(-0.43, 0.205), Vector2(0.075, 0.075), actions.pending == 0, "check" if include_same_name else "checkbox", include_same_name)
 			var same_name_label: Label3D = menu._label(menu.I18n.t("Also rename files with the same basename"), Vector3(-0.36, 0.205, 0.004), 19)
 			same_name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		if not compact:
-			var layer: Array = menu.SYMBOLS if symbols else menu.KEYS
-			for r in layer.size():
-				for c in 10:
-					var character: String = layer[r][c]
-					menu._button(menu.KEY_BASE + r * 10 + c, character.to_upper() if shifted else character, Vector2(-0.38 + c * 0.126, 0.075 - r * 0.098), Vector2(0.115, 0.085), actions.pending == 0)
-			menu._button(menu.SHIFT, "⇧", Vector2(-0.32, -0.32), Vector2(0.18, 0.085), actions.pending == 0, "", shifted)
-			menu._button(menu.SYMBOL_LAYER, "abc" if symbols else "#+=", Vector2(-0.13, -0.32), Vector2(0.18, 0.085), actions.pending == 0, "", symbols)
-			menu._button(menu.SPACE, "␣", Vector2(0.15, -0.32), Vector2(0.34, 0.085), actions.pending == 0)
-			menu._button(menu.BACKSPACE, "", Vector2(0.43, -0.32), Vector2(0.18, 0.085), actions.pending == 0, "backspace")
 		menu._button(PREVIEW, menu.I18n.t("Check changes"), Vector2(0.60, footer), Vector2(0.38, 0.08), actions.pending == 0 and not name.is_empty() and name != original_name())
 	else:
 		menu._label(menu.I18n.t("%d items will be renamed") % moves.size() if phase == "preview" else menu.I18n.t(result_error), Vector3(0.13, 0.30, 0.004), 19)

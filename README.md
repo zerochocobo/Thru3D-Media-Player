@@ -4,17 +4,20 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.17.5** (Android versionCode **85**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.17.6** (Android versionCode **87**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
 ## Features
 
+- Expand AirPlay mirroring into the regular player with compatible 3D, person passthrough and live captions, then return to the original mirror window. See [AirPlay scope](docs/AIRPLAY.md).
+- Real-time 2D-to-3D for supported animated photos and standalone VOB playback, including listings in 115 and OpenList.
+
 - Session-only viewing-hand lock, independent photo default/last-mode memory and a 180-degree video rotation preset.
 - Bounded Alpha mask scheduling/interpolation and reduced compositor-only XR eye buffers; device, memory and media limits apply.
 
 - AI GPU compatibility with OpenCL preference and Vulkan fallback, lossless internal image transfers, linked flat-video screen-edit locking and optional passive status display. See [GPU/model scope](docs/MODELS.md).
-- Shared browser/global controls. Featured Beta is restored only for the recorded Niconico/TikTok/Instagram Reels/Internet Archive paths; URL-only foreign toolbar Beta stays withdrawn. iQIYI/Youku directory badges are also withdrawn pending validation. See [current site status](docs/WEB_BROWSER.md).
+- Shared browser/global controls. Quest-tested Featured Beta paths include Niconico, TikTok, Instagram Reels, Internet Archive, TED Talks and Dailymotion. Foreign-site Beta starts from supported in-page controls. See [current site status](docs/WEB_BROWSER.md).
 
 - Browser history shortcuts and two-step restart/quit actions with session usage information.
 

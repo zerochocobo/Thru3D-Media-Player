@@ -43,7 +43,7 @@ func run() -> void:
 	check(main._active_menu() == Chinese.popup, "Popup owns the actual main input router")
 	check(not Chinese.popup._buttons.any(func(item): return item.target < 0), "Keyboard has no scene or follow controls")
 	check(Chinese.popup.global_basis.get_scale().is_equal_approx(Vector3.ONE * 0.5), "Keyboard width and height are half their original size")
-	check((Chinese.popup._backdrop.mesh.size * 0.5).is_equal_approx(Vector2(0.64, 0.39)), "Compact panel has a 64 by 39 cm physical footprint")
+	check((Chinese.popup._backdrop.mesh.size * 0.5).is_equal_approx(Vector2(0.64, 0.45)), "Compact panel includes the system input button in its 64 by 45 cm footprint")
 	point(main, Chinese.Keyboard.MOVE)
 	var initial: Transform3D = Chinese.popup.global_transform
 	main._on_controller_button("trigger_click", "right_hand")

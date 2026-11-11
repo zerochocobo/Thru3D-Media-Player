@@ -53,9 +53,11 @@ internal object OpenListBackend {
             .put("addition", addition.toString()).put("cache_expiration", 5)
             .put("web_proxy", true).put("webdav_policy", "native_proxy").put("down_proxy_url", "").put("disabled", false)
         var id = 0
+        var stage = CloudLoginFailure.Stage.MOUNT
         try {
             id = request("POST", "/create", body).getJSONObject("data").getInt("id")
             val account = JSONObject().put("core_id", id).put("mount", mount).put("provider", provider)
+            stage = CloudLoginFailure.Stage.ROOT
             client(account).page("/")
             return account
         } catch (error: Exception) {
@@ -65,7 +67,7 @@ internal object OpenListBackend {
                 for (i in 0 until all.length()) if (all.getJSONObject(i).optString("mount_path") == mount) id = all.getJSONObject(i).getInt("id")
             }
             if (id > 0) runCatching { remove(id) }
-            throw error
+            throw CloudLoginFailure(stage, error)
         }
     }
     fun remove(id: Int) { require(id > 0); request("POST", "/delete?id=$id") }

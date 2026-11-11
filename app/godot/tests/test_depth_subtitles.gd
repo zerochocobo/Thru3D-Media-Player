@@ -153,6 +153,35 @@ func run() -> void:
 	video._place_caption()
 	check(video.caption.global_transform.is_equal_approx(original_pose) and video.caption.layers == 1
 		and not below.text.visible and video.subtitle_flat_position == 0.67, "Text round trip restores the exact old pose and preference")
+	for angle in [-90.0, 45.0, 90.0, 180.0]:
+		video.set_screen_rotation(angle)
+		var previous_y := -INF
+		for position in [0.0, 0.67, 1.0]:
+			video.subtitle_flat_position = position
+			video._place_caption(); await process_frame; video._place_caption()
+			var bounds: AABB = video.caption.get_aabb()
+			var fits := true
+			for x in [bounds.position.x, bounds.end.x]:
+				for y in [bounds.position.y, bounds.end.y]:
+					var point: Vector3 = video.panel.to_local(video.caption.to_global(Vector3(x, y, 0)))
+					fits = fits and absf(point.x) < video._flat.size.x * 0.5 and absf(point.y) < video._flat.size.y * 0.5
+			check(fits and not below.active and video.caption.layers == 1 and video.caption.global_basis.is_equal_approx(original_pose.basis),
+				"Configured text stays upright inside the rotated screen: %s / %s" % [angle, position])
+			var y: float = (video.subtitle_transform().affine_inverse() * video.caption.global_position).y
+			check(y > previous_y, "The position slider moves the caption up the rotated screen: %s / %s" % [angle, position])
+			previous_y = y
+		if absf(angle) == 90.0:
+			check(is_equal_approx(video.caption.width * video.caption.pixel_size, video._flat.size.y * 0.9), "Quarter turns wrap against the new picture width")
+	video.subtitle_flat_position = 0.67
+	video.set_screen_rotation(90.0)
+	video.set_subtitle_below_screen(true)
+	var cue_top: Vector3 = video.subtitle_transform().affine_inverse() * below.text.to_global(Vector3.UP * below.text.get_aabb().end.y)
+	check(below.text.visible and cue_top.y < -video._flat.size.x * 0.5 and video.caption.layers == 0,
+		"Explicitly selecting below-screen subtitles works after a quarter turn")
+	video.set_subtitle_below_screen(false)
+	video.set_screen_rotation(0.0)
+	check(not below.active and video.caption.layers == 1 and video.caption.global_transform.is_equal_approx(original_pose),
+		"Straighten restores the saved in-screen position immediately")
 	video.set_subtitle_below_screen(true); video.depth_requested = false; poll(video, host)
 	check(below.active and below.text.visible, "Ordinary 2D also uses the opted-in presentation module")
 	video._unbind()

@@ -3,10 +3,32 @@ package org.vrpassthroughplayer.plugin
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 
 class QuarkWebLoginTest {
     private val nonce = "abcdefghijklmnop12345678"
     private val target = "https://pan.quark.cn/open/v1/oauth/authorize?client_id=fixture-client&state=com.trim.cloudstorage--trimNonce__$nonce&redirect_uri=https%3A%2F%2Foauth.fnnas.com%2Fapi%2Fv1%2Fredirect%2FfromQuark"
+    @Test fun exchangeReportsBrokerAndHttpCodesWithoutReturningTheErrorBody() {
+        for ((http, expected) in listOf(503 to "AUTH-EXCHANGE HTTP 503", 200 to "AUTH-EXCHANGE HTTP 200 API 40123")) {
+            val connection = object : HttpURLConnection(URL("https://oauth.fnnas.com/")) {
+                override fun getResponseCode() = http
+                override fun getOutputStream() = ByteArrayOutputStream()
+                override fun getInputStream() = ByteArrayInputStream("""{"code":40123,"message":"private phone and credential"}""".toByteArray())
+                override fun disconnect() {}
+                override fun usingProxy() = false
+                override fun connect() {}
+            }
+            val failure = assertThrows(CloudLoginFailure::class.java) {
+                CloudLoginFailure.at(CloudLoginFailure.Stage.EXCHANGE) {
+                    OpenListQuarkExchange.exchange(nonce) { connection }
+                }
+            }
+            assertEquals(expected, failure.code)
+        }
+    }
     @Test fun publicRequestOnlyAcceptsTheBoundProviderGrant() {
         assertEquals(target, OpenListLoginExchange.authorizationTarget(JSONObject().put("text", target), CloudDrive.QUARK))
         for (url in listOf("https://pan.quark.cn/", "https://oauth.fnnas.com/", "http://pan.quark.cn/open/v1/oauth/authorize",

@@ -26,6 +26,8 @@ func _run() -> void:
 	video.media.begin(1)
 	video.set_flat_world_pose(Transform3D(Basis.IDENTITY, Vector3(0, 0, -3)))
 	video.panel.visible = true
+	var cue := {"version": 1, "width": 8, "height": 2, "x": 0, "y": 0, "canvas_width": 16, "canvas_height": 9}
+	var pixels := PackedByteArray(); pixels.resize(8 * 2 * 4); pixels.fill(255)
 	for dimensions in [Vector2(1920, 1080), Vector2(1080, 1920)]:
 		video.media.format = {"width": dimensions.x, "height": dimensions.y}
 		for layout in [[false, false, false], [true, false, false], [true, true, false], [true, false, true], [true, true, true]]:
@@ -59,17 +61,19 @@ func _run() -> void:
 					check(video.video_layer.supports_surface(video) == compatible, "Native cylinder only serves an equivalent horizontal mesh")
 					check(video._layer_presentation() == compatible, "Decoder Surface follows the same curved rotation policy")
 					check(video.video_layer.layer_values(video, origin).is_empty() != compatible, "Native layer boundary rejects an incorrectly oriented cylinder")
+					if angle != 0.0:
+						video.bitmap_subtitles.apply(video.material, cue, 1, pixels)
+						video._sync_subtitle_surface()
+						var caption_vertices: PackedVector3Array = video._subtitle_surface.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+						var aligned := caption_vertices.size() == vertices.size()
+						for index in mini(caption_vertices.size(), vertices.size()):
+							var point: Vector3 = video._subtitle_surface.to_global(caption_vertices[index])
+							# A half turn gives an equivalent symmetric surface with reversed vertex order.
+							if absf(angle) != 180.0: aligned = aligned and point.distance_to(video.panel.to_global(vertices[index])) < 0.00001
+						check(video._subtitle_surface.visible and aligned, "Bitmap cues stay on the rotated curved picture by default")
+						video.bitmap_subtitles.clear(video.material)
 					if not compatible:
 						check(video.layer_block_reason() == "shape", "Fallback identifies the unsupported shape")
-						video.material.set_shader_parameter("bitmap_subtitle_enabled", true)
-						video._sync_subtitle_surface()
-						var caption_mesh: Array = video._subtitle_surface.mesh.surface_get_arrays(0)
-						var caption_vertices: PackedVector3Array = caption_mesh[Mesh.ARRAY_VERTEX]
-						var aligned := caption_vertices.size() == vertices.size()
-						for index in caption_vertices.size():
-							aligned = aligned and (video._subtitle_surface.global_transform * caption_vertices[index]).distance_to(video.panel.to_global(vertices[index])) < 0.00001
-						check(aligned, "Upright subtitle surface follows the exact rotated movie geometry")
-						video.material.set_shader_parameter("bitmap_subtitle_enabled", false)
 						var corner: Vector3 = video.screen_corner(1)
 						video.set_screen_distance(15)
 						check(video.screen_corner(1).is_equal_approx(corner), "Distance changes preserve the rotated curved shape")

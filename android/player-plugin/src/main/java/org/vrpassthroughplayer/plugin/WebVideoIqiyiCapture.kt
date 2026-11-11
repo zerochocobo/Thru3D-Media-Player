@@ -24,9 +24,10 @@ internal object WebVideoIqiyiCapture {
         if(media.getJSONObject("iqiyi").optString("dispatch_status")=="selected_level" && resourcePlan==null)return null
         if(resourcePlan!=null) {
             val body=resourcePlan.getString("playlist");resourcePlan.remove("playlist")
+            val duration=media.getJSONObject("iqiyi").getDouble("dispatch_duration_ms")/1000.0
             val info=WebVideoIqiyiResources(resourcePlan,body).use { resources ->
                 val ordinary=mapOf("user-agent" to media.optString("agent"),"referer" to media.getString("frame"),"origin" to "https://www.iqiyi.com")
-                network.resolveDeclaredHls(page,media,URI(page.url),body) { uri,_,prefix ->
+                network.resolveDeclaredHls(page,media,URI(page.url),body,duration) { uri,_,prefix ->
                     val target=resources.target(uri,{ network.requestHeaders(it,ordinary) },network::readRaw)
                     network.readRaw(target,network.requestHeaders(target,ordinary),prefix)
                 }

@@ -98,10 +98,11 @@ func _run() -> void:
 	var data := PackedByteArray(); data.resize(22050 * 2 * 4)
 	for i in 22050 * 4: data.encode_s16(i * 2, roundi(sin(float(i) * TAU * 220 / 22050) * 3000))
 	wav.data = data
-	var source := directory.path_join("source.wav"); check(wav.save_to_wav(source) == OK, "Generate real audio fixture")
+	var source := directory.path_join("source +%25 [音].wav"); check(wav.save_to_wav(source) == OK, "Generate real audio fixture")
+	var source_uri := "file://" + source.get_base_dir() + "/" + source.get_file().uri_encode().replace("%2B", "+").replace("%5B", "%5b")
 	var source2 := directory.path_join("second.wav"); data.encode_s16(10, 123); wav.data = data; wav.save_to_wav(source2)
 	var playing: String = audio.current; var playing_stream: AudioStream = audio.player.stream
-	audio.import_tracks([{"uri": source, "title": "source.wav"}, {"uri": source2, "title": "second.wav"}], second); await imported(audio)
+	audio.import_tracks([{"uri": source_uri, "title": "source.wav"}, {"uri": source2, "title": "second.wav"}], second); await imported(audio)
 	check(audio.library.imports.size() == 2 and audio.library.playlist(second).tracks.size() == 2, "Complete batch is saved and appended in order")
 	check(audio.library.resolve(audio.library.playlist(second).tracks[0]).label == "source.wav", "Batch preserves selection order")
 	check(audio.current == playing and audio.player.stream == playing_stream, "Import never switches tracks or interrupts playback")
@@ -236,7 +237,7 @@ func _run() -> void:
 	check(music.navigate_back() and music.compact, "Back from global list returns to photo mini player")
 	music.open(false); click(music, Music.QUEUE); click(music, Music.TAB)
 	click(music, Music.NEW_LIST); check(music.modal == "name", "New playlist opens the ray keyboard")
-	music.name_text = "Ray playlist"; music.refresh(); click(music, Music.SAVE_NAME)
+	music.editor.set_text("playlist_name", "Ray playlist"); click(music, Music.SAVE_NAME)
 	var ray_list: String = music.playlist_id
 	check(restored.library.playlist(ray_list).label == "Ray playlist", "Ray keyboard saves a playlist name")
 	click(music, Music.ADD_TRACKS); check(music.modal == "add_source", "Add tracks offers library selection or import")
@@ -265,7 +266,7 @@ func _run() -> void:
 	music.playlist_id = ray_list; music.refresh(); click(music, Music.PLAY_LIST); await settled(restored)
 	var managed_stream: AudioStream = restored.player.stream
 	click(music, Music.LIST_OPTIONS); click(music, Music.RENAME)
-	music.name_text = "Renamed source"; music.refresh(); click(music, Music.SAVE_NAME)
+	music.editor.set_text("playlist_name", "Renamed source"); click(music, Music.SAVE_NAME)
 	check(music._source_caption().contains("Renamed source") and restored.queue_name == "Renamed source", "Renaming the playing playlist updates live and persisted source names")
 	check(restored.player.stream == managed_stream and not restored.paused, "Renaming a playlist leaves its audio uninterrupted")
 	var import_destinations: Array[String] = []
@@ -293,7 +294,7 @@ func _run() -> void:
 	var original_queue := restored.queue.duplicate()
 	click(music, Music.MORE); click(music, Music.ADD_TO_LIST)
 	check(music.modal == "choose_list", "Track actions open the playlist destination picker")
-	click(music, Music.NEW_LIST); music.name_text = "Created from track"; music.refresh(); click(music, Music.SAVE_NAME)
+	click(music, Music.NEW_LIST); music.editor.set_text("playlist_name", "Created from track"); click(music, Music.SAVE_NAME)
 	check(music.modal.is_empty() and music.view == "all" and music.offset == 5, "Creating a destination returns to the original library position")
 	check(restored.library.playlists.back().tracks == ["manyou"] and restored.queue == original_queue, "New playlist and selected track are saved together without replacing playback")
 	music.open(false); click(music, Music.QUEUE); click(music, Music.TAB + 1)

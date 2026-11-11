@@ -19,6 +19,16 @@ import (
 	"time"
 )
 
+func TestVobSearchTypes(t *testing.T) {
+	obj := &model.Object{Name: "片段.VOB"}
+	if !matchesSearch(obj, "片段", "all") || !matchesSearch(obj, "片段", "video") {
+		t.Fatal("VOB missing from video search results")
+	}
+	if matchesSearch(obj, "片段", "image") || matchesSearch(obj, "片段", "subtitle") {
+		t.Fatal("VOB matched a non-video filter")
+	}
+}
+
 func TestSubtitleSearchTypes(t *testing.T) {
 	for _, name := range []string{"Film.zh.SRT", "Film.en.ass", "Film.ssa", "Film.vtt", "Film.smi", "Film.sami", "Film.sub", "电影.中文.srt"} {
 		obj := &model.Object{Name: name}

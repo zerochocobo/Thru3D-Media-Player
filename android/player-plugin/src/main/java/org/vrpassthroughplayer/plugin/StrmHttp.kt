@@ -22,7 +22,7 @@ internal object StrmHttp {
                     if (status == 404 || status == 410) throw StrmFailure("STRM_NOT_FOUND")
                     if (status != 200) throw StrmFailure("STRM_READ_FAILED")
                     if (request.contentLengthLong > StrmFile.MAX_BYTES) throw StrmFailure("STRM_TOO_LARGE")
-                    return StrmDocument(request.inputStream.use(StrmFile::read), uri.toASCIIString())
+                    return StrmDocument(request.inputStream.use(StrmFile::read), uri.mediaAsciiString())
                 }
             } finally { request.disconnect() }
         }

@@ -29,7 +29,7 @@ internal object MpvSourceNative {
                                    layerWidth: Int = 4096, layerHeight: Int = 4096, isoInput: Boolean = false,
                                    tlsCaFile: String = MpvTlsTrust.prepare(context),
                                    networkInterleaveCompat: Boolean = false, isoPlaylist: Int = -1,
-                                   networkCacheMiB: Int = 256, requiredPrimaryAudio: Boolean = false): Long
+                                   networkCacheMiB: Int = 256, requiredPrimaryAudio: Boolean = false, liveMirror: Boolean = false): Long
     /** ISO header/title preflight on the source worker. playlist -1 selects the longest title.
      * JSON: width, height, duration_us, mvc, playlist (selected) and the selectable titles. */
     @JvmStatic external fun beginDiscProbe(): Long

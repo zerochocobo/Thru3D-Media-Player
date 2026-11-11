@@ -38,6 +38,34 @@ function fixture(cookies = []) {
   return { connect, request, flush, browser, archive: vm.runInContext('Thru3DArchive',context), advance(ms) { now += ms; } };
 }
 
+test('Twitch homepage SPA clip keeps exact original-document requests and their own headers',()=>{
+  const f=fixture(),original='https://www.twitch.tv/',clip='https://www.twitch.tv/creator/clip/CurrentClip',p=f.connect(1,0,original,false);
+  p.port.onMessage.fire({type:'context',page:clip,twitch:true,enabled:false,reset:true});
+  f.request('https://actual-related.test/current.mp4',{documentUrl:original,requestHeaders:[{name:'Authorization',value:'only-this-request'}]});f.flush();
+  assert.equal(p.last().length,1);assert.equal(p.last()[0].headers.authorization,'only-this-request');
+  p.port.onMessage.fire({type:'context',page:clip,twitch:true,enabled:false,reset:true});f.flush();assert.equal(p.last().length,1);
+  p.port.onMessage.fire({type:'context',page:'https://www.twitch.tv/creator/clip/NextClip',twitch:true,enabled:false,reset:true});f.flush();
+  assert.equal(p.last().length,0,'A different clip still discards the old request');
+});
+
+test('Twitch original-document exception rejects missing or wrong UUID, frame, tab and unrelated URLs',()=>{
+  const f=fixture(),original='https://www.twitch.tv/',clip='https://www.twitch.tv/creator/clip/CurrentClip',p=f.connect(1,0,original,false);
+  p.port.onMessage.fire({type:'context',page:clip,twitch:true,enabled:false});
+  for(const change of [{documentId:'another'},{documentId:undefined},{frameId:1},{tabId:2},
+    {documentUrl:'https://www.twitch.tv/unrelated'},{documentUrl:'https://www.twitch.tv/creator/clip/OtherClip'},
+    {documentUrl:'https://www.twitch.tv.evil/'},{documentUrl:'https://twitch.tv/'}]){
+    f.request('https://actual-related.test/rejected.mp4',{documentUrl:original,...change});f.flush();assert.equal(p.last().length,0,JSON.stringify(change));
+  }
+});
+
+test('Twitch homepage or live channel alone never enables this clip exception',()=>{
+  const f=fixture(),original='https://www.twitch.tv/',p=f.connect(1,0,original,false);
+  p.port.onMessage.fire({type:'context',page:original,twitch:true,enabled:false});
+  f.request('https://actual-related.test/home.mp4',{documentUrl:original});f.flush();assert.equal(p.last().length,0);
+  p.port.onMessage.fire({type:'context',page:'https://www.twitch.tv/creator',twitch:true,enabled:false});
+  f.request('https://actual-related.test/live.mp4',{documentUrl:original});f.flush();assert.equal(p.last().length,0);
+});
+
 function archiveRedirect(f, page, original, target, id='archive-redirect') {
   const d={tabId:1,frameId:0,documentId:'doc-1-0',documentUrl:page,method:'GET',type:'media',requestId:id,url:original};
   f.browser.webRequest.onSendHeaders.fire({...d,requestHeaders:[{name:'Cookie',value:'only-original=1'}]});

@@ -21,6 +21,7 @@ internal object ExtendedImageNative {
         return nextBudgeted(id,checkpoint,budget.native,budget.output)
     }
     external fun pixels(token: Long): ByteArray?
+    external fun depthInput(token: Long, input: ByteBuffer, width: Int, height: Int): IntArray?
     external fun reset(id: Long)
     external fun releaseFrame(token: Long)
     external fun close(id: Long)

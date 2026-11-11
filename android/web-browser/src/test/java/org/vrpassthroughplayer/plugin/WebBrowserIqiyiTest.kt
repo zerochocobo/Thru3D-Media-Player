@@ -12,6 +12,12 @@ class WebBrowserIqiyiTest {
         val item=largeWire();val page=item.getString("frame")
         assertTrue(item.toString().length<132*1024)
         val plan=WebBrowserIqiyi.resourcePlan(item,page)!!
+        val packed=item.getJSONObject("iqiyi").getJSONObject("playlist_delta")
+        val encoded=packed.getJSONArray("rows").toString()
+        packed.put("version",2).put("rows",encoded)
+        assertEquals(plan.toString(),WebBrowserIqiyi.resourcePlan(item,page)!!.toString())
+        packed.put("rows",encoded+"[]")
+        assertNull(WebBrowserIqiyi.metadata(item,page))
         val text=plan.getString("playlist");assertTrue(text.length>256*1024)
         assertEquals(436,plan.getJSONArray("requests").length())
         for(i in 0 until 436) {
@@ -115,5 +121,49 @@ class WebBrowserIqiyiTest {
         data.put("sdk_duration_ms",9480).put("playlist",data.getString("playlist").replace("#EXTINF:8,","#EXTINF:7,"))
         assertNull(WebBrowserIqiyi.resourcePlan(m,page))
         data.put("dispatch_duration_ms",8480).put("sdk_duration_ms",8480);assertNull(WebBrowserIqiyi.resourcePlan(m,page))
+    }
+    @Test fun oneSecondMseRoundingRequiresTheExactEndOfTheDeclaredSegments() {
+        for ((dispatchMs, lastStart, firstExtinf) in listOf(Triple(9000, 2000, 3), Triple(9120, 2120, 2), Triple(9160, 2160, 1))) {
+            val m=item();val data=m.getJSONObject("iqiyi")
+            data.put("dispatch_duration_ms",dispatchMs).put("sdk_duration_ms",dispatchMs)
+                .put("dispatch_status","selected_level").put("dispatchers",JSONArray().put(JSONObject()
+                    .put("url",url(0,752,"declared.test")).put("source_id","current").put("start",0).put("end",752)))
+            val playlist=data.getString("playlist").replace("#EXTINF:2,","#EXTINF:$firstExtinf,")
+                .replace("#EXTINF:8,","#EXTINF:7,").replace("sd=2000","sd=$lastStart")
+            data.put("playlist",playlist)
+            val plan=WebBrowserIqiyi.resourcePlan(m,page)!!
+            val body=plan.getString("playlist")
+            val lastDuration=body.lineSequence().last { it.startsWith("#EXTINF:") }
+                .substringAfter(':').substringBefore(',').toDouble()
+            assertEquals(7.0,lastDuration,1e-9)
+            assertTrue(body.contains(url(188,752,"declared.test").replace("sd=2000","sd=$lastStart")))
+            for (invalid in listOf(playlist.replace("sd=$lastStart","sd=${lastStart+1}"),
+                playlist.replace("sd=$lastStart","sd=$lastStart&sd=$lastStart"),playlist.replace("#EXT-X-ENDLIST",""),
+                playlist.replace("#EXTINF:$firstExtinf,","#EXTINF:0.5,"))) {
+                data.put("playlist",invalid)
+                assertNull(WebBrowserIqiyi.resourcePlan(m,page))
+            }
+            data.put("playlist",playlist).put("sdk_duration_ms",dispatchMs+1)
+            assertNull(WebBrowserIqiyi.resourcePlan(m,page))
+        }
+    }
+    @Test fun zeroExtinfNeedsASubsecondSpanOnTheCurrentSdkTimeline() {
+        val m=item();val data=m.getJSONObject("iqiyi")
+        data.put("dispatch_duration_ms",10000).put("sdk_duration_ms",10000)
+            .put("dispatch_status","selected_level").put("dispatchers",JSONArray().put(JSONObject()
+                .put("url",url(0,752,"declared.test")).put("source_id","current").put("start",0).put("end",752)))
+        val playlist=data.getString("playlist").replace("#EXTINF:2,","#EXTINF:0,")
+            .replace("#EXTINF:8,","#EXTINF:10,").replace("sd=2000","sd=500")
+        data.put("playlist",playlist)
+        val normalized=WebBrowserIqiyi.resourcePlan(m,page)!!.getString("playlist")
+        assertTrue(normalized.contains("#EXTINF:0.5,"))
+        assertTrue(normalized.contains("#EXTINF:9.5,"))
+        assertNull(WebBrowserIqiyi.plan(m,page))
+        for (unbound in listOf(0,1000,1500)) {
+            data.put("playlist",playlist.replace("sd=500","sd=$unbound"))
+            assertNull(WebBrowserIqiyi.metadata(m,page))
+        }
+        data.put("playlist",playlist).put("dispatch_status","unavailable")
+        assertNull(WebBrowserIqiyi.metadata(m,page))
     }
 }

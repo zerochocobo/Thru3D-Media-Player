@@ -8,7 +8,7 @@ internal object CloudPaths {
         require(path.startsWith('/') && path.substring(1).contains('/'))
         val mount = path.substring(1).substringBefore('/')
         require(mount.matches(Regex("[a-zA-Z0-9-]+")))
-        return URI("cloud", mount, path.substring(mount.length + 1), null).toASCIIString()
+        return URI("cloud", mount, path.substring(mount.length + 1), null).mediaAsciiString()
     }
 
     fun path(value: String): String {

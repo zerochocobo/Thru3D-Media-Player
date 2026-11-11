@@ -358,11 +358,16 @@ func use_rows() -> bool:
 func _fail(result: Dictionary) -> void:
 	if result.get("error_reason", "") == "cloud_metadata_limit": limited = true
 	menu._cloud_busy = false; queued = false; pending = -1
+	var retry := Callable()
+	if task == "jump" and str(result.get("error_reason", "")) not in ["cloud_page_expired", "cloud_location_expired"]:
+		retry = jump.bind(target)
+	elif task == "all" and not limited and batch.is_empty():
+		retry = action.bind(RESUME)
 	if task == "all": mode = "partial"
 	task = ""; opened = false; complete = false
 	menu.file_actions.cloud_failed(); scope = _scope(); row_index_dirty = true
 	menu.status = str(result.get("error", "Cloud connection failed"))
-	menu.cloud_error.receive(result); menu.refresh()
+	menu.cloud_error.receive(result, retry); menu.refresh()
 
 func files_changed(removed: int) -> void:
 	if scope != _scope() or (mode == "paged" and not page_rows_active): return

@@ -175,6 +175,19 @@ func run() -> void:
 	check(await wait_video(silent_subtitle), "A missing audio stream does not crash or stall subtitle packet processing")
 	await settle(0.25)
 	check(video.control.observed_position_ms > 150 and video.media.state == "playing", "Silent subtitled video continues decoding real frames")
+	var vob := samples.path_join("synthetic-five-channel.VOB")
+	check(video.open_local(vob, "Original VOB"), "Standalone VOB opens as an ordinary video")
+	if await wait_video(vob):
+		check(is_equal_approx(float(video.media.format.pixel_aspect), 16.0 / 15.0), "Anamorphic VOB uses its sample aspect ratio")
+		video.set_audio_options(-1, 100, false)
+		AudioServer.add_bus_effect(master, capture)
+		capture.clear_buffer()
+		await settle(0.3)
+		pcm = capture.get_buffer(capture.get_frames_available())
+		check(Array(pcm).any(func(sample: Vector2) -> bool: return sample.length_squared() > 0.000000000001), "Five-channel VOB reaches the mixer after stereo downmix")
+		AudioServer.remove_bus_effect(master, capture_index)
+	else:
+		check(false, "VOB produces a usable video texture")
 	video.close_video()
 	await process_frame
 	check(video.local_uri.is_empty() and video.media.state == "closed" and not video.panel.visible, "Close clears the production media state and screen visibility")

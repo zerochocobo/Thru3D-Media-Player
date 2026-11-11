@@ -19,11 +19,42 @@ test('large complete declarations use the checked JS-to-JVM lossless transport v
   assert.equal(wire.playlist,undefined);assert.equal(wire.playlist_delta.chars,f.playlist.length);
   assert.ok(JSON.stringify(wire).length<128*1024);
   const vector=JSON.parse(fs.readFileSync(__dirname+'/../resources/iqiyi-large-wire.json','utf8'));
+  const expected=vector.iqiyi.playlist_delta;
+  vector.iqiyi.playlist_delta={...expected,version:2,rows:JSON.stringify(expected.rows)};
   assert.deepEqual(JSON.parse(JSON.stringify(wire)),vector.iqiyi);
   assert.equal(context.matches(data,{kind:'segment',url:f.url(435),at:Date.now()}),true);
   const old=wire.playlist_delta;f.track.m3u8=f.playlist.replace('UNIT%2bEXACT','CHANGED%2bEXACT');
   const next=context.capture(f.view,page,f.dom),updated=vm.runInContext('Thru3DIqiyi.transport',context)(next);
   assert.notEqual(updated.playlist_delta,old);assert.notEqual(next.revision,data.revision);
+});
+
+test('a long declaration and scoped request history fit in the same Android media report',()=>{
+  const f=largeFixture();let segment=0;
+  f.track.m3u8=f.playlist.replace(/&opaque=(?:ab){90}/g,()=>`&opaque=${(segment++%2?'x':'y').repeat(180)}`);
+  const data=context.capture(f.view,page,f.dom);
+  assert.equal(data.ready,true);
+  const {transport,fitMediaReport}=vm.runInContext('Thru3DIqiyi',context);
+  const declaration=transport(data);
+  const requests=Array.from({length:24},(_,i)=>({kind:'segment',url:f.url(i),original_url:f.url(i),at:i,headers:{cookie:'session='+'x'.repeat(6500)}}));
+  const preview={id:1,width:0,network:[]};
+  const owner={id:2,iqiyi:declaration,iqiyi_ready:true,iqiyi_request:3,network:requests};
+  const report={type:'media',videos:[preview,owner],pause_token:8,pause_held:true};
+  const androidSize=value=>JSON.stringify(value).replace(/\//g,'\\/').length;
+  assert.ok(JSON.stringify(requests).length<=192*1024);
+  assert.ok(androidSize(report)>256*1024);
+
+  assert.equal(fitMediaReport(report),report);
+  assert.ok(androidSize(report)<=240*1024);
+  assert.equal(owner.iqiyi,declaration);
+  assert.equal(owner.iqiyi_request,3);
+  assert.equal(report.pause_token,8);
+  assert.equal(report.pause_held,true);
+  assert.equal(report.videos[0],preview);
+  assert.ok(owner.network.length>0&&owner.network.length<requests.length);
+  assert.deepEqual(Array.from(owner.network),requests.slice(-owner.network.length));
+  const trimmed=owner.network;
+  fitMediaReport(report);
+  assert.equal(owner.network,trimmed);
 });
 
 test('packing never truncates an oversized declaration or hides a protected tail',()=>{
@@ -36,6 +67,50 @@ test('captures exactly the website-selected decoded item and track, but never gr
   const f=fixture(),c=context.capture(f.view,page,f.dom);assert.equal(c.ready,true);assert.equal(c.vid,'currentstream');assert.equal(c.bid,500);
   assert.equal(c.protection_unverified,true);assert.equal(c.drm_type,1);
   f.view.__lastAccJson={tvId:'next'};assert.equal(context.capture(f.view,page,f.dom).tvid,'42');
+});
+
+function changeEpisode(f){
+  const active=f.view.playback.playingPlayback;
+  active._info={...active._info,id:'43',vid:'nextstream'};
+  const track={...f.track,vid:'nextstream',m3u8:f.playlist.replaceAll('qd_tvid=42','qd_tvid=43')};
+  active._mvInfo={...active._mvInfo,tvid:'43',videoList:[track],levelInfoArr:active._mvInfo.levelInfoArr.map(level=>({
+    ...level,vid:'nextstream',fragmentList:level.fragmentList.map(fragment=>({...fragment,dispatchUrl:fragment.dispatchUrl.replace('qd_tvid=42','qd_tvid=43')}))
+  }))};
+}
+
+test('same-document episodes wait for a different decoded programme and bind its active SDK track',()=>{
+  const f=largeFixture(),next='https://www.iqiyi.com/v_next.html';
+  const first=context.capture(f.view,page,f.dom);
+  assert.ok(context.bind(f.video,first));
+  assert.equal(context.capture(f.view,next,f.dom).status,'wrong_item');
+  changeEpisode(f);
+  assert.equal(context.capture(f.view,next,f.dom).status,'wrong_item');
+  f.video.currentSrc='blob:unit-next';
+  const selected=context.capture(f.view,next,f.dom);
+  assert.ok(context.bind(f.video,selected));
+  assert.equal(selected.page,next);
+  assert.equal(selected.tvid,'43');
+  assert.equal(selected.vid,'nextstream');
+  assert.notEqual(selected.revision,first.revision);
+  assert.ok(context.bind(f.video,context.capture(f.view,next,f.dom)));
+});
+
+test('rapid unverified episode navigation and stale startup metadata cannot claim a new address',()=>{
+  const f=largeFixture();
+  assert.equal(context.capture(f.view,page,f.dom).ready,true);
+  assert.equal(context.capture(f.view,'https://www.iqiyi.com/v_intermediate.html',f.dom).status,'wrong_item');
+  changeEpisode(f);
+  f.video.currentSrc='blob:unit-next';
+  assert.equal(context.capture(f.view,'https://www.iqiyi.com/v_final.html',f.dom).status,'wrong_item');
+  const second=largeFixture();
+  assert.equal(context.capture(second.view,'https://www.iqiyi.com/v_final.html',second.dom).ready,true);
+});
+
+test('the document entry address anchors startup metadata before the first video report',()=>{
+  const f=largeFixture(),local=vm.createContext({URL,location:{href:page}});
+  vm.runInContext(fs.readFileSync(__dirname+'/../../main/assets/web-browser/iqiyi.js','utf8')+';globalThis.capture=Thru3DIqiyi.capture;',local);
+  assert.equal(local.capture(f.view,'https://www.iqiyi.com/v_next.html',f.dom).status,'wrong_item');
+  assert.equal(local.capture(f.view,page,f.dom).ready,true);
 });
 
 test('readiness diagnostics separate a current SDK declaration from the unchanged dispatch and timeline gates',()=>{
@@ -77,6 +152,21 @@ test('protected manifests and page getters do not become private capture input',
   assert.equal(context.capture(f.view,'https://evil.test/v_current123.html',f.dom).ready,false);
 });
 
+test('reports only the current rejected container and declaration shape',()=>{
+  const f=fixture(),inspect=vm.runInContext('Thru3DIqiyi.diagnostics',context);
+  f.track.ff='m4s';f.track.m3u8='{"video":["https://private.test/SIGNED"]}';f.track.fs=[{}];
+  const data=context.capture(f.view,page,f.dom),diagnostics=inspect(f.video,data);
+  assert.equal(data.ready,false);
+  assert.equal(diagnostics.status,'unsupported_container');
+  assert.equal(diagnostics.container,'m4s');assert.equal(diagnostics.declaration,'json_object');
+  assert.equal(diagnostics.drm_type,1);assert.equal(diagnostics.has_segment_list,true);
+  assert.doesNotMatch(JSON.stringify(diagnostics),/private|SIGNED/);
+  f.track.ff='PRIVATE_FORMAT';
+  assert.equal(inspect(f.video,context.capture(f.view,page,f.dom)).container,'other');
+  delete f.track.ff;
+  assert.equal(inspect(f.video,context.capture(f.view,page,f.dom)).container,'missing');
+});
+
 test('unsupported declarations keep the same rejection gates with fixed nonprivate reasons',()=>{
   const inspect=vm.runInContext('Thru3DIqiyi.diagnostics',context);
   for(const [change,status] of [
@@ -87,7 +177,9 @@ test('unsupported declarations keep the same rejection gates with fixed nonpriva
     const f=fixture();Object.assign(f.track,change);
     const captured=context.capture(f.view,page,f.dom),d=inspect(f.video,captured);
     assert.equal(captured.ready,false);assert.equal(captured.status,status);
-    assert.equal(Object.keys(captured).sort().join(','),'ready,status');
+    const fields=status==='unsupported_container'?
+      'container,declaration,drm_type,has_drm,has_root_drm,has_segment_list,ready,status':'ready,status';
+    assert.equal(Object.keys(captured).sort().join(','),fields);
     assert.equal(d.capture_ready,false);assert.equal(d.binding_ready,false);
     assert.equal(JSON.stringify(d).includes('PRIVATE'),false);
   }
@@ -132,6 +224,30 @@ test('integer MSE duration needs both the complete playlist total and matching S
   const data=context.capture(f.view,page,f.dom);assert.ok(context.bind(f.video,data));
   for(const update of [{sdk_duration_ms:24000},{playlist_duration:24},{dispatch_duration_ms:23000},
     {duration:25.2},{sdk_duration_ms:null}])assert.equal(context.bind({...f.video,duration:update.duration??25},{...data,...update}),null);
+});
+
+test('rounded playlist totals can differ when the last declared segment ends at the SDK duration',()=>{
+  for(const {dispatchMs,tailStart,headDuration} of [
+    {dispatchMs:24000,tailStart:20000,headDuration:21},
+    {dispatchMs:24120,tailStart:20120,headDuration:20},
+    {dispatchMs:24160,tailStart:20160,headDuration:19}
+  ]){
+    const f=fixture();f.info.duration=dispatchMs;f.track.duration=24;
+    f.track.m3u8=`#EXTM3U\n#EXTINF:${headDuration},\nhttps://declared.test/currentfile.ts?start=0&end=188&contentlength=188&sd=0\n`+
+      `#EXTINF:4,\nhttps://declared.test/currentfile.ts?start=188&end=376&contentlength=188&sd=${tailStart}\n#EXT-X-ENDLIST`;
+    f.view.playback.playingPlayback._mvInfo={tvid:'42',levelInfoArr:[{vid:'currentstream',bid:500,duration:dispatchMs,
+      fragmentList:[{sourceID:'currentfile',sPos:0,ePos:376,dispatchUrl:'//dispatch.test/currentfile.ts?issued=private'}]}]};
+    const data=context.capture(f.view,page,f.dom);
+    assert.equal(data.playlist_end_ms,dispatchMs);
+    assert.ok(context.bind(f.video,data));
+    const playlist=f.track.m3u8;
+    for(const invalid of [playlist.replace(`sd=${tailStart}`,`sd=${tailStart+1}`),
+      playlist.replace(`sd=${tailStart}`,`sd=${tailStart}&sd=${tailStart}`),
+      playlist.replace('#EXT-X-ENDLIST',''),playlist.replace(`#EXTINF:${headDuration},`,'#EXTINF:18,')]){
+      f.track.m3u8=invalid;
+      assert.equal(context.bind(f.video,context.capture(f.view,page,f.dom)),null);
+    }
+  }
 });
 
 function controllable(){

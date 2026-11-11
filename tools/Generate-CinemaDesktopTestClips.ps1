@@ -16,7 +16,9 @@ $captions = Join-Path $clipDirectory 'synthetic-captions.srt'
 [System.IO.File]::WriteAllText($captions, "1`n00:00:00,000 --> 00:00:03,000`nSynthetic caption`n", [System.Text.UTF8Encoding]::new($false))
 & $Ffmpeg -hide_banner -loglevel error -y -i $mp4 -i $captions -map '0:v:0' -map '1:0' -c:v copy -c:s srt -an (Join-Path $clipDirectory 'synthetic-silent-subtitle.mkv')
 if ($LASTEXITCODE -ne 0) { throw 'Synthetic silent/subtitle generation failed' }
-foreach ($clipName in @('synthetic-audio.mp4','synthetic-audio.mkv','synthetic-audio.ogv','synthetic-audio-only.wav','synthetic-silent-subtitle.mkv')) {
+& $Ffmpeg -hide_banner -loglevel error -y -i $mp4 -target pal-dvd -aspect 4:3 -ac 5 (Join-Path $clipDirectory 'synthetic-five-channel.VOB')
+if ($LASTEXITCODE -ne 0) { throw 'Synthetic VOB generation failed' }
+foreach ($clipName in @('synthetic-audio.mp4','synthetic-audio.mkv','synthetic-audio.ogv','synthetic-audio-only.wav','synthetic-silent-subtitle.mkv','synthetic-five-channel.VOB')) {
     $decodeArguments = @('-nostdin', '-hide_banner', '-loglevel', 'error', '-xerror', '-i', (Join-Path $clipDirectory $clipName))
     if ($clipName -notlike '*.wav') { $decodeArguments += @('-r', '24', '-fps_mode', 'cfr') }
     & $Ffmpeg @decodeArguments -f null -

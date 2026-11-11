@@ -26,6 +26,7 @@ internal class AccountManager(private val host: () -> Activity?) {
         val inputs = listOf("name", "base", "username", "password", "sms").associateWith { AccountInput() }
         @Volatile var state = "form"
         var error = ""
+        var errorCode = ""
         var busy = false
         var revision = 0
         var old: MediaServerAccount? = null
@@ -109,6 +110,7 @@ internal class AccountManager(private val host: () -> Activity?) {
                 .put("sms_wait", ((s.nextSmsAt - SystemClock.elapsedRealtime() + 999) / 1000).coerceAtLeast(0))
                 .put("has_password", (s.old?.key?.isNotEmpty() == true || RemoteWebDav.retainsSavedLogin(s.savedWebDavLogin, s.value("base"), s.value("username")))).put("result", s.result)
                 .put("editing_account", s.accountId.isNotEmpty())
+            if (s.errorCode.isNotEmpty()) value.put("error_code", s.errorCode)
             s.challenge?.let { c ->
                 value.put("prompt", android.util.Base64.encodeToString(c.prompt, android.util.Base64.NO_WRAP))
                     .put("choices", android.util.Base64.encodeToString(c.choices, android.util.Base64.NO_WRAP))
@@ -161,7 +163,7 @@ internal class AccountManager(private val host: () -> Activity?) {
         if (action == "web") {
             synchronized(s) {
                 if (s.busy || s.kind != "cloud" || (s.provider != CloudDrive.P115 && !OpenListAuth.supported(s.provider))) return
-                s.error = ""; s.state = "web"; s.revision++
+                s.error = ""; s.errorCode = ""; s.state = "web"; s.revision++
                 if (s.web == null) {
                     val authorized: (OpenListAuth.Credential) -> Boolean = { credential ->
                         task(s) {
@@ -210,15 +212,21 @@ internal class AccountManager(private val host: () -> Activity?) {
     private fun task(s: Session, work: () -> Unit): Boolean {
         synchronized(s) {
             if (closed || s.cancelled || s.busy) return false
-            s.busy = true; s.error = ""; s.revision++
+            s.busy = true; s.error = ""; s.errorCode = ""; s.revision++
         }
         try { worker.execute {
             if (s.cancelled || closed) return@execute
             try { work() } catch (e: Exception) {
                 synchronized(s) { if (!s.cancelled) {
                     if (e is MediaServerFailure && e.httpStatus > 0) s.result.put("http_status", e.httpStatus)
+                    if (e is CloudLoginFailure) s.errorCode = e.code
                     s.error = when (e) {
                         is MediaServerFailure -> e.code
+                        is CloudLoginFailure -> when (e.reason) {
+                            "cloud_login_required" -> "Sign in again."
+                            "cloud_store_unavailable" -> "Cloud account storage unavailable"
+                            else -> "Cloud connection failed"
+                        }
                         is CloudFailure -> if (e.reason == "cloud_login_required") "Sign in again." else "Cloud connection failed"
                         else -> "Unable to connect. Please retry."
                     }
@@ -405,7 +413,14 @@ internal class AccountManager(private val host: () -> Activity?) {
 
     fun webFrame(id: Int): ByteArray = session?.takeIf { it.id == id && !it.cancelled }?.web?.frame() ?: ByteArray(0)
     fun webAction(id: Int, action: String, x: Float, y: Float, text: String) {
-        session?.takeIf { it.id == id && !it.cancelled }?.web?.action(action, x, y, text)
+        val s = session?.takeIf { it.id == id && !it.cancelled } ?: return
+        synchronized(s) {
+            if (action == "reload" && s.web is CloudWebLogin) {
+                if (s.busy) return
+                s.error = ""; s.errorCode = ""; s.revision++
+            }
+            s.web?.action(action, x, y, text)
+        }
     }
     fun pause(paused: Boolean) { session?.web?.pause(paused) }
     @Synchronized fun cancel(id: Int) {

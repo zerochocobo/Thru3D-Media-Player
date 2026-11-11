@@ -261,6 +261,8 @@ struct Engine {
     double offset=0;
     bool stopped=false;
     uint64_t emitted=0;
+    double liveSeconds=0;
+    bool renewLiveStream=false;
     ~Engine(){if(stream>=0)moonshine_free_stream(model,stream);if(model>=0)moonshine_free_transcriber(model);}
 };
 #ifdef __ANDROID__
@@ -346,6 +348,51 @@ static std::string listening_step(const std::shared_ptr<Engine>& e){
 extern "C" JNIEXPORT jstring JNICALL Java_org_vrpassthroughplayer_plugin_ListeningNative_step(JNIEnv* env,jclass,jlong id){
     try{return utf8(env,listening_step(engine(id)));}
     catch(const std::exception& error){narration_error(env,error.what());return nullptr;}
+}
+extern "C" JNIEXPORT jstring JNICALL Java_org_vrpassthroughplayer_plugin_ListeningNative_recognizePcm(
+        JNIEnv* env,jclass,jlong id,jbyteArray bytes,jint rate,jint channels,jboolean reset){
+    try {
+        auto e=engine(id);
+        if(!bytes||rate<8000||rate>96000||channels<1||channels>2)throw std::runtime_error("listening_pcm_format");
+        const auto size=env->GetArrayLength(bytes);
+        if(size<=0||size>rate*channels*2||size%(channels*2))throw std::runtime_error("listening_pcm_size");
+        if(e->stream<0||reset||e->renewLiveStream){
+            if(e->stream>=0)moonshine_free_stream(e->model,e->stream);
+            e->stream=moonshine_create_stream(e->model,0);ok(e->stream);
+            ok(moonshine_start_stream(e->model,e->stream));
+            e->emitted=0;e->liveSeconds=0;e->renewLiveStream=false;
+        }
+        std::vector<uint8_t> input(size);
+        env->GetByteArrayRegion(bytes,0,size,reinterpret_cast<jbyte*>(input.data()));
+        std::vector<float> mono(size/(channels*2));
+        size_t offset=0;
+        for(auto& sample:mono){
+            int value=0;
+            for(int ch=0;ch<channels;++ch,offset+=2){
+                const int word=input[offset]|(input[offset+1]<<8);
+                value+=word>=32768?word-65536:word;
+            }
+            sample=float(value)/(32768.f*channels);
+        }
+        ok(moonshine_transcribe_add_audio_to_stream(e->model,e->stream,mono.data(),mono.size(),rate,0));
+        e->liveSeconds+=double(mono.size())/rate;
+        if(e->liveSeconds>=120){ok(moonshine_stop_stream(e->model,e->stream));e->renewLiveStream=true;}
+        transcript_t* transcript=nullptr;
+        ok(moonshine_transcribe_stream(e->model,e->stream,0,&transcript));
+        std::string json="[";
+        if(transcript){
+            for(;e->emitted<transcript->line_count;++e->emitted){
+                const auto& line=transcript->lines[e->emitted];
+                if(!line.is_complete)break;
+                if(!line.text||!line.text[0])continue;
+                if(json.size()>1)json+=',';
+                json+="{\"text\":"+quote(line.text)+'}';
+            }
+            // Retire at a completed sentence when possible, and bound even a silent session.
+            if(e->liveSeconds>=60&&e->emitted==transcript->line_count)e->renewLiveStream=true;
+        }
+        return utf8(env,json+']');
+    } catch(const std::exception& error){narration_error(env,error.what());return nullptr;}
 }
 extern "C" JNIEXPORT jlongArray JNICALL Java_org_vrpassthroughplayer_plugin_ListeningNative_audioSpans(JNIEnv* env,jclass,jlong id){
     try{auto e=engine(id);if(!e->reader||e->cancelled)throw std::runtime_error("listening_cancelled");

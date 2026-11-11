@@ -6,6 +6,7 @@ internal object ListeningNative {
     @JvmStatic external fun open(engine: Long, path: String, track: Int, ca: String, start: Double, disc: Boolean, playlist: Int)
     @JvmStatic external fun openWithClock(engine: Long, path: String, track: Int, ca: String, start: Double, disc: Boolean, playlist: Int, origin: Double, directAudio: Boolean, input: ListeningInput? = null)
     @JvmStatic external fun step(engine: Long): String
+    @JvmStatic external fun recognizePcm(engine: Long, pcm: ByteArray, rate: Int, channels: Int, reset: Boolean): String
     @JvmStatic external fun audioSpans(engine: Long): LongArray
     @JvmStatic external fun begin(engine: Long)
     @JvmStatic external fun cancel(engine: Long)

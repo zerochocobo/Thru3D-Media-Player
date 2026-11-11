@@ -56,18 +56,32 @@ func run() -> void:
 	var paint := StandardMaterial3D.new(); paint.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	paint.albedo_color = Color(0.16, 0.28, 0.38); backdrop.material_override = paint
 	for size in [0.5, 1.0, 2.0]:
-		for roll in [0.0, 45.0, -45.0]:
+		for roll in [45.0, -45.0, 90.0]:
 			video.subtitle_size = size; video.set_screen_rotation(roll); video._place_caption()
 			video._update_layer(); await frames(); video._update_layer()
 			var local_top: Vector3 = video.subtitle_transform().affine_inverse() * below.text.global_transform * Vector3(0, below.text.get_aabb().end.y, 0)
 			check(local_top.y + (below.text.outline_size + 1) * below.text.pixel_size < below.lower_edge(video._flat.size, roll), "Every line stays below the rotated screen at size %s and roll %s" % [size, roll])
-			check(video._subtitle_on_layer, "Screen-down capture works for size and rotation")
+			check(video._subtitle_on_layer and video.subtitle_below_screen, "The explicit below-screen configuration survives rotation")
 			backdrop.mesh.size = video._flat.size; backdrop.global_transform = video.panel.global_transform
 			camera.global_position = video.panel.global_position + Vector3(0, -0.3, 3.0)
 			below.commit(false) # Native layers are mocked; capture the actual fallback geometry.
 			await frames(2)
+			var image := viewport.get_texture().get_image()
+			var bottom_pixel := -INF
+			for corner in 4:
+				var world: Vector3 = video.panel.to_global(video.screen_corner(corner))
+				bottom_pixel = maxf(bottom_pixel, camera.unproject_position(world).y)
+			var first_glyph_row := image.get_height()
+			for y in range(0, image.get_height(), 2):
+				for x in range(0, image.get_width(), 2):
+					var color := image.get_pixel(x, y)
+					if color.a > 0.9 and minf(color.r, minf(color.g, color.b)) > 0.8:
+						first_glyph_row = y
+						break
+				if first_glyph_row == y: break
+			check(first_glyph_row < image.get_height() and first_glyph_row > bottom_pixel, "Fallback renders visible glyphs entirely below the picture at size %s and roll %s" % [size, roll])
 			var filename := "text-%s-roll-%s.png" % [size, roll]
-			viewport.get_texture().get_image().save_png(output.path_join(filename))
+			image.save_png(output.path_join(filename))
 			samples.append(filename)
 	video.subtitle_size = 1.0; video.set_screen_rotation(0); video._place_caption()
 	video._update_layer(); await frames(); video._update_layer()
@@ -169,6 +183,7 @@ func run() -> void:
 	menu.state_provider = func(): return state
 	menu.setting_requested.connect(func(key, value): state[key] = value; choices.append([key, value]))
 	menu.toggle(); menu._activate(110)
+	if menu._subtitle_appearance_open: menu._activate(Menu.SUBTITLE_APPEARANCE)
 	check(not menu.text_snapshot().contains(I18n.t("Below-screen subtitles")), "Main CC panel remains compact with appearance closed")
 	menu._activate(Menu.SUBTITLE_APPEARANCE)
 	for language in ["zh", "zh_Hant", "ja", "en"]:

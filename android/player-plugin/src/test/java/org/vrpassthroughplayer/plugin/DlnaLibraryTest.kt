@@ -52,6 +52,20 @@ class DlnaLibraryTest {
         assertEquals("旅行.PNG", entries.getJSONObject(1).getString("title"))
     }
 
+    @Test fun escapedResourceNamesWorkWhenTheServerOnlySuppliesGenericMime() {
+        val names = listOf("video" to "mkv", "image" to "jpg", "audio" to "m4a")
+        val entries = DlnaClient.didl(xml(names.joinToString("") { (kind, suffix) ->
+            """<item id="$kind"><class>object.item.${kind}Item</class><res protocolInfo="http-get:*:application/octet-stream:*">/a+b%20%23%3F%252F%2e$suffix?sig=a%2Bb</res></item>"""
+        }), "http://nas/description.xml")
+        assertEquals(names.size, entries.length())
+        names.forEachIndexed { index, (kind, suffix) ->
+            val row = entries.getJSONObject(index)
+            assertEquals(kind, row.getString("kind"))
+            assertEquals("a+b #?%2F.$suffix", row.getString("title"))
+            assertEquals("http://nas/a+b%20%23%3F%252F%2e$suffix?sig=a%2Bb", row.getString("uri"))
+        }
+    }
+
     @Test fun audioSamplesUseAudioResourcesInsteadOfAlbumArtOrVideoPreviews() {
         val entries = DlnaClient.didl(xml("""<item id="a"><dc:title>Sample</dc:title><class>object.item.audioItem.musicTrack</class>
             <res protocolInfo="http-get:*:image/jpeg:*">http://nas:8200/cover.jpg</res>

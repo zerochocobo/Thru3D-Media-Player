@@ -3,6 +3,7 @@ const Pinyin := preload("res://scripts/chinese_pinyin.gd")
 const Move := preload("res://scripts/interface_move.gd")
 const WINDOW_SCALE := 0.5
 const MOVE := 20
+const SYSTEM_KEYBOARD := 14
 const KEY := 100
 const CANDIDATE := 200
 const KEY_FONT_SIZE := 20
@@ -17,6 +18,7 @@ var english := false
 var shift := false
 var symbols := false
 var preview: Callable
+var allow_system := false
 var _repeat_hand := ""
 var _repeat_at := 0
 var _lexicon_ready := false
@@ -40,16 +42,18 @@ func _end_move() -> void:
 	if not title_move.capture.is_empty() and title_move.capture.moved: _remember_placement()
 	title_move.cancel()
 
-func present(id: String, action: Callable, valid: Callable, text: Callable, latin: bool) -> void:
+func present(id: String, action: Callable, valid: Callable, text: Callable, latin: bool, system_available: bool = false) -> void:
 	close(false)
 	owner_id = id; dispatch = action; alive = valid; preview = text
 	english = latin; shift = false; symbols = false
+	allow_system = system_available
 	visible = true; refresh()
 
 func close(notify: bool = true) -> void:
 	var callback := dispatch
 	var was_open := visible and not owner_id.is_empty()
 	owner_id = ""; dispatch = Callable(); alive = Callable(); preview = Callable()
+	allow_system = false
 	ime.clear(); _repeat_hand = ""; _end_move(); super.dismiss()
 	if notify and was_open and callback.is_valid(): callback.call("close", "")
 
@@ -118,8 +122,9 @@ func _place_device_status(_centre: Vector2) -> void:
 
 func refresh() -> void:
 	_clear_layout()
-	_set_backdrop(Vector2(1.28, 0.78))
-	_block_rays(_backdrop, Vector2(1.28, 0.78))
+	var panel_size := Vector2(1.28, 0.90 if allow_system else 0.78)
+	_set_backdrop(panel_size, Vector2(0, -0.06) if allow_system else Vector2.ZERO)
+	_block_rays(_backdrop, panel_size)
 	_button(MOVE, "", Vector2(-0.04, 0.333), Vector2(1.07, 0.102))
 	var handle: Dictionary = _buttons.back()
 	handle.base_color = Color(TILE, 0)
@@ -152,6 +157,8 @@ func refresh() -> void:
 		var size := Vector2(float(item[3]), 0.085)
 		if icons.has(target): _icon_key(target, icons[target], centre, size, true, target == 6 or (target == 2 and shift))
 		else: _button(target, str(item[1]), centre, size)
+	if allow_system:
+		_button(SYSTEM_KEYBOARD, I18n.t("System input method"), Vector2(0, -0.415), Vector2(0.60, 0.085), true, "", true)
 	for button in _buttons:
 		for child in button.node.get_children():
 			if child is Label3D: set_label_size(child, KEY_FONT_SIZE)
@@ -193,6 +200,10 @@ func _activate(target: int) -> void:
 		return
 	else:
 		match target:
+			SYSTEM_KEYBOARD:
+				# Only confirmed characters belong in the field when changing keyboards.
+				if allow_system: _send("system_keyboard")
+				return
 			1, 3:
 				if not ime.composing.is_empty():
 					if not _send("text", ime.composing): return

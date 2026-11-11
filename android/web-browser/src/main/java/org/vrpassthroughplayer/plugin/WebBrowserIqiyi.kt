@@ -4,6 +4,7 @@ import java.net.URI
 import java.net.URLDecoder
 import org.json.JSONArray
 import org.json.JSONObject
+import org.json.JSONTokener
 
 /** Current SDK-selected TS declaration. Observed requests or the selected SDK file declarations supply each resource. */
 object WebBrowserIqiyi {
@@ -40,9 +41,18 @@ object WebBrowserIqiyi {
             return (data.get("playlist") as String).also { require(it.length<=128*1024) }
         }
         val packed=data.getJSONObject("playlist_delta")
-        require(packed.opt("version")==1)
         val size=integer(packed.get("chars"),PLAYLIST_LIMIT)
-        val rows=packed.getJSONArray("rows");require(rows.length() in 1..8192)
+        val rows=when(packed.opt("version")) {
+            1 -> packed.getJSONArray("rows")
+            2 -> {
+                val encoded=packed.get("rows") as String
+                require(encoded.length<=128*1024)
+                val reader=JSONTokener(encoded)
+                (reader.nextValue() as JSONArray).also { require(reader.nextClean()=='\u0000') }
+            }
+            else -> error("Invalid playlist transport version")
+        }
+        require(rows.length() in 1..8192)
         val lines=ArrayList<String>(rows.length());var count=0
         for(i in 0 until rows.length()) {
             val row=rows.getJSONArray(i);require(row.length()==3)
@@ -71,12 +81,15 @@ object WebBrowserIqiyi {
         val text=playlist(data)
         val lines=text.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
         require(lines.firstOrNull()=="#EXTM3U" && lines.lastOrNull()=="#EXT-X-ENDLIST")
+        val selectedSdkLevel=data.optString("dispatch_status")=="selected_level"
         val result=ArrayList<Part>();var duration: Double?=null
         for(line in lines.drop(1)) {
             when {
                 line.startsWith("#EXTINF:") -> {
                     require(duration==null)
-                    duration=line.substringAfter(':').substringBefore(',').toDouble().also { require(it.isFinite() && it>0 && it<=172800) }
+                    duration=line.substringAfter(':').substringBefore(',').toDouble().also {
+                        require(it.isFinite() && it<=172800 && (it>0 || it==0.0 && selectedSdkLevel))
+                    }
                 }
                 line.startsWith('#') -> require(line=="#EXT-X-ENDLIST" || Regex("#EXT-X-(?:VERSION|TARGETDURATION|MEDIA-SEQUENCE):[0-9]+").matches(line))
                 else -> {
@@ -91,6 +104,13 @@ object WebBrowserIqiyi {
         for(file in result.groupBy { it.range.uri.rawPath }.values) {
             var position=0L
             for(part in file) { require(part.range.start==position);position=part.range.end }
+        }
+        // The SDK can round a subsecond segment's EXTINF to zero. Accept it only
+        // when the selected timeline still provides its exact positive length.
+        for ((index,part) in result.withIndex()) if (part.duration==0.0) {
+            val end=result.getOrNull(index+1)?.range?.sd?.toDouble() ?: data.optDouble("dispatch_duration_ms",Double.NaN)
+            val milliseconds=end-part.range.sd
+            require(milliseconds>0 && milliseconds<1000)
         }
         return result
     }
@@ -117,9 +137,14 @@ object WebBrowserIqiyi {
         val parts=parts(data);val files=data.getJSONArray("dispatchers");require(files.length() in 1..2048)
         val duration=data.getDouble("dispatch_duration_ms")/1000.0
         val visibleDuration=data.getDouble("duration")
-        val roundedCompleteTimeline=visibleDuration==kotlin.math.ceil(duration) &&
-            data.optDouble("sdk_duration_ms",Double.NaN)==data.getDouble("dispatch_duration_ms") &&
-            parts.sumOf { it.duration }==visibleDuration
+        val playlistDuration=parts.sumOf { it.duration }
+        val last=parts.last()
+        val endMs=last.range.sd+last.duration*1000
+        val dispatchMs=data.getDouble("dispatch_duration_ms")
+        val roundedCompleteTimeline=data.optDouble("sdk_duration_ms",Double.NaN)==dispatchMs && (
+            visibleDuration==kotlin.math.ceil(duration) && playlistDuration==visibleDuration ||
+            visibleDuration==kotlin.math.floor(duration)+1 && endMs==dispatchMs &&
+                playlistDuration in setOf(visibleDuration,visibleDuration-1,visibleDuration-2))
         require(duration.isFinite() && duration>0 &&
             (kotlin.math.abs(duration-visibleDuration)<=.5 || roundedCompleteTimeline))
         require(parts.first().range.sd==0L)
@@ -155,6 +180,7 @@ object WebBrowserIqiyi {
     fun plan(item: JSONObject,currentPage: String): JSONObject? = runCatching {
         val data=metadata(item,currentPage) ?: return null
         val parts=parts(data);val tvid=data.getString("tvid")
+        require(parts.all { it.duration>0 })
         val network=WebBrowserNetworkMedia.candidates(item,includeSegments=true)
         val records=(0 until network.length()).map { network.getJSONObject(it) }
         val manifests=records.filter { it.getString("kind")=="hls" && query(URI(it.getString("url")))["qd_tvid"]==tvid }.distinctBy { it.getString("url") }

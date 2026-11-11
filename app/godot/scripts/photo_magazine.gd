@@ -83,7 +83,7 @@ func prepare(result: Dictionary, job: Dictionary) -> bool:
 	if photo._request <= 0 and photo.platform:
 		photo.loading = false; photo.error = "Image unavailable"; photo._restore_display(); cancel(); photo.changed.emit()
 	elif not photo.platform:
-		photo._on_ready(photo._request, JSON.stringify({"state": "ready", "path": uri.trim_prefix("file://").uri_decode()}))
+		photo._on_ready(photo._request, JSON.stringify({"state": "ready", "path": preload("res://scripts/media_uri.gd").decode_path(uri.trim_prefix("file://"))}))
 	return true
 
 func decorate(job: Dictionary) -> void:

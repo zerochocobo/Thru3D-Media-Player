@@ -8,6 +8,31 @@ import org.junit.Test
 class CloudPagingOptionsTest {
     private val mount = "/12345678-1234-1234-1234-123456789abc"
 
+    @Test fun native115DirectoryIncludesUppercaseVobFilesInVideoRows() {
+        val folder = "/乐曲－MTV（卡拉OK及MV）》"
+        val names = (1..34).map { "歌手&合唱.-.[第${it}首(MTV)].VOB" }
+        val client = OpenListBackend.Client(mount, CloudDrive.OPEN115, "42") { method, route, body ->
+            assertEquals("POST", method)
+            assertEquals("/list115", route)
+            assertEquals(folder, body!!.getString("path"))
+            assertEquals("42", body.getString("folder_id"))
+            assertTrue(body.getBoolean("refresh"))
+            val items = JSONArray(names.mapIndexed { index, name ->
+                JSONObject().put("id", (9007199254740993L + index).toString())
+                    .put("name", name).put("size", 165_031_936).put("is_dir", false)
+            })
+            JSONObject().put("data", JSONObject().put("total", names.size).put("content", items))
+        }
+
+        val page = client.sizedPage(folder, 0, true, "name_asc", 200)
+        assertEquals(-1, page.nextOffset)
+        assertEquals(34, page.rawCount)
+        val rows = page.files.mapNotNull { CloudLibrary.directoryEntry("/account$folder", it, client) }
+        assertEquals(names, rows.map { it.getString("title") })
+        assertEquals(names.map { "/account$folder/$it" }, rows.map { CloudPaths.path(it.getString("uri")) })
+        assertTrue(rows.all { it.getString("kind") == "video" && !it.getBoolean("container") })
+    }
+
     @Test fun groupingTravelsWithOrderAndCannotBypassProviderCapabilities() {
         for (provider in listOf(CloudDrive.OPEN115, CloudDrive.WEBDAV)) {
             var calls = 0

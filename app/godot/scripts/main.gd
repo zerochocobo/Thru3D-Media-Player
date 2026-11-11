@@ -1,5 +1,6 @@
 extends Node3D
 
+const MediaUri := preload("res://scripts/media_uri.gd")
 const ScreenPresets := preload("res://scripts/screen_presets.gd")
 const UiTheme := preload("res://scripts/ui_theme.gd")
 
@@ -18,6 +19,12 @@ const AlphaEdge := preload("res://scripts/alpha_edge.gd")
 const StickControls := preload("res://scripts/player_stick_controls.gd")
 const HandPointer := preload("res://scripts/hand_pointer.gd")
 const InputVisuals := preload("res://scripts/input_visuals.gd")
+const ControllerDiagnostics := preload("res://scripts/controller_diagnostics.gd")
+var controller_diagnostics := ControllerDiagnostics.new()
+var _controller_raw_sticks := {}
+var _controller_stick_blocks := {}
+var _stick_diagnostic_routes := {}
+var _controller_pre_stick_routes := {}
 const ControllerFeedback := preload("res://scripts/controller_feedback.gd")
 const WristWatch := preload("res://scripts/wrist_watch.gd")
 const ViewingHandLock := preload("res://scripts/viewing_hand_lock.gd")
@@ -326,7 +333,7 @@ func _ready() -> void:
 	favorites.lock_changed.connect(_on_favorites_lock_changed)
 	controller_bindings.restore(settings.get_value("input", "controller_bindings", {}))
 	I18n.use(str(settings.get_value("ui", "language", "auto")))
-	ChineseInput.configure(bool(settings.get_value("ui", "quest_chinese_keyboard", false)))
+	ChineseInput.configure(bool(settings.get_value("ui", ChineseInput.app_setting_key(), false)))
 	ChineseInput.configure_browser(str(settings.get_value("ui", "web_keyboard", "builtin")))
 	fps_overlay = FpsOverlay.new()
 	fps_overlay.source = _fps_sample
@@ -830,44 +837,54 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_F7:
 				_request_controlled_probe()
 
-# Menus are ray + trigger only. A list row clicks on release unless the ray dragged to scroll.
+# Menus use ray + trigger. A list row clicks on release unless the ray dragged to scroll.
 # Video triggers select controls or resize flat corners; grips move pictures. Photo/hand dragging is separate.
 func _on_controller_release(action: String, hand: String = "") -> void:
+	var context := _controller_input_context(hand) if ControllerDiagnostics.enabled() and action in ControllerDiagnostics.BUTTONS else {}
+	var route := _route_controller_release(action, hand)
+	controller_diagnostics.button(Time.get_ticks_msec(), hand, action, false, route, context)
+
+func _route_controller_release(action: String, hand: String = "") -> String:
 	if hand_lock.blocked(hand):
-		controller_bindings.cancel_hand(hand); return
+		controller_bindings.cancel_hand(hand); return "blocked.hand_lock"
 	if action == "trigger_click" and _beach_prop_release(hand):
-		controller_bindings.release(hand,action); return
+		controller_bindings.release(hand,action); return "handled.beach_prop_release"
 	if action in ["trigger_click", "grip_click"] and beach_environment and beach_environment.scene_held(hand) and beach_environment.scene_input_matches(action) and beach_environment.scene_release(hand):
-		controller_bindings.release(hand,action); _controller_consumed.erase(hand+"/"+action); _vr_release_guard.erase(hand); stick_controls.suspend(); return
+		controller_bindings.release(hand,action); _controller_consumed.erase(hand+"/"+action); _vr_release_guard.erase(hand); stick_controls.suspend(); return "handled.beach_scene_release"
 	if action == "trigger_click" and screen_edit_lock.release(hand):
-		controller_bindings.release(hand, action); _controller_consumed.erase(hand + "/" + action); return
+		controller_bindings.release(hand, action); _controller_consumed.erase(hand + "/" + action); return "handled.screen_edit_release"
 	if action in ["trigger_click", "grip_click"] and screen_edit_lock.release_guard(hand):
-		controller_bindings.release(hand, action); _controller_consumed.erase(hand + "/" + action); return
+		controller_bindings.release(hand, action); _controller_consumed.erase(hand + "/" + action); return "blocked.screen_edit_release_guard"
 	if action == "grip_click":
 		immersive_sticks.poll(hand, Vector2.ZERO, false)
 		_finish_immersive_adjustment()
+	if action == "ax_button" and hand == "right_hand" and _release_browser_a(hand):
+		controller_bindings.release(hand, action)
+		_controller_consumed.erase(hand + "/" + action)
+		return "routed.browser_a_release"
 	if puzzle_game and puzzle_game.active:
-		puzzle_game.button(action, hand, true); return
+		puzzle_game.button(action, hand, true); return "routed.puzzle_release"
 	controller_bindings.release(hand, action)
 	if ChineseInput.active():
 		if action == "trigger_click": ChineseInput.popup.release_pointer(hand, Vector3.ZERO, Vector3.ZERO, false)
 		_controller_consumed.erase(hand + "/" + action)
-		return
+		return "routed.keyboard_release"
 	if action == "trigger_click" and _vr_release_guard.erase(hand):
 		_controller_consumed.erase(hand + "/" + action)
-		return
+		return "blocked.vr_release_guard"
 	var consumed_key := hand + "/" + action
 	var consumed: bool = _controller_consumed.has(consumed_key)
 	_controller_consumed.erase(consumed_key)
-	if is_instance_valid(airplay_session) and airplay_session.pip.release(hand, action): stick_controls.suspend(); return
-	if video and video.get("pip") and video.pip.release(hand, action): stick_controls.suspend(); return
+	if is_instance_valid(airplay_session) and airplay_session.pip.release(hand, action): stick_controls.suspend(); return "handled.airplay_release"
+	if video and video.get("pip") and video.pip.release(hand, action): stick_controls.suspend(); return "handled.pip_release"
 	if not interface_move.capture.is_empty() and interface_move.capture.hand == hand and interface_move.capture.input == action:
-		_finish_interface_move(); return
+		_finish_interface_move(); return "handled.interface_move_release"
 	if not _grab.is_empty() and _grab.get("release_input", "trigger_click") == action and _grab.hand == hand:
-		_on_pointer_release("trigger_click", hand); return
-	if consumed: return
-	if not _controller_allowed(hand): return
+		_on_pointer_release("trigger_click", hand); return "handled.picture_release"
+	if consumed: return "routed.consumed_release"
+	if not _controller_allowed(hand): return "blocked.not_focused" if not _input_focused() else "blocked.hand_tracking_owns_input"
 	_on_pointer_release(action, hand)
+	return "routed.pointer_release"
 
 func _finish_interface_move() -> void:
 	if interface_move.capture.is_empty(): return
@@ -955,28 +972,34 @@ func _on_pointer_release(action: String, hand: String) -> void:
 		ray[1] if ray != null else Vector3.ZERO, ray != null)
 
 func _on_controller_button(action: String, hand: String = "") -> void:
-	if hand_lock.blocked(hand): return
-	if hand not in ControllerBindings.HANDS or not _controller_allowed(hand): return
+	var context := _controller_input_context(hand) if ControllerDiagnostics.enabled() and action in ControllerDiagnostics.BUTTONS else {}
+	var route := _route_controller_button(action, hand)
+	controller_diagnostics.button(Time.get_ticks_msec(), hand, action, true, route, context)
+
+func _route_controller_button(action: String, hand: String = "") -> String:
+	if hand_lock.blocked(hand): return "blocked.hand_lock"
+	if hand not in ControllerBindings.HANDS: return "ignored.invalid_hand"
+	if not _controller_allowed(hand): return "blocked.not_focused" if not _input_focused() else "blocked.hand_tracking_owns_input"
 	if ChineseInput.active():
 		if action == "menu_button" or (action in ControllerBindings.BUTTONS and controller_bindings.press(hand, action)):
 			_on_pointer_button(action, hand)
 		_controller_consumed[hand + "/" + action] = true
-		return
+		return "routed.keyboard"
 	if _vr_passthrough_active():
 		if action == "trigger_click" and controller_bindings.press(hand, action): _on_pointer_button(action, hand)
 		_controller_consumed[hand + "/" + action] = true
-		return
+		return "routed.temporary_passthrough"
 	if _watch_owned and hand == "right_hand" and action != "menu_button":
-		_controller_consumed[hand + "/" + action] = true; return
+		_controller_consumed[hand + "/" + action] = true; return "blocked.wrist_watch"
 	if puzzle_game and puzzle_game.active:
-		puzzle_game.button(action, hand); return
+		puzzle_game.button(action, hand); return "routed.puzzle"
 	if action == "menu_button":
 		if controller_feedback: controller_feedback.wake(hand)
 		interface_move.cancel()
-		_on_pointer_button(action, hand); return
+		_on_pointer_button(action, hand); return "routed.system_menu"
 	# Capacitive touches are boolean OpenXR events too; only actual clicks wake.
-	if action not in ControllerBindings.BUTTONS: return
-	if controller_bindings.blocked[hand].has(action): return
+	if action not in ControllerBindings.BUTTONS: return "ignored.touch_or_unknown"
+	if controller_bindings.blocked[hand].has(action): return "blocked.wait_button_release"
 	var first_press := controller_bindings.press(hand, action)
 	if action == "primary_click" and controller_bindings.down[hand].has("grip_click") \
 		and not controller_bindings.down[hand].has("trigger_click") and _immersive_adjustment_context():
@@ -986,46 +1009,46 @@ func _on_controller_button(action: String, hand: String = "") -> void:
 			immersive_sticks.suspend(); stick_controls.suspend()
 			if not interface_move.capture.is_empty(): interface_move.capture["vr_adjusting"] = true
 		_controller_consumed[hand + "/" + action] = true
-		return
+		return "handled.immersive_reset"
 	if action == "ax_button" and hand == "right_hand" and _beach_easter_egg_press(hand, first_press):
-		_controller_consumed[hand + "/" + action] = true; return
+		_controller_consumed[hand + "/" + action] = true; return "handled.beach_easter_egg"
 	if action == "ax_button" and hand == "right_hand" and _cinema_interaction_owns():
-		return
+		return "blocked.cinema_movement"
 	# Hold the trigger to take a prop, including while walking. Empty-space
 	# presses still retrieve the menu; the corresponding release drops the prop.
 	if action == "trigger_click" and first_press and _beach_prop_press(hand):
-		_controller_consumed[hand + "/" + action] = true; return
-	if action == "trigger_click" and first_press and screen_edit_lock.press(hand): return
+		_controller_consumed[hand + "/" + action] = true; return "handled.beach_prop"
+	if action == "trigger_click" and first_press and screen_edit_lock.press(hand): return "routed.screen_edit_lock"
 	if action == "trigger_click" and first_press and _beach_scene_press(hand):
-		_controller_consumed[hand + "/" + action] = true; return
+		_controller_consumed[hand + "/" + action] = true; return "handled.beach_scene"
 	# Free movement uses an otherwise unclaimed trigger to retrieve controls.
 	if action == "trigger_click" and first_press and _cinema_interaction_owns() and not _cinema_input_blocked():
 		cinema_environment.suspend(); _show_player_menu()
-		_controller_consumed[hand + "/" + action] = true; return
+		_controller_consumed[hand + "/" + action] = true; return "handled.cinema_menu"
 	if action == "grip_click" and first_press and _beach_screen_grab(hand):
-		_controller_consumed[hand + "/" + action] = true; return
+		_controller_consumed[hand + "/" + action] = true; return "handled.beach_screen_grab"
 	if first_press and action == "by_button" and hand == "right_hand" and video and not video.captures.recording.is_empty():
 		video.captures.stop()
 		_controller_consumed[hand + "/" + action] = true
-		return
+		return "handled.stop_recording"
 	if action == "by_button" and first_press and _cinema_interaction_owns() and not _active_menu():
 		_cinema_return_to_playback()
 		_controller_consumed[hand + "/" + action] = true
-		return
+		return "handled.cinema_watch"
 	if first_press and controller_feedback and _input_feedback_visible(): controller_feedback.wake(hand)
-	if action in ControllerBindings.MODIFIERS and not first_press: return
-	if action == "by_button" and not first_press: return
+	if action in ControllerBindings.MODIFIERS and not first_press: return "ignored.duplicate_press"
+	if action == "by_button" and not first_press: return "ignored.duplicate_press"
 	var consumed_key := hand + "/" + action
 	# B on a disc menu goes back to the disc's top menu unless an app panel is open.
 	if action == "by_button" and first_press and video and not photo_active and video.disc.menu_session and not _active_menu() \
 		and video.disc_menu.top_menu(video.platform):
-		_controller_consumed[consumed_key] = true; return
+		_controller_consumed[consumed_key] = true; return "handled.disc_top_menu"
 	# The trigger is also a chord modifier; a disc menu button under the ray takes it first.
-	if action == "trigger_click" and first_press and (_disc_menu_bar_press(hand) or _disc_menu_press(hand)): return
-	if action == "trigger_click" and first_press and _try_screen_rotation(hand): return
+	if action == "trigger_click" and first_press and (_disc_menu_bar_press(hand) or _disc_menu_press(hand)): return "handled.disc_menu"
+	if action == "trigger_click" and first_press and _try_screen_rotation(hand): return "handled.screen_rotation"
 	if not photo_active and video and video.get("pip") and video.pip.capturing():
 		_pip_pointer_press(action, hand)
-		_controller_consumed[consumed_key] = true; return
+		_controller_consumed[consumed_key] = true; return "routed.pip_capture"
 	# Either modifier order can take over this hand's picture movement, even after
 	# natural motion committed it. Real UI/other-hand captures keep their ownership.
 	if action in ControllerBindings.MODIFIERS and controller_bindings.is_modifier(hand, action, _controller_context()) \
@@ -1038,18 +1061,19 @@ func _on_controller_button(action: String, hand: String = "") -> void:
 				if _grab.moved and not _grab.has("inspect") and _viewer().geometry == Geometry.Geometry.FLAT: _save_screen()
 				_grab.clear(); _viewer().set_corner_hover(-1)
 			stick_controls.suspend()
-		_controller_consumed[consumed_key] = true; return
+		_controller_consumed[consumed_key] = true; return "routed.chord_modifier"
 	if not interface_move.capture.is_empty() and interface_move.capture.moved:
-		_controller_consumed[consumed_key] = true; return
+		_controller_consumed[consumed_key] = true; return "blocked.interface_move"
 	var id := controller_bindings.resolve(hand, action, _controller_context())
-	if id in ["turn_180_video", "turn_180_photo", "previous_video", "next_video"] and not first_press: return
+	if id in ["turn_180_video", "turn_180_photo", "previous_video", "next_video"] and not first_press: return "ignored.duplicate_press"
 	if photo_active and photo.inspect and not (id in ["photo_close", "move_photo"] and _shortcut_allowed(id)):
-		_on_pointer_button(action, hand); return
+		_on_pointer_button(action, hand); return "routed.photo_inspect"
 	var menu := _active_menu()
+	if action == "ax_button" and hand == "right_hand" and first_press and _press_browser_a(menu, hand): return "routed.browser_a"
 	# A closer AirPlay surface owns its hit before a menu behind it. Movie PiP
 	# keeps its existing menu arbitration below.
 	if action == "trigger_click" and is_instance_valid(airplay_session) and airplay_session.press(hand, action):
-		stick_controls.suspend(); _controller_consumed[consumed_key] = true; return
+		stick_controls.suspend(); _controller_consumed[consumed_key] = true; return "handled.airplay"
 	# A real UI hit/capture keeps trigger selection, regardless of user shortcut mappings.
 	if action == "trigger_click" and menu:
 		var ray: Variant = _ray(hand)
@@ -1057,24 +1081,30 @@ func _on_controller_button(action: String, hand: String = "") -> void:
 		if _menu_captured(menu) or (not chord_modifier and ray != null and not menu.ray_hit(ray[0], ray[1]).is_empty()):
 			interface_move.cancel()
 			if photo_active: _on_pointer_button(action, hand)
-			else: _on_video_trigger(hand)
-			return
+			else:
+				_video_trigger_diagnostic_route = "routed.menu_trigger"
+				_on_video_trigger(hand)
+				return _video_trigger_diagnostic_route
+			return "routed.menu_trigger"
 		if photo_active and menu != player_menu and ray != null and menu.grab_hit(ray[0], ray[1]).is_empty() \
 			and controller_bindings.is_modifier(hand, "grip_click", _controller_context()):
 			_video_control_tap = {"hand": hand, "uri": photo.local_uri, "dismiss": menu, "photo": true}
-			return
+			return "routed.deferred_menu_dismiss"
 	if _pip_pointer_press(action, hand):
-		_controller_consumed[consumed_key] = true; return
+		_controller_consumed[consumed_key] = true; return "handled.pip"
 	if interface_move.pending() and not id.begins_with("move_") and not _is_chord(id, hand, action):
-		_controller_consumed[consumed_key] = true; return
-	if action == "trigger_click" and _try_corner_resize(hand): return
+		_controller_consumed[consumed_key] = true; return "blocked.pending_move"
+	if action == "trigger_click" and _try_corner_resize(hand): return "handled.corner_resize"
 	if id.begins_with("move_") and _shortcut_allowed(id):
-		_begin_interface_move(hand, action); _controller_consumed[consumed_key] = true; return
+		var move_route := _begin_interface_move(hand, action)
+		_controller_consumed[consumed_key] = true
+		return move_route
 	if controller_bindings.is_modifier(hand, action, _controller_context()):
-		_controller_consumed[consumed_key] = true; return
+		_controller_consumed[consumed_key] = true; return "routed.chord_modifier"
 	if not photo_active and action == "trigger_click":
+		_video_trigger_diagnostic_route = "routed.video_trigger"
 		_on_video_trigger(hand)
-		return
+		return _video_trigger_diagnostic_route
 	if not id.is_empty() and _shortcut_allowed(id, _is_chord(id, hand, action)):
 		if interface_move.pending(): interface_move.cancel()
 		if id.begins_with("drag_"):
@@ -1083,46 +1113,75 @@ func _on_controller_button(action: String, hand: String = "") -> void:
 		else:
 			_controller_consumed[consumed_key] = true
 			_execute_shortcut(id, hand, 1.0, 0.18)
-		return
+		return "routed.shortcut:" + id
 	if action == "by_button":
 		_controller_consumed[consumed_key] = true
 		# Full or partial chords must not fall through to ordinary Back.
-		if controller_bindings.modifier_held(hand, _controller_context()): return
+		if controller_bindings.modifier_held(hand, _controller_context()): return "blocked.chord_modifier"
 		_on_pointer_button(action, hand)
-		return
+		return "routed.back"
 	if menu and action == "trigger_click": _on_pointer_button(action, hand)
 	else: _controller_consumed[consumed_key] = true
+	if not id.is_empty(): return "blocked." + _shortcut_block_reason(id, _is_chord(id, hand, action))
+	return "ignored.modifier_or_unbound"
+
+func _press_browser_a(menu: Node3D, hand: String) -> bool:
+	if not recent_menu or not recent_menu.web_browser.active(): return false
+	var browser: RefCounted = recent_menu.web_browser
+	if menu != browser.input_host() or not _grab.is_empty() or not _video_control_tap.is_empty(): return false
+	var ray: Variant = _ray(hand)
+	if ray == null: return false
+	if capture_overlay and capture_overlay.visible and not capture_overlay.pointer_hit(ray[0], ray[1]).is_empty(): return false
+	if is_instance_valid(airplay_session) and airplay_session.pip.active() and airplay_session.input_enabled() and not airplay_session._menu_blocks(menu, ray): return false
+	if not browser.press(hand, ray[0], ray[1], true, "ax_button"): return false
+	interface_move.cancel()
+	_menu_touched_ms = Time.get_ticks_msec()
+	stick_controls.suspend()
+	return true
+
+func _release_browser_a(hand: String) -> bool:
+	if not recent_menu: return false
+	var browser: RefCounted = recent_menu.web_browser
+	if not browser.owns_pointer(hand, "ax_button"): return false
+	var ray: Variant = _ray(hand) if _controller_allowed(hand) and browser.active() and _active_menu() == browser.input_host() else null
+	return browser.release(hand, ray[0] if ray != null else Vector3.ZERO, ray[1] if ray != null else Vector3.ZERO,
+		ray != null, "ax_button")
 
 ## A fixed controller UI action, independent of saved playback bindings and picture grabs.
 var _video_control_tap := {}
+var _video_trigger_diagnostic_route := ""
 func _on_video_trigger(hand: String) -> void:
-	if screen_edit_lock.press(hand): return
-	if _capture_pointer_press(hand): return
-	if _disc_menu_press(hand): return
-	if _try_screen_rotation(hand): return
+	_video_trigger_diagnostic_route = _route_video_trigger(hand)
+
+func _route_video_trigger(hand: String) -> String:
+	if screen_edit_lock.press(hand): return "routed.screen_edit_lock"
+	if _capture_pointer_press(hand): return "handled.capture_overlay"
+	if _disc_menu_press(hand): return "handled.disc_menu"
+	if _try_screen_rotation(hand): return "handled.screen_rotation"
 	if not _video_control_tap.is_empty() or not _grab.is_empty():
 		_controller_consumed[hand + "/trigger_click"] = true
-		return
+		return "blocked.picture_capture_or_pending_tap"
 	var ray: Variant = _ray(hand)
-	if ray == null: return
+	if ray == null: return "blocked.no_ray"
 	var menu := _active_menu()
 	if menu:
 		var captured := _menu_captured(menu)
-		if _update_menu_pointer(hand, true) or captured: return
+		if _update_menu_pointer(hand, true) or captured: return "routed.menu_pointer"
 		# This press only dismisses the controls; it never becomes a picture drag.
 		if menu.ray_hit(ray[0], ray[1]).is_empty() and (menu == player_menu or menu.grab_hit(ray[0], ray[1]).is_empty()):
 			if controller_bindings.is_modifier(hand, "grip_click", _controller_context()):
 				_video_control_tap = {"hand": hand, "uri": video.local_uri, "dismiss": menu}
-				return
+				return "routed.deferred_menu_dismiss"
 			if menu == music_menu: _close_music_menu()
 			else: menu.dismiss()
 			_controller_consumed[hand + "/trigger_click"] = true
-		return
+		return "routed.menu_dismiss"
 	if not _has_open_media():
 		_show_recent_menu()
 		_controller_consumed[hand + "/trigger_click"] = true
 	else:
 		_video_control_tap = {"hand": hand, "uri": video.local_uri}
+	return "routed.deferred_controls" if not _video_control_tap.is_empty() else "handled.open_library"
 
 func _binding_page() -> bool:
 	return recent_menu is LibraryMenu and recent_menu.controls_page.active()
@@ -1138,29 +1197,35 @@ func _menu_captured(menu: Node3D) -> bool:
 	return false
 
 func _shortcut_allowed(id: String, chord: bool = false, chord_hand: String = "") -> bool:
-	if _vr_passthrough_active(): return false
-	if not photo_active and video and video.get("pip") and video.pip.blocked(): return false
-	if wrist_watch and (not wrist_watch.logic.scrub.is_empty() or not wrist_watch.logic.pressed.is_empty()): return false
-	if _cinema_interaction_owns() and not _active_menu(): return false
-	if not _input_focused() or not _inspect_blocked.is_empty(): return false
-	if photo_active and ((photo.inspect and id not in ["photo_close", "move_photo"]) or photo.gallery.has_capture() or not photo_hands.owners.is_empty()): return false
+	return _shortcut_block_reason(id, chord, chord_hand).is_empty()
+
+## The same predicate drives playback and diagnostics, so a blocked shortcut cannot be
+## reported as an executed action or acquire a different set of diagnostic-only rules.
+func _shortcut_block_reason(id: String, chord: bool = false, chord_hand: String = "") -> String:
+	if _vr_passthrough_active(): return "temporary_passthrough"
+	if not photo_active and video and video.get("pip") and video.pip.blocked(): return "pip"
+	if wrist_watch and (not wrist_watch.logic.scrub.is_empty() or not wrist_watch.logic.pressed.is_empty()): return "wrist_watch"
+	if _cinema_interaction_owns() and not _active_menu(): return "cinema_movement"
+	if not _input_focused(): return "not_focused"
+	if not _inspect_blocked.is_empty(): return "inspect_release_guard"
+	if photo_active and ((photo.inspect and id not in ["photo_close", "move_photo"]) or photo.gallery.has_capture() or not photo_hands.owners.is_empty()): return "photo_capture"
 	var menu := _active_menu()
-	if _menu_captured(menu): return false
-	if not _grab.is_empty() and (not chord or _grab.hand != chord_hand or _grab.has("inspect") or _grab.has("rotate")): return false
-	if id == "photo_close": return photo_active and photo.gallery.mode in [2, 3] and photo.gallery.focus >= 0 and not photo.gallery.returning and (menu == null or menu == photo_menu)
-	if id.begins_with("move_"): return not (_binding_page() and (not recent_menu.choices.opened.is_empty() or not recent_menu.controls_page.pending.is_empty()))
+	if _menu_captured(menu): return "menu_capture"
+	if not _grab.is_empty() and (not chord or _grab.hand != chord_hand or _grab.has("inspect") or _grab.has("rotate")): return "picture_capture"
+	if id == "photo_close": return "" if photo_active and photo.gallery.mode in [2, 3] and photo.gallery.focus >= 0 and not photo.gallery.returning and (menu == null or menu == photo_menu) else "photo_close_unavailable"
+	if id.begins_with("move_"): return "binding_editor" if _binding_page() and (not recent_menu.choices.opened.is_empty() or not recent_menu.controls_page.pending.is_empty()) else ""
 	if menu:
 		var still_seek := id in ["back10", "forward10", "back20", "forward20"] and _stills_playback_priority(menu)
-		if not still_seek and (menu != player_menu or photo_active or not player_menu.allows_playback_sticks()): return false
-		if id.begins_with("drag_"): return false
-		if not chord and id in ["library_video", "library_photo", "reset_video", "reset_photo", "projection_video", "projection_photo", "inspect"]: return false
-	if id == "play": return video != null and not video.local_uri.is_empty() and video.media.accepts(video.media.session_id)
+		if not still_seek and (menu != player_menu or photo_active or not player_menu.allows_playback_sticks()): return "menu_owns_playback"
+		if id.begins_with("drag_"): return "menu_owns_drag"
+		if not chord and id in ["library_video", "library_photo", "reset_video", "reset_photo", "projection_video", "projection_photo", "inspect"]: return "menu_reserves_button"
+	if id == "play": return "" if video != null and video.cast_allows("play") and not video.local_uri.is_empty() and video.media.accepts(video.media.session_id) else "no_active_video"
 	if id in ["turn_180_video", "turn_180_photo"]:
-		return _has_open_media() and _viewer().geometry == Geometry.Geometry.EQUIRECT_360
+		return "" if _has_open_media() and _viewer().geometry == Geometry.Geometry.EQUIRECT_360 else "requires_360_media"
 	if id in ["previous_video", "next_video"]:
-		if video and video.cast_token > 0: return _has_open_media() and video.cast_allows(id)
-		return _has_open_media() and not _adjacent_video(-1 if id == "previous_video" else 1).is_empty()
-	return true
+		if video and video.cast_token > 0: return "" if _has_open_media() and video.cast_allows(id) else "cast_navigation_unavailable"
+		return "" if _has_open_media() and not _adjacent_video(-1 if id == "previous_video" else 1).is_empty() else "no_adjacent_video"
+	return ""
 
 func _execute_shortcut(id: String, hand: String = "right_hand", amount: float = 1.0, delta: float = 1.0 / 72.0) -> void:
 	if _vr_passthrough_active(): return
@@ -1217,8 +1282,12 @@ func _axis_binding(hand: String, input: String) -> Dictionary:
 		id = controller_bindings.resolve(hand, input, _controller_context())
 		controller_bindings.down[hand] = held
 	else: id = controller_bindings.resolve(hand, input, _controller_context())
-	if id.is_empty(): return {}
-	if interface_move.pending() and not _is_chord(id, hand, input): return {}
+	if id.is_empty():
+		_stick_diagnostic_routes[hand] = "blocked.chord_modifier" if controller_bindings.modifier_held(hand, _controller_context()) else "ignored.unbound"
+		return {}
+	if interface_move.pending() and not _is_chord(id, hand, input):
+		_stick_diagnostic_routes[hand] = "blocked.pending_move"
+		return {}
 	return {"operation": "shortcut", "id": id, "hand": hand, "input": input, "continuous": controller_bindings.definition(id).continuous}
 
 func _is_chord(id: String, hand: String, input: String) -> bool:
@@ -1229,40 +1298,40 @@ func _move_pose(hand: String) -> Variant:
 	var controller: XRController3D = left_controller if hand == "left_hand" else right_controller
 	return controller.global_transform if controller and controller.get_is_active() and controller.get_has_tracking_data() and _controller_allowed(hand) else null
 
-func _begin_interface_move(hand: String, input: String) -> void:
-	if not screen_edit_lock.capture.is_empty(): return
+func _begin_interface_move(hand: String, input: String) -> String:
+	if not screen_edit_lock.capture.is_empty(): return "blocked.screen_edit_capture"
 	var pose: Variant = _move_pose(hand)
 	var head: Variant = _head_pose()
-	if pose == null or head == null: return
+	if pose == null or head == null: return "blocked.no_move_or_head_pose"
 	_video_control_tap = {} # Starting a grip cannot leave a deferred trigger tap behind.
 	if photo_active and photo.inspect:
 		var detail: MeshInstance3D = photo._detail
 		if detail and detail.visible and interface_move.begin(hand, input, pose, [{"node": detail, "kind": "detail", "pose": detail.global_transform, "key": "magnifier"}], detail.global_position, head):
 			stick_controls.suspend()
-		return
+		return "handled.magnifier_move" if not interface_move.capture.is_empty() else "blocked.magnifier_move"
 	var targets: Array = []
 	var menu := _active_menu()
 	var ray: Variant = _ray(hand)
 	var hit: Dictionary = menu.grab_hit(ray[0], ray[1]) if menu and ray != null else {}
 	if recent_menu and recent_menu.web_browser.active():
-		if hit.is_empty(): return
+		if hit.is_empty(): return "ignored.no_browser_grab_hit"
 		var host: Node3D = recent_menu.web_browser.windows.get(int(hit.get("window", 1)))
 		var world_point: Vector3 = menu.to_global(hit.point)
 		recent_menu.web_browser.focus_window(host.window_id)
 		if interface_move.begin(hand, input, pose, [host.move_target(_menu_key(host))], world_point, head): stick_controls.suspend()
-		return
+		return "handled.browser_move" if not interface_move.capture.is_empty() else "blocked.browser_move"
 	var surface := _viewer()
 	var media_anchor: Variant = _media_move_anchor(surface, ray)
 	# Only the auditorium movie is fixed. Alpha cutouts retain the existing flat/VR gestures.
 	var fixed_cinema := _cinema_scene_active() and not photo_active and not _person_passthrough()
 	if screen_edit_lock.locked() and hit.is_empty() and media_anchor != null:
-		screen_edit_lock.deny(hand, "move"); return
+		screen_edit_lock.deny(hand, "move"); return "blocked.screen_locked"
 	if fixed_cinema:
 		if hit.is_empty() and media_anchor != null:
 			_show_cinema_gesture_hint("Screen fixed · switch background to move")
 		media_anchor = null
 	# Movement range changes the linked targets, never turns a miss into a grab.
-	if hit.is_empty() and media_anchor == null: return
+	if hit.is_empty() and media_anchor == null: return "blocked.fixed_cinema_screen" if fixed_cinema else "ignored.no_move_target"
 	var scope: String = controller_bindings.move_scope
 	var move_media := scope != "panel" or menu == null
 	if menu and (scope != "panel" or not hit.is_empty()):
@@ -1282,9 +1351,9 @@ func _begin_interface_move(hand: String, input: String) -> void:
 		else:
 			if surface == video and portrait_screen.active: video.manual_portrait_pose()
 			targets.append({"node": surface, "kind": "screen" if surface.geometry == Geometry.Geometry.FLAT else "immersive", "pose": surface.global_transform * surface.flat_pose, "key": _surface_key(surface)})
-	if targets.is_empty(): return
+	if targets.is_empty(): return "ignored.no_move_target"
 	targets = targets.filter(func(target): return target.kind != "menu" or not target.node.space_locked())
-	if targets.is_empty(): return
+	if targets.is_empty(): return "blocked.space_locked"
 	for target in targets:
 		if target.kind == "screen":
 			target["distance_limits"] = photo.PHOTO_DISTANCE_LIMITS if photo_active else video.DISTANCE_LIMITS
@@ -1298,6 +1367,7 @@ func _begin_interface_move(hand: String, input: String) -> void:
 		stick_controls.suspend()
 		if surface: interface_move.capture["picture_center_identity"] = _picture_center_identity(surface)
 		if picture_center_guide: picture_center_guide.clear()
+	return "handled.interface_move" if not interface_move.capture.is_empty() else "blocked.interface_move_begin"
 
 func _picture_center_identity(surface: Node3D) -> String:
 	var session: int = photo.index if photo_active else video.media.session_id
@@ -1515,6 +1585,7 @@ func _process(delta: float) -> void:
 		if video.video_layer:
 			video.video_layer.reserved_layers = 2 + (menu_composition.layer_reservation() if menu_composition else 5)
 			if mono_menu_capture: video.video_layer.reserved_layers += mono_menu_capture.layer_reservation()
+			if airplay_session: video.video_layer.reserved_layers += airplay_session.layer_reservation()
 			video.video_layer.sync_cadence(video.video_layer_shown and not photo_active)
 		video.captures.tick()
 		if capture_overlay:
@@ -1667,15 +1738,30 @@ func _playback_diagnostic_sample() -> Dictionary:
 		"inference": video.alpha_requested or video.depth_requested}
 
 func _process_sticks(left: Vector2, right: Vector2, delta: float) -> void:
-	if hand_lock.blocked("left_hand"): left = Vector2.ZERO
-	if hand_lock.blocked("right_hand"): right = Vector2.ZERO
+	_stick_diagnostic_routes.clear()
+	var route := _route_sticks(left, right, delta)
+	var now := Time.get_ticks_msec()
+	for hand in ControllerBindings.HANDS:
+		var value := left if hand == "left_hand" else right
+		var raw: Vector2 = _controller_raw_sticks.get(hand, value)
+		var reason: String = _controller_stick_blocks.get(hand, _stick_diagnostic_routes.get(hand, route))
+		if reason == "blocked.wait_for_center" and _controller_pre_stick_routes.has(hand): reason = _controller_pre_stick_routes[hand]
+		var effective := Vector2.ZERO if reason in ["blocked.hand_lock", "blocked.not_focused", "blocked.hand_tracking_owns_input", "blocked.controller_inactive"] else value
+		controller_diagnostics.stick(now, hand, raw, effective, reason, _controller_input_context)
+
+func _route_sticks(left: Vector2, right: Vector2, delta: float) -> String:
+	if hand_lock.blocked("left_hand"):
+		left = Vector2.ZERO; _stick_diagnostic_routes["left_hand"] = "blocked.hand_lock"
+	if hand_lock.blocked("right_hand"):
+		right = Vector2.ZERO; _stick_diagnostic_routes["right_hand"] = "blocked.hand_lock"
 	if is_instance_valid(airplay_session) and airplay_session.pip.capturing():
 		airplay_session.adjust_distance(left, right, delta)
-		stick_controls.suspend(); return
-	if _vr_passthrough_active(): return
+		stick_controls.suspend(); return "routed.airplay_distance"
+	if _vr_passthrough_active(): return "blocked.temporary_passthrough"
 	_cinema_adjusting = false
-	_process_stick_input(left, right, delta)
+	var route := _process_stick_input(left, right, delta)
 	_update_cinema_guide()
+	return route
 
 func _update_cinema_guide() -> void:
 	if not video: return
@@ -1698,13 +1784,13 @@ func _stills_playback_priority(menu: Node3D) -> bool:
 	if not recent_menu is LibraryMenu or not recent_menu.media_picture_open() or _menu_captured(menu) or not recent_menu.server_browser.gallery.capture.is_empty(): return false
 	return menu == recent_menu or (menu == player_menu and _library_is_attached())
 
-func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> void:
-	if not screen_edit_lock.capture.is_empty(): stick_controls.suspend(); return
+func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> String:
+	if not screen_edit_lock.capture.is_empty(): stick_controls.suspend(); return "blocked.screen_edit_capture"
 	if ChineseInput.active():
 		_update_menu_pointer("left_hand"); _update_menu_pointer("right_hand")
 		stick_controls.suspend(); immersive_sticks.suspend()
-		return
-	if _vr_passthrough_active(): return
+		return "routed.keyboard"
+	if _vr_passthrough_active(): return "blocked.temporary_passthrough"
 	if _immersive_zoom_pending and ((left.length() < 0.3 and right.length() < 0.3) or not _immersive_adjustment_context()):
 		_immersive_zoom_pending = false
 		if video: video.commit_stereo_view()
@@ -1719,13 +1805,13 @@ func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> void:
 		_update_menu_pointer("right_hand")
 	if _process_immersive_sticks(left, right, delta):
 		stick_controls.suspend()
-		return
+		return "routed.immersive_adjustment"
 	if not photo_active and video and video.get("pip") and video.pip.blocked():
 		var capture: Dictionary = video.pip.movement.capture
 		if not capture.is_empty() and _input_focused():
 			var hand: String = capture.hand
 			video.pip.adjust_distance(hand, left if hand == "left_hand" else right, delta, _move_pose(hand), _head_pose())
-		stick_controls.suspend(); return
+		stick_controls.suspend(); return "routed.pip_distance"
 	if not interface_move.capture.is_empty() and _input_focused():
 		var held := left if interface_move.capture.hand == "left_hand" else right
 		var chord_pending: bool = interface_move.pending() and controller_bindings.down[interface_move.capture.hand].has("trigger_click")
@@ -1737,22 +1823,22 @@ func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> void:
 			for target in interface_move.capture.get("targets", []):
 				if target.kind == "screen" and is_instance_valid(target.node): target.node.set_screen_distance(_surface_distance(target.node))
 			if menu and not interface_move.capture.is_empty(): _update_menu_pointer(interface_move.capture.hand)
-		if not chord_pending: stick_controls.suspend(); return
+		if not chord_pending: stick_controls.suspend(); return "routed.interface_distance"
 	if not interface_move.capture.is_empty() and interface_move.capture.moved:
-		stick_controls.suspend(); return
+		stick_controls.suspend(); return "blocked.interface_move"
 	if _grab.has("resize") or _grab.has("rotate"):
-		stick_controls.suspend(); return
+		stick_controls.suspend(); return "blocked.resize_or_rotation"
 	if photo_active and photo.gallery.has_capture():
-		stick_controls.suspend(); return
+		stick_controls.suspend(); return "blocked.photo_gallery_capture"
 	if photo_active and photo.inspect:
 		stick_controls.suspend()
-		return
+		return "blocked.photo_inspect"
 	if not _input_focused() and _debug_sticks.is_empty():
 		stick_controls.suspend()
-		return
+		return "blocked.not_focused"
 	if photo_active and photo.geometry == Geometry.Geometry.FLAT and not photo_hands.owners.is_empty():
 		stick_controls.suspend()
-		return
+		return "blocked.photo_hand_capture"
 	if menu and not _stills_playback_priority(menu) and (menu != player_menu or photo_active or not player_menu.allows_playback_sticks()):
 		stick_controls.suspend()
 		# Either stick scrolls a list, never selects or controls playback at the same time.
@@ -1761,14 +1847,22 @@ func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> void:
 		if menu.has_method("stick_scroll") and (menu != player_menu or not player_menu.has_pointer_capture()):
 			menu.stick_scroll(left.y if absf(left.y) > absf(right.y) else right.y, delta)
 		_update_controls_visibility(menu)
-		return
+		return "blocked.menu_capture" if _menu_captured(menu) else "routed.menu_scroll"
 	if _cinema_interaction_owns():
+		var waiting := _cinema_stick_waiting_for_neutral
 		if not _cinema_input_blocked(): _process_cinema_move_stick(left, right, delta)
 		stick_controls.suspend()
 		if menu: _update_controls_visibility(menu)
-		return
+		if _cinema_input_blocked(): return "blocked.cinema_input"
+		return "blocked.cinema_wait_for_center" if waiting else "routed.cinema_movement"
 	var actions := stick_controls.poll(left, right, video != null) if controller_bindings.overrides.is_empty() and not interface_move.pending() else stick_controls.poll_mapped(left, right, _axis_binding)
+	for hand in ControllerBindings.HANDS:
+		if not _stick_diagnostic_routes.has(hand):
+			_stick_diagnostic_routes[hand] = stick_controls.diagnostic_routes.get(hand.trim_suffix("_hand"), "ignored.no_stick_action")
 	if not _grab.is_empty():
+		for hand in _stick_diagnostic_routes:
+			if _stick_diagnostic_routes[hand].begins_with("routed.") and _stick_diagnostic_routes[hand] != "routed.zoom":
+				_stick_diagnostic_routes[hand] = "blocked.picture_capture"
 		# Holding the picture: only zoom; other stick shortcuts wait for the stick to recenter.
 		actions = actions.filter(func(action): return action.operation == "zoom")
 	_apply_stick_actions(actions, delta)
@@ -1783,11 +1877,14 @@ func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> void:
 			seek_feedback.sequence = video.control.sequence + 1
 			if not video.seek_absolute(seek_feedback.target_ms): seek_feedback.clear()
 			_update_seek_feedback(0.0)
+	if seek_feedback.phase == "preview" and _stick_diagnostic_routes.get(seek_feedback.owner, "") == "blocked.wait_for_center":
+		_stick_diagnostic_routes[seek_feedback.owner] = "routed.seek_preview"
 	if menu == player_menu and menu != null:
 		if not actions.is_empty() or player_menu._state.get("seek_feedback", {}) != seek_feedback.snapshot():
 			_menu_touched_ms = Time.get_ticks_msec()
 			player_menu.refresh_values()
 		_update_controls_visibility(menu)
+	return "ignored.no_stick_action"
 
 ## Fixed VR grip controls take only media input. UI grabs, sliders, PiP and
 ## grip+trigger custom chords keep their existing ownership.
@@ -1876,9 +1973,21 @@ func _debug_stick(hand: String) -> Variant:
 	return null
 
 func _stick(controller: XRController3D) -> Vector2:
-	var injected: Variant = _debug_stick(str(controller.tracker)) if controller else null
-	if injected != null: return injected
-	return controller.get_vector2("primary") if controller and controller.get_is_active() and _controller_allowed(str(controller.tracker)) else Vector2.ZERO
+	var hand := str(controller.tracker) if controller else ""
+	var injected: Variant = _debug_stick(hand) if controller else null
+	if injected != null:
+		_controller_raw_sticks[hand] = injected; _controller_stick_blocks.erase(hand)
+		return injected
+	var raw := controller.get_vector2("primary") if controller else Vector2.ZERO
+	if controller: _controller_raw_sticks[hand] = raw
+	_controller_stick_blocks.erase(hand)
+	if not controller or not controller.get_is_active():
+		_controller_stick_blocks[hand] = "blocked.controller_inactive"
+		return Vector2.ZERO
+	if not _controller_allowed(hand):
+		_controller_stick_blocks[hand] = "blocked.not_focused" if not _input_focused() else "blocked.hand_tracking_owns_input"
+		return Vector2.ZERO
+	return raw
 
 func _hand_tracker(hand: String) -> XRHandTracker:
 	return XRServer.get_tracker("/user/hand_tracker/" + ("left" if hand == "left_hand" else "right")) as XRHandTracker
@@ -2220,6 +2329,46 @@ func _hand_input_report() -> Dictionary:
 			"joint_source": int(joints.hand_tracking_source) if joints else -1}
 	return report
 
+## Fixed labels and action states only: no media paths, URLs, account data or ray hit content.
+func _controller_input_context(hand: String) -> Dictionary:
+	var tracker := _hand_action_tracker(hand)
+	var controller := left_controller if hand == "left_hand" else right_controller
+	var menu := _active_menu()
+	var buttons := {}
+	for input in ControllerDiagnostics.BUTTONS:
+		buttons[input] = tracker.get_input(input) if tracker else null
+	return {"profile": str(tracker.get_tracker_profile()) if tracker else "", "tracker_present": tracker != null,
+		"controller_active": controller != null and controller.get_is_active(),
+		"controller_tracked": controller != null and controller.get_has_tracking_data(),
+		"focused": _input_focused(), "source": hand_pointers[hand].source if hand_pointers.has(hand) else "",
+		"menu": _controller_menu_label(menu), "menu_capture": _menu_captured(menu),
+		"cinema": cinema_environment.interaction if _cinema_scene_active() else "",
+		"photo": photo_active, "hand_lock": hand_lock.effective(),
+		"wrist_watch": _watch_owned, "screen_locked": screen_edit_lock.locked(),
+		"interface_move": not interface_move.capture.is_empty(), "picture_capture": not _grab.is_empty(),
+		"inspect_release_guard": not _inspect_blocked.is_empty(),
+		"buttons": buttons, "modifiers": controller_bindings.down.get(hand, {}).keys(),
+		"buttons_waiting_release": controller_bindings.blocked.get(hand, {}).keys()}
+
+func _controller_menu_label(menu: Node3D) -> String:
+	if menu == null: return ""
+	if ChineseInput.active(): return "keyboard"
+	if recent_menu and recent_menu.web_browser.active(): return "browser"
+	if menu == recent_menu: return "library:%d:%d" % [recent_menu.section, recent_menu.tab]
+	if menu == scenery_menu: return "scenery"
+	if menu == player_menu: return "player:%d" % player_menu.section
+	if menu == music_menu: return "music"
+	if menu == vr_passthrough_menu: return "temporary_passthrough"
+	return "other"
+
+func _controller_input_report() -> Dictionary:
+	var report := controller_diagnostics.snapshot()
+	if ControllerDiagnostics.enabled():
+		report["current"] = {}
+		for hand in ControllerBindings.HANDS: report.current[hand] = _controller_input_context(hand)
+		report["bindings"] = controller_bindings.snapshot()
+	return report
+
 static func _input_pose_tracked(tracker: XRPositionalTracker, pose_name: String) -> bool:
 	if tracker == null or not tracker.has_pose(pose_name): return false
 	var pose := tracker.get_pose(pose_name)
@@ -2325,7 +2474,9 @@ func _screen_rotation_mouse_input(event: InputEvent) -> bool:
 	return false
 
 func _update_flat_grab_stick(left: Vector2, right: Vector2, delta: float) -> void:
+	_controller_pre_stick_routes.clear()
 	if _beach_active() and beach_environment.scene_stick(left, right, delta):
+		for hand in ControllerBindings.HANDS: _controller_pre_stick_routes[hand] = "routed.beach_scene"
 		stick_controls.suspend(); return
 	if not _input_focused() or _active_menu() or not interface_move.capture.is_empty() or _grab.is_empty() or _grab.has("resize") or _grab.has("inspect") or _grab.has("rotate") or _viewer().geometry != Geometry.Geometry.FLAT:
 		return
@@ -2334,6 +2485,7 @@ func _update_flat_grab_stick(left: Vector2, right: Vector2, delta: float) -> voi
 	var amount := signf(held.y) * (absf(held.y) - STICK_DEADZONE) / (1.0 - STICK_DEADZONE) * delta
 	_grab.moved = true
 	_push_screen(amount * PUSH_SPEED)
+	_controller_pre_stick_routes[_grab.hand] = "routed.flat_screen_distance"
 	stick_controls.suspend()
 
 func _eye() -> Vector3:
@@ -2808,7 +2960,7 @@ func _cinema_video_locked() -> bool:
 func _curve_modes_available() -> bool:
 	return video != null and background != null and not photo_active and not portrait_screen.active \
 		and video.geometry == Geometry.Geometry.FLAT and not video.cinema.enabled \
-		and background.choice in ["belfast", "morning", "night", "custom"]
+		and background.choice in ["belfast", "morning", "night", "custom", "dark"]
 
 func _set_screen_preference(key: String, value: Variant) -> void:
 	if portrait_screen.active: return
@@ -2872,9 +3024,12 @@ func _save_screen() -> void:
 	settings.save(settings_path)
 
 func _zoom_video(amount: float, hand: String = "right_hand") -> void:
-	if not is_zero_approx(amount) and screen_edit_lock.deny(hand, "zoom"): return
+	if not is_zero_approx(amount) and screen_edit_lock.deny(hand, "zoom"):
+		_stick_diagnostic_routes[hand] = "blocked.screen_locked"
+		return
 	if _cinema_video_locked() and video.geometry == Geometry.Geometry.FLAT:
 		if not is_zero_approx(amount): _show_cinema_gesture_hint("Drag screen corners to resize")
+		_stick_diagnostic_routes[hand] = "blocked.fixed_cinema_screen"
 		return
 	_cinema_adjusting = true
 	if video.geometry == Geometry.Geometry.FLAT:
@@ -3215,7 +3370,7 @@ func _on_file_renamed(old_uri: String, new_uri: String, title: String) -> void:
 			if not uri.begins_with(prefix) or seen.has(uri): continue
 			seen[uri] = true
 			mappings.append({"old": uri, "new": new_uri.trim_suffix("/") + "/" + uri.substr(prefix.length()),
-				"title": str(item.get("title", uri.get_file().uri_decode())), "size": int(item.get("size", -1))})
+				"title": str(item.get("title", MediaUri.filename(uri))), "size": int(item.get("size", -1))})
 	else:
 		mappings.append({"old":old_uri, "new":new_uri, "title":title, "size":int(target.get("size", -1))})
 		for move in recent_menu.file_actions.rename.moves:
@@ -3261,7 +3416,7 @@ func _prepare_file_delete(uri: String) -> void:
 	if recent_menu and recent_menu.file_actions.modal == "rename" and recent_menu.file_actions.target.get("folder", false):
 		var known: Array = video.recent_files.list_recent() + video_queue + photo.queue
 		for surface in [video, photo]:
-			if not surface.local_uri.is_empty(): known.append({"uri":surface.local_uri, "title":surface.local_uri.get_file().uri_decode(), "size":-1})
+			if not surface.local_uri.is_empty(): known.append({"uri":surface.local_uri, "title":MediaUri.filename(surface.local_uri), "size":-1})
 		recent_menu.file_actions.target["affected_media"] = known.duplicate(true)
 	if video.local_uri == uri or video.local_uri.begins_with(uri.trim_suffix("/") + "/"): video.close_video()
 	if photo.local_uri == uri or photo.local_uri.begins_with(uri.trim_suffix("/") + "/") or photo.queue.any(func(item): return str(item.get("uri", "")) == uri or str(item.get("uri", "")).begins_with(uri.trim_suffix("/") + "/")):
@@ -3360,6 +3515,7 @@ func _cycle_playback_mode() -> void:
 	_set_playback_mode(PLAYBACK_MODES[(PLAYBACK_MODES.find(playback_mode) + 1) % PLAYBACK_MODES.size()])
 
 func _on_video_completed() -> void:
+	if airplay_session and airplay_session.player_mode: return
 	if _vr_passthrough_active(): return
 	if recent_menu and recent_menu.web_browser.has_playback_return(video.local_uri):
 		_return_to_web_video.call_deferred(false, video.local_uri); return
@@ -4225,6 +4381,13 @@ func _playback_browser_cursor() -> Dictionary:
 
 func _close_current_media(restore_browser: bool = true) -> void:
 	_external_video_uri = ""
+	if is_instance_valid(airplay_session) and airplay_session.player_mode:
+		airplay_session.return_to_pip()
+		video.close_video(); video.cast_token = 0; video.cast_navigation = {}
+		if player_menu: player_menu.dismiss()
+		_clear_controls_locks(); stick_controls.suspend()
+		_show_full_library(); cast_session.refresh()
+		return
 	if restore_browser and recent_menu and recent_menu.web_browser.has_playback_return(video.local_uri):
 		_return_to_web_video(false, video.local_uri); return
 	if not restore_browser and recent_menu: recent_menu.web_browser.playback_selected("")
@@ -4285,7 +4448,8 @@ func _diagnostic_header() -> String:
 		"gpu": gpu_adapter, "low_end_gpu": low_end_gpu, "memory_mode": Quality.load_memory_choice(settings), "memory_saver": memory_saver,
 		"render_scale": display.render_scale, "refresh_cap": Quality.load_refresh_cap(settings, low_end_gpu), "output_width": Quality.load_output_choice(settings),
 		"alpha_fps": _alpha_fps(), "alpha_profile": video.default_profile, "background": str(settings.get_value("appearance", "background", "")),
-		"language": I18n.choice, "xr": display.capabilities() if display.has_method("capabilities") else {}}
+		"language": I18n.choice, "xr": display.capabilities() if display.has_method("capabilities") else {},
+		"controller_input": _controller_input_report()}
 	return "Player: " + JSON.stringify(info)
 
 func _on_diagnostic_log(payload: String) -> void:
@@ -4664,9 +4828,10 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			ChineseInput.configure_browser(str(value))
 			settings.set_value("ui", "web_keyboard", ChineseInput.browser_keyboard)
 			settings.save(settings_path)
-		"quest_chinese_keyboard":
+		"quest_chinese_keyboard", "openxr_chinese_keyboard":
+			if key != ChineseInput.app_setting_key(): return
 			ChineseInput.configure(bool(value))
-			settings.set_value("ui", "quest_chinese_keyboard", bool(value))
+			settings.set_value("ui", key, bool(value))
 			settings.save(settings_path)
 		"language":
 			settings.set_value("ui", "language", str(value))
@@ -5208,6 +5373,8 @@ func _apply_stick_actions(actions: Array[Dictionary], delta: float = 1.0 / 72.0)
 			if _shortcut_allowed(action.id):
 				_begin_stick_seek(str(action.get("hand", "right_hand")), str(action.get("input", "stick_right")),
 					SeekStep.milliseconds(settings) * (-1 if str(action.id).begins_with("back") else 1), action.id)
+			else:
+				_stick_diagnostic_routes[str(action.get("hand", "right_hand"))] = "blocked." + _shortcut_block_reason(action.id)
 		else:
 			_execute_shortcut(action.id, action.get("hand", "right_hand"), float(action.get("amount", 1.0)), delta)
 	if not mapped.is_empty(): actions = actions.filter(func(action): return action.operation != "shortcut")
@@ -5958,13 +6125,13 @@ func _update_background() -> void:
 		# with no video for seconds before playback.
 		alpha = active and (video.alpha_requested or video.alpha_enabled)
 		immersive = active and video.geometry != Geometry.Geometry.FLAT
-	var browser_alpha: bool = recent_menu != null and recent_menu.web_browser.person_passthrough_active()
-	if browser_alpha: alpha = true
+	var surface_alpha: bool = recent_menu != null and recent_menu.web_browser.person_passthrough_active()
+	if surface_alpha: alpha = true
 	# Alpha chooses between the saved scenery and the camera without changing either
 	# the saved background or the temporary camera request restored after Alpha ends.
 	# Browser quads are underlays: transparent pixels reveal the camera through the
 	# projection hole. Preserve the saved player policy for when the browser ends.
-	var keep_background := _alpha_keep_background() and not browser_alpha
+	var keep_background := _alpha_keep_background() and not surface_alpha
 	# Keep the original camera/scenery policy intact unless retention is active.
 	var wants_passthrough: bool = alpha or temporary_passthrough or scenery.choice == "passthrough"
 	var hide_scenery: bool = immersive
@@ -6346,6 +6513,7 @@ func _save_report() -> void:
 		"video_layout": video.layout_snapshot() if video else {},
 		"active_media": "image" if photo_active else "video",
 		"hand_input": _hand_input_report(),
+		"controller_input": _controller_input_report(),
 		"input_visuals": input_visuals.snapshot() if input_visuals else {},
 		"background": background.choice if background else "",
 		"photo": photo.snapshot() if photo else {},
@@ -6792,7 +6960,7 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		# Comic archive/PDF probes: open the container (uri), later its [page]th image as the library does.
 		var archives = recent_menu.archives
 		if command.has("uri"):
-			recent_menu.show(); archives.open({"uri": str(command.uri), "title": str(command.get("title", str(command.uri).get_file().uri_decode()))})
+			recent_menu.show(); archives.open({"uri": str(command.uri), "title": str(command.get("title", MediaUri.filename(str(command.uri))))})
 		var pages: Array = archives.image_queue()
 		var page := int(command.get("page", -1))
 		if page >= 0 and page < pages.size():
@@ -6861,7 +7029,7 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		# Device probes: open a file exactly as choosing it in the library does (layout from the
 		# name, saved per-file settings, history), unlike "open", which drives the player directly.
 		var uri := str(command.get("uri", ""))
-		if not uri.is_empty(): _on_library_chosen(uri, str(command.get("title", uri.get_file().uri_decode())))
+		if not uri.is_empty(): _on_library_chosen(uri, str(command.get("title", MediaUri.filename(uri))))
 	elif operation == "menu_action" and OS.is_debug_build():
 		# Device probes: a player-menu action by name, as its button would send it.
 		if str(command.get("target", "")) == "capture_cancel": capture_overlay._activate(capture_overlay.CANCEL)

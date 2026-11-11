@@ -13,7 +13,7 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** One independent mirror decoder. Godot owns the OES texture; SurfaceTexture stays on its GL thread. */
-internal class AirplayMirror(private val render: (Runnable) -> Unit) {
+internal class AirplayMirror(private val render: (Runnable) -> Unit, private val captions: AirplayCaptions) {
     private val thread = HandlerThread("Thru3D-Airplay-Mirror").apply { start() }
     private val worker = Handler(thread.looper)
     private val packets = AirplayPackets()
@@ -72,12 +72,30 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
     private var audioOutput = -1
     private var audioBuffer: ByteBuffer? = null
     private var audioDueNs = 0L
+    private var decodedAudioRate = 0
+    private var decodedAudioChannels = 0
     private val info = MediaCodec.BufferInfo()
     @Volatile private var attached = false
     @Volatile private var suspended = false
+    @Volatile private var playerPipe: AirplayPlayerPipe? = null
+    private var playerMux: AirplayMatroska? = null
+    fun playerActive(): Boolean = playerPipe?.closed == false
+    fun claimPlayer(): android.os.ParcelFileDescriptor? = playerPipe?.claim()
+    fun openPlayer(id: Long): Boolean {
+        if (id != epoch || id <= 0 || attached || attaching.get() || playerPipe != null || !packets.videoReady()) return false
+        val pipe = AirplayPlayerPipe()
+        playerPipe = pipe
+        worker.post {
+            if (epoch != id || playerPipe !== pipe) { pipe.close(); return@post }
+            resumePackets()
+            playerMux = null // A rotation may invalidate the retained GOP before this worker runs.
+            error = ""; worker.removeCallbacks(pump); worker.post(pump)
+        }
+        return true
+    }
     private val pump = object : Runnable {
         override fun run() {
-            if (!attached) return
+            if (!attached && !playerActive()) return
             val runningEpoch = epoch
             runCatching {
                 for (attempt in 0 until 8) {
@@ -87,7 +105,7 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
                     waitingVideo = null
                 }
                 drainVideo()
-            }.onFailure { if (epoch == runningEpoch) error = "$sourceName decoder unavailable"; Log.w("Thru3D-Airplay", "Video decoder failed: ${it.javaClass.simpleName}"); stopCodecs() }
+            }.onFailure { if (epoch == runningEpoch) error = "$sourceName decoder unavailable"; Log.w("Thru3D-Airplay", "Video decoder failed: ${it.javaClass.simpleName}"); playerPipe?.close(); stopCodecs() }
             if (error.isEmpty()) runCatching {
                 for (attempt in 0 until 8) {
                     val p = waitingAudio ?: packets.take(false) ?: break
@@ -95,8 +113,9 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
                     waitingAudio = null
                 }
                 drainAudio()
+                playerMux?.let { playerPipe?.offer(it.silence(baseNs + (System.nanoTime() - wallNs).coerceAtLeast(0))) }
             }.onFailure { failAudio(it) }
-            if (attached && error.isEmpty()) worker.postDelayed(this, 5)
+            if ((attached || playerActive()) && error.isEmpty()) worker.postDelayed(this, 5)
         }
     }
     fun begin(id: Long, paused: Boolean = false, source: String = "AirPlay") { sourceName = source; epoch = id; packets.clear(); error = ""; audioError = ""; audioBytes = 0; receivedVideo.set(0); receivedAudio.set(0); nextDiagnosticMs = 0; suspended = paused; if (paused) packets.park() }
@@ -191,6 +210,10 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
             .put("transform", org.json.JSONArray(matrix.map { it.toDouble() })) }
     }
     private fun feedVideo(p: AirplayPackets.Packet): Boolean {
+        playerPipe?.let { pipe ->
+            val mux = playerMux ?: AirplayMatroska(width, height, sampleRate, audioChannels, baseNs).also { playerMux = it }
+            pipe.offer(mux.video(p.data, packets.config, p.ns)); return true
+        }
         // An Android-surface swapchain keeps its original producer geometry on some runtimes.
         // Wait for the AirPlay-only replacement before submitting a differently shaped frame.
         if (direct && (width != surfaceWidth || height != surfaceHeight)) return false
@@ -220,20 +243,26 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
         return feed(video!!, p).also { if (it) synchronized(lock) { videoInputs++ } }
     }
     private fun feedAudio(p: AirplayPackets.Packet): Boolean {
-        if (muted || audioError.isNotEmpty() || baseNs == 0L || p.ns < baseNs - 100_000_000) return true
+        if ((muted && !captions.accepting && !playerActive()) || audioError.isNotEmpty() || baseNs == 0L || p.ns < baseNs - 100_000_000) return true
         if (p.codec != audioCodec) return true
         if (audioCodec == 0) {
             val due = wallNs + p.ns - baseNs
             val now = System.nanoTime()
             if (now > due + 200_000_000) { pcmPacket = null; pcmBuffer = null; return true }
             if (now < due - 10_000_000) return false
-            if (track == null) track = createTrack(sampleRate, audioChannels)
-            if (pcmPacket !== p) { pcmPacket = p; pcmBuffer = ByteBuffer.wrap(p.data) }
+            if (pcmPacket !== p) {
+                pcmPacket = p; pcmBuffer = ByteBuffer.wrap(p.data)
+                captions.offer(pcmBuffer!!, sampleRate, audioChannels)
+                playerMux?.let { playerPipe?.offer(it.audio(p.data, p.ns)) }
+            }
             val buffer = pcmBuffer!!
-            val written = track!!.write(buffer, buffer.remaining(), AudioTrack.WRITE_NON_BLOCKING)
-            check(written >= 0) { "AudioTrack write failed" }
-            audioBytes += written
-            if (buffer.hasRemaining()) return false
+            if (!muted && !playerActive()) {
+                if (track == null) track = createTrack(sampleRate, audioChannels)
+                val written = track!!.write(buffer, buffer.remaining(), AudioTrack.WRITE_NON_BLOCKING)
+                check(written >= 0) { "AudioTrack write failed" }
+                audioBytes += written
+                if (buffer.hasRemaining()) return false
+            }
             pcmPacket = null; pcmBuffer = null
             return true
         }
@@ -279,7 +308,7 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
         val codec = audio ?: return
         repeat(8) {
             if (audioOutput >= 0) {
-                if (!muted) {
+                if (!muted && !playerActive()) {
                     if (System.nanoTime() < audioDueNs - 10_000_000) return
                     val buffer = audioBuffer
                     if (buffer != null && buffer.hasRemaining()) {
@@ -295,11 +324,25 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
             if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 track?.release()
                 val f = codec.outputFormat; val rate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                track = createTrack(rate, f.getInteger(MediaFormat.KEY_CHANNEL_COUNT))
+                val channels = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                decodedAudioRate = if (f.getInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT) == AudioFormat.ENCODING_PCM_16BIT) rate else 0
+                decodedAudioChannels = channels
+                if (playerActive()) {
+                    check(rate == sampleRate && channels == audioChannels) { "AirPlay PCM format changed" }
+                    track = null
+                } else track = createTrack(rate, channels)
                 Log.i("Thru3D-Airplay", "Audio output started rate=$rate channels=${f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)}")
             } else if (index >= 0) {
                 audioOutput = index; audioBuffer = codec.getOutputBuffer(index)
                 audioBuffer?.position(info.offset); audioBuffer?.limit(info.offset+info.size)
+                if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0)
+                    audioBuffer?.let { captions.offer(it, decodedAudioRate, decodedAudioChannels) }
+                playerMux?.let { mux ->
+                    audioBuffer?.let { buffer ->
+                        val bytes = ByteArray(buffer.remaining()); buffer.duplicate().get(bytes)
+                        playerPipe?.offer(mux.audio(bytes, baseNs + info.presentationTimeUs * 1000))
+                    }
+                }
                 audioDueNs = wallNs + info.presentationTimeUs*1000
             } else return
         }
@@ -311,6 +354,7 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
     }
     fun detach(id: Long, keepSession: Boolean = false) {
         if (id != epoch) return
+        playerPipe?.close(); playerPipe = null
         if (suspended && !attached && !attaching.get()) {
             if (!keepSession) { epoch = 0; suspended = false; packets.clear() }
             return
@@ -320,6 +364,7 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
         else { epoch = 0; suspended = false; packets.clear() }
         attached = false
         worker.post {
+            playerMux = null
             worker.removeCallbacks(pump); stopCodecs()
             if (direct) synchronized(lock) { surface = null; direct = false; layerSlot = 0; frames = 0; decodedWidth = 0; decodedHeight = 0; released.addLast(id) }
             else render(Runnable { synchronized(lock) {
@@ -336,11 +381,13 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit) {
         catch (_: InterruptedException) { Thread.currentThread().interrupt(); false }
     }
     private fun failAudio(failure: Throwable) {
+        playerPipe?.close()
         audioError = "$sourceName audio unavailable"
         Log.w("Thru3D-Airplay", "Audio decoder failed: ${failure.javaClass.simpleName}")
         stopAudio()
     }
     private fun stopAudio() {
+        captions.discontinuity(); decodedAudioRate = 0; decodedAudioChannels = 0
         audio?.let { runCatching { it.stop() }; runCatching { it.release() } }; audio = null
         track?.let { runCatching { it.stop() }; runCatching { it.release() } }; track = null
         audioOutput = -1; audioBuffer = null; waitingAudio = null; pcmPacket = null; pcmBuffer = null

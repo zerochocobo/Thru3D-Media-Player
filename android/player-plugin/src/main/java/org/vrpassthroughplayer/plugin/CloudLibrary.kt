@@ -51,15 +51,17 @@ internal object CloudLibrary {
         val account = JSONObject().put("id", id).put("provider", provider)
             .put("name", name.trim().take(80)).put("cookie", cookie)
         // Validate the session with a single page, even when the root contains many files.
-        CloudDrive(provider, cookie).page("/")
-        commit { synchronized(this) {
-            if (credentials(id).getString("provider") != provider) throw CloudFailure()
-            val updated = JSONArray()
-            for (i in 0 until saved.length()) if (saved.getJSONObject(i).getString("id") != id) updated.put(saved.getJSONObject(i))
-            updated.put(account)
-            store.save(updated); saved = updated
-            revoke(id)
-        } }
+        CloudLoginFailure.at(CloudLoginFailure.Stage.ROOT) { CloudDrive(provider, cookie).page("/") }
+        CloudLoginFailure.at(CloudLoginFailure.Stage.SAVE) {
+            commit { synchronized(this) {
+                if (credentials(id).getString("provider") != provider) throw CloudFailure()
+                val updated = JSONArray()
+                for (i in 0 until saved.length()) if (saved.getJSONObject(i).getString("id") != id) updated.put(saved.getJSONObject(i))
+                updated.put(account)
+                store.save(updated); saved = updated
+                revoke(id)
+            } }
+        }
         CloudAccountChanges.emit()
     }
     private fun identity(account: JSONObject) = account.optString("cookie", account.optString("mount"))
@@ -67,8 +69,9 @@ internal object CloudLibrary {
     fun connectOAuth(credential: OpenListAuth.Credential, name: String, id: String? = null,
         commit: ((() -> Unit) -> Unit) = { it() }) = safe {
         require(name.isNotBlank() && OpenListAuth.supported(credential.provider))
-        OpenListBackend.start(appContext)
-        saveMount(OpenListBackend.create(credential), name, id, commit)
+        CloudLoginFailure.at(CloudLoginFailure.Stage.CORE) { OpenListBackend.start(appContext) }
+        val candidate = CloudLoginFailure.at(CloudLoginFailure.Stage.MOUNT) { OpenListBackend.create(credential) }
+        CloudLoginFailure.at(CloudLoginFailure.Stage.SAVE) { saveMount(candidate, name, id, commit) }
     }
     fun webDavMetadata(id: String): JSONObject = safe {
         val account = credentials(id)
@@ -81,10 +84,11 @@ internal object CloudLibrary {
         require(name.isNotBlank())
         val old = id?.let(::credentials)
         require(old == null || old.getString("provider") == CloudDrive.WEBDAV)
-        OpenListBackend.start(appContext)
+        CloudLoginFailure.at(CloudLoginFailure.Stage.CORE) { OpenListBackend.start(appContext) }
         val previous = old?.let(OpenListBackend::webDavConnection)
-        val connection = RemoteWebDav.connection(base, username, password, previous)
-        saveMount(OpenListBackend.createWebDav(connection), name, id, commit, old?.getString("mount"))
+        val connection = CloudLoginFailure.at(CloudLoginFailure.Stage.REQUEST) { RemoteWebDav.connection(base, username, password, previous) }
+        val candidate = CloudLoginFailure.at(CloudLoginFailure.Stage.MOUNT) { OpenListBackend.createWebDav(connection) }
+        CloudLoginFailure.at(CloudLoginFailure.Stage.SAVE) { saveMount(candidate, name, id, commit, old?.getString("mount")) }
     }
     private fun saveMount(candidate: JSONObject, name: String, id: String?, commit: ((() -> Unit) -> Unit), expectedMount: String? = null) {
         candidate.put("id", id ?: UUID.randomUUID().toString()).put("name", name.trim().take(80))
@@ -470,5 +474,6 @@ internal object CloudLibrary {
     }
     private inline fun <T> safe(block: () -> T): T = try { block() }
         catch (error: CloudFailure) { throw error }
+        catch (error: CloudLoginFailure) { throw error }
         catch (error: Exception) { throw CloudDiagnostics.failure("cloud.library", error) }
 }

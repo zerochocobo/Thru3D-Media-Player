@@ -25,6 +25,18 @@ class WebBrowserCaptureDiagnosticsTest {
         assertEquals("{\"status\":\"unknown\"}",result.toString())
         assertEquals(0,WebBrowserCaptureDiagnostics.project("other",JSONObject()).length())
     }
+    @Test fun rejectsRawIqiyiContainerAndDeclarationValues() {
+        val raw=JSONObject().put("status","unsupported_container").put("container","m4s")
+            .put("declaration","json_object").put("has_segment_list",true)
+        val item=JSONObject().put("iqiyi_diagnostics",raw)
+        val summary=WebBrowserCaptureDiagnostics.project("iqiyi",item)
+        assertEquals("m4s",summary.getString("container"))
+        assertEquals("json_object",summary.getString("declaration"))
+        assertTrue(summary.getBoolean("has_segment_list"))
+        raw.put("container","PRIVATE").put("declaration","https://private.test/media")
+        val rejected=WebBrowserCaptureDiagnostics.project("iqiyi",item)
+        assertFalse(rejected.has("container"));assertFalse(rejected.has("declaration"))
+    }
     @Test fun readinessFailureKeepsOnlyItsPublicIdentityAndNumericEvidence() {
         val tiktok=JSONObject().put("status","decoded_shape").put("public_id","6742501081818877190")
             .put("expected_width",720).put("expected_height",1280).put("expected_duration",6).put("decoded_duration",5.783)

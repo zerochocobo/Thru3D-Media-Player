@@ -182,11 +182,24 @@ internal class WebVideoNetworkCapture(
             else attrs(line)["URI"]?.let { listOf(base.uri.resolve(it)) }.orEmpty()
         }.toSet()
         require(linked.size in 1..128)
-        val graph = resources.values.filter { it.kind == "hls" && (it.uri == root || it.uri in linked) }
         val audioUris = lines.filter { it.startsWith("#EXT-X-MEDIA:") }.map(::attrs).filter { it["TYPE"] == "AUDIO" }
             .mapNotNull { it["URI"]?.let(base.uri::resolve) }.toSet()
         val observedAudio = audioUris.filter { resources[it]?.kind == "hls" }.toSet()
         if (audioUris.isNotEmpty()) require(observedAudio.size == 1)
+        // ABR playback can have already requested several old qualities. Only
+        // the observed representation matching this decoded video belongs in
+        // the current graph; keep the existing bounded parser and audio checks.
+        val width=media.optInt("width");val height=media.optInt("height")
+        require(width>0 && height>0)
+        val currentVideos=lines.indices.mapNotNull { i ->
+            if(!lines[i].startsWith("#EXT-X-STREAM-INF:"))return@mapNotNull null
+            val size=attrs(lines[i])["RESOLUTION"].orEmpty().split('x')
+            if(size.getOrNull(0)?.toIntOrNull()!=width || size.getOrNull(1)?.toIntOrNull()!=height)return@mapNotNull null
+            val next=lines.getOrNull(i+1)?.takeUnless { it.isEmpty() || it.startsWith('#') } ?: return@mapNotNull null
+            target(base,next).uri.takeIf { resources[it]?.kind=="hls" }
+        }.toSet()
+        require(currentVideos.isNotEmpty())
+        val graph=resources.values.filter { it.kind=="hls" && (it.uri==root || it.uri in currentVideos || it.uri in observedAudio) }
         val info = manifestInfo(page, media, graph, true)
         val formats = info.getJSONArray("formats")
         require((0 until formats.length()).all { resources[URI(formats.getJSONObject(it).getString("url"))]?.kind == "hls" })
@@ -217,17 +230,19 @@ internal class WebVideoNetworkCapture(
 
     /** A selected SDK can supply a complete inline timeline without making an HLS GET.
      * These derived resources are not relabelled as browser observations. */
-    internal fun resolveDeclaredHls(page: WebVideoPage,media: JSONObject,base: URI,body: String,
+    internal fun resolveDeclaredHls(page: WebVideoPage,media: JSONObject,base: URI,body: String,timelineDuration: Double,
         reader: (URI,Map<String,String>,Boolean)->Pair<URI,ByteArray>): JSONObject? = runCatching {
         require(page.site=="iqiyi" && !media.optBoolean("protected"))
         require(body.startsWith("#EXTM3U") && body.toByteArray(Charsets.UTF_8).size<=1024*1024)
+        require(timelineDuration.isFinite() && timelineDuration>0 &&
+            kotlin.math.abs(timelineDuration-media.getDouble("duration"))<=1)
         require(loadObserved(media,true)!=null)
         val common=mapOf("user-agent" to media.optString("agent"),"referer" to media.getString("frame"),"origin" to "https://www.iqiyi.com")
         val root=Resource(base,"hls",common)
         resources[base]=root;inlineManifests[base]=body;bodies[base]=base to body.toByteArray(Charsets.UTF_8)
         declaredReader=reader
         try {
-            manifestInfo(page,media,listOf(root),true).also { info ->
+            currentHlsLeaves(media,mapOf(root to text(root)),timelineDuration).also { info ->
                 // The synthetic inline root is not an observed media request. Its
                 // ordinary headers already live on the format itself.
                 info.getJSONArray("formats").getJSONObject(0).getJSONObject("browser_headers").remove(base.toString())
@@ -396,8 +411,9 @@ internal class WebVideoNetworkCapture(
             require(kotlin.math.abs(durations.sum() - expectedDuration) <= maxOf(.5, expectedDuration * .0001))
         }
     }
-    private fun currentHlsLeaves(media: JSONObject, loaded: Map<Resource, Pair<Resource, String>>): JSONObject {
-        val width = media.optInt("width"); val height = media.optInt("height"); val duration = media.optDouble("duration")
+    private fun currentHlsLeaves(media: JSONObject, loaded: Map<Resource, Pair<Resource, String>>,
+        duration: Double = media.optDouble("duration")): JSONObject {
+        val width = media.optInt("width"); val height = media.optInt("height")
         require(width > 0 && height > 0 && duration.isFinite() && duration > 0)
         val matched = loaded.values.mapNotNull { (base, body) -> runCatching {
             validateHls(base, duration)

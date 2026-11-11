@@ -45,6 +45,7 @@ internal class MpvVideoBridge(
     private val retainListeningAudio: (String, LongArray) -> Unit = { _, _ -> },
     private val listeningInput: (String) -> ListeningInput? = { null },
     private val awaitBrowserRelease: () -> Boolean = { true },
+    private val openAirplay: (String) -> ParcelFileDescriptor? = { null },
 ) {
     private val worker = RvmWorkers.video
     private val subtitleWorker = Executors.newSingleThreadExecutor { Thread(it, "QuestSubtitleFiles") }
@@ -203,6 +204,7 @@ internal class MpvVideoBridge(
         fun needsAudio() = (audioEnabled && audioAvailable) || narration?.wantsAudio == true || narration?.wantsPreview == true || narration?.wantsPauseDrain == true || voiceClone?.wantsAudio == true
         @Volatile var audioAvailable = audio
         @Volatile var descriptor: StorageDocumentRead<ParcelFileDescriptor>? = null
+        @Volatile var mirrorDescriptor: ParcelFileDescriptor? = null
         @Volatile var sidecars: List<ParcelFileDescriptor> = emptyList()
         @Volatile var networkLease: String? = null
         @Volatile var subtitleLeases: List<String> = emptyList()
@@ -226,6 +228,7 @@ internal class MpvVideoBridge(
             subtitleLeases.forEach(releaseNetwork); subtitleLeases = emptyList()
             audioLeases.forEach(releaseNetwork); audioLeases = emptyList()
             descriptor?.close(); descriptor = null
+            mirrorDescriptor?.close(); mirrorDescriptor = null
             sidecars.forEach { runCatching { it.close() } }; sidecars = emptyList()
         }
         @Volatile var secondarySubtitleCommand = 0L
@@ -402,7 +405,7 @@ internal class MpvVideoBridge(
                            depth: Boolean = false, topBottom: Boolean = false, exactSeek: Boolean = false, layer: Boolean = false,
                            networkInterleaveCompat: Boolean = false, discPlaylist: Int = -1): Int {
         if (!supported() || sessions.size >= 2 || startMs < 0 || profile !in RvmProfiles.keys || (depth && (alpha || stereo)) ||
-            Uri.parse(uri).scheme !in setOf("content", "file", "usb", "smb", "cloud", "medialib", "dlna", "http", "https", "externalvideo") ||
+            Uri.parse(uri).scheme !in setOf("content", "file", "usb", "smb", "cloud", "medialib", "dlna", "http", "https", "externalvideo", "airplayvideo") ||
             discPlaylist !in -2..99999) return -1
         val id = gate.begin(); if (id <= 0) return -1
         val pendingView = synchronized(playbackViewLock) { pendingPlaybackView.also { pendingPlaybackView = null } }
@@ -443,12 +446,20 @@ internal class MpvVideoBridge(
                 val app = context() ?: error("Activity unavailable")
                 val tlsCaFile = MpvTlsTrust.prepare(app)
                 // Keep Host.uri (history, modes and companions) on the shortcut, resolving only the input.
-                val resolved = preparedView?.url ?: resolveNetwork(uri)
+                val mirror = uri.startsWith("airplayvideo://")
+                val resolved = if (mirror) uri else preparedView?.url ?: resolveNetwork(uri)
                 val source = Uri.parse(resolved)
                 host.remote = host.remote || source.scheme in setOf("http", "https", "smb", "cloud", "medialib")
                 host.loadingPhase = "reading"
                 if (resolved != uri || source.scheme in setOf("medialib", "cloud", "smb")) host.networkLease = resolved
-                val path = if (source.scheme == "file") source.path ?: error("Local file path unavailable")
+                val path = if (mirror) {
+                    val pipe = openAirplay(uri) ?: error("AirPlay source unavailable")
+                    synchronized(host) {
+                        if (host.closing || stopped) { pipe.close(); return@post }
+                        host.mirrorDescriptor = pipe
+                    }
+                    "fd://${pipe.fd}"
+                } else if (source.scheme == "file") source.path ?: error("Local file path unavailable")
                 else if (source.scheme in setOf("http", "https")) resolved else {
                     val file = StorageDocumentReader.open(app.contentResolver, source)
                     host.descriptor = file
@@ -512,12 +523,12 @@ internal class MpvVideoBridge(
                 val surfaceHeight = disc?.height ?: mkv?.height ?: LAYER_SURFACE_SIZE
                 // Extra audio is optional: a failed lookup plays the video without it.
                 val deferCloud = Uri.parse(uri).scheme == "cloud"
-                val extra = if (audio && !deferCloud) sidecarAudio(uri) else emptyList()
+                val extra = if (audio && !deferCloud && !mirror) sidecarAudio(uri) else emptyList()
                 host.listeningPrimaryAudio = extra.singleOrNull()?.takeIf { it.requiredPrimary }?.location.orEmpty()
                 host.markStartup("audio_sidecars_resolved_ms")
                 host.sidecars = extra.mapNotNull { it.descriptor }
                 host.audioLeases = extra.filter { it.location.startsWith("http://127.0.0.1:") }.map { it.location }
-                val captions = if (deferCloud) emptyList() else prepareSubtitles(host, sidecarSubtitles(uri))
+                val captions = if (deferCloud || mirror) emptyList() else prepareSubtitles(host, sidecarSubtitles(uri))
                 host.subtitleMemoryId = runCatching { subtitleIdentity(uri) }.getOrDefault("")
                 host.markStartup("subtitle_sidecars_resolved_ms")
                 host.subtitleLeases = captions.map { it.location }
@@ -572,7 +583,7 @@ internal class MpvVideoBridge(
                                 if (host.layer) host.copy?.surface ?: host.fanout?.surface ?: host.layerSurface else null, disc?.mvc == true || mkv != null, surfaceWidth, surfaceHeight, iso, tlsCaFile,
                                 host.interleavePolicy.sequential, if (iso) host.discPlaylist else -1,
                                 networkCacheMiB(app, host.remote, session.inference, host.memorySaver),
-                                requiredPrimaryAudio = extra.any { it.requiredPrimary })
+                                requiredPrimaryAudio = extra.any { it.requiredPrimary }, liveMirror = mirror)
                             check(host.handle > 0)
                             host.markStartup("native_created_ms")
                             host.loadingPhase = "reading"
@@ -691,6 +702,8 @@ internal class MpvVideoBridge(
         val old = sessions[id] ?: return -1
         if (!active(old) || sessions.size >= 2 || profile !in RvmProfiles.keys || (depth && (alpha || stereo))) return -1
         val host = old.host
+        if (positionMs >= 0 && host.uri.startsWith("airplayvideo://")) return -1
+        if (host.uri.startsWith("airplayvideo://") && host.handle <= 0) return -1
         // A layer host has no frame images for the shader effects; the owner reopens it instead. The Alpha
         // plan B prototype host fans its frames out to RVM, so it keeps the layer for Alpha.
         if (host.layer && (depth || (alpha && !host.alphaLayer))) return -1
@@ -704,7 +717,7 @@ internal class MpvVideoBridge(
         // nothing to show. Decode that frame again instead (an exact seek to its own timestamp).
         // A spontaneous boundary already supplied a new source frame. Seeking back to
         // the old displayed PTS can hit the same HLS discontinuity over and over.
-        val redecodeMs = if (positionMs < 0 && !old.sourceEpochGate.revisionPending && !host.layer && direct(old) && direct(session))
+        val redecodeMs = if (!host.uri.startsWith("airplayvideo://") && positionMs < 0 && !old.sourceEpochGate.revisionPending && !host.layer && direct(old) && direct(session))
             synchronized(old.lock) { old.pairs[old.drawnToken]?.optLong("pts_us", -1L) ?: -1L }.let { if (it >= 0) it / 1000 else -1L }
         else -1L
         val depthModel = if (depth) old.depthModel?.handOff() else null
@@ -718,15 +731,20 @@ internal class MpvVideoBridge(
     fun setPlaying(id: Int, playing: Boolean) {
         val session = sessions[id] ?: return
         if (!active(session)) return
-        if(playing&&(session.host.voiceClone?.holdsPlayback==true||globalVoiceManager?.holdsPlayback==true))return
-        session.host.playing = playing
-        if (!playing) session.host.narration?.pauseWithVideo()
-        if (!playing && session.host.handle > 0) MpvSourceNative.setPlaying(session.host.handle, false)
-        refreshPlayback(explicit = playing)
+        // A live descriptor cannot seek to re-export an already presented frame.
+        // Keep decoding through effect/format revisions so the next live frame can
+        // satisfy the player's first-frame gate. Foreground/focus still gate output.
+        val wanted = playing || session.host.uri.startsWith("airplayvideo://")
+        if(wanted&&(session.host.voiceClone?.holdsPlayback==true||globalVoiceManager?.holdsPlayback==true))return
+        session.host.playing = wanted
+        if (!wanted) session.host.narration?.pauseWithVideo()
+        if (!wanted && session.host.handle > 0) MpvSourceNative.setPlaying(session.host.handle, false)
+        refreshPlayback(explicit = wanted)
     }
     fun setSpeed(id: Int, speed: Double): Boolean {
         if (!speed.isFinite() || speed !in 0.25..3.0) return false
         val session = sessions[id] ?: return false
+        if (session.host.uri.startsWith("airplayvideo://") && speed != 1.0) return false
         synchronized(session.host) {
             if (!active(session) || session.host.closing) return false
             if (session.host.handle > 0 && !MpvSourceNative.setSpeed(session.host.handle, speed)) return false

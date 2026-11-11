@@ -52,6 +52,9 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun airplay_receiver_attach(epoch: Long, texture: Int): Boolean = !closed.get() && airplayReceiver.attach(epoch, texture)
     @UsedByGodot fun airplay_receiver_attach_layer(epoch: Long, slot: Int, width: Int, height: Int): Boolean = !closed.get() && slot in 6..7 &&
         WebBrowserLayerNative.surface(slot)?.let { airplayReceiver.attachLayer(epoch, it, slot, width, height) } == true
+    @UsedByGodot fun airplay_receiver_open_player(epoch: Long): Boolean = !closed.get() && airplayReceiver.openPlayer(epoch)
+    @UsedByGodot fun airplay_receiver_captions(epoch: Long, language: String): Boolean = !closed.get() && airplayReceiver.captions(epoch, language)
+    @UsedByGodot fun airplay_receiver_caption_status(epoch: Long): String = airplayReceiver.captionStatus(epoch)
     @UsedByGodot fun airplay_receiver_detach_layer(epoch: Long): Boolean = airplayReceiver.detachLayer(epoch)
     @UsedByGodot fun airplay_receiver_suspend(epoch: Long): Boolean = airplayReceiver.suspend(epoch)
     @UsedByGodot fun airplay_receiver_disconnect(epoch: Long) { airplayReceiver.disconnect(epoch) }
@@ -326,7 +329,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         sources::releaseMediaStream, sources::sidecarSubtitles, sources::streamProgress, sources::streamFailure,
         sources::subtitleFiles, sources::openSubtitleFile, sources::subtitleIdentity, sources::enableInterleaveCache,
         sources::finishIsoPreflight, sources::voiceReference, sources::openSubtitleUri, sources::playbackView, sources::prepareListening, sources::retainListeningAudio, sources::listeningInput,
-        webBrowser::awaitMediaRelease)
+        webBrowser::awaitMediaRelease, airplayReceiver::claimPlayer)
     private val backgroundAudio = BackgroundAudioImport({ activity?.applicationContext }, sources::audioDownload, sources::releasePhotoStream) { id, json ->
         if (!closed.get()) emitSignal("background_audio_imported", id, json)
     }
@@ -400,6 +403,9 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun get_photo_animation_frame(id: Int): String = if(closed.get()) "" else photos.animationFrame(id)
     @UsedByGodot fun pause_photo_animation(id: Int,paused: Boolean) = photos.pauseAnimation(id,paused)
     @UsedByGodot fun restart_photo_animation(id: Int) = photos.restartAnimation(id)
+    @UsedByGodot fun set_photo_animation_depth(id: Int,enabled: Boolean): Boolean = !closed.get() && photos.setAnimationDepth(id,enabled)
+    @UsedByGodot fun photo_animation_depth_pixels(id: Int,token: Long): ByteArray =
+        if(closed.get()) ByteArray(0) else photos.animationDepthPixels(id,token)
     @UsedByGodot fun upload_photo_animation_frame(id: Int,token: Long,texture: Int,mipmaps: Boolean): Boolean =
         !closed.get() && photos.uploadAnimation(id,token,texture,mipmaps)
     @UsedByGodot fun photo_animation_pixels(id: Int,token: Long): ByteArray =

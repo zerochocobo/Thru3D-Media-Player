@@ -1,5 +1,7 @@
 extends RefCounted
 ## Store browser identities and paths, never a resolved stream, login token or credential.
+const MediaUri := preload("res://scripts/media_uri.gd")
+
 static func clean(value: Variant) -> Dictionary:
 	if not value is Dictionary: return {}
 	if value.get("type") == "archive":
@@ -43,17 +45,18 @@ static func cloud_file(value: Variant, uri: String) -> Dictionary:
 
 static func infer(uri: String) -> Dictionary:
 	if uri.begins_with("dlna://"):
-		return {"type": "dlna", "server_id": uri.trim_prefix("dlna://").get_slice("/", 0).uri_decode(), "item_id": uri.get_file().uri_decode()}
+		return {"type": "dlna", "server_id": MediaUri.decode_path(uri.trim_prefix("dlna://").get_slice("/", 0)), "item_id": MediaUri.filename(uri)}
 	if uri.begins_with("file://"):
-		var path := uri.trim_prefix("file://").uri_decode().get_base_dir()
+		var path := MediaUri.decode_path(uri.trim_prefix("file://")).get_base_dir()
 		return {"type": "local", "path": path, "stack": [{"id": path, "title": path.get_file()}]}
 	for scheme in ["smb", "cloud"]:
 		if not uri.begins_with(scheme + "://"): continue
 		var rest := uri.trim_prefix(scheme + "://")
 		var server := rest.get_slice("/", 0)
 		if server.is_empty(): return {}
-		var path := rest.substr(server.length()).trim_prefix("/").get_base_dir().uri_decode()
+		var path := rest.substr(server.length()).trim_prefix("/").get_base_dir()
 		if scheme == "smb": return {"type": scheme, "server_id": server, "path": path}
+		path = MediaUri.decode_path(path)
 		var parent := "/" + server + ("/" + path if not path.is_empty() else "")
 		return {"type": scheme, "path": parent, "stack": [{"id": parent, "title": path.get_file() if not path.is_empty() else server}]}
 	if uri.begins_with("medialib://"):

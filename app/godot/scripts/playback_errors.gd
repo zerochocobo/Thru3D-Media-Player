@@ -49,6 +49,8 @@ const REASONS := {
 	"unknown_format": "Cannot recognize the media format. It may be unsupported or damaged.",
 	"nothing_to_play": "No playable audio or video tracks were found.",
 	"decoder_failed": "The video decoder could not be started.",
+	"resolution_unsupported": "The video resolution exceeds what the player supports.",
+	"decoder_capacity_exceeded": "The video exceeds this device's hardware decoding.",
 	"audio_output_failed": "Audio output could not be initialized.",
 	"video_output_failed": "Video output could not be initialized.",
 	"output_timeout": "Video output timed out. Try opening the video again.",
@@ -60,9 +62,19 @@ const STAGES := {"resolving": "Resolving media", "reading": "Reading media", "pa
 	"ai_initialization": "Initializing AI passthrough", "ai_processing": "Processing AI passthrough"}
 const MPV_REASONS := {-14: "audio_output_failed", -15: "video_output_failed", -16: "nothing_to_play", -17: "unknown_format"}
 
+## The player's GPU slots: at most 8192 on a side and 8192x4320 pixels (mpv playback_failure.h).
+const PLAYER_LIMIT := "8192×4320"
+
 static func message(report: Dictionary) -> String:
 	var code := str(report.get("code", ""))
 	var reason := str(report.get("reason", ""))
+	var video := _video_text(report)
+	if reason == "resolution_unsupported" and not video.is_empty():
+		return I18n.t("Video %s is larger than the player supports (up to %s).") % [video, PLAYER_LIMIT]
+	if reason == "decoder_capacity_exceeded" and not video.is_empty():
+		var limit := _limit_text(report.get("decoder", {}))
+		if limit.is_empty(): return I18n.t("This device has no hardware decoder for video %s.") % video
+		return I18n.t("Video %s exceeds this device's hardware decoding (up to %s).") % [video, limit]
 	if REASONS.has(reason): return REASONS[reason]
 	if MESSAGES.has(code): return MESSAGES[code]
 	var mpv_code := int(report.get("mpv_code", 0))
@@ -87,7 +99,32 @@ static func clean(report: Dictionary) -> Dictionary:
 		if report.has(key): result[key] = safe_detail(str(report[key]))
 	for key in ["http_status", "mpv_code", "session_id", "logical_session_id", "generation"]:
 		if report.has(key): result[key] = int(report[key])
+	for key in ["video", "decoder"]:
+		var section = report.get(key)
+		if not section is Dictionary: continue
+		var kept := {}
+		for field in section:
+			var value = section[field]
+			if value is bool or value is int or value is float: kept[str(field)] = value
+			elif value is String: kept[str(field)] = safe_detail(value).left(64)
+		result[key] = kept
 	return result
+
+## "AV1 7680×7680 59.94fps": the numbers a user can read back to us from a screenshot.
+static func _video_text(report: Dictionary) -> String:
+	var video = report.get("video", {})
+	if not video is Dictionary or int(video.get("width", 0)) <= 0 or int(video.get("height", 0)) <= 0: return ""
+	var text := "%s %d×%d" % [str(video.get("codec", "")).to_upper(), int(video.width), int(video.height)]
+	var fps := float(video.get("fps", 0.0))
+	if fps > 0.0: text += " " + ("%.2f" % fps).trim_suffix("0").trim_suffix("0").trim_suffix(".") + "fps"
+	return text.strip_edges()
+
+static func _limit_text(decoder) -> String:
+	if not decoder is Dictionary or not bool(decoder.get("hardware", false)): return ""
+	if int(decoder.get("peak_width", 0)) > 0:
+		return "%d×%d %dfps" % [int(decoder.peak_width), int(decoder.peak_height), int(decoder.get("peak_fps", 0))]
+	if int(decoder.get("max_width", 0)) > 0: return "%d×%d" % [int(decoder.max_width), int(decoder.max_height)]
+	return ""
 
 ## A second redaction boundary also protects reports from older plugin versions.
 static func safe_detail(value: String) -> String:
@@ -121,5 +158,21 @@ static func details(report: Dictionary) -> String:
 	if not cause.is_empty(): lines.append(cause)
 	var native := safe_detail(str(report.get("native_detail", "")))
 	if not native.is_empty() and native != cause: lines.append(native.left(160))
+	var video := _video_text(report)
+	if not video.is_empty(): lines.append(I18n.t("Video: %s") % video)
+	var decoder = report.get("decoder", {})
+	if decoder is Dictionary and not decoder.is_empty():
+		var name := str(decoder.get("decoder", "")) if bool(decoder.get("hardware", false)) else I18n.t("No hardware decoder")
+		var parts := PackedStringArray()
+		for part in [name, str(decoder.get("mime", "")), str(decoder.get("device", ""))]:
+			if not part.is_empty(): parts.append(part)
+		lines.append(I18n.t("Decoder: %s") % " · ".join(parts))
+		var limits := PackedStringArray()
+		if int(decoder.get("max_width", 0)) > 0: limits.append("%d×%d" % [int(decoder.max_width), int(decoder.max_height)])
+		if int(decoder.get("peak_width", 0)) > 0: limits.append("%d×%d@%d" % [int(decoder.peak_width), int(decoder.peak_height), int(decoder.get("peak_fps", 0))])
+		if int(decoder.get("max_height_at_width", 0)) > 0 and report.get("video") is Dictionary:
+			limits.append("%d×%d" % [int(report.video.get("width", 0)), int(decoder.max_height_at_width)])
+		if not limits.is_empty(): lines.append(I18n.t("Hardware limit: %s") % " · ".join(limits))
+	if str(report.get("reason", "")) == "resolution_unsupported": lines.append(I18n.t("Player limit: %s") % (PLAYER_LIMIT + " px"))
 	if lines.size() == 1: lines.append(I18n.t("No additional error details were provided."))
 	return "\n".join(lines)

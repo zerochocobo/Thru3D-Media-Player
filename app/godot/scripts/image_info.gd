@@ -3,7 +3,7 @@ extends RefCounted
 const EXTENSIONS := ["jpg", "jpeg", "png", "webp", "heic", "heif", "tif", "tiff", "hdr", "rgbe", "exr", "avif", "avifs", "apng", "gif", "dng", "cr2", "cr3", "nef", "nrw", "arw", "raf", "rw2", "orf", "pef", "srw"]
 static func is_image(uri: String, title: String = "") -> bool:
 	if uri.begins_with("medialib://") and uri.trim_prefix("medialib://").get_slice("/", 1) == "photo": return true
-	return title.get_extension().to_lower() in EXTENSIONS or uri.get_slice("?", 0).get_slice("#", 0).uri_decode().get_extension().to_lower() in EXTENSIONS
+	return title.get_extension().to_lower() in EXTENSIONS or preload("res://scripts/media_uri.gd").filename(uri).get_extension().to_lower() in EXTENSIONS
 
 static func _u16(bytes: PackedByteArray, offset: int, little: bool = false) -> int:
 	if offset < 0 or offset + 2 > bytes.size(): return 0

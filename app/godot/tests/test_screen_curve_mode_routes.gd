@@ -37,7 +37,7 @@ func mode_field(menu: Node3D) -> bool:
 func _run() -> void:
 	DirAccess.make_dir_recursive_absolute(output)
 	var cfg := ConfigFile.new()
-	cfg.set_value("appearance", "background", "belfast")
+	cfg.set_value("appearance", "background", "dark")
 	cfg.set_value("screen", "cinema", {"enabled": false})
 	cfg.set_value("screen", "curve_degrees", 120.0)
 	cfg.set_value("ui", "language", "zh")
@@ -52,7 +52,7 @@ func _run() -> void:
 	main._sync_cinema_screen()
 	var menu: Node3D = main.player_menu
 	menu.visible = true; menu._adjustment = "screen"; menu.refresh()
-	check(main._curve_modes_available() and mode_field(menu), "Panorama free screen exposes curve modes")
+	check(main._curve_modes_available() and mode_field(menu), "Dark background exposes curve modes on startup")
 	check(main.video.screen_curve_mode == "horizontal", "New settings default to horizontal")
 	check(menu.choices.targets.values().filter(func(item): return item.get("key") == "screen_curve_mode" and item.get("kind") == "choose").size() == 3, "All three modes use adjacent buttons")
 	check(not menu.choices.targets.values().any(func(item): return item.get("key") == "screen_curve_mode" and item.get("kind") == "open"), "Curve modes have no select control")
@@ -65,9 +65,9 @@ func _run() -> void:
 	var corner: Vector3 = main.video.screen_corner(1)
 	main._on_playback_adjustment("screen_distance", 8.0)
 	check(main.video.screen_corner(1).is_equal_approx(corner), "Production distance slider preserves sphere shape")
-	for scenery in ["dark", "passthrough", "morning", "night", "belfast"]:
+	for scenery in ["morning", "dark", "passthrough", "dark", "night", "belfast"]:
 		main.background.select(scenery); main._update_background(); menu.refresh()
-		var available: bool = scenery in ["morning", "night", "belfast"]
+		var available: bool = scenery in ["dark", "morning", "night", "belfast"]
 		check(main._curve_modes_available() == available and mode_field(menu) == available, "Mode field follows actual background: " + scenery)
 		check(main.video.effective_curve_mode() == ("spherical" if available else "horizontal"), "Geometry follows actual background: " + scenery)
 		check(main.video.screen_curve_mode == "spherical", "Background switch retains preference: " + scenery)
@@ -98,6 +98,12 @@ func _run() -> void:
 	restored.restore_screen_curve(cfg, "screen"); restored.set_curve_modes_available(true)
 	check(restored.effective_curve_mode() == "spherical", "A fresh display restores the saved mode")
 	restored.free(); main.free()
+	var reopened := Main.new(); reopened.settings_path = output.path_join("settings.cfg")
+	reopened.display = SupportedDisplay.new(); root.add_child(reopened)
+	reopened.set_process(false); reopened.video.set_process(false); reopened.photo.set_process(false); reopened.report_timer.stop()
+	check(reopened.background.choice == "dark", "A fresh application restores the dark background")
+	check(reopened._curve_modes_available() and reopened.video.effective_curve_mode() == "spherical", "A fresh application restores the selected curve on the dark background")
+	reopened.free()
 	for failure in failures: push_error(failure)
 	print("Screen curve mode routes: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)

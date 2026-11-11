@@ -233,7 +233,7 @@ func _process(_delta: float) -> void:
 		_request = int(platform.open_background_image(uri))
 		if _request > 0: return
 	else:
-		var path := uri.trim_prefix("file://").uri_decode() if uri.begins_with("file://") else uri
+		var path := preload("res://scripts/media_uri.gd").decode_path(uri.trim_prefix("file://")) if uri.begins_with("file://") else uri
 		if FileAccess.file_exists(path): _start_copy({"path":path}); return
 	error = Rules.READ; _finish_import_job(false)
 

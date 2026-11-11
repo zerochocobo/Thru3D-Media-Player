@@ -41,7 +41,8 @@ internal class CloudCancellation : CloudTransport {
         return CloudHttp.request(url, cookie, form, this)
     }
 }
-internal class CloudFailure(val reason: String = "cloud_unavailable", detail: String = "", cause: Throwable? = null, val httpStatus: Int = 0) : IOException(when (reason) {
+internal class CloudFailure(val reason: String = "cloud_unavailable", detail: String = "", cause: Throwable? = null,
+    val httpStatus: Int = 0, val apiCode: Int? = null) : IOException(when (reason) {
     "cloud_login_required" -> "Please sign in to your cloud account again"
     "cloud_store_unavailable" -> "Cloud account storage unavailable"
     "cloud_file_missing" -> "Cloud file or account not found"

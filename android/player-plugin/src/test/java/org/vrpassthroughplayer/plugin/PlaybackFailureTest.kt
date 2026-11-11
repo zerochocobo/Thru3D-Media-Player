@@ -7,6 +7,29 @@ import java.io.IOException
 import java.net.SocketTimeoutException
 
 class PlaybackFailureTest {
+    @Test fun decoderLimitNamesTheVideoAndDeviceNumbers() {
+        val details = JSONObject().put("video_stream", JSONObject().put("codec", "av1").put("width", "7680").put("height", "7680").put("fps", "59.940060"))
+        val stream = DecoderCapacity.stream(details)!!
+        assertEquals(DecoderCapacity.Stream("av1", 7680, 7680, 59.94006), stream)
+        assertEquals(59.94, stream.json().getDouble("fps"), 0.0)
+        assertNull(DecoderCapacity.stream(JSONObject().put("video_stream", JSONObject().put("codec", "av1").put("width", "").put("height", "7680"))))
+        val decoder = JSONObject().put("decoder", "c2.qti.av1.decoder").put("exceeded", true).put("max_height_at_width", 4608)
+        val timeout = PlaybackFailure("output_timeout", "output", mpvCode = 0)
+        val named = PlaybackFailure.withCapacity(timeout, stream.json(), decoder)
+        assertEquals("decoder_capacity_exceeded", named.reason)
+        assertEquals("decoding", named.stage)
+        val report = named.json()
+        assertEquals(7680, report.getJSONObject("video").getInt("height"))
+        assertEquals(4608, report.getJSONObject("decoder").getInt("max_height_at_width"))
+        // The player's own size limit and unrelated failures keep their cause; the numbers still travel.
+        val own = PlaybackFailure.withCapacity(PlaybackFailure("resolution_unsupported", "decoding"), stream.json(), decoder)
+        assertEquals("resolution_unsupported", own.reason)
+        assertTrue(own.json().has("decoder"))
+        val network = PlaybackFailure.withCapacity(PlaybackFailure("network_timeout", "reading"), stream.json(), decoder)
+        assertEquals("network_timeout", network.reason)
+        val fits = PlaybackFailure.withCapacity(timeout, stream.json(), JSONObject().put("exceeded", false))
+        assertEquals("output_timeout", fits.reason)
+    }
     @Test fun providerTransportFailureIsNotAMissingFile() {
         val uri = "content://com.android.externalstorage.documents/tree/1234-ABCD%3A/document/1234-ABCD%3Amovie.mp4"
         assertEquals("storage_provider_failed", PlaybackFailure.from(StorageProviderUnavailable(), "reading").reason)

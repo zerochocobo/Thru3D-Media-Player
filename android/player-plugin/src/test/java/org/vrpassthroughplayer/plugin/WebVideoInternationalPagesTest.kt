@@ -56,4 +56,13 @@ class WebVideoInternationalPagesTest {
             "https://instagram.com.evil/reel/Chunk8-jurw/", "https://user:secret@streamable.com/dnd1")
         invalid.forEach { url -> assertThrows(url, Exception::class.java) { WebVideoPage.parse(url) } }
     }
+
+    @Test fun odyseePublicPageKeepsTheEncodedClaimPathAndDropsTracking() {
+        val id="@Example:1/%E5%A4%AA%E7%A5%96%E6%8B%B3:2"
+        val parsed=WebVideoPage.parse("https://www.odysee.com/$id/?tracking=private")
+        assertEquals("https://odysee.com/$id",parsed.url)
+        assertEquals(id,parsed.id)
+        assertEquals(parsed,WebVideoPage.parse("https://odysee.com/@Example:1/太祖拳:2"))
+        assertThrows(Exception::class.java) { WebVideoPage.parse("https://odysee.com/$id%2Fetc") }
+    }
 }

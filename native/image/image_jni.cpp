@@ -1,4 +1,5 @@
 #include "image_core.h"
+#include "animation_input.h"
 #include <jni.h>
 #include <GLES3/gl3.h>
 #include <EGL/egl.h>
@@ -41,6 +42,16 @@ extern "C" JNIEXPORT jlongArray JNICALL Java_org_vrpassthroughplayer_plugin_Exte
 }
 extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_ExtendedImageNative_reset(JNIEnv*,jobject,jlong id){auto item=get(decoders,id);if(item){std::lock_guard<std::mutex> lock(item->lock);try{item->decoder->reset();}catch(...){}}}
 extern "C" JNIEXPORT jbyteArray JNICALL Java_org_vrpassthroughplayer_plugin_ExtendedImageNative_pixels(JNIEnv* env,jobject,jlong token){auto frame=get(frames,token);if(!frame)return nullptr;auto out=env->NewByteArray(jsize(frame->rgba.size()));if(out)env->SetByteArrayRegion(out,0,jsize(frame->rgba.size()),reinterpret_cast<const jbyte*>(frame->rgba.data()));return out;}
+extern "C" JNIEXPORT jintArray JNICALL Java_org_vrpassthroughplayer_plugin_ExtendedImageNative_depthInput(JNIEnv* env,jobject,jlong token,jobject input,jint width,jint height){
+    auto frame=get(frames,token);if(!frame||!input)return nullptr;
+    auto data=static_cast<float*>(env->GetDirectBufferAddress(input));
+    const auto capacity=env->GetDirectBufferCapacity(input);
+    if(!data||width<1||height<1||width>1024||height>1024||capacity!=int64_t(width)*height*12)return nullptr;
+    try {
+        const auto rect=animation_input(frame->rgba.data(),frame->rgba.size(),frame->width,frame->height,data,size_t(capacity)/4,width,height);
+        auto out=env->NewIntArray(4);if(out)env->SetIntArrayRegion(out,0,4,rect.data());return out;
+    }catch(...){return nullptr;}
+}
 extern "C" JNIEXPORT jboolean JNICALL Java_org_vrpassthroughplayer_plugin_ExtendedImageNative_upload(JNIEnv*,jobject,jlong token,jint texture,jboolean mipmaps){
     auto frame=get(frames,token);if(!frame||texture<=0||eglGetCurrentContext()==EGL_NO_CONTEXT)return false;
     GLint binding=0,pbo=0,alignment=0,row=0,skipx=0,skipy=0;

@@ -392,7 +392,7 @@ internal class LocalVideoLibrary(
         } }
         val editableVolume = !removable(directory)
         val result = JSONArray()
-        children.filter { !it.name.startsWith(".") && (it.isDirectory || if (subtitlesOnly) SidecarSubtitles.supportedFile(it.name) else MediaKinds.supported(it.name)) }
+        children.filter { !it.name.startsWith(".") && (it.isDirectory || if (subtitlesOnly) SidecarSubtitles.supportedFile(it.name) else MediaKinds.supportedFileName(it.name)) }
             .sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
             .forEach {
                 val editablePath = editableVolume && !(it.absolutePath.replace('\\', '/') + "/").contains("/Android/")
@@ -404,10 +404,13 @@ internal class LocalVideoLibrary(
                     .put("modified", it.lastModified().takeIf { time -> time > 0 } ?: -1)
                     .put("delete_uri", Uri.fromFile(it).toString()).put("can_delete", writable() && editablePath && directory.canWrite() && it.canonicalPath == it.absolutePath)
                     .put("delete_reason", "File deletion permission denied")
-                if (!it.isDirectory) entry.put("uri", Uri.fromFile(it).toString()).put("size", it.length()).put("kind", MediaKinds.kind(it.name))
-                    .put("can_delete", writable() && editablePath && directory.canWrite() && MediaDeletePolicy.regular(it) && it.canonicalPath == it.absolutePath)
-                    .put("can_rename", writable() && editablePath && directory.canWrite() && MediaDeletePolicy.regular(it) && it.canonicalPath == it.absolutePath && MediaKinds.kind(it.name) == "video")
-                    .put("delete_reason", "File deletion permission denied")
+                if (!it.isDirectory) {
+                    val kind = MediaKinds.fileNameKind(it.name)
+                    entry.put("uri", Uri.fromFile(it).toString()).put("size", it.length()).put("kind", kind)
+                        .put("can_delete", writable() && editablePath && directory.canWrite() && MediaDeletePolicy.regular(it) && it.canonicalPath == it.absolutePath)
+                        .put("can_rename", writable() && editablePath && directory.canWrite() && MediaDeletePolicy.regular(it) && it.canonicalPath == it.absolutePath && kind == "video")
+                        .put("delete_reason", "File deletion permission denied")
+                }
                 result.put(entry)
             }
         return result

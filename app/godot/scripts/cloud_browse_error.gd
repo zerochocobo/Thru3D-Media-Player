@@ -1,23 +1,27 @@
 extends RefCounted
-## Keep the complete diagnostic apart from the narrow browser status line.
+## Keep the diagnostic available while the user retries or browses the last loaded page.
 const OPEN := 9160
 const BACK := 9161
+const RETRY := 9166
 const Log := preload("res://scripts/diagnostic_log.gd")
+const UiTheme := preload("res://scripts/ui_theme.gd")
 var menu: Node
 var detail := ""
 var code := ""
 var reason := ""
 var opened := false
 var saved_scroll := 0.0
+var retry := Callable()
 
 func _init(owner: Node) -> void: menu = owner
 
 func clear() -> void:
 	if opened: close()
-	detail = ""; code = ""; reason = ""
+	detail = ""; code = ""; reason = ""; retry = Callable()
 
-func receive(result: Dictionary) -> void:
+func receive(result: Dictionary, retry_request: Callable = Callable()) -> void:
 	clear()
+	retry = retry_request
 	var summary := str(result.get("error", "Cloud connection failed"))
 	reason = str(result.get("error_reason", "cloud_unavailable"))
 	var original := str(result.get("error_detail", "")).left(4097)
@@ -35,10 +39,34 @@ func summary_text() -> String:
 	if menu.compact and not code.is_empty(): return code
 	return menu.I18n.t(menu.status) + (" (" + code + ")" if not code.is_empty() else "")
 
+func shows_notice() -> bool:
+	return (not detail.is_empty() and not opened and menu.section == menu.Section.CLOUD and menu.rows.is_empty()
+		and not menu._cloud_busy and not menu.archives.browsing and not menu.cloud_search.active
+		and menu.cloud_accounts.mode.is_empty() and not menu.account_panel.active())
+
+func draw_notice() -> void:
+	var x := 0.0 if menu.compact else 0.19
+	var ink := UiTheme.color("danger")
+	menu._icon("info", Vector3(x, 0.16, 0.005), 0.072, ink)
+	var summary: String = menu.I18n.t(menu.status)
+	var title: Label3D = menu._label(menu._fit_title(summary, "", 1.0, 24), Vector3(x, 0.064, 0.005), 24)
+	title.modulate = ink
+	if not code.is_empty(): menu._label(code, Vector3(x, -0.008, 0.005), 17).modulate = ink
+	menu._button(RETRY, menu.I18n.t("Retry"), Vector2(x - 0.22, -0.12), Vector2(0.36, 0.086), true, "", true)
+	menu._button(OPEN, menu.I18n.t("Error details"), Vector2(x + 0.22, -0.12), Vector2(0.44, 0.086))
+
 func close() -> void:
 	opened = false; menu.scroll = saved_scroll
 
 func action(target: int) -> bool:
+	if target == RETRY and shows_notice():
+		if retry.is_valid():
+			retry.call()
+		else:
+			menu.status = ""
+			menu._load_cloud(false, true, menu._cloud_requested_page)
+			menu.refresh()
+		return true
 	if target == OPEN and not detail.is_empty():
 		saved_scroll = menu.scroll; opened = true
 		menu._reset_navigation(); menu.refresh(); return true

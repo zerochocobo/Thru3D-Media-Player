@@ -4,6 +4,16 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.17.6 — 2026-11-11
+
+- Expand an AirPlay mirror from picture-in-picture into the regular player for compatible 2D-to-3D, person passthrough, live captions and mute controls. Returning restores the original mirror window within the same session.
+- Add real-time 2D-to-3D for supported animated photos using the video depth pipeline. Still photos retain their existing depth processing.
+- Play standalone VOB video files and recognize them in storage listings, including 115 and OpenList. Show the video resolution and device decoder limits when an oversized video fails to play.
+- Keep configured subtitles upright below rotated video and size them to the rotated picture. Restore curvature options on dark backgrounds.
+- Add system keyboard options for SMB forms, use the system keyboard by default for file and playlist names, and offer in-app Pinyin on generic OpenXR. Preserve literal characters such as # and % in media names. Improve cloud sign-in errors, directory loading and refresh feedback.
+- Add Featured Beta badges for the Quest-tested TED Talks and Dailymotion playback paths, and add a Naver Clip entry to the international catalog. Improve browser trigger taps, add right A as a secondary webpage click, and update site adapters. The PICO China store retains its seven domestic Featured sites.
+- Include controller input and routing decisions in exported diagnostics to help trace missed or blocked shortcuts.
+
 ## 0.17.5 — 2026-11-10
 
 - Restore Featured Beta badges for Niconico, TikTok, Instagram Reels and Internet Archive after the recorded Quest ordinary featured-entry/video-selection/page-button/audio-video/seek/retained-return journeys. Scope remains limited to those paths and formats; this does not establish all-content or PICO acceptance. Keep foreign manual playback and fullscreen behavior, without restoring URL-only foreign toolbar Beta entries. Other overseas badges and pending iQIYI/Youku badges remain withheld; China-store Featured stays seven CN sites.

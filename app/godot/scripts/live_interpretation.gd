@@ -33,6 +33,11 @@ var _failure_until := 0
 var _empty_caption_since := -1
 var _caption_epoch := -1
 var _caption_position := -1.0
+var _mirror_sequence := -1
+var _mirror_cues: Array = []
+
+func is_mirror() -> bool:
+	return _source.begins_with("airplayvideo://")
 
 func _init(owner: Node3D) -> void:
 	video = owner
@@ -60,6 +65,8 @@ func is_cast_source() -> bool:
 	return _cast_token > 0 or video.cast_token > 0
 
 func reset_source(uri: String = "") -> void:
+	if is_mirror() and Methods.supports(video.platform, "airplay_receiver_captions"):
+		video.platform.airplay_receiver_captions(_cast_token, "")
 	var token := int(video.cast_token) if not uri.is_empty() else 0
 	var session := int(video.media.session_id) if not uri.is_empty() else 0
 	var same := not uri.is_empty() and uri == _source and token == _cast_token and (token == 0 or session == _source_session)
@@ -68,11 +75,13 @@ func reset_source(uri: String = "") -> void:
 	_failure_state = ""; _failure_until = 0; _poll_at = 0; _received_at = 0; _cache_instance = -1
 	translator.reset(true)
 	_stored.clear()
+	_mirror_sequence = -1; _mirror_cues.clear()
 	if not same: enabled = not is_cast_source() and bool(memory.lookup(uri).get("enabled", false))
 
 func available() -> bool:
 	if not _allowed() or video.media.playback.get("details", {}).get("audio_tracks", []).is_empty(): return false
 	if not is_cast_source(): return true
+	if is_mirror(): return Methods.supports(video.platform, "airplay_receiver_captions")
 	return (_source.begins_with("http://") or _source.begins_with("https://")) and CastCapabilities.capabilities(video).get("seek", false)
 
 ## MPV processing revisions replace the presentation session over the same Host.
@@ -112,6 +121,14 @@ func set_option(key: String, value: Variant) -> bool:
 func active() -> bool: return enabled and _allowed()
 
 func _configure(wanted: bool) -> bool:
+	if is_mirror():
+		var language := source if wanted else ""
+		if _payload != "mirror:" + language:
+			if not video.platform.airplay_receiver_captions(_cast_token, language): return false
+			_payload = "mirror:" + language
+			_mirror_sequence = -1; _mirror_cues.clear()
+		_session = video.media.session_id
+		return true
 	# Recognized original text is stored per video only where per-file settings may persist.
 	var media := "" if is_cast_source() else Memory.key_for(_source)
 	var payload := JSON.stringify({"enabled": wanted, "language": source, "lead": lead, "target": target,
@@ -142,8 +159,9 @@ func tick() -> void:
 		report = {}; return
 	if Time.get_ticks_msec() < _poll_at: return
 	_poll_at = Time.get_ticks_msec() + 100
-	var incoming: Variant = JSON.parse_string(video.platform.get_mpv_listening(video.media.session_id))
+	var incoming: Variant = JSON.parse_string(video.platform.airplay_receiver_caption_status(_cast_token) if is_mirror() else video.platform.get_mpv_listening(video.media.session_id))
 	if not incoming is Dictionary: return
+	if is_mirror(): incoming = _mirror_report(incoming)
 	report = incoming
 	if is_cast_source() and str(report.get("state", "")) in FAILURES:
 		_stop_cast(str(report.state)); return
@@ -164,8 +182,23 @@ func tick() -> void:
 	# Readiness controls subtitle availability only; the video keeps playing.
 	# A failed provider falls back to original text.
 	var pending: bool = not translator.current.is_empty() or not translator.jobs.is_empty()
-	if report.get("buffered", false) and (not translate or not pending):
+	if not is_mirror() and report.get("buffered", false) and (not translate or not pending):
 		video.platform.listening_ready(video.media.session_id, epoch)
+
+## Live speech cannot be read ahead. Present each new result against the active
+## player's clock; retain it across polling and processing revisions, never on disk.
+func _mirror_report(incoming: Dictionary) -> Dictionary:
+	var position: float = video.control.observed_position_ms / 1000.0
+	var sequence := int(incoming.get("sequence", -1))
+	if sequence != _mirror_sequence:
+		_mirror_sequence = sequence
+		var lines := PackedStringArray()
+		for cue: Dictionary in incoming.get("cues", []):
+			var line := str(cue.get("text", "")).strip_edges()
+			if not line.is_empty(): lines.append(line)
+		if not lines.is_empty(): _mirror_cues = [{"start": position, "end": position + 6.0, "text": " ".join(lines)}]
+	return {"state": incoming.get("state", "off"), "phase": "recognition", "epoch": incoming.get("generation", 0), "cues": _mirror_cues,
+		"position": position, "playing": true, "buffered": true, "cache_persistent": false}
 
 ## -1 when no line shows at [position], 0 when it shows untranslated, 1 when translated.
 func translation_at(position: float) -> int:
@@ -203,13 +236,13 @@ static func status_label(value: String) -> String:
 func snapshot() -> Dictionary:
 	var notice := _failure_notice()
 	var can_start := available() or active()
-	var cast_entry := is_cast_source() and _allowed() and (_source.begins_with("http://") or _source.begins_with("https://"))
+	var cast_entry := is_cast_source() and _allowed() and (is_mirror() or _source.begins_with("http://") or _source.begins_with("https://"))
 	var hint := ""
 	if cast_entry and not can_start:
 		hint = "Audio track unavailable" if video.media.playback.get("details", {}).get("audio_tracks", []).is_empty() else "Available for seekable videos"
 	var position := playback_position(float(report.get("position", 0.0)))
 	return {"listening_available": can_start, "listening_visible": can_start or cast_entry, "listening_unavailable_hint": hint,
-		"listening_enabled": active(), "listening_source": source,
+		"listening_enabled": active(), "listening_source": source, "listening_live_source": is_mirror(),
 		"listening_target": target, "listening_lead": lead, "listening_state": _failure_state if not notice.is_empty() else report.get("state", "off"),
 		"listening_notice": notice,
 		"listening_caption": preparation_caption(), "listening_status_caption": status_caption(position),
@@ -292,8 +325,9 @@ static func rows(state: Dictionary) -> Array:
 	result.append({"title": "Original language", "field": {"key": "listening_source", "value": state.get("listening_source", "ja"), "choices": [
 		{"value": "ja", "label": "Japanese"}, {"value": "zh", "label": "Chinese"}, {"value": "en", "label": "English"}]}})
 	result.append({"title": "Translation", "field": {"key": "listening_target", "value": state.get("listening_target", ""), "hint": "Recognized text is sent to Microsoft", "choices": [{"value": "", "label": "No translation"}] + Protocol.target_choices()}})
-	result.append({"title": "Audio lookahead", "field": {"key": "listening_lead", "value": state.get("listening_lead", 12), "choices": [
-		{"value": 8, "label": "8 s"}, {"value": 12, "label": "12 s"}, {"value": 20, "label": "20 s"}]}})
+	if not state.get("listening_live_source", false):
+		result.append({"title": "Audio lookahead", "field": {"key": "listening_lead", "value": state.get("listening_lead", 12), "choices": [
+			{"value": 8, "label": "8 s"}, {"value": 12, "label": "12 s"}, {"value": 20, "label": "20 s"}]}})
 	if state.get("listening_enabled", false) and state.has("listening_detail_caption"): result.append({"listening_detail": true})
 	if state.get("subtitle_task_supported", false) and state.get("listening_enabled", false):
 		result.append({"subtitle_task": true})

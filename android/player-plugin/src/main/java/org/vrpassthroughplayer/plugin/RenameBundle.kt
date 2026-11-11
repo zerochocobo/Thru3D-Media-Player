@@ -4,13 +4,15 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** Exact basename matching; an arbitrary extension is preserved byte-for-byte. */
-internal class RenameBundle(video: String, newStem: String, names: Collection<String>, includeSameName: Boolean = true, folder: Boolean = false) {
+internal class RenameBundle(video: String, newStem: String, names: Collection<String>, includeSameName: Boolean = true,
+                            folder: Boolean = false, allowHashAndPercent: Boolean = false) {
     data class Move(val from: String, val to: String)
     val moves: List<Move>
     init {
         require(newStem == newStem.trim() && newStem.isNotEmpty() && newStem.length <= 160 &&
             newStem.toByteArray().size <= 200 && !newStem.startsWith('.') && !newStem.endsWith('.') &&
-            newStem.none { it < ' ' || it in "/\\:*?\"<>|#%" } && newStem !in setOf(".", "..")) { "Invalid file name" }
+            newStem.none { it < ' ' || it in "/\\:*?\"<>|" || (!allowHashAndPercent && it in "#%") } &&
+            newStem !in setOf(".", "..")) { "Invalid file name" }
         require(!Regex("(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\..*)?").matches(newStem)) { "Invalid file name" }
         val stem = if (folder) video else video.substringBeforeLast('.')
         require(!stem.equals(newStem, true)) { "Name is unchanged" }

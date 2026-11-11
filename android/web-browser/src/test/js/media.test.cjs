@@ -37,7 +37,7 @@ function fixture(count = 1, blob = true, options = {}) {
     controls:(_,choose)=>{selectWeibo=choose;return {sync(){}};},
     binding:(v,requests)=>requests.some(r=>r.kind==='file'&&r.url===v.currentSrc) ? {page:v.publicPage||'https://weibo.com/123456/ABCDE',id:'ABCDE',source:v.currentSrc} : null
   };
-  if(options.iqiyi)context.Thru3DIqiyi={page:()=>({id:'v_current'}),matches:()=>false,transport:data=>data,
+  if(options.iqiyi)context.Thru3DIqiyi={page:()=>({id:'v_current'}),matches:()=>false,transport:data=>data,fitMediaReport:report=>report,
     capture:()=>({ready:true,id:'v_current',revision:'a1',page:location.href,src:videos[0].currentSrc}),
     binding:(video,data)=>video===videos[0]&&video.currentSrc===data.src?data:null,
     restore:(_,video,data,time,play)=>{video.currentTime=time;if(play)video.play();else video.pause();return true;}};

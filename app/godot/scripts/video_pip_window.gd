@@ -153,15 +153,17 @@ func _draw() -> void:
 	var ui_start := _decorations.size()
 	# Leave space below the bottom handle's forgiving hit area and highlight.
 	var y := -size.y / 2 - 0.078
-	var bar_width := 0.24 if live_source else 0.28 if image_mode else 0.48
+	var bar_width := 0.32 if live_source else 0.28 if image_mode else 0.48
 	var bar := _quad(Vector2(bar_width, 0.084), Vector3(0, y, 0.001), PANEL, 10)
 	add_child(bar); _decorations.append(bar); _block_rays(bar, bar.mesh.size)
 	controls_root.set_meta("menu_surface_bounds", Rect2(Vector2(-bar_width / 2, y - 0.045), Vector2(bar_width, 0.09)))
 	var badge := _label("AirPlay" if live_source else str(slot), Vector3(-bar_width / 2 - (0.065 if live_source else 0.025), y, 0.004), 16 if live_source else 20)
 	# Glyph meshes can arrive after the initial capture bounds are measured.
 	badge.set_meta("menu_capture_bounds", AABB(Vector3(-0.02,-0.02,0),Vector3(0.04,0.04,0.001)))
-	_glyph(1, "close", Vector2(-0.055 if live_source else -0.09 if image_mode else -0.195, y), 0.064, true, I18n.t("Close window") if live_source else I18n.t("Close window %d") % slot)
-	if live_source: _glyph(9, "mute" if source_muted else "volume_low", Vector2(0.055, y), 0.064, true, I18n.t("Unmute" if source_muted else "Mute"))
+	_glyph(1, "close", Vector2(-0.10 if live_source else -0.09 if image_mode else -0.195, y), 0.064, true, I18n.t("Close window") if live_source else I18n.t("Close window %d") % slot)
+	if live_source:
+		_glyph(9, "mute" if source_muted else "volume_low", Vector2(0, y), 0.064, true, I18n.t("Unmute" if source_muted else "Mute"))
+		_glyph(10, "expand", Vector2(0.10, y), 0.064, true, I18n.t("Open AirPlay player"))
 	# The mode switch stays at the same point when the toolbar changes mode.
 	if not live_source:
 		_glyph(6 if image_mode else 5, "video" if image_mode else "image", Vector2(0, y), 0.064,
@@ -274,6 +276,7 @@ func _paint_order(node: Node3D) -> void:
 func _activate(target: int) -> void:
 	if live_source:
 		if target == 9: requested.emit(slot, "mute", 0.0 if source_muted else 1.0)
+		if target == 10: requested.emit(slot, "player", 1.0)
 		if target != 1: return
 	if image_mode and target not in [1, 5, 6, 7, 8]: return
 	match target:

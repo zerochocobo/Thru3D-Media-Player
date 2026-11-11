@@ -228,9 +228,10 @@ internal object DlnaClient {
             for (r in 0 until resources.length) {
                 val res = resources.item(r) as Element
                 val info = res.getAttribute("protocolInfo")
-                if (!imageItem && audio == null && (info.contains(":audio/") || MediaKinds.audio(res.textContent))) audio = res
-                if (!imageItem && !audioItem && (info.contains(":video/") || isVideoName(res.textContent))) { chosen = res; break }
-                if (imageItem && (info.contains(":image/") || MediaKinds.image(res.textContent))) {
+                val extension = resourceName(res).substringAfterLast('.', "").lowercase()
+                if (!imageItem && audio == null && (info.contains(":audio/") || extension in MediaKinds.audio)) audio = res
+                if (!imageItem && !audioItem && (info.contains(":video/") || extension in VIDEO_EXTENSIONS)) { chosen = res; break }
+                if (imageItem && (info.contains(":image/") || extension in MediaKinds.images)) {
                     val dimensions = res.getAttribute("resolution").split('x').mapNotNull { it.toLongOrNull() }
                     val area = if (dimensions.size == 2) dimensions[0] * dimensions[1] else 0L
                     if (area > largest) { chosen = res; largest = area }
@@ -259,11 +260,14 @@ internal object DlnaClient {
         if (title.substringAfterLast('.', "").lowercase() in extensions) return title
         // URI.path decodes escaped filenames and excludes query parameters. MIME alone does not
         // identify the original container (e.g. video/mpeg may mean mpg, ts or m2ts).
-        val name = runCatching { URI(resource.textContent.trim()).path?.substringAfterLast('/') }.getOrNull().orEmpty()
+        val name = resourceName(resource)
         val extension = name.substringAfterLast('.', "")
         if (extension.lowercase() !in extensions) return title
         return if (title.isEmpty()) name else "$title.$extension"
     }
+
+    private fun resourceName(resource: Element): String =
+        runCatching { URI(resource.textContent.trim()).path?.substringAfterLast('/') }.getOrNull().orEmpty()
 
     fun parseDuration(value: String?): Long? {
         val parts = value?.trim()?.split(':') ?: return null
@@ -348,7 +352,7 @@ internal object DlnaClient {
     }
 
     fun isVideoName(name: String) = name.substringBefore('?').substringAfterLast('.', "").lowercase() in VIDEO_EXTENSIONS
-    val VIDEO_EXTENSIONS = setOf("mp4", "mkv", "mk3d", "mov", "m4v", "webm", "ts", "m2ts", "iso", "avi", "wmv", "flv", "mpg", "mpeg")
+    val VIDEO_EXTENSIONS = setOf("mp4", "mkv", "mk3d", "mov", "m4v", "webm", "ts", "m2ts", "iso", "avi", "wmv", "flv", "mpg", "mpeg", "vob")
 
     /** Cover picture the server offers for an item: upnp:albumArtURI, else an image resource
      * (DLNA thumbnail). Never derived from the video itself. */

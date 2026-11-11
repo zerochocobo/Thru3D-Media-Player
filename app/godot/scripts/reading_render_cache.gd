@@ -69,7 +69,7 @@ func open_page(at: int, entry: Dictionary, uri: String) -> void:
 	photo._prefetch_request = id
 	if photo.platform and id <= 0: fail(at); return
 	if not photo.platform:
-		ready.call_deferred(id, {"state":"ready", "path":uri.trim_prefix("file://").uri_decode()})
+		ready.call_deferred(id, {"state":"ready", "path":preload("res://scripts/media_uri.gd").decode_path(uri.trim_prefix("file://"))})
 
 func ready(id: int, info: Variant) -> bool:
 	for at in photo._prefetched:

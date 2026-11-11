@@ -164,6 +164,23 @@ func _run() -> void:
 	video.picker_error = "LOCAL_DOCUMENT_PROVIDER_FAILED"
 	check(main._menu_error() == "系统文件服务打开失败，请重试。", "Provider preflight failure stays distinct from missing or revoked access")
 	check(Errors.message({"reason":"storage_provider_failed"}) != Errors.REASONS.not_found, "Provider RPC failures do not claim the file was removed")
+	# Decoder limits reach the user as numbers, through the same clean() boundary as the bridge report.
+	var decoder := {"hardware": true, "decoder": "c2.qti.av1.decoder", "mime": "video/av01", "device": "Quest 3",
+		"max_width": 8192, "max_height": 8192, "peak_width": 8192, "peak_height": 4320, "peak_fps": 48, "max_height_at_width": 4608, "exceeded": true,
+		"note": "https://secret.example/x?token=1"}
+	var oversized := Errors.clean({"reason": "resolution_unsupported", "stage": "decoding",
+		"video": {"codec": "av1", "width": 7680, "height": 7680, "fps": 59.94}, "decoder": decoder})
+	check(Errors.message(oversized) == "视频 AV1 7680×7680 59.94fps 超出播放器支持范围（最高 8192×4320）。", "Player limit names both sizes: " + Errors.message(oversized))
+	var lines := Errors.details(oversized)
+	check("视频：AV1 7680×7680 59.94fps" in lines and "解码器：c2.qti.av1.decoder · video/av01 · Quest 3" in lines, "Details name the video and decoder: " + lines)
+	check("硬解上限：8192×8192 · 8192×4320@48 · 7680×4608" in lines and "播放器上限：8192×4320 px" in lines, "Details name both limits: " + lines)
+	check(not "secret" in str(oversized), "Decoder strings pass the redaction boundary")
+	oversized.reason = "decoder_capacity_exceeded"
+	check(Errors.message(oversized) == "视频 AV1 7680×7680 59.94fps 超出本机硬件解码能力（最高 8192×4320 48fps）。", "Hardware limit names the device's peak: " + Errors.message(oversized))
+	oversized.decoder = {"hardware": false, "mime": "video/av01", "device": "Quest 2", "exceeded": true}
+	check(Errors.message(oversized) == "本机没有可解码视频 AV1 7680×7680 59.94fps 的硬件解码器。", "Missing hardware decoder is named")
+	check("解码器：无硬件解码器 · video/av01 · Quest 2" in Errors.details(oversized), "Details say no hardware decoder")
+	check(Errors.message({"reason": "resolution_unsupported"}) == Errors.REASONS.resolution_unsupported,"Without parameters the fixed reason remains")
 	main.free(); menu.free(); video.free()
 	if failures.is_empty(): print("Playback error checks passed: ", checks); quit(0)
 	else:

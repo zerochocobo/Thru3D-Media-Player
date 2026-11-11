@@ -48,8 +48,41 @@ test('visible second players and ads cannot borrow the current clip declaration'
   const v=video(),ad=video({currentSrc:'https://ad.example/ad.mp4',duration:6});assert.equal(t.binding(v,data(),[request()],page,[v,ad]),null);
   ad.style={display:'none'};assert.equal(t.binding(v,data(),[request()],page,[v,ad]).id,'PublicClip');
 });
+test('integer catalogue seconds match the decoded floor without widening fractional or preview mismatches',()=>{
+  const declared=parts();declared[1].data.clip.durationSeconds=15;
+  const current=video({duration:15.782942});
+  assert.equal(t.binding(current,data(declared),[request()],page,[current]).expected_duration,15);
+  for(const duration of [14,16,3601]){
+    const v=video({duration});assert.equal(t.binding(v,data(declared),[request()],page,[v]),null);
+  }
+  declared[1].data.clip.durationSeconds=15.1;
+  assert.equal(t.binding(current,data(declared),[request()],page,[current]),null);
+  declared[1].data.clip.durationSeconds=15.6;
+  assert.ok(t.binding(current,data(declared),[request()],page,[current]));
+});
 test('GraphQL errors, oversize input and conflicting current clip identities stay unbound',()=>{
   const broken=parts();broken[0].errors=[{message:'restricted'}];assert.equal(data(broken).length,0);
   assert.equal(t.metadata(' '.repeat(2*1024*1024+1),page).length,0);
   const ambiguous=parts();ambiguous.push({data:{clip:{id:'999',slug:'PublicClip',durationSeconds:32}}});assert.equal(data(ambiguous).length,0);
+});
+const assetSource='https://actual-codec-related.example/current-hevc.mp4',assetSigned=assetSource+'?token=opaque%20value&sig=exact';
+function assetParts(){const body=parts();body[0].data.clip.assets=[{id:'asset1',videoQualities:[{quality:'1080',sourceURL:assetSource}]}];return body;}
+test('actual clip asset variants join the same clip duration and exact signed request',()=>{
+  const rows=data(assetParts(),[request({url:assetSigned})]);assert.equal(rows.length,1);assert.equal(rows[0].source,assetSigned);assert.equal(rows[0].qualities[0],1080);
+  const current=video({currentSrc:assetSigned});assert.equal(t.binding(current,rows,[request({url:assetSigned})],page,[current]).id,'PublicClip');
+  assert.equal(data(assetParts()).length,1,'the existing top-level file remains available');
+  const wrong=assetParts();wrong[1].data.clip.id='OtherNumericId';assert.equal(data(wrong,[request({url:assetSigned})]).length,0);
+  assert.equal(data(assetParts(),[request({url:assetSigned.replace('exact','wrong')})]).length,0);
+});
+test('download and unrelated asset fields never declare playback sources',()=>{
+  for(const extra of [{sourceURL:assetSource},{downloadQualities:[{quality:'1080',sourceURL:assetSource}]},{nested:{videoQualities:[{quality:'1080',sourceURL:assetSource}]}}]){
+    const body=parts();body[0].data.clip.assets=[extra];assert.equal(data(body,[request({url:assetSigned})]).length,0);
+  }
+});
+test('protected, ad, live and oversized asset lists cannot bind the selected file',()=>{
+  for(const marker of ['drm','hasDrm','isDrm','encrypted','isEncrypted','isProtected','isAd','isLive']){
+    const body=assetParts();body[0].data.clip.assets[0][marker]=true;assert.equal(data(body,[request({url:assetSigned})]).length,0,marker);
+  }
+  const many=assetParts();many[0].data.clip.assets=Array.from({length:9},()=>many[0].data.clip.assets[0]);assert.equal(data(many,[request({url:assetSigned})]).length,0);
+  const rows=assetParts();rows[0].data.clip.assets[0].videoQualities=Array.from({length:33},()=>({quality:'1080',sourceURL:assetSource}));assert.equal(data(rows,[request({url:assetSigned})]).length,0);
 });

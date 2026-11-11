@@ -1,5 +1,6 @@
 extends "res://scripts/media_surface.gd"
 var source_location := {}
+const MediaUri := preload("res://scripts/media_uri.gd")
 const StreamProjection := preload("res://scripts/stream_projection.gd")
 var _stream_projection := {}
 var _stream_mesh: ArrayMesh
@@ -244,9 +245,9 @@ var subtitle_line := 0:
 var subtitle_flat_position := 0.0:
 	set(value): subtitle_flat_position = clampf(value, 0.0, 1.0) if is_finite(value) else 0.0
 var _subtitle_surface: MeshInstance3D
-var _subtitle_curve_mesh: ArrayMesh
-var _subtitle_curve_key := Vector3.ZERO
-var _subtitle_curve_source: Mesh
+var _subtitle_mesh: ArrayMesh
+var _subtitle_mesh_key := Vector4.ZERO
+var _subtitle_mesh_source: Mesh
 var _subtitle_patch: QuadMesh
 var _subtitle_material: ShaderMaterial
 var caption: Label3D
@@ -877,7 +878,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_capture_layout_pending = restore_mode
 	_capture_preference_exists = not mode_memory.lookup(uri).is_empty()
 	# Alpha-packed and Alpha-wanted files say so in their names (PTMediaServer / DeoVR markers).
-	_layout_basename = basename if not basename.is_empty() else (title if not title.is_empty() else uri.uri_decode().get_file())
+	_layout_basename = basename if not basename.is_empty() else (title if not title.is_empty() else MediaUri.filename(uri))
 	var stated := Naming.from_metadata(_layout_basename, metadata)
 	if uri.begins_with("medialib://"): stated.erase("alpha")
 	# A transient transport marker is not a recognized video format.
@@ -984,11 +985,11 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	if not basename.is_empty(): _bookmark_metadata.basename = basename
 	if str(_bookmark_metadata.get("basename", "")).is_empty():
 		if uri.begins_with("file://") or uri.begins_with("smb://") or uri.begins_with("cloud://"):
-			_bookmark_metadata.basename = uri.uri_decode().get_file()
+			_bookmark_metadata.basename = MediaUri.filename(uri)
 		elif uri.begins_with("content://"):
 			_bookmark_metadata.basename = title
 	if uri.begins_with("file://"):
-		var source := FileAccess.open(uri.trim_prefix("file://").uri_decode(), FileAccess.READ)
+		var source := FileAccess.open(MediaUri.decode_path(uri.trim_prefix("file://")), FileAccess.READ)
 		if source: _bookmark_metadata.size = source.get_length()
 	_bookmark_resolve()
 	# Unknown sources first complete the existing layout detection, so recognized VR/stereo never
@@ -1583,6 +1584,7 @@ func _set_backend_playing(id: int, playing: bool) -> void:
 	if platform: platform.set_mpv_playing(id, playing and not vr_passthrough.active())
 
 func toggle_play() -> void:
+	if not cast_allows("play"): return
 	if vr_passthrough.active(): return
 	if bool(narration.clone_state.get("opened", false)): return
 	if media.state == "ended":
@@ -2270,9 +2272,7 @@ func _auto_select_subtitle() -> void:
 	if selected > 0 and set_subtitle_track(selected, false): _subtitle_auto_pending = false
 
 static func _subtitle_filename(location: String) -> String:
-	if location.contains("://"):
-		return location.get_slice("?", 0).get_slice("#", 0).get_file().uri_decode().to_lower()
-	return location.get_file().to_lower()
+	return MediaUri.filename(location).to_lower()
 
 static func _subtitle_language(track: Dictionary) -> String:
 	var declared := str(track.get("server_language", track.get("language", ""))).strip_edges().to_lower()
@@ -2399,15 +2399,18 @@ func _place_caption() -> void:
 	if geometry == Geometry.Geometry.FLAT:
 		# Ordinary video captions stay on the screen, independent of immersive preferences.
 		var pose := subtitle_transform()
+		var screen := _upright_subtitle_size()
 		caption.font_size = roundi(40 * subtitle_size)
 		caption.outline_size = maxi(2, roundi(8 * subtitle_size))
 		var pixel_size := 0.0016 * screen_scale
 		caption.pixel_size = pixel_size
-		var margin := minf(0.06 * screen_scale, _flat.size.y * 0.1)
+		var margin := minf(0.06 * screen_scale, screen.y * 0.1)
 		# Include the actual multiline text height in the usable travel range.
-		caption.width = _flat.size.x * 0.9 / pixel_size
-		var text_height := minf(_flat.size.y - 2 * margin, caption.get_aabb().size.y)
-		var y := lerpf(-_flat.size.y * 0.5 + margin, _flat.size.y * 0.5 - margin - maxf(0.064 * subtitle_size * screen_scale, text_height), subtitle_flat_position)
+		caption.width = screen.x * 0.9 / pixel_size
+		var text_height := minf(screen.y - 2 * margin, caption.get_aabb().size.y)
+		var bottom := -screen.y * 0.5 + margin
+		var top := screen.y * 0.5 - margin - maxf(0.064 * subtitle_size * screen_scale, text_height)
+		var y := lerpf(bottom, top, subtitle_flat_position)
 		var anchor := pose * Vector3(0, y, 0.01)
 		caption.billboard = BaseMaterial3D.BILLBOARD_DISABLED
 		caption.layers = 1
@@ -3154,6 +3157,8 @@ func _check_playback_timeout(now_ms: int) -> void:
 ## Sound can keep playing while the picture and MPV's clock stand still (decoder or audio-clock
 ## stall). Reopen once at the shown position, keeping every choice, instead of freezing for good.
 func _check_playback_stall(now_ms: int) -> void:
+	# A static phone screen can legitimately stop producing frames. Its pipe cannot seek/reopen.
+	if local_uri.begins_with("airplayvideo://"): return
 	var details: Dictionary = media.playback.get("details", {})
 	# A disc menu waits on a still picture by design.
 	var active := requested_play and media.state == "playing" and media.frame_counter > 0 and not _waiting_first and not disc.menu_session \
@@ -3525,30 +3530,51 @@ func _sync_subtitle_surface() -> void:
 			_subtitle_patch.size = Vector2.ONE * half * 2.0
 		_subtitle_surface.mesh = _subtitle_patch
 		_subtitle_surface.global_transform = (to_patch as Transform3D).affine_inverse()
-	for key in ["subtitle_texture", "subtitle_enabled", "subtitle_world_to_patch", "subtitle_patch_half_extent", "bitmap_subtitle_texture", "bitmap_subtitle_enabled", "bitmap_subtitle_rect", "rotation_degrees"]:
+	for key in ["subtitle_texture", "subtitle_enabled", "subtitle_world_to_patch", "subtitle_patch_half_extent", "bitmap_subtitle_texture", "bitmap_subtitle_enabled", "rotation_degrees"]:
 		_subtitle_material.set_shader_parameter(key, material.get_shader_parameter(key))
+	var rect: Variant = material.get_shader_parameter("bitmap_subtitle_rect")
+	if rect is Vector4 and geometry == Geometry.Geometry.FLAT:
+		rect = _upright_bitmap_rect(rect, _upright_subtitle_size())
+	_subtitle_material.set_shader_parameter("bitmap_subtitle_rect", rect)
+
+func _upright_subtitle_size() -> Vector2:
+	if is_zero_approx(screen_rotation): return _flat.size
+	var rotation := deg_to_rad(screen_rotation)
+	var bounds := Vector2(curve_span(_flat.size, rotation), curve_span(_flat.size, rotation + PI * 0.5))
+	if disc.menu_session: return bounds
+	# Quarter turns use the whole picture. At an oblique angle fit an upright rectangle inside it.
+	var span := Vector2(curve_span(bounds, rotation), curve_span(bounds, rotation + PI * 0.5))
+	return bounds * minf(_flat.size.x / span.x, _flat.size.y / span.y)
+
+func _upright_bitmap_rect(rect: Vector4, screen: Vector2) -> Vector4:
+	if disc.menu_session or screen.is_equal_approx(_flat.size): return rect
+	# Preserve the cue's pixel aspect, horizontal centre and slider-controlled baseline.
+	var fit := minf(screen.x / _flat.size.x, screen.y / _flat.size.y)
+	var extent := Vector2(rect.z, rect.w) * _flat.size * fit / screen
+	return Vector4(rect.x + (rect.z - extent.x) * 0.5,
+		rect.y + (rect.w - extent.y) * (1.0 - subtitle_flat_position), extent.x, extent.y)
 
 func _upright_subtitle_mesh() -> Mesh:
-	if portrait.active or screen_curve <= 0.0: return _flat
+	var source: Mesh = _flat if portrait.active or screen_curve <= 0.0 else panel.mesh
 	var rotation := deg_to_rad(screen_rotation)
-	if absf(sin(rotation)) < 0.00001: return panel.mesh
+	if absf(sin(rotation)) < 0.00001 or (disc.menu_session and source == _flat): return source
 	# Reuse the exact movie surface in the unrolled caption frame. Only the bitmap
-	# UVs use its upright envelope; spherical/vertical geometry must not be replaced by a cylinder.
-	var key := Vector3(screen_rotation, _flat.size.x, _flat.size.y)
-	if not _subtitle_curve_mesh or _subtitle_curve_source != panel.mesh or not _subtitle_curve_key.is_equal_approx(key):
-		_subtitle_curve_key = key
-		_subtitle_curve_source = panel.mesh
-		var arrays := panel.mesh.surface_get_arrays(0)
+	# UVs change so that the caption can stay upright on any curve.
+	var key := Vector4(screen_rotation, _flat.size.x, _flat.size.y, float(disc.menu_session))
+	if not _subtitle_mesh or _subtitle_mesh_source != source or not _subtitle_mesh_key.is_equal_approx(key):
+		_subtitle_mesh_key = key
+		_subtitle_mesh_source = source
+		var arrays := source.surface_get_arrays(0)
 		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 		var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
-		var size := Vector2(curve_span(_flat.size, rotation), curve_span(_flat.size, rotation + PI * 0.5))
+		var size := _upright_subtitle_size()
 		for index in vertices.size():
 			vertices[index] = vertices[index].rotated(Vector3.FORWARD, rotation)
 			var at := Vector3((uv[index].x - 0.5) * _flat.size.x, (0.5 - uv[index].y) * _flat.size.y, 0).rotated(Vector3.FORWARD, rotation)
 			uv[index] = Vector2(at.x / size.x + 0.5, 0.5 - at.y / size.y)
 		arrays[Mesh.ARRAY_VERTEX] = vertices; arrays[Mesh.ARRAY_TEX_UV] = uv
-		_subtitle_curve_mesh = ArrayMesh.new(); _subtitle_curve_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	return _subtitle_curve_mesh
+		_subtitle_mesh = ArrayMesh.new(); _subtitle_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return _subtitle_mesh
 
 func _pixel_aspect() -> float:
 	return float(media.format.get("pixel_aspect", 1.0))
@@ -4314,7 +4340,7 @@ func _flat_text_layer_extras(origin: XROrigin3D) -> Array:
 		add_child(_flat_subtitle_canvas)
 	# A changed cue uses the original glyphs until its new capture is ready, never the old cue.
 	if not _flat_subtitle_canvas.request(caption, video_layer.runtime_image_size): return []
-	if not _flat_subtitle_canvas.fits_surface(caption, subtitle_transform(), _flat.size): return []
+	if not _flat_subtitle_canvas.fits_surface(caption, subtitle_transform(), _upright_subtitle_size()): return []
 	if _flat_subtitle_layer_version != _flat_subtitle_canvas.version:
 		_subtitle_layer_version = -1
 		if not _copy_subtitle_canvas(_flat_subtitle_canvas.viewport):
@@ -4359,7 +4385,9 @@ func _bitmap_layer_extras(origin: XROrigin3D) -> Array:
 		_bitmap_layer_texture = texture
 		_bitmap_layer_size = bucket
 	# The cue's part of the surface, clipped to it as the surface clipped it.
-	var cue := Rect2(rect.x, rect.y, rect.z, rect.w)
+	var upright_size := _upright_subtitle_size()
+	var upright_rect := _upright_bitmap_rect(rect, upright_size)
+	var cue := Rect2(upright_rect.x, upright_rect.y, upright_rect.z, upright_rect.w)
 	var shown := cue.intersection(Rect2(0, 0, 1, 1))
 	if not shown.has_area(): return []
 	var start := ((shown.position - cue.position) / cue.size * Vector2(size)).round()
@@ -4367,7 +4395,7 @@ func _bitmap_layer_extras(origin: XROrigin3D) -> Array:
 	var pose := subtitle_transform()
 	var scale := Vector2(pose.basis.x.length(), pose.basis.y.length())
 	pose.basis = pose.basis.orthonormalized()
-	var screen := _flat.size * scale
+	var screen := upright_size * scale
 	var middle := (shown.get_center() - Vector2(0.5, 0.5)) * screen
 	var extent := shown.size * screen
 	var values: PackedFloat32Array
@@ -4489,6 +4517,9 @@ func _reopen_on_eye_buffer(position_ms: int, trigger: String = "") -> void:
 ## Reopen the shown file at its position (layer: may decode into the compositor layer).
 ## trigger: the caller, for the exported log only.
 func _reopen_at(position_ms: int, layer: bool, trigger: String = "") -> void:
+	if local_uri.begins_with("airplayvideo://"):
+		_request_revision()
+		return
 	if local_uri.is_empty():
 		return
 	if mode_transition.guard_reopen(position_ms, layer): return

@@ -22,7 +22,7 @@ static func restore(settings: ConfigFile) -> void:
 static func is_local(uri: String) -> bool:
 	if uri.begins_with("archive-image://"): return is_local(uri.get_slice("/", 2).uri_decode())
 	if sources.has(uri): return bool(sources[uri])
-	if uri.get_file().get_slice("?", 0).to_lower().ends_with(".strm"): return false
+	if preload("res://scripts/media_uri.gd").filename(uri).to_lower().ends_with(".strm"): return false
 	return uri.begins_with("file://") or uri.begins_with("usb://") or uri.begins_with("content://media/") or uri.begins_with("content://com.android.externalstorage.documents/")
 
 static func record_allowed(uri: String) -> bool:

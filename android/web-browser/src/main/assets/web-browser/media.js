@@ -637,7 +637,7 @@
       overlay.style.cssText='position:fixed;pointer-events:none;z-index:2147482990;';mount.append(overlay);
       const activate=()=>{
         const current=iqiyiButton?.target;
-        if(closed||suspended||pauseLease||!current||!iqiyiEnabled||!iqiyiActionEnabled||current.video.currentSrc!==current.source||mediaEpoch.get(current.video)?.id!==current.epoch)return;
+        if(closed||suspended||pauseLease||!current||!iqiyiEnabled||!iqiyiActionEnabled||current.page!==location.href||current.video.currentSrc!==current.source||mediaEpoch.get(current.video)?.id!==current.epoch)return;
         iqiyiReturnPause=null;iqiyiChoice={...current,at:Date.now(),request:++iqiyiClick};changed();
       };
       const control=Thru3DPlayButton.create(document,overlay,'iqiyi',activate);
@@ -962,7 +962,7 @@
         Thru3DYouku.sameManifest(t.url,c.url)||Thru3DYouku.sameManifest(t.url,c.original_url))));
       if(niconicoEnabled&&!protectedMedia)requests=network.filter(c=>niconicoPrimary===video&&niconicoData.some(d=>d.id===Thru3DNiconico.page(location.href)&&
         (c.url===d.root||d.variants.some(t=>c.url===t.video||c.url===t.audio||t.resources.includes(c.url)))));
-      if(iqiyiEnabled&&pageIqiyi?.ready&&pageIqiyi.src===currentSource)requests=network.filter(c=>Thru3DIqiyi.matches(pageIqiyi,c));
+      if(iqiyiEnabled&&!protectedMedia&&pageIqiyi?.ready&&pageIqiyi.src===currentSource)requests=network.filter(c=>Thru3DIqiyi.matches(pageIqiyi,c));
       let weibo = null;
       if (weiboEnabled && !protectedMedia && !currentSource.startsWith('blob:')) {
         const retained = weiboEvidence.get(video);
@@ -1163,7 +1163,7 @@
         time: 0, duration: 0, playing: false });
     }
     const controlled = [...videos.keys()].filter(v => v.isConnected && (v.currentSrc || v.readyState > 0));
-    try { port.postMessage({ type: "media", videos: items,
+    const report = { type: "media", videos: items,
       ...(mangoEnabled?{mango_capture:mangoCapture}:{}),
       ...(youkuEnabled?{youku_capture:youkuCapture}:{}),
       ...(niconicoEnabled?{niconico_capture:niconicoCapture}:{}),
@@ -1180,7 +1180,8 @@
       ...(dailymotionEnabled?{dailymotion_capture:dailymotionCapture}:{}),
       ...(tencentEnabled ? {tencent_capture:{...tencentCapture,...pageTencent.capture,status:pageTencent.data?'normalized':tencentStatus,metadata:tencentRecords.length,requests:network.length}} : {}),
       suspended, pause_token: pauseLease?.token || 0,
-      pause_has_media: controlled.length > 0, pause_held: !!pauseLease && controlled.every(v => v.paused || v.ended) }); }
+      pause_has_media: controlled.length > 0, pause_held: !!pauseLease && controlled.every(v => v.paused || v.ended) };
+    try { port.postMessage(iqiyiEnabled ? Thru3DIqiyi.fitMediaReport(report) : report); }
     catch (_) { closed = true; }
   };
   const changed = () => {

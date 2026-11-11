@@ -375,11 +375,15 @@ func draw() -> void:
 			menu._button(BASE + 15, I18n.t("Reset password"), Vector2(0.4, -0.3), Vector2(0.4, 0.08), enabled)
 	elif view == "web": draw_web()
 	var error := str(data.get("error", ""))
+	var error_code := str(data.get("error_code", ""))
 	if error.begins_with("Sign-in declined ("):
 		error = I18n.t("Sign-in declined (%s).").replace("%s", error.trim_prefix("Sign-in declined (").trim_suffix(")."))
 	else: error = I18n.t(error)
 	if bool(data.get("busy", false)) and view != "plex_link": error = I18n.t("Connecting…")
-	if not error.is_empty(): menu._label(error, Vector3(0.15, 0.56 if compact else 0.375, 0.006), 17)
+	if not error.is_empty():
+		var label: Label3D = menu._label(error + (" (" + error_code + ")" if not error_code.is_empty() else ""),
+			Vector3(0.15, 0.56 if compact else 0.375, 0.006), 17)
+		if not error_code.is_empty(): label.modulate = UiTheme.color("danger")
 
 func _editing_id() -> bool: return bool(data.get("editing_account", false))
 func draw_fields(enabled: bool) -> void:
@@ -476,7 +480,11 @@ func draw_web() -> void:
 	var error := str(data.get("error", ""))
 	if data.get("busy", false): status = "Connecting…"
 	elif not error.is_empty(): status = error
-	if not status.is_empty(): menu._label(I18n.t(status), Vector3(0, -0.56, 0.009), 17)
+	if not status.is_empty():
+		var code := str(data.get("error_code", "")) if not data.get("busy", false) else ""
+		var label: Label3D = menu._label(I18n.t(status) + (" (" + code + ")" if not code.is_empty() else ""),
+			Vector3(0, -0.56, 0.009), 17)
+		if not code.is_empty(): label.modulate = UiTheme.color("danger")
 
 func web_action(action_name: String, point: Vector2 = Vector2.ZERO, text: String = "") -> void:
 	if web_gecko() and action_name in ["back", "reload", "desktop", "mobile", "legacy"]:
@@ -509,17 +517,24 @@ func draw_gecko() -> void:
 		var focused: bool = item[0] == BASE + 29 and (web_selecting or web_focus != Focus.FULL)
 		menu._button(item[0], "", Vector2((i - (actions.size() - 1) * 0.5) * pitch, top + 0.115), Vector2(0.15, 0.15), web_hand.is_empty(), item[1], focused)
 		menu._tips[item[0]] = I18n.t(item[2])
-	menu._button(WEB, "", rect.get_center(), rect.size, not bool(info.get("failed", false)))
+	menu._button(WEB, "", rect.get_center(), rect.size, not bool(info.get("failed", false)) and str(data.get("error_code", "")).is_empty())
 	menu._buttons.back().node.set_meta("menu_eye_buffer", true)
 	menu._buttons.back().node.position.z = 0.007
 	if info.get("editing", false):
 		menu._button(BASE + 20, "", Vector2(chrome_width * 0.5 - 0.19, frame.position.y - 0.12), Vector2(0.15, 0.15), true, "keyboard_hide")
 	var message := str(info.get("status", ""))
-	if data.get("busy", false): message = "Connecting…"
-	elif not str(data.get("error", "")).is_empty(): message = str(data.error)
+	var error_code := str(info.get("error_code", ""))
+	if data.get("busy", false): message = "Connecting…"; error_code = ""
+	elif not str(data.get("error", "")).is_empty():
+		message = str(data.error)
+		error_code = str(data.get("error_code", ""))
 	elif info.get("failed", false) and message.is_empty(): message = "Page unavailable. Try reloading."
 	elif not _web_surface_status.is_empty(): message = "Web sign-in is unavailable on this device."
-	if not message.is_empty(): menu._label(I18n.t(message), Vector3(0, frame.position.y - 0.12, 0.009), 18)
+	if not message.is_empty():
+		var label: Label3D = menu._label(I18n.t(message), Vector3(0, frame.position.y - 0.12, 0.009), 18)
+		if not error_code.is_empty():
+			label.modulate = UiTheme.color("danger")
+			menu._label(error_code, Vector3(0, frame.position.y - 0.19, 0.009), 16).modulate = label.modulate
 	if info.get("loading", false):
 		var length := frame.size.x * clampf(float(info.get("progress", 0)) / 100, 0.02, 1.0)
 		menu._decoration(Vector2(length, 0.007), Vector2(frame.position.x + length * 0.5, frame.position.y - 0.012), menu.ACCENT)

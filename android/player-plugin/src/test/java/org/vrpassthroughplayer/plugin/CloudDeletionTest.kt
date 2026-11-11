@@ -56,10 +56,16 @@ class CloudDeletionTest {
         try { block(); fail("Expected guarded refusal") } catch (_: IllegalArgumentException) {} catch (_: IllegalStateException) {}
     }
     @Test fun checkedSingleWriteNeedsNoDuplicateReadOnConfirmedSuccess() {
-        val f = item("中文 #%.mp4", "9007199254740993")
-        val client = Fake().apply { folders["/"]!!.add(f) }
-        assertTrue(CloudDeletion(client).run("/"+f.name, request(f), false, false).getBoolean("deleted"))
-        assertEquals(1, client.writes); assertTrue(client.reads.isEmpty())
+        for (extension in listOf("mp4", "mkv", "iso", "jpg", "m4a", "pdf", "cbz", "strm")) {
+            val f = item("中文 + #%2F?.$extension", "9007199254740993")
+            val client = Fake().apply { folders["/"]!!.add(f) }
+            assertTrue(CloudDeletion(client).run("/"+f.name, request(f), false, false).getBoolean("deleted"))
+            assertEquals(1, client.writes); assertTrue(client.reads.isEmpty())
+        }
+        val document = item("photo.jpg#notes.txt", "5")
+        val client = Fake().apply { folders["/"]!!.add(document) }
+        rejected { CloudDeletion(client).run(document.id, request(document), false, false) }
+        assertEquals(0, client.writes)
     }
     @Test fun targetedInspectionNeverReadsUnrelatedPages() {
         val file=item("a.mp4","9")

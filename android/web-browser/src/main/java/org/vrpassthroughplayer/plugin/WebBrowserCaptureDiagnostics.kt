@@ -19,7 +19,7 @@ internal object WebBrowserCaptureDiagnostics {
         val data=item.optJSONObject(site+"_diagnostics") ?: JSONObject()
         val result=JSONObject().put("status",data.optString("status").takeIf{it in allowed} ?: "unknown")
         val flags=if(site=="tiktok")listOf("advertisement") else listOf("capture_ready","binding_ready","source_matches",
-            "dimensions_match","duration_matches","track_drm","root_drm","dispatch_ready","timeline_matches")
+            "dimensions_match","duration_matches","track_drm","root_drm","dispatch_ready","timeline_matches","has_segment_list")
         for(key in flags)if(data.opt(key) is Boolean)result.put(key,data.getBoolean(key))
         val fields=if(site=="tiktok")mapOf("expected_width" to 8192.0,"expected_height" to 8192.0,
             "expected_duration" to 86400.0,"decoded_duration" to 86400.0)
@@ -30,6 +30,10 @@ internal object WebBrowserCaptureDiagnostics {
                 (key=="decoded_duration" || value==kotlin.math.floor(value)))result.put(key,value)
         }
         if(site=="tiktok")data.optString("public_id").takeIf{it.matches(Regex("[1-9][0-9]{14,19}"))}?.let{result.put("public_id",it)}
+        if(site=="iqiyi" && result.getString("status")=="unsupported_container") {
+            data.optString("container").takeIf{it in setOf("ts","265ts","f4v","m4s","mp4","missing","other")}?.let{result.put("container",it)}
+            data.optString("declaration").takeIf{it in setOf("hls","json_object","json_array","url","missing","empty","other")}?.let{result.put("declaration",it)}
+        }
         return result
     }
 }

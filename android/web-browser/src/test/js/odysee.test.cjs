@@ -86,6 +86,28 @@ test('HLS reacquires only the new committed claim after the same video changes s
   f.requests[0].url=f.video._hls._url;assert.equal(O.binding(f.video,f.requests,f.document,[f.video]).claim_id,f.owner.claimId);
 });
 
+test('an encoded Chinese slug matches the same decoded claim and original requests',()=>{
+  const name='西港-黃澤坤-太祖拳雙肩-Kung-Fu_1080p_watermarked_trimmed',encoded=encodeURIComponent(name);
+  const f=hlsFixture();f.document.location.href=page.replace('PublicClip',encoded);
+  for(const variant of [name,encoded]){
+    f.owner.uri='lbry://@PublicChannel#2/'+variant+'#1';
+    const current=O.binding(f.video,f.requests,f.document,[f.video]);
+    assert.equal(current.id,'@PublicChannel:2/'+encoded+':1');assert.equal(current.root,f.root);
+  }
+  f.owner.uri='lbry://@PublicChannel#2/'+name+'-別片#1';
+  assert.equal(O.binding(f.video,f.requests,f.document,[f.video]),null);
+  const g=fixture();g.document.location.href=g.metadata.url=g.canonical[0].href=f.document.location.href;
+  g.metadata.contentUrl=declared.replace('PublicClip',encoded);
+  assert.equal(O.binding(g.video,g.requests,g.document,[g.video]).source,source);
+});
+
+test('escaped separators, malformed UTF-8 and double-encoded slugs stay ineligible',()=>{
+  for(const bad of ['%2FOther','%3A1','%23Other','%5COther','%2E%2E-hidden','%E8%FF','%25E8','Title%00']){
+    assert.equal(O.page(page.replace('PublicClip',bad)),null);
+    assert.equal(O.file(declared.replace('PublicClip',bad)),null);
+  }
+});
+
 function renderedFileFixture(){
   const f=hlsFixture();f.video.currentSrc=source;delete f.video._hls;f.video.__reactProps$test.src=source;
   f.requests=[{kind:'file',url:source,at:Date.now()}];f.scripts.length=0;f.canonical.length=0;return f;

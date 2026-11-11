@@ -32,6 +32,9 @@ class StrmFileTest {
         assertEquals("file:///storage/a.mkv", target("file:///storage/Movies/a.strm", "../a.mkv"))
         assertEquals("file:///storage/a.mkv", target("file:///storage/Movies/a.strm", "/storage/a.mkv"))
         assertEquals("file:///storage/Movies/a.mkv", target("file:///storage/Movies/a.strm", ".\\a.mkv"))
+        val name = "e\u0301 + #?%25.mkv"
+        assertEquals("/storage/Movies/$name", java.net.URI(target("file:///storage/Movies/a.strm", name)).path)
+        assertEquals("/index/$name", java.net.URI(target("cloud://mount-id/index/a.strm", name)).path)
     }
     @Test fun httpRelativeAndExtensionlessSignedAddresses() {
         assertEquals("https://nas/media/movie%20one.mkv", target("https://nas/media/a.strm?key=old", "movie one.mkv"))

@@ -18,12 +18,18 @@ static func release_host(host: Node) -> void:
 	if is_instance_valid(popup) and popup.head_provider.get_object()==host:
 		popup.head_provider=Callable()
 
-static func available() -> bool: return quest and I18n.language == "zh"
+static func is_generic_openxr() -> bool: return android and not quest and not pico
+static func _quest_available() -> bool: return quest and I18n.language == "zh"
+static func available() -> bool: return _quest_available() or is_generic_openxr()
+static func app_setting_key() -> String:
+	return "openxr_chinese_keyboard" if is_generic_openxr() else "quest_chinese_keyboard"
+
 static func enabled() -> bool: return selected and available()
 ## Generic Android OpenXR runtimes may not composite the system IME in VR.
-## Keep the established Quest/PICO routes and the app-field opt-in unchanged.
-static func browser_choice_available() -> bool: return android and not quest and not pico
-static func browser_enabled() -> bool: return enabled() or (browser_choice_available() and browser_keyboard == "builtin")
+static func browser_choice_available() -> bool: return is_generic_openxr()
+static func browser_enabled() -> bool:
+	if browser_choice_available(): return browser_keyboard == "builtin"
+	return _quest_available() and selected
 static func active() -> bool: return is_instance_valid(popup) and popup.visible
 
 static func configure_browser(value: String) -> void:
@@ -41,12 +47,12 @@ static func ensure(parent: Node) -> Node3D:
 		parent.add_child(popup)
 	return popup
 
-static func open(host: Node, id: String, action: Callable, valid: Callable, preview: Callable = Callable(), english: bool = false) -> void:
+static func open(host: Node, id: String, action: Callable, valid: Callable, preview: Callable = Callable(), english: bool = false, allow_system: bool = false) -> void:
 	var keyboard := ensure(host.get_tree().root)
 	keyboard.head_provider = head_provider
 	Keyboard.Pinyin.begin_load()
 	if active(): keyboard.close()
-	keyboard.present(id, action, valid, preview, english)
+	keyboard.present(id, action, valid, preview, english, allow_system)
 	var head: Variant = head_provider.call() if head_provider.is_valid() else null
 	if head is Transform3D:
 		var frame := Keyboard.Move.menu_head(head)

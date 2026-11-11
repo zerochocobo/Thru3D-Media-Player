@@ -76,11 +76,14 @@ func run() -> void:
 		var point: Vector2 = canvas.rect.get_center()
 		check(pose.origin.is_equal_approx(video.caption.to_global(Vector3(point.x, point.y, 0) * video.caption.pixel_size)), "Layer centre follows original label coordinate system")
 	video.set_screen_scale(1.0)
-	for rotation in [-45.0, 0.0, 45.0]:
+	for rotation in [-90.0, 45.0, 90.0]:
 		video.set_screen_rotation(rotation); video._place_caption(); video._update_layer()
-		check(canvas.pose(video.caption).basis.is_equal_approx(video.caption.global_basis), "Source rotation preserves upright subtitle basis")
+		await frames(4); video._place_caption(); video._update_layer()
+		check(video._flat_subtitle_on_layer and canvas.pose(video.caption).basis.is_equal_approx(baseline_pose.basis),
+			"Rotated in-screen text reaches the compositor with upright glyphs: %s" % rotation)
 	video.set_screen_rotation(0.0)
 	video.set_screen_curve(0.35); video._place_caption(); video._update_layer()
+	await frames(4); video._update_layer()
 	check(video._flat_subtitle_on_layer and layers.shown[Layer.STRIDE] == 0, "Text stays on its original flat plane on a curved screen")
 	video.set_screen_curve(0.0)
 	for quality in 3:

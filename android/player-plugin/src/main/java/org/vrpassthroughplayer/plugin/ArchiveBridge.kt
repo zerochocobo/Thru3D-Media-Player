@@ -50,14 +50,15 @@ internal class ArchiveBridge(private val context: () -> Context?, private val so
             if (serial != generation.get() || closed) return@execute
             val cancel = CloudCancellation(); cancellation = cancel
             val result = try {
-                check(ArchiveKinds.supported(title.ifEmpty { Uri.parse(uri).lastPathSegment.orEmpty() })) { "Archive format or compression is not supported" }
+                val source = Uri.parse(uri)
+                val name = title.ifEmpty { if (source.scheme == "smb") uri.substringAfterLast('/') else source.lastPathSegment.orEmpty() }
+                check(ArchiveKinds.supported(name)) { "Archive format or compression is not supported" }
                 require(password.length <= 512)
                 val candidate = if (password.isNotEmpty()) password else runCatching {
                     val book = passwords("list", "").optJSONArray("passwords") ?: JSONArray()
                     unlocks.password(uri, (0 until book.length()).map { book.getString(it) }.toSet())
                 }.getOrDefault("")
-                CrashTrail.mark("archive.open", "kind=" + title.ifEmpty { Uri.parse(uri).lastPathSegment.orEmpty() }.substringAfterLast('.', "").lowercase().take(6) +
-                    " from=${Uri.parse(uri).scheme}")
+                CrashTrail.mark("archive.open", "kind=" + name.substringAfterLast('.', "").lowercase().take(6) + " from=${source.scheme}")
                 val cache = File(app().cacheDir, "comic-pages")
                 if (!cacheCleaned) {
                     // Disposable extracted pages and downloaded copies, never the user's original.
@@ -74,8 +75,8 @@ internal class ArchiveBridge(private val context: () -> Context?, private val so
                 }
                 val retained = sessionData?.takeIf { session.isNotEmpty() }
                 val data = retained?.let { JSONObject(it.toString()) }
-                    ?: core(JSONObject().put("op", "open").put("url", sourceLease).put("name", title.ifEmpty { Uri.parse(uri).lastPathSegment.orEmpty() })
-                        .put("password", candidate).put("remote", Uri.parse(uri).scheme !in setOf("file", "content", "usb") && !sources.cachedArchive(sourceLease))
+                    ?: core(JSONObject().put("op", "open").put("url", sourceLease).put("name", name)
+                        .put("password", candidate).put("remote", source.scheme !in setOf("file", "content", "usb") && !sources.cachedArchive(sourceLease))
                         .put("cache", cache.absolutePath), cancel)
                 session = data.getString("session")
                 if (serial != generation.get() || closed) throw InterruptedException()

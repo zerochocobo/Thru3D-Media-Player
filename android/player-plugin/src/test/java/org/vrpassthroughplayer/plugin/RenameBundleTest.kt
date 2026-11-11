@@ -16,6 +16,20 @@ class RenameBundleTest {
         for (name in listOf("../new", "CON", "new/part", ".", "new.", " name", "na?me"))
             assertThrows(IllegalArgumentException::class.java) { RenameBundle("old.mp4", name, listOf("old.mp4")) }
     }
+
+    @Test fun smbRenameMovesOnlyMatchingLiteralBasenamesAndKeepsTheirExtensions() {
+        val video = "原#片%2F.mp4"
+        val subtitle = "原#片%2F.srt"
+        val other = "原#片%252F.srt"
+        val bundle = RenameBundle(video, "新#片%2F", listOf(video, subtitle, other), allowHashAndPercent = true)
+        assertEquals(listOf(RenameBundle.Move(video, "新#片%2F.mp4"), RenameBundle.Move(subtitle, "新#片%2F.srt")), bundle.moves)
+        assertThrows(IllegalArgumentException::class.java) {
+            RenameBundle(video, "新#片%2F", listOf(video, "新#片%2f.MP4"), allowHashAndPercent = true)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RenameBundle(video, "新/片%2F", listOf(video), allowHashAndPercent = true)
+        }
+    }
     @Test fun rollsBackPriorMovesOnFailureAndReportsFailedRollback() {
         val bundle = RenameBundle("old.mp4", "new", listOf("old.mp4", "old.srt"))
         val moves = ArrayList<Pair<String, String>>()

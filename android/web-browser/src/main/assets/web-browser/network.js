@@ -144,13 +144,17 @@
         const sameIqiyi = iqiyi && state.iqiyi && Thru3DIqiyi.page(message.page)?.id===Thru3DIqiyi.page(state.page)?.id;
         const sameTwitch=twitch&&state.twitch&&Thru3DTwitch.page(message.page)===Thru3DTwitch.page(state.page)&&
           new URL(message.page).origin===new URL(state.page).origin;
+        // The site can reuse clip metadata when returning through its Clips tab.
+        // Keep declarations on this document's port, while dropping its prior file requests.
+        const twitchDocument=!!state.document&&s.frameId===0&&
+          ['https://www.twitch.tv','https://twitch.tv','https://clips.twitch.tv'].includes(new URL(s.url).origin);
         if (!sameBili) { responses?.cancel(state); state.biliStatus = 'idle'; state.biliResponses = new Map(); state.biliRequests = new Map(); state.biliViews = new Map(); }
         if (!sameDouyin) { douyinResponses?.cancel(state); state.douyinData = new Map(); state.douyinApiPaths = new Set(); }
         if (!sameTencent) { tencentResponses?.cancel(state); state.tencentData = new Map();state.tencentEnvelopes=new Map(); }
         if (!sameMango) mangoResponses?.cancel(state);
         if (!sameYouku) youkuResponses?.cancel(state);
         if (!sameNiconico) niconicoResponses?.cancel(state);
-        if (!sameTwitch) twitchResponses?.cancel(state);
+        if (!sameTwitch) twitchResponses?.cancel(state,twitchDocument);
         if (!sameNaver) naverResponses?.cancel(state);
         if (!sameBili && !sameDouyin && !sameTencent && !sameMango && !sameYouku && !sameIqiyi && !sameNiconico && !sameTwitch && !sameTikTok && !sameInstagram && !sameTed && !sameRedBull && !sameNaver && !sameReddit && !sameStreamable && !sameArchive && !sameOdysee && !sameDailymotion) state.items.clear();
         state.bilibili = bili;
@@ -200,11 +204,13 @@
       (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
     const sameNiconico=state?.niconico&&d.frameId===0&&typeof Thru3DNiconico!=='undefined'&&Thru3DNiconico.documentPage(d.documentUrl)&&
       (d.documentId&&state.document||d.documentUrl?.split('#')[0]===state.documentPage.split('#')[0]);
-    // Twitch removes tracking query parameters using replaceState. Gecko keeps
-    // the original document URL; the same public clip AND document UUID bind it.
+    // Gecko keeps the initial request document URL through homepage -> clip SPA
+    // navigation. Require its real UUID, current clip and same origin; accept
+    // only that exact initial URL or the current clip's tracking variation.
     const sameTwitch=state?.twitch&&d.frameId===0&&typeof Thru3DTwitch!=='undefined'&&
-      !!Thru3DTwitch.page(d.documentUrl)&&Thru3DTwitch.page(d.documentUrl)===Thru3DTwitch.page(state.page)&&
-      !!d.documentId&&d.documentId===state.document;
+      !!Thru3DTwitch.page(state.page)&&!!d.documentId&&d.documentId===state.document&&
+      Thru3DTwitch.address(d.documentUrl)?.origin===Thru3DTwitch.address(state.page)?.origin&&
+      (Thru3DTwitch.page(d.documentUrl)===Thru3DTwitch.page(state.page)||d.documentUrl.split('#')[0]===state.documentPage.split('#')[0]);
     const sameTikTok=state?.tiktok&&d.frameId===0&&typeof Thru3DTikTok!=='undefined'&&Thru3DTikTok.documentPage(d.documentUrl)&&
       (d.documentId&&state.document||d.documentUrl?.split('#')[0]===state.documentPage.split('#')[0]);
     const sameInstagram=state?.instagram&&d.frameId===0&&typeof Thru3DInstagram!=='undefined'&&Thru3DInstagram.documentPage(d.documentUrl)&&

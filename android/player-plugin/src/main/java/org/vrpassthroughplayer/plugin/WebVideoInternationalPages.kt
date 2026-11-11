@@ -66,8 +66,11 @@ internal object WebVideoInternationalPages {
             return page("rumble", id, "https://rumble.com$path")
         }
         if (host in setOf("odysee.com", "www.odysee.com")) {
-            require(match("/(?:@[A-Za-z0-9_.-]+(?::[a-fA-F0-9]+)?/)?[A-Za-z0-9_.-]+:[a-fA-F0-9]+/?") != null && !path.contains("..")) { "Choose an Odysee video" }
-            return page("odysee", path.trim('/'), "https://odysee.com${path.trimEnd('/')}")
+            if (match("/(?:@[A-Za-z0-9_.-]+(?::[a-fA-F0-9]+)?/)?[A-Za-z0-9_.-]+:[a-fA-F0-9]+/?") != null && !path.contains(".."))
+                return page("odysee", path.trim('/'), "https://odysee.com${path.trimEnd('/')}")
+            val url = URI("https://odysee.com${uri.rawPath.trimEnd('/')}").toASCIIString()
+            val id = WebBrowserOdysee.page(url) ?: error("Choose an Odysee video")
+            return page("odysee", id, url)
         }
         if (host in setOf("nicovideo.jp", "www.nicovideo.jp", "sp.nicovideo.jp", "nico.ms")) {
             val id = (if (host == "nico.ms") match("/((?:sm|so|nm)?[0-9]+)/?") else match("/watch/((?:sm|so|nm)?[0-9]+)/?"))?.groupValues?.get(1)

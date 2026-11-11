@@ -120,7 +120,7 @@ func run() -> void:
 	var image := Image.create(320, 180, false, Image.FORMAT_RGBA8); image.fill(Color.DARK_CYAN)
 	window.show_image(ImageTexture.create_from_image(image)); window.controls = true; window.refresh()
 	var targets: Array = window._buttons.map(func(button): return button.target)
-	check(targets == [1, 9], "Live source exposes close and sound, without replacing its input with movie/image modes")
+	check(targets == [1, 9, 10], "Live source exposes close, sound and the normal-player entry")
 	check(window._tips[1] == I18n.t("Close window"), "A single AirPlay window does not append a slot number")
 	window.set_compositor(true)
 	check(window.on_compositor and window.frame.material_override == window.hole, "Live image source can expose its independent native compositor layer")

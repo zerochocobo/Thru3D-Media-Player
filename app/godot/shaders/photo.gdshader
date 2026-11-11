@@ -24,6 +24,8 @@ uniform bool photo_depth = false;
 uniform bool spatial_hidden = false;
 uniform float depth_convergence = 0.35;
 uniform float depth_strength = 1.0;
+uniform vec2 depth_shift_axis = vec2(1.0, 0.0);
+uniform bool motion_depth = false;
 uniform vec4 depth_rect = vec4(0.0, 0.0, 1.0, 1.0);
 uniform int test_eye = -1;
 uniform vec2 edge_feather = vec2(0.0);
@@ -71,7 +73,11 @@ void fragment() {
 		vec2 fixed_uv = shown;
 		for (int i = 0; i < 4; i++) {
 			float near_value = texture(depth_texture, clamp(depth_rect.xy + shown * depth_rect.zw, depth_rect.xy, depth_rect.xy + depth_rect.zw)).r;
-			shown.x = fixed_uv.x - (eye_index == 0 ? 1.0 : -1.0) * (near_value - depth_convergence) * 0.0175 * depth_strength;
+			if (motion_depth) {
+				shown = fixed_uv - depth_shift_axis * (eye_index == 0 ? 1.0 : -1.0) * (near_value - depth_convergence) * 0.0175 * depth_strength;
+			} else {
+				shown.x = fixed_uv.x - (eye_index == 0 ? 1.0 : -1.0) * (near_value - depth_convergence) * 0.0175 * depth_strength;
+			}
 		}
 	}
 	if (video_geometry == 3 && !stereo_sbs) { shown = (shown - pano_rect.xy) / pano_rect.zw; }

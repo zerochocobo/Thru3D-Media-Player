@@ -90,7 +90,7 @@ func files(menu: Node3D, platform: Object, custom: bool) -> void:
 	for folder in [false, true]:
 		rename.open({"uri": "file:///fixture/original", "title": "Original.folder" if folder else "Original.mp4", "folder": folder, "kind": "folder" if folder else "video"})
 		await process_frame; popup(custom, "File/folder rename")
-		check(has_key(menu, Library.KEY_BASE) != custom, "Rename shows only the selected keyboard")
+		check(not has_key(menu, Library.KEY_BASE) and menu.system_text_input.editor.virtual_keyboard_enabled != custom, "Rename uses system input unless built-in Pinyin is configured")
 		var count: int = platform.mutations.size()
 		if custom:
 			Chinese.popup.english = false
@@ -100,9 +100,10 @@ func files(menu: Node3D, platform: Object, custom: bool) -> void:
 			check(rename.name == "电影" and platform.mutations.size() == count, "First Enter commits only candidate")
 			Chinese.popup._activate(6)
 		else:
-			rename.action(9190); rename.action(Library.KEY_BASE + 10); rename.action(rename.PREVIEW)
+			insert(menu.system_text_input, "电影", false)
+			rename.action(rename.PREVIEW)
 		check(platform.mutations.size() == count + 1 and platform.mutations.back()[0] == "prepare", "Enter/preview only prepares rename")
-		check(platform.mutations.back()[1].new_name == ("电影" if custom else "q"), "Rename preserves requested basename")
+		check(platform.mutations.back()[1].new_name == "电影", "Rename preserves requested Unicode basename")
 		check(not Chinese.active(), "Rename preview releases keyboard")
 		var prepared: Dictionary = platform.mutations.back()[1]
 		rename.receive(rename.request_id, JSON.stringify({"state": "ready", "uri": prepared.uri, "preview": true, "plan": "test-plan", "moves": []}))
@@ -193,23 +194,23 @@ func playlists(custom: bool, label: String) -> void:
 	var audio := Audio.new(); audio.directory = directory.path_join(label + "/audio"); root.add_child(audio)
 	var music := Music.new(); music.audio = audio; root.add_child(music); music.open(false)
 	music._activate(Music.NEW_LIST); await process_frame; popup(custom, "New playlist")
-	check(has_key(music, Music.KEY) != custom, "Playlist shows one keyboard")
+	check(has_key(music, Music.EDIT_NAME) and music.editor.editor.virtual_keyboard_enabled != custom, "Playlist name uses system input unless built-in Pinyin is configured")
+	insert(music.editor, "夜晚音乐", custom)
+	music.refresh()
+	check(music.editor.active() and music.name_text == "夜晚音乐", "Music refresh retains name draft")
 	if custom:
-		insert(music.editor, "夜晚音乐", true); music.refresh()
-		check(music.editor.active() and music.name_text == "夜晚音乐", "Music refresh retains name draft")
 		Chinese.popup._activate(6)
 	else:
-		music._activate(Music.KEY + 10); music._activate(Music.SAVE_NAME)
+		music.editor.editor.text_submitted.emit(music.name_text)
 	var id: String = music.playlist_id
 	check(not id.is_empty() and music.modal.is_empty(), "Playlist saved")
-	if custom: check(audio.library.playlist(id).label == "夜晚音乐", "Playlist Chinese name persisted")
+	check(audio.library.playlist(id).label == "夜晚音乐", "Playlist Chinese name persisted")
 	music.target_playlist = id; music._open_modal("playlist"); music._activate(Music.RENAME); await process_frame
 	popup(custom, "Rename playlist")
-	if custom: insert(music.editor, "清晨音乐", true)
-	else: music._activate(Music.KEY + 11)
+	insert(music.editor, "清晨音乐", custom)
 	music._activate(Music.SAVE_NAME)
 	check(not music.editor.active() and not Chinese.active(), "Ray save closes playlist editor")
-	if custom: check(audio.library.playlist(id).label == "清晨音乐", "Playlist rename persists")
+	check(audio.library.playlist(id).label == "清晨音乐", "Playlist rename persists")
 	music._activate(Music.NEW_LIST); music.dismiss(); await process_frame
 	check(not Chinese.active() and not music.editor.active(), "Music dismiss cancels deferred input")
 	music.free(); audio.free()
@@ -226,6 +227,43 @@ func backgrounds(custom: bool, label: String) -> void:
 	check(library.assets.fixture.title == "日落全景" and menu.modal.is_empty(), "Background Chinese rename saved")
 	menu.free(); library.free()
 
+func openxr_names(custom: bool) -> void:
+	Chinese.android = true
+	Chinese.quest = false
+	Chinese.pico = false
+	I18n.use("en")
+	Chinese.configure(custom)
+	Chinese.configure_browser("builtin")
+	var platform := Platform.new()
+	var menu := Library.new()
+	root.add_child(menu)
+	menu.platform = platform
+	menu.visible = true
+	menu.set_process(false)
+	await files(menu, platform, custom)
+	menu.section = Library.Section.SMB
+	menu._open_editor({"id": "saved", "host": "nas", "user": "old-user"})
+	await process_frame
+	popup(custom, "OpenXR SMB username")
+	var editor: RefCounted = menu.system_text_input
+	check(editor.active("smb_user") and editor.custom == custom, "OpenXR opens the configured SMB username editor by default")
+	check(not has_key(menu, Library.KEY_BASE), "OpenXR SMB username has no duplicate letter keys")
+	Chinese.configure_browser("system")
+	check(Chinese.active() == custom and editor.active(), "Web keyboard choice does not close an OpenXR app editor")
+	if custom:
+		check(not Chinese.popup.english, "OpenXR SMB username opens directly in Pinyin")
+		for letter in "dianying": Chinese.popup.type_key(letter)
+		Chinese.popup._activate(6)
+	else:
+		insert(editor, "电影", false)
+	check(menu._editor.user == "电影", "SMB username receives Chinese text through the selected input path")
+	menu._editor_input(Library.SAVE)
+	check(platform.mutations.back()[0] == "smb" and platform.mutations.back()[1].user == "电影", "OpenXR SMB save receives the entered username")
+	check(not Chinese.active() and not editor.active(), "Saving retires the OpenXR SMB editor")
+	menu.free()
+	platform.free()
+	await playlists(custom, "openxr-" + str(custom))
+
 func run() -> void:
 	DirAccess.make_dir_recursive_absolute(directory)
 	for profile in [[true, "zh", true, "quest"], [false, "zh", true, "pico"], [true, "zh", false, "off"], [true, "en", true, "english"]]:
@@ -240,6 +278,8 @@ func run() -> void:
 		await playlists(custom, profile[3])
 		await backgrounds(custom, profile[3])
 		check(not Chinese.active(), "All input closed after profile " + profile[3])
+	await openxr_names(false)
+	await openxr_names(true)
 	Chinese.configure(false)
 	if is_instance_valid(Chinese.popup): Chinese.popup.free()
 	print("Chinese input coverage checks=%d failures=%d" % [checks, failures.size()])

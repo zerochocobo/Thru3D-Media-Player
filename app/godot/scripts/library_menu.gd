@@ -84,6 +84,7 @@ var web_browser := preload("res://scripts/web_browser_panel.gd").new(self)
 const ServerBrowser := preload("res://scripts/media_server_browser.gd")
 const PlatformMethods := preload("res://scripts/platform_methods.gd")
 const SystemTextInput := preload("res://scripts/system_text_input.gd")
+const ChineseInput := preload("res://scripts/chinese_input.gd")
 var system_text_input := SystemTextInput.new(self)
 const StorageVolume := preload("res://scripts/storage_volume.gd")
 var server_browser: RefCounted = ServerBrowser.new(self)
@@ -188,6 +189,7 @@ const EXPAND_LIBRARY := 90
 const STORAGE_ROOT := 91
 const RETRY_USB := 92
 const TAKEOVER_USB := 93
+const EDITOR_SYSTEM_KEYBOARD := 94
 var _usb_takeover_pending := false
 const USB_BUSY_EJECT := "USB device is in use; eject it in system settings, then retry"
 var view_mode := "grid"
@@ -293,6 +295,7 @@ const AlphaEdgeSettings := preload("res://scripts/alpha_edge.gd")
 const AUTO_PASSTHROUGH_HINT := "Automatically enable passthrough when the filename contains alpha or passthrough. When off, you can enable it manually from the playback menu."
 var _restore_folder_key := ""
 var _editor := {}                  # SMB or DLNA server; empty when not editing
+var _editor_system_keyboard := false
 var _field := 1
 var _shift := false
 var _symbols := false
@@ -365,7 +368,7 @@ func set_compact(value: bool, restore_playback: bool = false) -> void:
 		anchor = capture_position()
 	_layout_anchor = anchor; _layout_scroll = scroll
 	# Search resolution can open a file before its containing folder has ever been listed.
-	if not archives.browsing and compact and platform and rows.is_empty() and section == Section.CLOUD and not cloud_search.active and not _cloud_stack.is_empty() and cloud_pagination.mode == "paged":
+	if not archives.browsing and compact and platform and rows.is_empty() and section == Section.CLOUD and not cloud_search.active and not _cloud_stack.is_empty() and cloud_pagination.mode == "paged" and cloud_error.detail.is_empty():
 		_load_cloud(false, false, _cloud_page)
 		refresh()
 
@@ -1998,11 +2001,12 @@ func _rebuild_rows() -> void:
 				var languages: Array = []
 				for value in I18n.CHOICES: languages.append({"value": value, "label": LANGUAGE_NAMES[value]})
 				rows.append(_choice_row("Language", "language", I18n.choice, languages))
-				if preload("res://scripts/chinese_input.gd").browser_choice_available():
-					rows.append(_choice_row("Web keyboard", "web_keyboard", preload("res://scripts/chinese_input.gd").browser_keyboard,
+				if ChineseInput.browser_choice_available():
+					rows.append(_choice_row("Web keyboard", "web_keyboard", ChineseInput.browser_keyboard,
 						[{"value": "builtin", "label": "Built-in keyboard"}, {"value": "system", "label": "System keyboard"}]))
-				if preload("res://scripts/chinese_input.gd").available():
-					rows.append(_choice_row("中文输入法", "quest_chinese_keyboard", preload("res://scripts/chinese_input.gd").selected,
+				if ChineseInput.available():
+					var input_label := "App Chinese input" if ChineseInput.is_generic_openxr() else "中文输入法"
+					rows.append(_choice_row(input_label, ChineseInput.app_setting_key(), ChineseInput.selected,
 						[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
 				var management_hint := "Delete or rename files in supported library sections. Managing files is easier in list view. Available actions depend on the source and permissions."
 				rows.append(_choice_row("Allow file management", "file_editing", file_actions.enabled,
@@ -2151,6 +2155,10 @@ func _local_path() -> String:
 
 func _cloud_path() -> String:
 	return "" if _cloud_stack.is_empty() else str(_cloud_stack.back().id)
+
+func _cloud_loading_in_header() -> bool:
+	return (section == Section.CLOUD and _cloud_busy
+		and not archives.browsing and not cloud_search.active and cloud_accounts.mode.is_empty())
 
 func _cancel_cloud() -> void:
 	cloud_pagination.cancel()
@@ -2439,6 +2447,7 @@ func _activate(target: int) -> void:
 		app_actions.activate(QUIT_APP, "")
 	elif target >= NAV_BASE and target < NAV_BASE + NAV.size():
 		if target == NAV_BASE + Section.WEB and not Distribution.web_browser_enabled(): return
+		_end_editor_input()
 		# Capture before shared navigation cleanup cancels requests and resets scroll.
 		if target != NAV_BASE + section: server_browser.leave_section()
 		web_video.close()
@@ -2801,6 +2810,7 @@ func _go_back() -> void:
 	scroll = 0.0
 	status = ""
 	if not _editor.is_empty():
+		_end_editor_input()
 		_editor = {}
 	elif section == Section.CLOUD:
 		_cloud_stack.pop_back()
@@ -2924,6 +2934,7 @@ func _refresh_source() -> void:
 
 func _open_editor(server: Dictionary) -> void:
 	system_text_input.cancel()
+	_editor_system_keyboard = false
 	file_actions.reset()
 	_editor = {"id": str(server.get("id", "")), "name": str(server.get("name", "")), "host": str(server.get("host", "")),
 		"user": str(server.get("user", "")), "password": "", "has_password": bool(server.get("has_password", false))}
@@ -2953,38 +2964,58 @@ func _open_editor(server: Dictionary) -> void:
 func _editor_fields() -> Array:
 	return ["host", "port"] if section == Section.DLNA else FIELDS
 
-func _editor_custom_context() -> String:
-	if _editor.is_empty() or section == Section.DLNA: return ""
-	var tag := "smb_" + str(_editor_fields()[_field])
-	return tag if SystemTextInput.uses_custom(tag) else ""
+func _editor_text_context() -> String:
+	if _editor.is_empty(): return ""
+	var tag := ("dlna_" if section == Section.DLNA else "smb_") + str(_editor_fields()[_field])
+	if tag == "smb_user" and ChineseInput.is_generic_openxr(): return tag
+	return tag if _editor_system_keyboard or SystemTextInput.uses_custom(tag) else ""
 
-func _end_editor_input() -> void:
-	system_text_input.cancel("smb_name"); system_text_input.cancel("smb_user")
+func _end_editor_input(commit: bool = false) -> void:
+	if system_text_input.context.begins_with("smb_") or system_text_input.context.begins_with("dlna_"):
+		if commit and not _editor.is_empty():
+			var key := system_text_input.context.get_slice("_", 1)
+			if _editor.has(key):
+				_editor[key] = system_text_input.finish(system_text_input.context, str(_editor[key]))
+				return
+		system_text_input.cancel()
 
 func _begin_editor_input() -> void:
 	_end_editor_input()
-	var tag := _editor_custom_context()
+	var tag := _editor_text_context()
 	if tag.is_empty() or _editor_busy(): return
 	var draft := _editor
 	var key: String = _editor_fields()[_field]
+	var valid := func(): return visible and is_same(_editor, draft) and _editor_text_context() == tag and not _editor_busy()
+	var update := func(value):
+		if valid.call(): draft[key] = value; refresh()
 	system_text_input.begin(tag, str(_editor[key]), 80 if key == "name" else 256,
-		func(value): _editor[key] = value; refresh(), func(_value): refresh(), Callable(),
-		func(): return visible and is_same(_editor, draft) and _editor_custom_context() == tag and not _editor_busy())
+		update, update, update, valid,
+		_editor_system_keyboard, key == "password")
 	system_text_input.editor.select_all()
+
+func _use_editor_system_keyboard() -> void:
+	if _editor.is_empty() or _editor_busy(): return
+	_editor_system_keyboard = true
+	# Reuse an active editor so its draft, caret and selection survive the switch.
+	if not system_text_input.active(_editor_text_context()) or not system_text_input.use_system_keyboard():
+		_begin_editor_input()
+	refresh()
 
 func _editor_busy() -> bool:
 	return _pending.has(int(_editor.get("request_id", -1)))
 
 func _editor_input(target: int) -> void:
 	if _editor_busy() and target != CANCEL: return
-	if target in [CANCEL, SAVE, DELETE]: _end_editor_input()
+	if target in [CANCEL, SAVE, DELETE]: _end_editor_input(target == SAVE)
 	var fields := _editor_fields()
 	var key: String = fields[_field]
 	if target >= FIELD_BASE and target < FIELD_BASE + fields.size():
-		_end_editor_input()
+		_end_editor_input(true)
 		_field = target - FIELD_BASE
 		_begin_editor_input()
-	elif not _editor_custom_context().is_empty() and (target in [SHIFT, SYMBOL_LAYER, SPACE, BACKSPACE] or (target >= KEY_BASE and target < KEY_BASE + 40)): return
+	elif target == EDITOR_SYSTEM_KEYBOARD:
+		_use_editor_system_keyboard()
+	elif not _editor_text_context().is_empty() and (target in [SHIFT, SYMBOL_LAYER, SPACE, BACKSPACE] or (target >= KEY_BASE and target < KEY_BASE + 40)): return
 	elif target >= KEY_BASE and target < KEY_BASE + 40:
 		var layer: Array = SYMBOLS if _symbols else KEYS
 		var character: String = layer[(target - KEY_BASE) / 10][(target - KEY_BASE) % 10]
@@ -3093,7 +3124,7 @@ func _draw_compact() -> void:
 	var next := RECENT_NEXT if section == Section.RECENT else CLOUD_NEXT
 	var page := _recent_page if section == Section.RECENT else _cloud_page
 	var count := str(_recent_page_count()) if section == Section.RECENT else (str(maxi(1, ceili(float(_cloud_total) / _cloud_page_size))) if _cloud_total >= 0 else "…")
-	var paging := not archives.browsing and (section == Section.RECENT or (section == Section.CLOUD and not _cloud_stack.is_empty()))
+	var paging := not cloud_error.shows_notice() and not archives.browsing and (section == Section.RECENT or (section == Section.CLOUD and not _cloud_stack.is_empty()))
 	var can_next := page + 1 < _recent_page_count() if section == Section.RECENT else _cloud_next >= 0
 	var busy := _cloud_busy if section == Section.CLOUD else false
 	if (cloud_search.active and not archives.browsing):
@@ -3103,9 +3134,11 @@ func _draw_compact() -> void:
 		_button(previous, "", Vector2(-0.49, -0.365), Vector2(0.075, 0.065), not busy and page > 0, "previous")
 		_label("%d / %s" % [page + 1, count], Vector3(-0.32, -0.365, 0.004), 16)
 		_button(next, "", Vector2(-0.15, -0.365), Vector2(0.075, 0.065), not busy and can_next, "next")
-	if not status.is_empty():
+	if _cloud_loading_in_header():
+		_label(I18n.t("Loading…"), Vector3(0, 0.278, 0.004), 16).modulate = ACCENT
+	elif not status.is_empty() and not cloud_error.shows_notice():
 		var message := _label(_fit_title(cloud_error.summary_text() if section == Section.CLOUD else I18n.t(status), "", 0.94, 14), Vector3(0, 0.278, 0.004), 14)
-		message.modulate = MUTED
+		message.modulate = UiTheme.color("danger") if section == Section.CLOUD and not cloud_error.detail.is_empty() else MUTED
 		if section == Section.CLOUD and not cloud_error.detail.is_empty():
 			_button(CloudBrowseError.OPEN, "", Vector2(0.39, 0.36), Vector2(0.065, 0.065), true, "info")
 			_tips[CloudBrowseError.OPEN] = I18n.t("Error details")
@@ -3291,6 +3324,7 @@ func _draw() -> void:
 		_draw_crumbs(crumbs)
 	if (archives.browsing or section in [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD]) and not cloud_managing:
 		_button(REFRESH, "", _action_position(0.80), Vector2(0.09, 0.065), platform != null, "refresh")
+		_tips[REFRESH] = I18n.t("Refresh")
 	if not archives.browsing and section == Section.CLOUD:
 		cloud_accounts.draw()
 		if not audio_import_mode and not subtitle_picker_mode and cloud_accounts.mode.is_empty() and not _cloud_stack.is_empty() and cloud_search.supported():
@@ -3332,6 +3366,8 @@ func _draw() -> void:
 	if not archives.browsing and preload("res://scripts/online_panorama_panel.gd").AVAILABLE and media_filter==2 and section!=Section.SETTINGS and not audio_import_mode and not image_picker_mode:
 		_round(ONLINE_PANORAMAS,"globe",Vector2(0.80,0.58),0.08,true,false,I18n.t("Online panoramas"))
 	_decoration(Vector2(1.28, 0.002), Vector2(0.19, 0.405), UiTheme.color("divider"))
+	if _cloud_loading_in_header():
+		_label(I18n.t("Loading…"), Vector3(0.13, 0.444, 0.004), 17).modulate = ACCENT
 	subtitle_filter.draw()
 	_draw_rows()
 	web_browser.library.draw_footer()
@@ -3388,21 +3424,24 @@ func _draw() -> void:
 		_button(RECENT_PREVIOUS, "‹", Vector2(-0.45, -0.515), Vector2(0.09, 0.07), _recent_page > 0)
 		_label("%d / %d" % [_recent_page + 1, _recent_page_count()], Vector3(-0.27, -0.515, 0.004), 18)
 		_button(RECENT_NEXT, "›", Vector2(-0.09, -0.515), Vector2(0.09, 0.07), _recent_page + 1 < _recent_page_count())
-	if cloud_paging:
+	if cloud_paging and not cloud_error.shows_notice():
 		if not subtitle_filter.draw_paging(cloud_page_y) and not cloud_pagination.draw_footer(cloud_page_y, false):
 			_button(CLOUD_PREVIOUS, "‹", Vector2(-0.45, cloud_page_y), Vector2(0.09, 0.07), not _cloud_busy and _cloud_page > 0)
 			var pages := str(maxi(_cloud_page + 1, maxi(1, ceili(float(_cloud_total) / _cloud_page_size)))) if _cloud_total >= 0 else ("…" if _cloud_next >= 0 else str(_cloud_page + 1))
 			_label("%d / %s" % [_cloud_page + 1, pages], Vector3(-0.27, cloud_page_y, 0.004), 18)
 			_button(CLOUD_NEXT, "›", Vector2(-0.09, cloud_page_y), Vector2(0.09, 0.07), not _cloud_busy and _cloud_next >= 0)
 	var footer_status := I18n.t(subtitle_filter.status_text()) if subtitle_filter.active() and not cloud_error.opened else (cloud_error.summary_text() if not archives.browsing and section == Section.CLOUD else I18n.t(status))
+	if cloud_error.shows_notice() or (_cloud_loading_in_header() and footer_status == I18n.t("Loading…")):
+		footer_status = ""
 	if audio_import_mode and not str(_audio_preview_state.get("audio_preview_error", "")).is_empty(): footer_status = I18n.t(str(_audio_preview_state.audio_preview_error))
 	elif audio_import_mode and _audio_preview_state.get("audio_preview_loading", false): footer_status = I18n.t("Loading preview")
 	var line := _label(_fit_title(footer_status, "", 0.46 if audio_import_mode else 0.67, 17), Vector3(-0.45, -0.66 if cloud_paging and file_actions.has_selection() else -0.58 if cloud_paging or file_actions.folder() else -0.52, 0.004), 17)
-	if not archives.browsing and section == Section.CLOUD and not cloud_error.detail.is_empty():
+	var has_cloud_error := not archives.browsing and section == Section.CLOUD and not cloud_error.detail.is_empty()
+	if has_cloud_error and not cloud_error.shows_notice():
 		_button(CloudBrowseError.OPEN, "", Vector2(0.30, line.position.y), Vector2(0.07, 0.065), true, "info")
 		_tips[CloudBrowseError.OPEN] = I18n.t("Error details")
 	line.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	line.modulate = MUTED
+	line.modulate = UiTheme.color("danger") if has_cloud_error else MUTED
 	if file_actions.uncertain or file_actions.pending > 0:
 		_button(FileActions.CHECK_STATUS, I18n.t(file_actions.pending_text()), Vector2(0.66, -0.59), Vector2(0.30, 0.06), file_actions.pending == 0, "refresh")
 
@@ -3477,6 +3516,7 @@ func _header_title() -> String:
 
 func _draw_rows() -> void:
 	if cloud_error.opened: cloud_error.draw_rows(); return
+	if cloud_error.shows_notice(): cloud_error.draw_notice(); return
 	if compact:
 		_draw_compact_rows()
 		return
@@ -4030,8 +4070,8 @@ func _engine_notices() -> String:
 
 func _draw_editor() -> void:
 	var dlna_editor := section == Section.DLNA
-	var custom := not _editor_custom_context().is_empty()
-	if custom: _set_backdrop(Vector2(1.46, 0.52), Vector2(0.13, 0.30))
+	var compact_input := not _editor_text_context().is_empty()
+	if compact_input: _set_backdrop(Vector2(1.46, 0.52), Vector2(0.13, 0.30))
 	var fields := _editor_fields()
 	var title := _label("DLNA" if dlna_editor else "SMB", Vector3(-0.42, 0.46, 0.004), 24)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -4050,7 +4090,7 @@ func _draw_editor() -> void:
 		var name := _label(I18n.t("IP address" if i == 0 else "Port") if dlna_editor else I18n.t(FIELD_NAMES[i]), Vector3(-field_width * 0.5 + 0.03 if dlna_editor else -0.28, 0.02 if dlna_editor else 0.0, 0.004), 17, node)
 		name.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		name.modulate = UiTheme.color("editor_ink") if dlna_editor and i == _field else MUTED
-	if _editor_custom_context().is_empty():
+	if not compact_input:
 		var layer: Array = SYMBOLS if _symbols else KEYS
 		for r in layer.size():
 			for c in 10:
@@ -4062,13 +4102,14 @@ func _draw_editor() -> void:
 		_button(SYMBOL_LAYER, "#+=" if not _symbols else "abc", Vector2(-0.13, y), Vector2(0.18, 0.085), true, "", _symbols)
 		_button(SPACE, "␣", Vector2(0.15, y), Vector2(0.34, 0.085))
 		_button(BACKSPACE, "", Vector2(0.43, y), Vector2(0.18, 0.085), true, "backspace")
-	var actions := 0.10 if custom else -0.44
+	var actions := 0.10 if compact_input else -0.44
+	_button(EDITOR_SYSTEM_KEYBOARD, I18n.t("System input method"), Vector2(-0.25, actions), Vector2(0.57, 0.08), not _editor_busy(), "", true)
 	_button(SAVE, "", Vector2(0.73, actions), Vector2(0.18, 0.08), not _editor_busy() and not str(_editor.get("host", "")).strip_edges().is_empty() and (not dlna_editor or not str(_editor.port).strip_edges().is_empty()), "check", true)
 	_button(CANCEL, "", Vector2(0.52, actions), Vector2(0.18, 0.08), true, "close")
 	if not str(_editor.id).is_empty():
 		_button(DELETE, I18n.t("Delete"), Vector2(0.24, actions), Vector2(0.24, 0.08), not _editor_busy())
 	if dlna_editor and not status.is_empty():
-		_label(I18n.t(status), Vector3(0.13, -0.54, 0.004), 18)
+		_label(I18n.t(status), Vector3(0.13, 0.195 if compact_input else -0.54, 0.004), 18)
 
 # --- desktop preview helpers ----------------------------------------------------------------
 

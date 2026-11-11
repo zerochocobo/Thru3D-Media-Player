@@ -26,6 +26,7 @@ const FEATURED := [
 	{"name": "Streamable", "url": "https://streamable.com/", "icon": "site_streamable", "color": Color("70bfff"), "languages": []},
 	{"name": "Internet Archive", "url": "https://archive.org/details/movies", "icon": "site_archive", "color": Color("d9dde3"), "languages": []},
 	{"name": "Odysee", "url": "https://odysee.com/", "icon": "site_odysee", "color": Color("ed77bc"), "languages": []},
+	{"name": "Naver Clip", "url": "https://m.naver.com/shorts/", "icon": "site_naver_clip", "color": Color("9d78ff"), "languages": ["ko"]},
 ]
 
 # Positive sample evidence, not a promise for every video/account/quality on a site.
@@ -34,11 +35,11 @@ const FEATURED := [
 const NATIVE_PLAYBACK := ["Bilibili", "YouTube", "Weibo", "Tencent Video", "Mango TV", "Youku",
 	"Twitch", "TikTok", "Instagram Reels", "TED", "Niconico", "iQIYI", "Douyin", "Dailymotion", "Streamable", "Internet Archive", "Odysee"]
 # Catalogue badges require the ordinary featured-site journey, not a fixed detail sample.
-# These four foreign entries have ordinary Featured selection, real device
-# playback/seek and retained-page return evidence from 2026-11-10.
+# These foreign entries have ordinary Featured selection, real device
+# playback/seek and retained-page return evidence from 2026-11-10/11.
 # Other foreign badges remain withdrawn; fixed detail samples do not qualify.
 const BETA_PLAYBACK := ["Bilibili", "Weibo", "Tencent Video", "Mango TV", "Douyin",
-	"Niconico", "TikTok", "Instagram Reels", "Internet Archive"]
+	"Niconico", "TikTok", "Instagram Reels", "Internet Archive", "TED", "Dailymotion"]
 const BETA_ICON := "play" # Same triangle as the page's Play Beta action.
 # Only Chinese sites retain a URL-only presentation fallback. Foreign Beta
 # experiments remain inside the webpage instead of advertising an entire domain.

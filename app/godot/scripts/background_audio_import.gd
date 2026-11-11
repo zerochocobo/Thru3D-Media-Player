@@ -42,7 +42,7 @@ func start(uri: String, title: String, playlist: String = "") -> bool:
 		_request = int(platform.import_background_audio(uri, _title))
 		busy = _request > 0
 	else:
-		var path := uri.trim_prefix("file://").uri_decode() if uri.begins_with("file://") else uri
+		var path := preload("res://scripts/media_uri.gd").decode_path(uri.trim_prefix("file://")) if uri.begins_with("file://") else uri
 		if not FileAccess.file_exists(path): error = "Audio import unavailable"; changed.emit(); return false
 		busy = true; _thread = Thread.new()
 		if _thread.start(_copy.bind(path, _title)) != OK: busy = false; _thread = null

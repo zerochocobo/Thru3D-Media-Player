@@ -19,8 +19,8 @@ if (!$SkipJvm) {
 }
 $cases = @('test_raw_image', 'test_photos', 'test_online_panorama', 'test_photo_preload',
     'test_photo_gallery_resources', 'test_photo_magazine', 'test_photo_loading', 'test_photo_recovery',
-    'test_photo_animation', 'test_photo_portrait', 'test_photo_portrait_cache', 'test_photo_cache_settings',
-    'test_photo_depth_payload', 'test_photo_orientation', 'test_video_pip_images', 'test_pip_screenshot', 'render_online_panorama')
+    'test_photo_animation', 'test_photo_animation_depth', 'test_photo_portrait', 'test_photo_portrait_cache', 'test_photo_cache_settings',
+    'test_photo_depth_payload', 'test_photo_orientation', 'test_video_pip_images', 'test_pip_screenshot', 'render_online_panorama', 'render_photo_animation_depth')
 if ($CoreOnly) { $cases = @('test_raw_image') }
 if ($Only.Count) {
     foreach ($name in $Only) { if ($name -notin $cases) { throw "Unknown image transfer test: $name" } }
@@ -33,7 +33,7 @@ foreach ($case in $cases) {
     $errLog = Join-Path $output "$case.stderr.log"
     # test_photos instantiates the real cinema: dummy rendering can report invalid mesh RIDs.
     # Use a hidden real GL window for that integration and the panorama pixel oracle.
-    $renderer = if ($case -in @('test_photos','render_online_panorama')) { '--rendering-method gl_compatibility --rendering-driver opengl3' } else { '--headless' }
+    $renderer = if ($case -in @('test_photos','render_online_panorama','render_photo_animation_depth')) { '--rendering-method gl_compatibility --rendering-driver opengl3' } else { '--headless' }
     $arguments = '{0} --xr-mode off --path "{1}" --script res://tests/{2}.gd' -f $renderer, $ProjectDirectory, $case
     $run = Start-Process -FilePath $Godot -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $outLog -RedirectStandardError $errLog
     if (!$run.WaitForExit(180000)) { $run.Kill($true); $failed += "$case (timeout)"; continue }

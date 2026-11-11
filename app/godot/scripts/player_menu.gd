@@ -934,8 +934,9 @@ func _draw_bar() -> void:
 	_bar_drawn = _bar_key()
 	_glyph(111, "voice", Vector2(-0.3, row), 0.075, _enabled("audio"), I18n.t("Audio"))
 	if _cast_allowed("previous_video"): _glyph(101, "previous_video", Vector2(-0.13, row), 0.08, _enabled("previous_video"), I18n.t("Previous video"))
-	_round(102, "pause" if _pausable() else "play", Vector2(0, row), 0.095, _enabled("play"), true,
-		I18n.t("Pause" if _pausable() else "Play"))
+	if _cast_allowed("play"):
+		_round(102, "pause" if _pausable() else "play", Vector2(0, row), 0.095, _enabled("play"), true,
+			I18n.t("Pause" if _pausable() else "Play"))
 	if _cast_allowed("next_video"): _glyph(103, "next_video", Vector2(0.13, row), 0.08, _enabled("next_video"), I18n.t("Next video"))
 	var spatial := bool(_state.get("spatial_video", false))
 	if spatial: _close_depth_slider()
@@ -945,7 +946,7 @@ func _draw_bar() -> void:
 		_depth_busy = _busy_ring(_buttons.back().node, 0.075)
 	_glyph(MODE, "view_mode", Vector2(0.38 if spatial else 0.41, row), 0.075, true, I18n.t("Video mode"))
 	_glyph(11, "settings", Vector2(0.5, row), 0.075, true, I18n.t("Settings"))
-	_seek_bar(-0.08)
+	if not _state.get("cast", {}).get("live_mirror", false): _seek_bar(-0.08)
 	# Transient seek feedback must leave the bookmark endpoints readable.
 	var has_markers: bool = not _state.get("bookmarks", []).is_empty()
 	_status = _label(_seek_status(), Vector3(0, -0.044 if has_markers else -0.15, 0.004), 14 if has_markers else 20)
@@ -957,7 +958,7 @@ func _draw_bar() -> void:
 		I18n.t("Finish recording to open picture in picture" if not _state.get("pip_available", true) and _state.get("capture", {}).get("recording", false) else "Picture in picture"))
 	if _pip_open:
 		pip_controls.draw()
-	_round(107, "close", Vector2(-0.14, 0.215), 0.08, _enabled("stop"), false, I18n.t("End cast" if _state.has("cast") else ("Close" if clone_panel.opened else "Close video")))
+	_round(107, "close", Vector2(-0.14, 0.215), 0.08, _enabled("stop"), false, I18n.t("Return to picture-in-picture" if _state.get("cast", {}).get("live_mirror", false) else ("End cast" if _state.has("cast") else ("Close" if clone_panel.opened else "Close video"))))
 	_round(100, "folder", Vector2(0, 0.215), 0.08, true, false, I18n.t("Library"))
 	_round(108, "recenter", Vector2(0.14, 0.215), 0.08, true, false, I18n.t("Recenter"))
 	if _cast_allowed("favorite"): _draw_favorite(Vector2(0.28, 0.215))

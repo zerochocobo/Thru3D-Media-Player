@@ -37,7 +37,7 @@ internal class CloudDeletion(private val client: CloudClient, private val author
     fun run(path: String, request: JSONObject, inspect: Boolean, prepare: Boolean): JSONObject {
         require(client.canDelete && path != "/" && path.startsWith('/') && !path.endsWith('/') &&
             path.removePrefix("/").split('/').none { it.isEmpty() || it in setOf(".", "..") || '\u0000' in it })
-        require(request.optBoolean("folder") || MediaKinds.supported(path.substringAfterLast('/'))) { "File deletion unavailable for this source" }
+        require(request.optBoolean("folder") || MediaKinds.supportedFileName(path.substringAfterLast('/'))) { "File deletion unavailable for this source" }
         val expected = request.getString("cloud_id")
         require(expected.matches(Regex("[1-9][0-9]*")))
         if (inspect) {

@@ -1,6 +1,7 @@
 package org.vrpassthroughplayer.plugin
 
 import java.net.URI
+import java.net.URLDecoder
 import java.util.Locale
 import org.json.JSONObject
 
@@ -9,6 +10,9 @@ object WebBrowserOdysee {
     private const val ENABLED=true // Current free-claim file flow passed the production desktop preflight.
     private data class Identity(val id: String,val slug: String,val prefix: String)
     private data class FileIdentity(val claim: String,val file: String,val slug: String?)
+    private val slugCharacters=Regex("[\\p{L}\\p{M}\\p{N}_.-]+")
+    private fun slug(value: String): String?=URLDecoder.decode(value,"UTF-8")
+        .takeIf { slugCharacters.matches(it) && !it.contains("..") }
     fun document(value: String): Boolean=runCatching {
         val u=URI(value)
         value.length<=8192 && u.scheme=="https" && u.host in setOf("odysee.com","www.odysee.com") &&
@@ -16,16 +20,16 @@ object WebBrowserOdysee {
     }.getOrDefault(false)
     private fun identity(value: String): Identity?=runCatching {
         require(document(value));val path=URI(value).rawPath.orEmpty();require(!path.contains(".."))
-        val m=Regex("/(?:@[A-Za-z0-9_.-]+(?::[a-fA-F0-9]{1,40})?/)?([A-Za-z0-9_.-]+):([a-fA-F0-9]{1,40})/?").matchEntire(path) ?: return null
-        Identity(path.trim('/'),m.groupValues[1],m.groupValues[2].lowercase(Locale.ROOT))
+        val m=Regex("/(?:@[A-Za-z0-9_.-]+(?::[a-fA-F0-9]{1,40})?/)?([^/:]+):([a-fA-F0-9]{1,40})/?").matchEntire(path) ?: return null
+        Identity(path.trim('/'),slug(m.groupValues[1]) ?: return null,m.groupValues[2].lowercase(Locale.ROOT))
     }.getOrNull()
     fun page(value: String): String?=identity(value)?.id
     fun observing(value: String)=ENABLED && document(value)
     fun enabled(value: String)=ENABLED && page(value)!=null
     private fun file(value: String): FileIdentity?=runCatching {
         val u=WebBrowserNetworkMedia.address(value) ?: return null;require(u.scheme=="https")
-        val old=Regex("/api/v[34]/streams/free/([A-Za-z0-9_.-]+)/([a-fA-F0-9]{40})/([a-fA-F0-9]{6}\\.mp4)").matchEntire(u.rawPath)
-        if(old!=null)FileIdentity(old.groupValues[2].lowercase(Locale.ROOT),old.groupValues[3].lowercase(Locale.ROOT),old.groupValues[1])
+        val old=Regex("/api/v[34]/streams/free/([^/]+)/([a-fA-F0-9]{40})/([a-fA-F0-9]{6}\\.mp4)").matchEntire(u.rawPath)
+        if(old!=null)FileIdentity(old.groupValues[2].lowercase(Locale.ROOT),old.groupValues[3].lowercase(Locale.ROOT),slug(old.groupValues[1]) ?: return null)
         else Regex("/v6/streams/([a-fA-F0-9]{40})/([a-fA-F0-9]{6}\\.mp4)").matchEntire(u.rawPath)?.let {
             FileIdentity(it.groupValues[1].lowercase(Locale.ROOT),it.groupValues[2].lowercase(Locale.ROOT),null)
         }
@@ -43,8 +47,8 @@ object WebBrowserOdysee {
         if(rendered) {
             val claim=data.getString("claim_id");require(claim.matches(Regex("[a-f0-9]{40}")) && claim.startsWith(current.prefix))
             val uri=data.getString("claim_uri");require(uri.length<=8192)
-            val declared=Regex("lbry://(?:@[A-Za-z0-9_.-]+[#:][a-fA-F0-9]{1,40}/)?([A-Za-z0-9_.-]+)[#:]([a-fA-F0-9]{1,40})/?").matchEntire(uri) ?: return null
-            require(declared.groupValues[1]==current.slug && claim.startsWith(declared.groupValues[2].lowercase(Locale.ROOT)))
+            val declared=Regex("lbry://(?:@[A-Za-z0-9_.-]+[#:][a-fA-F0-9]{1,40}/)?([^/#:]+)[#:]([a-fA-F0-9]{1,40})/?").matchEntire(uri) ?: return null
+            require(slug(declared.groupValues[1])==current.slug && claim.startsWith(declared.groupValues[2].lowercase(Locale.ROOT)))
             if(hls) {
                 require(item.optBoolean("blob") && item.optString("source").isEmpty() && source.startsWith("blob:${URI(currentPage).scheme}://${URI(currentPage).host}/"))
                 val root=WebBrowserNetworkMedia.address(data.getString("root")) ?: return null

@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Thru3D video handoff",
-  "version": "1.83",
+  "version": "1.93",
   "browser_specific_settings": {
     "gecko": {
       "id": "web-video@thru3d.local"

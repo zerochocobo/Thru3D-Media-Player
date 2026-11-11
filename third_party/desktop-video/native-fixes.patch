@@ -63,7 +63,16 @@
      template <class T>
 --- a/src/video_decoder.cpp
 +++ b/src/video_decoder.cpp
-@@ -264,9 +264,9 @@
+@@ -131,6 +131,8 @@
+     ERR_FAIL_COND_MSG(stream_index < 0, vformat("Couldn't find video stream: %s", ffmpeg_get_error_message(stream_index)));
+ 
+     video_stream = format_context->streams[stream_index];
++    const AVRational ratio = av_guess_sample_aspect_ratio(format_context, video_stream, nullptr);
++    sample_aspect_ratio = ratio.num > 0 && ratio.den > 0 ? av_q2d(ratio) : 1.0;
+     video_time_base_in_seconds = video_stream->time_base.num / (double)video_stream->time_base.den;
+     if (video_stream->duration > 0) {
+         duration = video_stream->duration * video_time_base_in_seconds * 1000.0;
+@@ -264,9 +266,9 @@
          switch (decoder->decoder_state) {
              case READY:
              case RUNNING: {
@@ -75,7 +84,7 @@
                  if (needs_frame) {
                      decoder->_decode_next_frame(packet, receive_frame);
                  } else {
-@@ -306,7 +306,7 @@
+@@ -306,7 +308,7 @@
  
          bool unref_packet = true;
  
@@ -84,7 +93,7 @@
              AVCodecContext *codec_ctx = video_codec_context;
              if (has_audio && p_packet->stream_index == audio_stream->index) {
                  codec_ctx = audio_codec_context;
-@@ -353,7 +353,7 @@
+@@ -353,7 +355,7 @@
          } else {
              _read_decoded_audio_frames(p_receive_frame);
          }
@@ -93,7 +102,7 @@
          UtilityFunctions::print(vformat("Failed to send avcodec packet: %s", ffmpeg_get_error_message(send_packet_result)));
          _try_disable_hw_decoding(send_packet_result);
      }
-@@ -456,12 +456,12 @@
+@@ -456,12 +458,12 @@
          }
  #ifdef FFMPEG_MT_GPU_UPLOAD
          Ref<ImageTexture> tex;
@@ -108,7 +117,7 @@
          {
              ZoneNamedN(image_unwrap_gpu, "Image unwrap GPU upload", true);
              if (!tex.is_valid() || tex->get_size() != image->get_size() || tex->get_format() != image->get_format()) {
-@@ -472,15 +472,15 @@
+@@ -472,15 +474,15 @@
                  tex->update(image);
              }
          }
@@ -128,7 +137,12 @@
  #endif
      }
  }
-@@ -521,11 +521,11 @@
+@@ -517,15 +519,15 @@
+ 
+         ERR_FAIL_COND_MSG(av_sample_fmt_is_planar((AVSampleFormat)frame->format), "Audio format should never be planar, bug?");
+ 
+-        int data_size = av_samples_get_buffer_size(nullptr, frame->ch_layout.nb_channels, frame->nb_samples, (AVSampleFormat)frame->format, 0);
++        int data_size = av_samples_get_buffer_size(nullptr, frame->ch_layout.nb_channels, frame->nb_samples, (AVSampleFormat)frame->format, 1);
          Ref<DecodedAudioFrame> audio_frame = memnew(DecodedAudioFrame(frame_time));
          audio_frame->sample_data.resize(data_size / sizeof(float));
          memcpy(audio_frame->sample_data.ptrw(), frame->data[0], data_size);
@@ -142,7 +156,62 @@
  
          av_frame_unref(p_received_frame);
          if (frame != p_received_frame) {
-@@ -645,16 +645,16 @@
+@@ -603,25 +605,29 @@
+ }
+ 
+ AVFrame *VideoDecoder::_ensure_frame_audio_format(AVFrame *p_frame, AVSampleFormat p_target_audio_format) {
+-    if (p_frame->format == p_target_audio_format) {
++    AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
++    const auto &source_layout = audio_codec_context->ch_layout;
++    const auto &output_layout = get_audio_channel_count() == source_layout.nb_channels ? source_layout : stereo;
++    if (p_frame->format == p_target_audio_format && av_channel_layout_compare(&p_frame->ch_layout, &output_layout) == 0) {
+         return p_frame;
+     }
+ 
+     int obtain_swr_ctx_result = swr_alloc_set_opts2(
+             &swr_context,
+-            &audio_codec_context->ch_layout, p_target_audio_format, audio_codec_context->sample_rate,
+-            &audio_codec_context->ch_layout, audio_codec_context->sample_fmt, audio_codec_context->sample_rate,
++            &output_layout, p_target_audio_format, audio_codec_context->sample_rate,
++            &p_frame->ch_layout, (AVSampleFormat)p_frame->format, p_frame->sample_rate,
+             0, nullptr);
+ 
+     if (obtain_swr_ctx_result < 0) {
+         UtilityFunctions::print("Failed to obtain SWR context");
+         return nullptr;
+     }
+-    AVFrame *out_frame;
+-
+-    out_frame = av_frame_alloc();
++    AVFrame *out_frame = av_frame_alloc();
++    if (!out_frame || av_channel_layout_copy(&out_frame->ch_layout, &output_layout) < 0) {
++        av_frame_free(&out_frame);
++        return nullptr;
++    }
+     out_frame->format = p_target_audio_format;
+-    out_frame->ch_layout = audio_codec_context->ch_layout;
+     out_frame->sample_rate = audio_codec_context->sample_rate;
+     out_frame->nb_samples = p_frame->nb_samples;
+ 
+@@ -629,7 +635,7 @@
+ 
+     if (get_buffer_result < 0) {
+         UtilityFunctions::print("Failed to allocate SWR frame buffer:", ffmpeg_get_error_message(get_buffer_result));
+-        av_frame_unref(out_frame);
++        av_frame_free(&out_frame);
+         return nullptr;
+     }
+ 
+@@ -637,7 +643,7 @@
+ 
+     if (converter_result < 0) {
+         UtilityFunctions::print("Failed to convert audio frame:", ffmpeg_get_error_message(converter_result));
+-        av_frame_unref(out_frame);
++        av_frame_free(&out_frame);
+         return nullptr;
+     }
+ 
+@@ -645,16 +651,16 @@
  }
  
  void VideoDecoder::seek(double p_time, bool p_wait) {
@@ -163,7 +232,7 @@
  
      if (p_wait) {
          decoder_commands.push_and_sync(this, &VideoDecoder::_seek_command, p_time);
-@@ -766,20 +766,20 @@
+@@ -766,20 +772,20 @@
  }
  
  void VideoDecoder::return_frame(Ref<DecodedFrame> p_frame) {
@@ -187,6 +256,27 @@
      Vector<Ref<DecodedAudioFrame>> frames = decoded_audio_frames.duplicate();
      if (p_clear) decoded_audio_frames.clear();
      return frames;
+@@ -816,10 +822,16 @@
+ }
+ 
+ int VideoDecoder::get_audio_channel_count() const {
+-    if (audio_stream) {
+-        return audio_codec_context->ch_layout.nb_channels;
+-    }
+-    return 0;
++    if (!audio_stream) {
++        return 0;
++    }
++    // Godot's video resampler accepts mono, stereo, quad, 5.1 and 7.1.
++    switch (const int channels = audio_codec_context->ch_layout.nb_channels) {
++        case 1: case 2: case 4: case 6: case 8:
++            return channels;
++        default:
++            return 2;
++    }
+ }
+ 
+ VideoDecoder::VideoDecoder(Ref<FileAccess> p_file) {
 --- a/src/video_decoder.h
 +++ b/src/video_decoder.h
 @@ -109,7 +109,7 @@
@@ -198,7 +288,13 @@
  
      SwsContext *sws_context = nullptr;
      SwrContext *swr_context = nullptr;
-@@ -132,13 +132,13 @@
+@@ -127,18 +127,19 @@
+     double video_time_base_in_seconds;
+     double audio_time_base_in_seconds;
+     double duration;
++    double sample_aspect_ratio = 1.0;
+     double skip_output_until_time = -1.0;
+     SafeFlag skip_current_outputs;
      SafeNumeric<float> last_decoded_frame_time;
      Ref<FileAccess> video_file;
      BitField<HardwareVideoDecoder> target_hw_video_decoders = HardwareVideoDecoder::ANY;
@@ -216,3 +312,29 @@
      Vector<Ref<DecodedFrame>> decoded_frames;
      std::thread *thread = nullptr;
      SafeFlag thread_abort;
+@@ -182,6 +183,7 @@
+     bool is_running() const;
+     double get_duration() const;
+     Vector2i get_size() const;
++    double get_sample_aspect_ratio() const { return sample_aspect_ratio; }
+     int get_audio_mix_rate() const;
+     int get_audio_channel_count() const;
+ 
+--- a/src/video_stream_ffmpeg.h
++++ b/src/video_stream_ffmpeg.h
+@@ -79,6 +79,7 @@
+ 
+ public:
+     Error load(Ref<FileAccess> p_file_access);
++    double get_sample_aspect_ratio() const { return decoder->get_sample_aspect_ratio(); }
+ 
+     bool _is_paused() const override;
+     void _update(double p_delta) override;
+@@ -113,6 +114,7 @@
+         if (pb->load(fa) != OK) {
+             return nullptr;
+         }
++        set_meta("sample_aspect_ratio", pb->get_sample_aspect_ratio());
+         return pb;
+     }
+ };

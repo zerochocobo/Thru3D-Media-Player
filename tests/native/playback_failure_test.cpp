@@ -21,5 +21,8 @@ int main() {
     assert(playback_end_failure(-13, timeout).reason == "network_timeout");
     assert(playback_exception_failure("MPV video output format did not become ready within 15 seconds").reason == "output_timeout");
     assert(playback_log_failure("ffmpeg", "SSL peer certificate cannot be authenticated").reason == "tls_failed");
-    std::cout << "Playback failure native checks passed: 15\n";
+    assert(playback_exception_failure(kSourceDimensionsExceeded).reason == "resolution_unsupported");
+    assert(source_dimensions_supported(7680, 4320) && source_dimensions_supported(8192, 4320) && source_dimensions_supported(5760, 5760));
+    assert(!source_dimensions_supported(7680, 7680) && !source_dimensions_supported(8200, 100) && !source_dimensions_supported(0, 1080));
+    std::cout << "Playback failure native checks passed: 18\n";
 }

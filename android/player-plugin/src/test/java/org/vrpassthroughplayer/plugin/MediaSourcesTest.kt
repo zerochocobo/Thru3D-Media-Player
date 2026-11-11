@@ -103,6 +103,9 @@ class MediaSourcesTest {
     @Test fun videoNames() {
         assertTrue(DlnaClient.isVideoName("a.MKV"))
         assertTrue(DlnaClient.isVideoName("http://x/y.mp4?token=1"))
+        assertTrue(DlnaClient.isVideoName("http://x/clip.VOB?token=1"))
+        assertTrue(MediaKinds.supportedFileName("片段.VOB"))
+        assertEquals("video", MediaKinds.fileNameKind("片段.VOB"))
         assertFalse(DlnaClient.isVideoName("a.srt"))
     }
 }

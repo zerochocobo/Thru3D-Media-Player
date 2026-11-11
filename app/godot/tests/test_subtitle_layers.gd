@@ -79,6 +79,29 @@ func _run() -> void:
 	check(is_equal_approx(values[13], rect.z * screen.x) and is_equal_approx(values[14], rect.w * screen.y), "Sized as the cue's part of the screen")
 	video._subtitle_layer_extras(origin)
 	check(host.copies == 1, "An unchanged cue is not copied again")
+	video.set_screen_rotation(90.0)
+	var rotated: PackedFloat32Array = video._subtitle_layer_extras(origin)[0].values
+	var upright := Vector2(screen.y, screen.x)
+	var fit := minf(upright.x / screen.x, upright.y / screen.y)
+	var extent := Vector2(rect.z, rect.w) * screen * fit
+	var centre := Vector3((rect.x + rect.z * 0.5 - 0.5) * upright.x, (0.5 - rect.y - rect.w) * upright.y + extent.y * 0.5, 0)
+	check(Vector2(rotated[13], rotated[14]).is_equal_approx(extent) and host.copies == 1,
+		"A quarter turn fits the original PGS proportions without uploading the cue again")
+	check(Vector3(rotated[2], rotated[3], rotated[4]).is_equal_approx(video.subtitle_transform() * centre),
+		"The PGS baseline is measured from the rotated picture")
+	video._subtitle_on_layer = false
+	video._sync_subtitle_surface()
+	var fallback: Vector4 = video._subtitle_material.get_shader_parameter("bitmap_subtitle_rect")
+	check(video._subtitle_surface.visible and (Vector2(fallback.z, fallback.w) * upright).is_equal_approx(extent),
+		"Eye-buffer fallback uses the same rotated layout as the compositor")
+	video.subtitle_flat_position = 1.0
+	video.bitmap_subtitles.apply(video.material, _cue(1, 300, 50), 1, PackedByteArray(), 1.0, video.subtitle_flat_position)
+	rotated = video._subtitle_layer_extras(origin)[0].values
+	var top := rotated[3] + rotated[14] * 0.5
+	check(is_equal_approx(top, video.panel.global_position.y + upright.y * 0.5) and host.copies == 1,
+		"The vertical position control reaches the rotated picture's top without re-uploading PGS pixels")
+	video.subtitle_flat_position = 0.0
+	video.set_screen_rotation(0.0)
 	_apply(video, _cue(2, 400, 60))
 	video._subtitle_layer_extras(origin)
 	check(host.copies == 2 and host.created.size() == 1, "A new cue of the same bucket reuses the swapchain")

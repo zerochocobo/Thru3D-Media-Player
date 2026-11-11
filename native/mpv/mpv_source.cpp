@@ -214,6 +214,7 @@ struct Source final {
     // once the file loads; a track that fails to open is logged and skipped.
     const std::vector<std::pair<std::string, std::string>> audio_files;
     bool required_primary_audio = false; // fixed before start(); split A/V, not optional dubbing
+    bool live_mirror = false;
     const std::vector<std::pair<std::string, std::string>> subtitle_files;
     std::atomic<bool> closing{false}, abandoned{false}, done{false}, render_ready{false};
     // Diagnostics only: where a close is waiting, so a source that never finishes closing
@@ -596,7 +597,13 @@ struct Source final {
             ",\"observed_monotonic_ns\":" + std::to_string(observed_ns) +
             ",\"clock_scope\":\"MPV_playback_observation_not_same_video_frame_ticket\",\"rendered_into_video\":false}";
         core_eof.store(eof == "yes" && !awaiting_seek_event && last_epoch.load() >= epoch_floor.load());
+        // Container parameters of the selected video, so a failure can name what the decoder was given.
+        const auto video_stream = "{\"codec\":" + quote(property(core, "current-tracks/video/codec")) +
+            ",\"width\":" + quote(property(core, "current-tracks/video/demux-w")) +
+            ",\"height\":" + quote(property(core, "current-tracks/video/demux-h")) +
+            ",\"fps\":" + quote(property(core, "current-tracks/video/demux-fps")) + "}";
         const auto json = "{\"codec\":" + quote(codec) + ",\"hwdec_current\":" + quote(hwdec) +
+            ",\"video_stream\":" + video_stream +
             ",\"dolby_vision_profile\":" + quote(property(core, "current-tracks/video/dolby-vision-profile")) +
             ",\"dolby_profile5\":" + (dolby_profile5.load() ? "true" : "false") +
             ",\"dolby_color_path\":" + quote(dolby_profile5.load() ? "GPU_RPU_RGBA16F_PQ_to_SDR" : "existing") +
@@ -721,8 +728,7 @@ struct Source final {
         if (rotation_result != MPV_ERROR_PROPERTY_UNAVAILABLE) checked(rotation_result, "MPV output rotation");
         require(rotate >= -360 && rotate <= 360, "MPV source rotation out of range");
         const int rotation = quest::frame_rotation(static_cast<int>(rotate));
-        require(width > 0 && height > 0 && width <= 8192 && height <= 8192 && width*height <= 8192LL*4320,
-                "MPV source dimensions exceed the current GPU slot contract");
+        require(quest::source_dimensions_supported(width, height), quest::kSourceDimensionsExceeded);
         // Before publishing dimensions, select the color path for the decoded
         // transfer function, not just the Dolby profile/container label.
         if (property(core, "current-tracks/video/dolby-vision-profile") == "5")
@@ -831,6 +837,12 @@ struct Source final {
                 option("demuxer-readahead-secs", "0.5"); option("demuxer-max-bytes", "16MiB");
             }
             option("network-timeout", "30");
+            if (live_mirror) {
+                option("cache", "no"); option("cache-pause", "no");
+                option("demuxer", "lavf");
+                option("demuxer-lavf-format", "matroska"); option("demuxer-lavf-probe-info", "no");
+                option("demuxer-readahead-secs", "0"); option("demuxer-max-bytes", "4MiB");
+            }
             option("tls-verify", "yes");
             if (!tls_ca_file.empty()) option("tls-ca-file", tls_ca_file.c_str());
             // stream_curl treats a 206 that ends before Content-Range's total as EOF unless it is
@@ -898,7 +910,7 @@ struct Source final {
                 // frame with a negative PTS, which is never published, and paused startup then waits
                 // forever. Later seeks pass explicit flags, so this per-file option affects only the start.
                 const std::string start = "start=" + std::to_string(start_ms / 1000.0) + (start_ms == 0 ? ",hr-seek=yes" : "");
-                const char* load[] = {"loadfile", path.c_str(), "replace", "-1", start.c_str(), nullptr};
+                const char* load[] = {"loadfile", path.c_str(), "replace", "-1", live_mirror ? nullptr : start.c_str(), nullptr};
                 checked(mpv_command(core, load), "MPV source loadfile");
                 load_submitted_us.store(startup_us());
             }
@@ -1137,6 +1149,17 @@ struct Source final {
                             source_rotation.store(quest::frame_rotation(std::stoi(rotate)));
                     }
                     file_loaded_us.store(startup_us());
+                    {
+                        // The container already names the coded size. An oversized video
+                        // fails now instead of after a slow software decode of its first frame.
+                        int64_t demux_w = 0, demux_h = 0;
+                        if (mpv_get_property(core, "current-tracks/video/demux-w", MPV_FORMAT_INT64, &demux_w) >= 0 &&
+                            mpv_get_property(core, "current-tracks/video/demux-h", MPV_FORMAT_INT64, &demux_h) >= 0 &&
+                            !quest::source_dimensions_supported(demux_w, demux_h)) {
+                            try { snapshot(core); } catch (...) {} // the failure report carries the stream parameters
+                            throw std::runtime_error(quest::kSourceDimensionsExceeded);
+                        }
+                    }
                     loaded = true; set_state("ready");
                     format_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
                 }
@@ -1829,7 +1852,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
                                                          jobjectArray subtitle_files, jboolean exact_start, jobject surface,
                                                          jboolean software_layer, jint layer_width, jint layer_height, jboolean iso_input,
                                                          jstring ca_file, jboolean interleave_compat, jint iso_playlist,
-                                                         jint network_cache_mib, jboolean required_primary_audio) {
+                                                         jint network_cache_mib, jboolean required_primary_audio, jboolean live_mirror) {
     try {
         require(extension_available(), "MPV source requires the verified private source-frame build");
         require(path && start >= 0, "Invalid MPV local source request");
@@ -1850,6 +1873,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
         const bool network = (file.rfind("http://", 0) == 0 || file.rfind("https://", 0) == 0) &&
             file.find_first_of(" \r\n") == std::string::npos;
         require(local || descriptor || network, "MPV source requires a local path, owned descriptor or HTTP media URL");
+        require(live_mirror != JNI_TRUE || (descriptor && start == 0 && !surface), "AirPlay requires a live descriptor on the player frame path");
         require(interleave_compat != JNI_TRUE || (network && audio == JNI_TRUE), "MPV interleave compatibility requires network audio/video");
         require(max_width >= 0 && max_width <= 8192, "MPV output width cap out of range");
         require(network_cache_mib >= 64 && network_cache_mib <= 1024, "MPV network cache out of range");
@@ -1870,6 +1894,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
                 software_layer == JNI_TRUE, layer_width, layer_height, iso_input == JNI_TRUE, std::move(tls_ca_file), interleave_compat == JNI_TRUE);
         } catch (...) { if (layer_surface) env->DeleteGlobalRef(layer_surface); throw; }
         source->required_primary_audio = required_primary_audio == JNI_TRUE;
+        source->live_mirror = live_mirror == JNI_TRUE;
         require(!source->required_primary_audio || (audio == JNI_TRUE && source->audio_files.size() == 1),
                 "Split A/V requires exactly one primary audio track");
         source->max_output_width.store(max_width); // before any render; fixed for this source
@@ -2076,7 +2101,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_seek(JNIEnv* env, jclass, jl
         require(position >= 0 && position <= std::numeric_limits<int32_t>::max(), "MPV seek position out of range");
         auto source = find(handle); std::lock_guard<std::mutex> lock(source->commands_mutex);
         const auto epoch = source->last_epoch.load();
-        if (source->closing.load() || epoch == 0 || source->epoch_floor.load() > epoch) return JNI_FALSE;
+        if (source->live_mirror || source->closing.load() || epoch == 0 || source->epoch_floor.load() > epoch) return JNI_FALSE;
         source->epoch_floor.store(epoch+1); source->core_eof.store(false);
         source->pending_seek_ms = position; source->pending_seek_exact = exact == JNI_TRUE;
         source->wake.notify_one(); return JNI_TRUE;

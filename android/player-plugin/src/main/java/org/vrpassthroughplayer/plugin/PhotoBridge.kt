@@ -39,17 +39,35 @@ internal class PhotoBridge(
     private val files = ConcurrentHashMap<Int, PhotoSource>()
     private var animationId=0
     private var animation: AnimatedPhotoSession?=null
+    private var animationDepth: AnimatedPhotoDepth?=null
+    private fun closeAnimation() {
+        animationDepth?.close();animationDepth=null
+        animation?.close();animation=null;animationId=0
+    }
     private val animationWorker=java.util.concurrent.Executors.newSingleThreadExecutor { task ->
         Thread({android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);task.run()},"PhotoAnimation")
     }
     fun animationFrame(id: Int): String = synchronized(PhotoCache.lock) {
         if(closed||current.get()!=id||files[id]?.animation!=true)return ""
-        if(animationId!=id){animation?.close();val owner=files[id]!!;val session=AnimatedPhotoSession(owner,worker=animationWorker,ownsWorker=false)
+        if(animationId!=id){closeAnimation();val owner=files[id]!!;val session=AnimatedPhotoSession(owner,worker=animationWorker,ownsWorker=false)
             animation=session;animationId=id;owner.animationSnapshot=session::snapshot}
-        animation?.poll()?:""
+        val state=JSONObject(animation?.poll()?:return "")
+        if(state.optLong("token")>0)animationDepth?.present(AnimatedPhotoDepth.Identity(state.getLong("frame_id"),state.getLong("pts_us"),state.getLong("loop")))
+        animationDepth?.let {state.put("depth",it.status())}
+        state.toString()
+    }
+    fun setAnimationDepth(id: Int,enabled: Boolean): Boolean = synchronized(PhotoCache.lock) {
+        if(!enabled){if(animationId==id){animationDepth?.close();animationDepth=null};return true}
+        if(closed||current.get()!=id||files[id]?.animation!=true)return false
+        if(animationId!=id)animationFrame(id)
+        if(animationDepth==null)animationDepth=AnimatedPhotoDepth.create(context,animation!!::depthInput)
+        true
+    }
+    fun animationDepthPixels(id: Int,token: Long): ByteArray = synchronized(PhotoCache.lock) {
+        if(animationId==id)animationDepth?.pixels(token)?:ByteArray(0) else ByteArray(0)
     }
     fun pauseAnimation(id: Int,paused: Boolean) = synchronized(PhotoCache.lock) {if(animationId==id)animation?.pause(paused)}
-    fun restartAnimation(id: Int) = synchronized(PhotoCache.lock) {if(animationId==id){animation?.close();animation=null;animationId=0}}
+    fun restartAnimation(id: Int) = synchronized(PhotoCache.lock) {if(animationId==id)closeAnimation()}
     fun uploadAnimation(id: Int,token: Long,texture: Int,mipmaps: Boolean): Boolean = synchronized(PhotoCache.lock) {
         animationId==id && animation?.upload(token,texture,mipmaps)==true
     }
@@ -87,7 +105,7 @@ internal class PhotoBridge(
 
     fun open(id: Int, uri: String, bounded: Boolean = false): Boolean {
         if (closed) return false
-        synchronized(PhotoCache.lock) { current.set(id);animation?.close();animation=null;animationId=0 }
+        synchronized(PhotoCache.lock) { current.set(id);closeAnimation() }
         val state = Loading(id, Uri.parse(uri).scheme !in setOf("file", "content", "pdfpage"))
         loading = state
         cancelDepth(); connection?.disconnect()
@@ -321,7 +339,7 @@ internal class PhotoBridge(
         release(id)
     }
     fun release(id: Int) = synchronized(PhotoCache.lock) {
-        if(animationId==id){animation?.close();animation=null;animationId=0}
+        if(animationId==id)closeAnimation()
         depthJobs.remove(id)?.cancelled = true
         portraitJobs.entries.filter { it.value.id == id }.forEach { it.value.cancelled = true; portraitJobs.remove(it.key) }
         files.remove(id)?.release()
@@ -348,7 +366,7 @@ internal class PhotoBridge(
     fun promoteTo(id: Int, target: PhotoBridge): Boolean = synchronized(PhotoCache.lock) {
         if (target.closed || files[id]?.file?.isFile != true) return@synchronized false
         target.cancelDepth()
-        target.animation?.close();target.animation=null;target.animationId=0
+        target.closeAnimation()
         val source = files.remove(id) ?: return@synchronized false
         target.files[id] = source
         target.current.set(id)
@@ -369,7 +387,7 @@ internal class PhotoBridge(
     fun activate(id: Int): Boolean {
         if (closed || files[id]?.file?.isFile != true) return false
         synchronized(PhotoCache.lock) {
-            if(animationId!=id){animation?.close();animation=null;animationId=0}
+            if(animationId!=id)closeAnimation()
             depthJobs.entries.filter { it.key != id }.forEach { it.value.cancelled = true; depthJobs.remove(it.key) }
             depthJobs[id]?.background = false
             current.set(id)

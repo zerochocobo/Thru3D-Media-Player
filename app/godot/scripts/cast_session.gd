@@ -154,6 +154,29 @@ func accept() -> void:
 	var offer: Variant = JSON.parse_string(platform.dlna_receiver_accept(int(pending.token)))
 	pending = {}
 	if not offer is Dictionary or offer.is_empty(): return
+	_return_mirror()
+	_save_previous()
+	token = int(offer.token)
+	_start_player(str(offer.uri), str(offer.title), token, int(offer.get("start_ms", 0)), bool(offer.get("playing", true)))
+	_update_navigation(offer)
+	refresh()
+
+func busy_editor() -> bool:
+	return host.video.vr_passthrough.active() or (host.puzzle_game and host.puzzle_game.active) or host.recent_menu.voice_manager.opened or _typing()
+
+## AirPlay supplies a live source to exactly the same player and transition as DLNA.
+func open_mirror(uri: String, epoch: int) -> void:
+	_save_previous()
+	detach()
+	_start_player(uri, "AirPlay", epoch, 0, true)
+	refresh()
+
+func _return_mirror() -> void:
+	var airplay: Object = host.get("airplay_session")
+	if is_instance_valid(airplay): airplay.return_to_pip()
+
+func _save_previous() -> void:
+	if str(host.video.local_uri).begins_with("airplayvideo://"): return
 	if token == 0 and previous.is_empty():
 		var viewer: Node = host._viewer()
 		if host.photo_active or host.video.media.accepts(host.video.media.session_id):
@@ -163,6 +186,8 @@ func accept() -> void:
 			if host.photo_active:
 				previous.photo_queue = host.photo.queue.duplicate(true)
 				previous.photo_directory = host.photo.directory._context.duplicate(true)
+
+func _start_player(uri: String, title: String, owner_token: int, start_ms: int, playing: bool) -> void:
 	host._cancel_video_queue_wait()
 	if host.video_directory: host.video_directory.cancel()
 	host.video_queue_pages.cancel(); host.video_queue_pages.context = {}; host.video_queue.clear()
@@ -171,12 +196,9 @@ func accept() -> void:
 	host._prepare_cast_switch()
 	host.stick_controls.suspend()
 	host.video.close_video()
-	token = int(offer.token)
 	host.playback_mode = "single"
-	host.video.open_cast(str(offer.uri), str(offer.title), token, int(offer.get("start_ms", 0)), bool(offer.get("playing", true)))
-	_update_navigation(offer)
+	host.video.open_cast(uri, title, owner_token, start_ms, playing)
 	host._show_player_menu()
-	refresh()
 
 func detach() -> void:
 	if supported(): platform.dlna_receiver_detach()
@@ -184,6 +206,7 @@ func detach() -> void:
 	refresh()
 
 func local_selection() -> void:
+	_return_mirror()
 	detach(); previous = {}
 	refresh()
 
@@ -198,6 +221,7 @@ func finish() -> void:
 
 func restore() -> void:
 	if token > 0 or previous.is_empty(): return
+	_return_mirror()
 	var saved := previous.duplicate(true)
 	previous = {}
 	host._prepare_cast_switch()

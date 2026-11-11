@@ -4,6 +4,8 @@ const HIDDEN := ["favorite", "bookmarks", "disc_title", "disc_menu", "capture_sc
 
 static func capabilities(video: Node) -> Dictionary:
 	var details: Dictionary = video.media.playback.get("details", {})
+	if str(video.get("local_uri")).begins_with("airplayvideo://"):
+		return {"live_mirror": true, "seek": false, "effects": true, "audio": not details.get("audio_tracks", []).is_empty(), "multi_audio": false, "has_previous": false, "has_next": false}
 	var seekable: bool = video.control.duration_ms > 0 and details.get("seekable", "no") == "yes" and details.get("partially_seekable", "no") != "yes"
 	var result := {"seek": seekable, "effects": seekable, "audio": details.get("audio_tracks", []).size() > 0, "multi_audio": details.get("audio_tracks", []).size() > 1}
 	if not details.has("seekable") and not video.cast_capability_cache.is_empty(): result = video.cast_capability_cache.duplicate()
@@ -13,6 +15,7 @@ static func capabilities(video: Node) -> Dictionary:
 
 static func allows(caps: Dictionary, operation: String) -> bool:
 	if operation in HIDDEN: return false
+	if caps.get("live_mirror", false) and operation == "play": return false
 	# Display geometry is available for live streams too; it does not seek or reconfigure decoding.
 	if operation in ["video_aspect_preset", "video_aspect_factor"]: return true
 	if operation in ["previous_video", "next_video"] and caps.get("navigation_pending", false): return false

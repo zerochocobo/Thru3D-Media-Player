@@ -24,6 +24,7 @@ class AnimatedPhotoSessionTest {
         var frame=0;var serial=0L;var resets=0;var closes=0;var maxLive=0;var failAt=-1
         var failureMessage="decode failure"
         var onNext: (() -> Unit)?=null
+        var onInput: (() -> Unit)?=null
         val live=mutableSetOf<Long>()
         override fun open(path: String)=1L
         override fun info(id: Long)=longArrayOf(3,2,2,frameCount.toLong(),plays,1,1,0)
@@ -35,6 +36,12 @@ class AnimatedPhotoSessionTest {
         }
         override fun reset(id: Long){resets++;frame=0}
         override fun pixels(token: Long)=if(token in live)ByteArray(16) else null
+        override fun depthInput(token: Long,input: java.nio.ByteBuffer,width: Int,height: Int): IntArray? {
+            if(token !in live)return null
+            onInput?.invoke()
+            input.clear();repeat(width*height*3){input.putFloat(token.toFloat())};input.clear()
+            return intArrayOf(0,0,width,height)
+        }
         override fun upload(token: Long,texture: Int,mipmaps: Boolean)=token in live
         override fun releaseFrame(token: Long){assertTrue("Frame lease released exactly once",live.remove(token))}
         override fun close(id: Long){closes++}
@@ -87,4 +94,33 @@ class AnimatedPhotoSessionTest {
             assertEquals(token,f.poll().getLong("token"));assertTrue(f.backend.maxLive<=3)
             f.time+=10000;assertEquals(4,f.poll().getLong("token"))
         }finally {f.close()}}
+    @Test fun depthSamplesTheDisplayedLeaseAndUsesSourceTimingAcrossLoops(){val f=Fixture(Backend(2,0))
+        try {
+            val rgb=java.nio.ByteBuffer.allocateDirect(48).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            assertNull(f.session.depthInput(rgb,2,2));f.work.drain();f.poll();f.work.drain()
+            var input=f.session.depthInput(rgb,2,2)!!
+            assertEquals(AnimatedPhotoDepth.Identity(1,0,0),input.identity);assertEquals(1f,rgb.getFloat(0),0f)
+            f.time=10000;f.poll();f.work.drain();input=f.session.depthInput(rgb,2,2)!!
+            assertEquals(AnimatedPhotoDepth.Identity(2,10000,0),input.identity);assertEquals(2f,rgb.getFloat(0),0f)
+            f.time=20000;f.poll();input=f.session.depthInput(rgb,2,2)!!
+            assertEquals(AnimatedPhotoDepth.Identity(3,0,1),input.identity);assertEquals(3f,rgb.getFloat(0),0f)
+            f.session.pause(true);f.time+=100000;f.poll()
+            assertEquals(input.identity,f.session.depthInput(rgb,2,2)!!.identity)
+        }finally {f.close()}}
+    @Test fun backgroundSamplingNeverHoldsThePresentationLock(){val f=Fixture()
+        val entered=java.util.concurrent.CountDownLatch(1);val resume=java.util.concurrent.CountDownLatch(1)
+        val done=java.util.concurrent.CountDownLatch(1)
+        f.work.drain();f.poll()
+        f.backend.onInput={entered.countDown();check(resume.await(5,TimeUnit.SECONDS))}
+        val sampler=Thread {try {f.session.depthInput(java.nio.ByteBuffer.allocateDirect(48),2,2)}finally {done.countDown()}}
+        sampler.start()
+        try {
+            assertTrue(entered.await(5,TimeUnit.SECONDS))
+            // Closing from a different thread must finish even while sampling is still active.
+            val closed=java.util.concurrent.CountDownLatch(1)
+            val closer=Thread {f.session.close();closed.countDown()};closer.start()
+            assertTrue("XR presentation/close cannot wait for model-input sampling",closed.await(2,TimeUnit.SECONDS))
+            assertEquals(1L,done.count)
+        }finally {resume.countDown();sampler.join(5000);f.close()}
+    }
 }

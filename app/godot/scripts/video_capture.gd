@@ -62,7 +62,7 @@ func export_loop(segment: Dictionary) -> bool:
 	var metadata: Dictionary = video.get("_bookmark_metadata") if video.get("_bookmark_metadata") is Dictionary else {}
 	var source_name := str(metadata.get("basename", ""))
 	if source_name.is_empty(): source_name = str(video.get("display_name") if video.get("display_name") else "")
-	if source_name.is_empty(): source_name = video.local_uri.get_file().get_slice("?", 0).uri_decode()
+	if source_name.is_empty(): source_name = preload("res://scripts/media_uri.gd").filename(video.local_uri)
 	if source_name.is_empty(): source_name = "video"
 	var request := {"kind": "clip", "uri": video.local_uri, "mode": mode(true), "loop_id": str(segment.id),
 		"source_name": source_name, "start_us": int(segment.a_ms) * 1000, "end_us": int(segment.b_ms) * 1000}

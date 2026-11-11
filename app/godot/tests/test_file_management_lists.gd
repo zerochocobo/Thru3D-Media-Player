@@ -95,13 +95,19 @@ func _run() -> void:
 	check(button(menu, Menu.ROW_BASE).rect == baseline and not has(menu, Actions.SELECT_BASE), "Disabling management restores the original row geometry")
 	menu.file_actions.set_enabled(true); menu.refresh(); pick(menu, 0)
 	menu._activate(Actions.Rename.OPEN)
-	check(menu.file_actions.rename.name == "a" and not menu.file_actions.rename.selected_all, "Rename retains the basename and starts editing at the end")
-	menu._activate(Menu.KEY_BASE)
-	check(menu.file_actions.rename.name == "a1", "Typing appends instead of replacing the original name")
+	await process_frame
+	var name_editor: LineEdit = menu.system_text_input.editor
+	check(name_editor.text == "a" and not name_editor.has_selection() and name_editor.has_focus(), "System editor retains the basename and starts editing at the end")
+	var typed := InputEventKey.new()
+	typed.unicode = "中".unicode_at(0)
+	typed.pressed = true
+	root.push_input(typed)
+	await process_frame
+	check(menu.file_actions.rename.name == "a中", "System input appends Unicode to the original name")
 	check(menu.text_snapshot().contains(".mp4") and has(menu, Actions.Rename.SAME_NAME), "Extension is read-only and video offers same-basename companions")
-	menu.file_actions.rename.name = "a".repeat(150) + "tail"; menu._activate(Menu.KEY_BASE)
-	check(menu.text_snapshot().contains("tail1│"), "Long names keep the edited end and cursor visible")
-	menu.file_actions.rename.name = "a1"
+	menu.system_text_input.set_text("file_rename", "a".repeat(150) + "tail")
+	check(menu.text_snapshot().contains("tail"), "Long names keep the edited end visible")
+	menu.system_text_input.set_text("file_rename", "a1")
 	menu._activate(Actions.Rename.SAME_NAME); menu._activate(Actions.Rename.PREVIEW)
 	check(platform.calls.back().target.new_name == "a1" and not platform.calls.back().target.include_same_name, "Companion opt-out is carried into the immutable preview plan")
 	platform.respond("ready", {"preview": true, "plan": "name-plan", "moves": [{"from":"a.mp4", "to":"a1.mp4"}]})
@@ -117,7 +123,7 @@ func _run() -> void:
 	check(has(menu, Actions.Rename.OPEN) and not has(menu, Actions.DELETE_FILE), "Cloud folder rename permission is independent from delete permission")
 	menu._activate(Actions.Rename.OPEN)
 	check(menu.file_actions.rename.name == "old.folder" and not has(menu, Actions.Rename.SAME_NAME), "Folder rename edits its whole name without treating dots as extensions")
-	menu.file_actions.rename.name = "new.folder"; menu._activate(Actions.Rename.PREVIEW)
+	menu.system_text_input.set_text("file_rename", "new.folder"); menu._activate(Actions.Rename.PREVIEW)
 	check(platform.calls.back().target.cloud_id == "9007199254740993" and platform.calls.back().target.folder, "Cloud folder preview retains the exact provider identity")
 	platform.respond("ready", {"preview":true, "plan":"folder-plan", "moves":[{"from":"old.folder", "to":"new.folder"}]})
 	menu._activate(Actions.CANCEL)
@@ -143,7 +149,7 @@ func _run() -> void:
 	menu._local_entries = [{"title":"old(1).mp4", "uri":"file:///disk/old(1).mp4", "can_delete":true, "can_rename":true, "size":12, "modified":10},
 		{"title":"old(1).jpg", "uri":"file:///disk/old(1).jpg", "kind":"image", "can_delete":true, "size":6, "modified":10}]
 	menu.refresh(); menu.file_actions.toggle(menu.rows.filter(func(row): return row.uri.ends_with(".mp4"))[0])
-	menu._activate(Actions.Rename.OPEN); menu.file_actions.rename.name = "new(1)"; menu._activate(Actions.Rename.PREVIEW)
+	menu._activate(Actions.Rename.OPEN); menu.system_text_input.set_text("file_rename", "new(1)"); menu._activate(Actions.Rename.PREVIEW)
 	platform.respond("ready", {"preview":true, "plan":"exact-uris", "moves":[
 		{"from":"old(1).mp4", "to":"new(1).mp4", "old_uri":"file:///disk/old(1).mp4", "new_uri":"file:///disk/new(1).mp4", "size":12},
 		{"from":"old(1).jpg", "to":"new(1).jpg", "old_uri":"file:///disk/old(1).jpg", "new_uri":"file:///disk/new(1).jpg", "size":6}]})

@@ -5,8 +5,23 @@ import org.json.JSONException
 import org.junit.Assert.*
 import org.junit.Test
 import java.net.SocketTimeoutException
+import org.vrpassthroughplayer.plugin.CloudLoginFailure.Stage
 
 class CloudDiagnosticsTest {
+    @Test fun loginDiagnosticKeepsTheFailedStageAndStatusWithoutRawData() {
+        val reply = JSONObject().put("code", 500).put("message", "failed to get user ID; 13100000000 private-user")
+        val mount = assertThrows(CloudLoginFailure::class.java) {
+            CloudLoginFailure.at(Stage.SAVE) {
+                CloudLoginFailure.at(Stage.MOUNT) { CloudDiagnostics.checkCore(reply, "/create") }
+            }
+        }
+        assertEquals("AUTH-MOUNT PROFILE API 500", mount.code)
+        assertNull(mount.cause)
+        val root = CloudLoginFailure(Stage.ROOT, CloudFailure(detail = "private filename", apiCode = 500))
+        assertEquals("AUTH-ROOT API 500", root.code)
+        val exchange = CloudLoginFailure(Stage.EXCHANGE, SocketTimeoutException("private provider URL"))
+        assertEquals("AUTH-EXCHANGE TIMEOUT", exchange.code)
+    }
     @Test fun expiredDirectoryCursorsRemainActionableInTheBrowseDto() {
         for (reason in listOf("cloud_page_expired", "cloud_location_expired")) {
             val failure = assertThrows(CloudFailure::class.java) {

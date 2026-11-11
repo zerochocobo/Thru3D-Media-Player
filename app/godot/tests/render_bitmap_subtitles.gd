@@ -88,10 +88,10 @@ func _run() -> void:
 	video.material.set_shader_parameter("stereo_sbs", false)
 	var counts := {}
 	var masks := {}
-	for mode in ["normal", "unchanged", "small", "large", "lifted", "adjustment_reset", "rotation90", "rotation-90", "restored",
+	for mode in ["normal", "unchanged", "small", "large", "lifted", "adjustment_reset", "rotation90", "rotation90_lifted", "rotation-90", "restored",
 		"depth_shader", "depth_warped", "depth_layer_fallback", "depth_return", "alpha_zero", "gap", "vr", "off"]:
 		video.subtitle_size = 0.5 if mode == "small" else (1.25 if mode == "large" else 1.0)
-		video.subtitle_flat_position = 0.5 if mode == "lifted" else 0.0
+		video.subtitle_flat_position = 0.5 if mode in ["lifted", "rotation90_lifted"] else 0.0
 		video.material.set_shader_parameter("alpha_enabled", mode == "alpha_zero")
 		# Mock the depth outputs; the real compositor submission is checked by test_subtitle_layers.
 		video.material.set_shader_parameter("depth_enabled", mode == "depth_shader")
@@ -147,10 +147,29 @@ func _run() -> void:
 		failures.append("Resetting bitmap adjustments must restore its authored silhouette")
 	if masks.lifted.is_empty() or masks.normal.is_empty() or masks.lifted[0] >= masks.normal[0]:
 		failures.append("PGS position slider must lift the actual rendered crop")
-	# Transparent video gives a background-independent reference for the same PGS silhouette.
-	for mode in ["rotation90", "rotation-90"]:
-		if masks[mode] != masks.alpha_zero:
-			failures.append("PGS silhouette must retain its position and orientation: " + mode)
+	if masks.rotation90 != masks["rotation-90"] or masks.restored != masks.normal:
+		failures.append("Both quarter turns use the same upright picture bounds, and straighten restores the original silhouette")
+	if masks.rotation90_lifted.is_empty() or masks.rotation90.is_empty() or masks.rotation90_lifted[0] >= masks.rotation90[0]:
+		failures.append("The PGS position slider moves rendered pixels up the rotated picture")
+	var source_size: Vector2 = video._flat.size
+	var rotated_size := Vector2(source_size.y, source_size.x)
+	var fit := minf(rotated_size.x / source_size.x, rotated_size.y / source_size.y)
+	var crop_size := source_size * Vector2(1280.0 / 1920.0, 160.0 / 1080.0) * fit
+	var centre_x := (896.0 / 1920.0 - 0.5) * rotated_size.x
+	var baseline_y := (0.5 - 960.0 / 1080.0) * rotated_size.y
+	var half_width := crop_size.x * 620.0 / 1280.0
+	var upright: Transform3D = video.subtitle_transform()
+	var expected_min := camera.unproject_position(upright * Vector3(centre_x - half_width, baseline_y + crop_size.y * 140.0 / 160.0, 0))
+	var expected_max := camera.unproject_position(upright * Vector3(centre_x + half_width, baseline_y + crop_size.y * 20.0 / 160.0, 0))
+	var bright_min := Vector2(viewport.size)
+	var bright_max := Vector2.ZERO
+	for index in masks.rotation90:
+		@warning_ignore("integer_division")
+		var pixel := Vector2(index % viewport.size.x, index / viewport.size.x)
+		bright_min = bright_min.min(pixel)
+		bright_max = bright_max.max(pixel)
+	if (bright_min - expected_min).abs().length() > 3.0 or (bright_max - expected_max).abs().length() > 3.0:
+		failures.append("The rendered PGS crop retains its aspect and follows the rotated picture's baseline")
 	for mode in ["depth_shader", "depth_warped", "depth_layer_fallback", "depth_return"]:
 		var reference: PackedInt32Array = masks.alpha_zero if mode == "depth_layer_fallback" else masks.normal
 		if masks[mode] != reference:

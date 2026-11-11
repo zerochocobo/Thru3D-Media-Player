@@ -102,7 +102,7 @@ func _run() -> void:
 		for z in [-1.0, 0.0, 1.0]:
 			var direction := Vector3(x, -1.65, z).normalized()
 			var hit: Dictionary = main.cinema_environment.ray_hit(before, direction)
-			if hit.get("valid", false): aim = direction; break
+			if hit.get("valid", false) and hit.get("kind") in ["floor", "riser"]: aim = direction; break
 		if aim != Vector3.ZERO: break
 	check(aim != Vector3.ZERO, "Current desktop camera can aim at a clear nearby floor")
 	if aim != Vector3.ZERO:

@@ -31,7 +31,9 @@ object WebBrowserTwitch {
         require(width in 1..16384 && height in 1..16384 && width == data.getInt("width") && height == data.getInt("height"))
         require(duration.isFinite() && duration > 0 && duration <= 3600 && kotlin.math.abs(duration - data.getDouble("duration")) <= .001)
         val expected = data.getDouble("expected_duration")
-        require(expected.isFinite() && expected > 0 && expected <= 3600 && kotlin.math.abs(duration - expected) <= .5)
+        require(expected.isFinite() && expected > 0 && expected <= 3600 &&
+            (kotlin.math.abs(duration - expected) <= .5 ||
+                expected == kotlin.math.floor(expected) && kotlin.math.floor(duration) == expected))
         val requests = WebBrowserNetworkMedia.candidates(item)
         require((0 until requests.length()).any { val r = requests.getJSONObject(it); r.optString("kind") == "file" && r.optString("url") == source })
         data

@@ -73,15 +73,15 @@ internal object StrmFile {
         if (Regex("^[A-Za-z]:[/\\\\]").containsMatchIn(value)) reject("STRM_WINDOWS_PATH")
         if (value.startsWith("\\\\")) {
             val unc = value.replace('\\', '/').removePrefix("//")
-            return checked(URI("smb", unc.substringBefore('/'), "/" + unc.substringAfter('/', ""), null).toASCIIString())
+            return checked(URI("smb", unc.substringBefore('/'), "/" + unc.substringAfter('/', ""), null).mediaAsciiString())
         }
         if (Regex("^[A-Za-z][A-Za-z0-9+.-]*:").containsMatchIn(value)) return checked(value)
         val base = URI(origin)
         when (base.scheme) {
-            "http", "https" -> checked(base.resolve(URI(value.replace(" ", "%20"))).toASCIIString())
+            "http", "https" -> checked(base.resolve(URI(value.replace(" ", "%20"))).mediaAsciiString())
             "file" -> {
                 val path = normalized(base.path.substringBeforeLast('/'), value.replace('\\', '/'), 0)
-                URI("file", "", path, null).toASCIIString()
+                URI("file", "", path, null).mediaAsciiString()
             }
             "content" -> if (base.authority == StorageDocumentPolicy.AUTHORITY && base.rawPath.startsWith("/tree/"))
                 StorageDocumentPolicy.relative(origin, value) else reject("STRM_RELATIVE_PATH_UNAVAILABLE")
@@ -91,7 +91,7 @@ internal object StrmFile {
                 val root = if (minimum == 1) "/" + base.path.trimStart('/').substringBefore('/') else ""
                 val relative = value.replace('\\', '/')
                 val path = normalized(if (relative.startsWith('/')) root else base.path.substringBeforeLast('/'), relative.trimStart('/'), minimum)
-                checked(URI(base.scheme, base.authority, path, null).toASCIIString())
+                checked(URI(base.scheme, base.authority, path, null).mediaAsciiString())
             }
             else -> reject("STRM_RELATIVE_PATH_UNAVAILABLE")
         }
@@ -123,7 +123,7 @@ internal object StrmFile {
             "content" -> if (uri.authority.isNullOrEmpty()) reject("STRM_INVALID_ADDRESS")
             else -> reject("STRM_UNSUPPORTED_ADDRESS")
         }
-        return uri.scheme.lowercase() + uri.toASCIIString().substring(uri.scheme.length)
+        return uri.scheme.lowercase() + uri.mediaAsciiString().substring(uri.scheme.length)
     }
 
     /** Convert an external NAS address to an existing saved connection, without importing credentials. */

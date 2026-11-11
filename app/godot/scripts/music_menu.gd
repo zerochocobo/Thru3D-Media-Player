@@ -25,10 +25,6 @@ const REMOVE_TRACK := 411
 const DELETE_FILE := 414
 const CONFIRM := 415
 const SAVE_NAME := 416
-const ERASE := 417
-const SPACE := 418
-const SHIFT := 419
-const KEY := 500
 const CANCEL_IMPORT := 420
 const RETRY_IMPORT := 421
 const ADD_TO_LIST := 422
@@ -49,7 +45,6 @@ const INLINE_UP := 600
 const INLINE_DOWN := 610
 const INLINE_REMOVE := 620
 const LIST_ROWS := 5
-const KEYS := ["1234567890", "qwertyuiop", "asdfghjkl-", "zxcvbnm_.+"]
 var choices := ChoiceFields.new(self)
 var editor := TextInput.new(self)
 var audio: Node
@@ -69,7 +64,6 @@ var modal := ""
 var target_track := ""
 var target_playlist := ""
 var name_text := ""
-var shift := false
 var _state := {}
 var _rows: Array[Dictionary] = []
 var _drag := {}
@@ -101,10 +95,14 @@ func _exit_tree() -> void: editor.cancel()
 func text_entry_active() -> bool: return editor.active()
 
 func _edit_name() -> void:
-	if modal != "name" or not TextInput.uses_custom("playlist_name"): return
+	if modal != "name": return
 	var target := target_playlist
-	editor.begin("playlist_name", name_text, 80, func(value): name_text = value; refresh(),
-		func(value): name_text = value; _activate(SAVE_NAME), Callable(),
+	var update := func(value):
+		name_text = value
+		refresh()
+	name_text = editor.finish("playlist_name", name_text)
+	editor.begin("playlist_name", name_text, 80, update,
+		func(value): name_text = value; _activate(SAVE_NAME), update,
 		func(): return visible and modal == "name" and target_playlist == target)
 	editor.editor.select_all()
 
@@ -112,7 +110,7 @@ func has_pointer_capture() -> bool: return not choices.capture.is_empty() or not
 func allows_playback_sticks() -> bool: return false
 
 func navigate_back() -> bool:
-	if editor.active(): editor.cancel(); return true
+	if editor.active(): editor.cancel("", true); return true
 	if has_pointer_capture():
 		for hand in ["left_hand", "right_hand"]: cancel_pointer(hand)
 	elif not choices.opened.is_empty(): choices.reset()
@@ -217,11 +215,12 @@ func _draw() -> void:
 	_clear_layout(); _time = null; _duration = null; _notice = null; _storage_labels.clear()
 	choices.begin(str([compact, view, playlist_id, modal, filter]), Vector2(-0.39, 0.31))
 	var panel_size := Vector2(1.14, 0.54) if compact else Vector2(1.42, 1.22)
-	if not modal.is_empty(): panel_size = Vector2(1.42, 1.12) if modal == "name" else Vector2(1.20, 1.0 if modal == "choose_list" else 0.90)
+	if not modal.is_empty(): panel_size = Vector2(1.20, 1.0 if modal == "choose_list" else 0.90)
 	if modal == "settings": panel_size = Vector2(1.14, 0.60)
 	var panel_offset := Vector2.ZERO
-	if modal == "name" and TextInput.uses_custom("playlist_name"):
-		panel_size.y = 0.49; panel_offset.y = 0.305
+	if modal == "name":
+		panel_size = Vector2(1.42, 0.49)
+		panel_offset.y = 0.305
 	_set_backdrop(panel_size, panel_offset)
 	_block_rays(_backdrop, _backdrop.mesh.size)
 	if not modal.is_empty():
@@ -435,23 +434,10 @@ func _draw_modal() -> void:
 		_storage_labels = StorageView.draw(self, _state, Vector2(0, -0.09), 0.96, true, true)
 		return
 	if modal == "name":
-		if TextInput.uses_custom("playlist_name"):
-			_button(EDIT_NAME, _fit_title(name_text + "│", "", 1.08, TEXT_BODY), Vector2(0, 0.36), Vector2(1.16, 0.085))
-			_pill(CANCEL, "Cancel", Vector2(-0.25, 0.16), 0.40)
-			_pill(SAVE_NAME, "Save", Vector2(0.25, 0.16), 0.40, not name_text.strip_edges().is_empty(), true)
-			return
-		var input := _quad(Vector2(1.16, 0.085), Vector3(0, 0.36, 0.002), TILE, 11)
-		add_child(input); _decorations.append(input)
-		_label(_fit_title(name_text + "│", "", 1.08, TEXT_BODY), Vector3(0, 0.36, 0.004), TEXT_BODY)
-		for r in KEYS.size():
-			for c in 10:
-				var ch: String = KEYS[r][c]
-				_button(KEY + r * 10 + c, ch.to_upper() if shift else ch, Vector2(-0.54 + c * 0.12, 0.21 - r * 0.11), Vector2(0.105, 0.09))
-		_button(SHIFT, "⇧", Vector2(-0.44, -0.24), Vector2(0.20, 0.085), true, "", shift)
-		_button(SPACE, "␣", Vector2(-0.08, -0.24), Vector2(0.44, 0.085))
-		_glyph(ERASE, "backspace", Vector2(0.36, -0.24), 0.08, true, I18n.t("Delete"))
-		_pill(CANCEL, "Cancel", Vector2(-0.25, -0.41), 0.40)
-		_pill(SAVE_NAME, "Save", Vector2(0.25, -0.41), 0.40, not name_text.strip_edges().is_empty(), true); return
+		_button(EDIT_NAME, _fit_title(name_text, "", 1.08, TEXT_BODY), Vector2(0, 0.36), Vector2(1.16, 0.085))
+		_pill(CANCEL, "Cancel", Vector2(-0.25, 0.16), 0.40)
+		_pill(SAVE_NAME, "Save", Vector2(0.25, 0.16), 0.40, not name_text.strip_edges().is_empty(), true)
+		return
 	var label := I18n.t(str(audio.library.resolve(target_track).get("label", ""))) if not target_track.is_empty() else _playlist_label(audio.library.playlist(target_playlist))
 	if modal == "add_source": label = _playlist_label(audio.library.playlist(playlist_id))
 	_label(_fit_title(label, "", 1.04, 20), Vector3(0, top - 0.10, 0.004), 20).modulate = MUTED
@@ -494,6 +480,10 @@ func _draw_modal() -> void:
 
 func _activate(id: int) -> void:
 	if choices.action(id): return
+	if id == CANCEL and modal == "name":
+		_close_modal()
+		refresh()
+		return
 	if id in [CLOSE, BACK, CANCEL]:
 		if id == CLOSE or not navigate_back(): editor.cancel(); close_requested.emit()
 		return
@@ -503,12 +493,6 @@ func _activate(id: int) -> void:
 		offset = clampi(offset + (-_capacity() if id == PREVIOUS else _capacity()), 0, maxi(0, _rows.size() - _capacity())); refresh(); return
 	if modal == "name":
 		if id == EDIT_NAME: _edit_name()
-		elif TextInput.uses_custom("playlist_name") and (id in [ERASE, SHIFT, SPACE] or (id >= KEY and id < KEY + 40)): return
-		elif id >= KEY and id < KEY + 40:
-			var ch: String = KEYS[(id - KEY) / 10][(id - KEY) % 10]; name_text = (name_text + (ch.to_upper() if shift else ch)).left(80)
-		elif id == ERASE: name_text = name_text.left(-1)
-		elif id == SHIFT: shift = not shift
-		elif id == SPACE: name_text = (name_text + " ").left(80)
 		elif id == SAVE_NAME:
 			name_text = editor.finish("playlist_name", name_text)
 			if target_playlist.is_empty():

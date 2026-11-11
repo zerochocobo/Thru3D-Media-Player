@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 $output = Join-Path $workspace 'build/output/system-search-keyboard-20261018'
 New-Item -ItemType Directory -Force $output | Out-Null
-foreach ($case in @('test_system_search_input', 'test_cloud_search', 'test_media_servers', 'test_media_server_browser', 'test_controller_bindings', 'test_i18n')) {
+foreach ($case in @('test_system_search_input', 'test_smb_system_input', 'test_cloud_search', 'test_media_servers', 'test_media_server_browser', 'test_controller_bindings', 'test_i18n')) {
     $log = Join-Path $output "$case.log"
     & $Godot --headless --xr-mode off --path "$workspace/app/godot" --quit-after 3600 --script "res://tests/$case.gd" 2>&1 | Out-File -LiteralPath $log -Encoding utf8
     $text = Get-Content -LiteralPath $log -Raw

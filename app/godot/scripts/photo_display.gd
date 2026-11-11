@@ -9,6 +9,7 @@ var _rotation_portrait := false
 var _rotation_start := 0.0
 var ground_vertical := false
 var _placeholder_rotation := 0.0
+const MediaUri := preload("res://scripts/media_uri.gd")
 const Placement := preload("res://scripts/interface_move.gd")
 const Info := preload("res://scripts/image_info.gd")
 const Naming := preload("res://scripts/media_naming.gd")
@@ -625,6 +626,8 @@ func _rotation_matches(data: Dictionary, at: int = -1) -> bool:
 	return int(data.get("rotation", 0)) == _stereo_rotation(at)
 
 func _refresh_rotated_depth() -> void:
+	if animation.depth_mode:
+		_apply_geometry(); return
 	if not depth_requested or spatial_requested or stereo_sbs or geometry != 0 or _rotation_matches(_display_depth_data): return
 	render_cache.cancel(); _hide_layer(); _upload = {}; _layer_key = ""
 	# Keep raw depth for geometry/inference reuse, but never show an old-direction eye pair.
@@ -761,7 +764,7 @@ func _select(target: int, direction: int = 0, outgoing: MeshInstance3D = null) -
 	if _request <= 0:
 		loading = false; error = "Image unavailable"; _restore_display(); changed.emit(); return false
 	if not platform:
-		var path := str(item.uri).trim_prefix("file://").uri_decode()
+		var path := MediaUri.decode_path(str(item.uri).trim_prefix("file://"))
 		if not path.is_absolute_path():
 			loading = false; error = "Image unavailable"; _restore_display(); changed.emit(); return false
 		_on_ready(_request, JSON.stringify({"state": "ready", "path": path}))
@@ -1318,7 +1321,7 @@ func _pump_prefetch() -> void:
 		_prefetched[target] = {"id": id, "decoded": false}
 		_prefetch_request = id
 		if not platform:
-			var path := uri.trim_prefix("file://").uri_decode()
+			var path := MediaUri.decode_path(uri.trim_prefix("file://"))
 			_on_ready(id, JSON.stringify({"state": "ready", "path": path}) if path.is_absolute_path() else '{"state":"error"}')
 
 func _cancel_depth_prefetch() -> void:
@@ -1730,7 +1733,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	mark = _mark("display", mark)
 	if depth_failed:
 		depth_error = "3D unavailable"; _spatial_auto_due = false
-	elif auto_depth and not animation.available() and geometry == 0 and not stereo_sbs and retained.is_empty(): set_depth(true)
+	elif auto_depth and geometry == 0 and not stereo_sbs and retained.is_empty(): set_depth(true)
 	mark = _mark("depth", mark)
 	var thumbnail_key := str(queue[index].get("thumbnail_key", local_uri)) if index >= 0 and index < queue.size() else local_uri
 	if result.has("thumbnail") and (not result.get("thumbnail_cached", false) or not Thumbnails.has(thumbnail_key)):
@@ -1792,6 +1795,7 @@ func finish_transition() -> void:
 
 ## Conversion and automatic effects must agree before choosing the final display source.
 func _presentation_effects_ready() -> bool:
+	if animation.depth_mode: return true # Motion stays visible while its realtime model prepares.
 	if depth_requested and (_depth_busy or _depth_rebuild_seconds > 0): return false
 	if depth_requested and depth_error.is_empty():
 		if not depth_enabled: return false
@@ -1875,6 +1879,9 @@ func _apply_geometry() -> void:
 		target.set_shader_parameter("depth_convergence", DepthPosition.convergence(depth_position))
 		target.set_shader_parameter("depth_texture", _depth_texture)
 		target.set_shader_parameter("depth_rect", _depth_rect)
+		target.set_shader_parameter("motion_depth", animation.depth_mode)
+		var angle := deg_to_rad(screen_rotation)
+		target.set_shader_parameter("depth_shift_axis", Vector2(cos(angle), -sin(angle) * _size.x / maxf(_size.y, 1.0)) if animation.depth_mode else Vector2.RIGHT)
 		target.set_shader_parameter("photo_stereo", depth_enabled and not _rotation_preview and _stereo_texture != null and not stereo_sbs and geometry == Geometry.Geometry.FLAT)
 		target.set_shader_parameter("stereo_texture", _stereo_texture)
 		target.set_shader_parameter("portrait_enabled", portrait_enabled and not _rotation_preview)
@@ -2153,6 +2160,8 @@ func _update_inspect() -> void:
 	_detail_material.set_shader_parameter("detail_up", right.cross(forward).normalized())
 
 func set_depth(enabled: bool) -> bool:
+	if animation.available() and not portrait_requested and not spatial_requested:
+		return animation.set_depth(enabled)
 	if enabled: animation.freeze()
 	if enabled and _metadata.get("magazine_unregistered", false): return false
 	if spatial_requested: set_spatial(false, true)
@@ -2219,13 +2228,15 @@ func _depth_source_allowed(id: int) -> bool:
 	var target:=_depth_index(id)
 	if target<0 or target>=queue.size(): return false
 	if id==_display_request and not (id==_request and loading and pending_index>=0):
-		return depth_requested and geometry==0 and not stereo_sbs and not _metadata.get("native_stereo",false) and not animation.available()
+		return depth_requested and geometry==0 and not stereo_sbs and not _metadata.get("native_stereo",false) \
+			and (not animation.available() or (animation.paused and not animation.depth_mode))
 	var info: Dictionary=queue[target].get("photo_info",{})
 	if not _pending_display.is_empty() and int(_pending_display.job.id)==id: info=_pending_display.result.info
 	elif _prefetched.has(target): info=_prefetched[target].get("result",{}).get("info",_prefetched[target].get("info",info))
 	return _requires_depth(target,info)
 
 func _suspend_conversion() -> void:
+	animation.stop_depth()
 	# Keep the user's automatic 3D preference for the next compatible flat image.
 	depth_requested=false; depth_enabled=false; depth_error=""; _depth_busy=false; _depth_rebuild_seconds=0
 	_spatial_auto_due=false; _cancel_depth_prefetch()
@@ -2382,8 +2393,8 @@ func set_depth_position(value: Variant) -> bool:
 	if _detail_material: _detail_material.set_shader_parameter("depth_convergence", DepthPosition.convergence(depth_position))
 	if depth_requested:
 		if spatial_requested: set_spatial(false, true)
-		if Methods.supports(platform, "prepare_photo_3d"): _depth_rebuild_seconds = 0.15
-		_spatial_auto_due = true
+		if not animation.depth_mode and Methods.supports(platform, "prepare_photo_3d"): _depth_rebuild_seconds = 0.15
+		_spatial_auto_due = not animation.depth_mode
 	changed.emit()
 	return true
 
@@ -2403,15 +2414,15 @@ func set_depth_strength(value: float) -> bool:
 	render_cache.cancel()
 	for entry in _prefetched.values():
 		entry.erase("depth_failed"); entry.erase("portrait_failed")
-	if Methods.supports(platform, "update_photo_3d_strength"):
+	if not animation.depth_mode and Methods.supports(platform, "update_photo_3d_strength"):
 		platform.update_photo_3d_strength(depth_strength)
 	if not depth_requested: return set_depth(true)
 	# Reuse cached depth/person inference; coalesce slider changes before warping both eyes.
 	if not portrait_requested:
 		material.set_shader_parameter("depth_strength", depth_strength)
 		_detail_material.set_shader_parameter("depth_strength", depth_strength)
-	if Methods.supports(platform, "prepare_photo_3d"): _depth_rebuild_seconds = 0.15
-	_spatial_auto_due=not portrait_requested
+	if not animation.depth_mode and Methods.supports(platform, "prepare_photo_3d"): _depth_rebuild_seconds = 0.15
+	_spatial_auto_due=not portrait_requested and not animation.depth_mode
 	changed.emit()
 	return true
 
@@ -2462,7 +2473,7 @@ func snapshot() -> Dictionary:
 		"inspect": inspect, "zoom": magnification, "inspect_magnification": inspect_magnification,
 		"screen_distance": screen_distance, "screen_scale": screen_scale, "edge_feather_strength": edge_feather_strength,
 		"portrait_requested": portrait_requested, "portrait_enabled": portrait_enabled, "portrait_available": can_portrait(), "portrait_error": portrait_error,
-		"depth_requested": depth_requested, "depth_enabled": depth_enabled,
+		"depth_requested": depth_requested, "depth_enabled": depth_enabled, "animation_depth":animation.depth_stats if animation.depth_mode else {},
 		"depth_available": geometry==0 and not stereo_sbs and platform != null and not _metadata.get("magazine_unregistered", false) and not _metadata.get("native_stereo", false), "native_stereo": not magazine.active() and _metadata.get("native_stereo", false), "depth_strength": depth_strength, "depth_position": depth_position, "depth_error": depth_error,
 		"spatial_metadata": spatial_metadata(), "spatial_fov_available": spatial_fov_scale() > 0.0,
 		"stereo_strategy":_display_depth_data.get("strategy", "inverse_shader"), "stereo_ready":_stereo_texture != null,

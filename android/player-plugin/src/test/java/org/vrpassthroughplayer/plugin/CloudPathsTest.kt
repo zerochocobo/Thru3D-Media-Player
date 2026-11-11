@@ -5,7 +5,7 @@ import org.junit.Test
 
 class CloudPathsTest {
     @Test fun cloudNamesRoundTripWithoutDoubleDecoding() {
-        for (name in listOf("中文 3D.mp4", "a#b?c%.mkv", "%2F literal.mp4", "a+b.mp4")) {
+        for (name in listOf("中文 3D.mp4", "a#b?c%.mkv", "%2F literal.mp4", "a+b.mp4", "é.mp4", "e\u0301.mp4", "🧪 + & [片].jpg")) {
             val path = CloudPaths.child("/mount-id/folder", name)
             assertEquals(path, CloudPaths.path(CloudPaths.uri(path)))
         }

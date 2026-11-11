@@ -30,7 +30,8 @@ internal object CloudDiagnostics {
         return CloudFailure(detail = "$stage: ${error.javaClass.simpleName}: $message$location", cause = error)
     }
     fun checkCore(result: JSONObject, route: String): JSONObject {
-        if (result.optInt("code") == 200) return result
+        val code = result.optInt("code")
+        if (code == 200) return result
         if (route == "/remove115" && result.opt("delete_started") == false)
             throw CloudDeleteRejected(if (result.optString("delete_reason") == "changed")
                 "Cloud file changed. Refresh the folder" else "File deletion failed")
@@ -39,8 +40,8 @@ internal object CloudDiagnostics {
             throw IllegalStateException(message)
         val detail = result.optString("error_detail").ifBlank { message }
         if (result.optString("error_reason") in setOf("cloud_page_expired", "cloud_location_expired", "cloud_metadata_limit"))
-            throw CloudFailure(result.getString("error_reason"), detail)
-        throw CloudFailure(detail = "OpenList $route · code ${result.optInt("code")}\n$detail")
+            throw CloudFailure(result.getString("error_reason"), detail, apiCode = code.takeIf { it != 0 })
+        throw CloudFailure(detail = "OpenList $route · code $code\n$detail", apiCode = code.takeIf { it != 0 })
     }
     fun providerFailure(json: JSONObject): CloudFailure {
         val codes = listOf("errno", "errNo", "code").mapNotNull { key ->
@@ -51,7 +52,7 @@ internal object CloudDiagnostics {
             (json.opt(key) as? String)?.takeIf { it.isNotBlank() }
         }.orEmpty()
         val reason = if (code in setOf("99", "911", "990001", "40101032")) "cloud_login_required" else "cloud_unavailable"
-        return CloudFailure(reason, "115 code: ${code.ifEmpty { "unknown" }}, message: $message")
+        return CloudFailure(reason, "115 code: ${code.ifEmpty { "unknown" }}, message: $message", apiCode = code.toIntOrNull())
     }
     fun response(error: Exception, stage: String): JSONObject {
         val failure = failure(stage, error)

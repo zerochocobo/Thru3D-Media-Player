@@ -6,6 +6,7 @@ internal interface PhotoAnimationBackend {
     fun next(id: Long,check: Runnable): LongArray?
     fun reset(id: Long)
     fun pixels(token: Long): ByteArray?
+    fun depthInput(token: Long, input: java.nio.ByteBuffer, width: Int, height: Int): IntArray? = null
     fun upload(token: Long,texture: Int,mipmaps: Boolean): Boolean
     fun releaseFrame(token: Long)
     fun close(id: Long)
@@ -16,6 +17,7 @@ internal object NativePhotoAnimationBackend: PhotoAnimationBackend {
     override fun next(id: Long,check: Runnable)=ExtendedImageNative.next(id,check)
     override fun reset(id: Long)=ExtendedImageNative.reset(id)
     override fun pixels(token: Long)=ExtendedImageNative.pixels(token)
+    override fun depthInput(token: Long,input: java.nio.ByteBuffer,width: Int,height: Int)=ExtendedImageNative.depthInput(token,input,width,height)
     override fun upload(token: Long,texture: Int,mipmaps: Boolean)=ExtendedImageNative.upload(token,texture,mipmaps)
     override fun releaseFrame(token: Long)=ExtendedImageNative.releaseFrame(token)
     override fun close(id: Long)=ExtendedImageNative.close(id)

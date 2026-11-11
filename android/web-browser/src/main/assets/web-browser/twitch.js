@@ -32,7 +32,14 @@ const Thru3DTwitch = (() => {
       if(c.slug!==undefined&&(!slug(c.slug)||c.slug!==expected))continue;
       const duration=Number.isFinite(c.durationSeconds)&&c.durationSeconds>0&&c.durationSeconds<=3600?c.durationSeconds:0;
       const token=c.playbackAccessToken,tracks=[];
-      if(Array.isArray(c.videoQualities)&&c.videoQualities.length<=32)for(const q of c.videoQualities){
+      // Current codec variants are declared under this same clip's assets.
+      // Read only video qualities; downloads and arbitrary nested URLs are not
+      // playback declarations. The actual signed file request still must match.
+      const protectedAsset=a=>['drm','hasDrm','isDrm','encrypted','isEncrypted','isProtected','isAd','isLive'].some(k=>
+        a[k]!==undefined&&a[k]!==null&&a[k]!==false&&a[k]!==0&&a[k]!==''&&a[k]!=='false'&&a[k]!=='0');
+      const lists=Array.isArray(c.assets)&&c.assets.length<=8?c.assets.filter(a=>a&&typeof a==='object'&&!protectedAsset(a)).map(a=>a.videoQualities):[];
+      lists.push(c.videoQualities);
+      for(const list of lists)if(Array.isArray(list)&&list.length<=32)for(const q of list){
         const u=address(q?.sourceURL);if(!u||!u.pathname.endsWith('.mp4'))continue;
         const quality=typeof q.quality==='string'&&/^[0-9]{3,4}$/.test(q.quality)?Number(q.quality):0;
         const signature=typeof token?.signature==='string'&&token.signature.length<=1024?token.signature:'';
@@ -80,10 +87,15 @@ const Thru3DTwitch = (() => {
     }
     return true;
   };
+  // Some clip declarations contain whole catalogue seconds. Match that exact
+  // second's decoded floor while retaining the existing fractional tolerance.
+  const durationMatches = (expected,actual) => Number.isFinite(expected)&&expected>0&&expected<=3600&&
+    Number.isFinite(actual)&&actual>0&&actual<=3600&&
+    (Math.abs(expected-actual)<=.5||Number.isInteger(expected)&&Math.floor(actual)===expected);
   const owner = (data,document,live) => {
     const id=page(document);if(!id||!Array.isArray(data)||!Array.isArray(live))return null;
     const matches=live.filter(v=>v.isConnected&&!v.mediaKeys&&v.readyState>=2&&v.videoWidth>0&&v.videoHeight>0&&visible(v)&&
-      Number.isFinite(v.duration)&&v.duration>0&&data.some(d=>d.id===id&&d.source===v.currentSrc&&Math.abs(d.expected_duration-v.duration)<=.5&&
+      Number.isFinite(v.duration)&&v.duration>0&&data.some(d=>d.id===id&&d.source===v.currentSrc&&durationMatches(d.expected_duration,v.duration)&&
         (!d.qualities.length||d.qualities.includes(v.videoHeight))));
     // Concurrent visible players/ad overlays must never choose each other's file.
     if(matches.length!==1||live.some(v=>v!==matches[0]&&v.isConnected&&v.readyState>=2&&v.videoWidth>0&&visible(v)))return null;
@@ -91,7 +103,7 @@ const Thru3DTwitch = (() => {
   };
   const binding = (video,data,requests,document,live) => {
     if(owner(data,document,live)!==video)return null;
-    const rows=data.filter(d=>d.id===page(document)&&d.source===video.currentSrc&&Math.abs(d.expected_duration-video.duration)<=.5);
+    const rows=data.filter(d=>d.id===page(document)&&d.source===video.currentSrc&&durationMatches(d.expected_duration,video.duration));
     const request=requests.filter(r=>r.kind==='file'&&r.url===video.currentSrc);
     if(rows.length!==1||new Set(request.map(r=>r.url)).size!==1)return null;
     const d=rows[0];return {id:d.id,page:document,source:d.source,revision:d.revision,expected_duration:d.expected_duration,

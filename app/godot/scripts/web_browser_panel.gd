@@ -71,10 +71,12 @@ const KEY_CONTROL := BASE + 40
 const WINDOW_TARGET := BASE + 300
 const RECT := Rect2(-0.59, -0.48, 1.44, 0.90)
 # Resting-hand jitter and per-frame rays make desktop pages run mousemove/hover
-# handlers (and hover video previews) every frame. Presses and drags stay exact.
+# handlers (and hover video previews) every frame.
 const HOVER_DEADZONE_CSS := 2.0
 const HOVER_INTERVAL_MS := 33
 const SCROLL_HOVER_HOLD_MS := 250
+const TAP_SLOP_CSS := 8.0
+const TAP_SLOP_UV := 0.01
 var menu: Node
 var opened := false
 var scene_suspended := false
@@ -82,6 +84,8 @@ var data := {}
 var draft := ""
 var hand := ""
 var point := Vector2(0.5, 0.5)
+var _pointer_button := ""
+var _page_dragging := false
 var _hover_sent_ms := -HOVER_INTERVAL_MS
 var _scroll_hover_until := 0
 var windows := {}
@@ -1044,23 +1048,41 @@ func _pointer(command: String, location: Vector2, scroll: float = 0.0) -> void:
 	if Methods.supports(menu.platform, "web_browser_window_pointer"):
 		menu.platform.web_browser_window_pointer(pointer_window, command, location.x, location.y, scroll)
 	else: menu.platform.web_browser_pointer(command, location.x, location.y, scroll)
-func press(owner: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+func press(owner: String, origin: Vector3, direction: Vector3, tracked: bool, button: String = "trigger_click") -> bool:
 	if not active(): return false
-	if not hand.is_empty(): return true
-	var hit: Dictionary = input_host().ray_hit(origin, direction) if tracked else {}
+	if button == "trigger_click" and not hand.is_empty(): return true
+	var host := input_host()
+	var hit: Dictionary = host.ray_hit(origin, direction) if tracked else {}
 	if int(hit.get("target", -1)) != WEB: return false
-	pointer_window = int(hit.get("window", 1)); focus_window(pointer_window)
-	var location: Variant = windows[pointer_window].page_point(origin, direction)
+	var id := int(hit.get("window", 1))
+	var page: Node = windows.get(id)
+	if page == null: return false
+	if button == "ax_button":
+		# Leave browser chrome, including focus selection and choice popups, on the trigger.
+		if not hit.get("enabled", true) or page.selecting or not page.depth_choices.opened.is_empty(): return false
+		if host.has_pointer_capture(): return true
+	pointer_window = id; focus_window(id)
+	var location: Variant = page.page_point(origin, direction)
 	if location == null: return false
 	hand = owner; point = location
-	windows[pointer_window].show_press(point)
+	_pointer_button = button
+	_page_dragging = false
+	page.show_press(point)
 	_pointer("down", point); return true
+func _within_tap_slop(location: Vector2) -> bool:
+	# Until a drag starts, point is the original touch-down position. Cap the
+	# tolerance in visible UV too so a tight focus crop still drags promptly.
+	var offset := location - point
+	var pixels: Vector2 = offset * windows[pointer_window].page_css_scale()
+	return offset.length_squared() <= TAP_SLOP_UV * TAP_SLOP_UV and pixels.length_squared() <= TAP_SLOP_CSS * TAP_SLOP_CSS
 func move(owner: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	if not active(): return
 	if hand == owner:
 		var projected: Variant = windows[pointer_window].page_point(origin, direction) if tracked else null
 		if projected == null: cancel(); return
+		if not _page_dragging and _within_tap_slop(projected): return
 		if projected.distance_squared_to(point) < 1.0e-8: return
+		_page_dragging = true
 		point = projected; _pointer("move", point)
 	elif hand.is_empty() and tracked:
 		var hit: Dictionary = input_host().ray_hit(origin, direction)
@@ -1076,15 +1098,26 @@ func move(owner: String, origin: Vector3, direction: Vector3, tracked: bool) -> 
 				if id == pointer_window and (((hover - point) * windows[id].page_css_scale()).length() < HOVER_DEADZONE_CSS
 						or now - _hover_sent_ms < HOVER_INTERVAL_MS): return
 				pointer_window = id; point = hover; _hover_sent_ms = now; _pointer("move", point)
-func release(owner: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
-	if hand != owner: return false
+func owns_pointer(owner: String, button: String) -> bool:
+	return hand == owner and _pointer_button == button
+func release(owner: String, origin: Vector3, direction: Vector3, tracked: bool, button: String = "trigger_click") -> bool:
+	if not owns_pointer(owner, button): return false
 	var projected: Variant = windows[pointer_window].page_point(origin, direction) if tracked else null
-	if projected == null or not Rect2(Vector2.ZERO, Vector2.ONE).has_point(projected): cancel()
-	else: _pointer("up", projected); hand = ""
+	if projected == null:
+		cancel(); return true
+	if not _page_dragging and _within_tap_slop(projected):
+		projected = point
+	elif not Rect2(Vector2.ZERO, Vector2.ONE).has_point(projected):
+		cancel(); return true
+	elif not _page_dragging:
+		# A fast drag can cross the threshold on the release frame itself.
+		_pointer("move", projected)
+	point = projected
+	_pointer("up", point); hand = ""; _pointer_button = ""
 	return true
 func cancel() -> void:
 	if not hand.is_empty() and supported(): _pointer("cancel", point)
-	hand = ""
+	hand = ""; _pointer_button = ""
 func scroll(amount: float, delta: float) -> bool:
 	if library.active() and not library.modal.is_empty(): return true
 	if not active(): return false

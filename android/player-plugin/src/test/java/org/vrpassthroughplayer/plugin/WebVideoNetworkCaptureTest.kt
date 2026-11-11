@@ -17,7 +17,8 @@ class WebVideoNetworkCaptureTest {
         val plan=WebBrowserIqiyi.resourcePlan(m,p.url)!!;val body=plan.getString("playlist");plan.remove("playlist")
         assertTrue(body.length>256*1024);assertTrue(plan.toString().length>256*1024)
         val reads=mutableListOf<URI>()
-        fun resolve(input: JSONObject=m,bytes: ByteArray=mp4(width=1440,duration=436)) = resolver(emptyMap()).resolveDeclaredHls(p,input,URI(p.url),body) { uri,_,_ ->
+        fun resolve(input: JSONObject=m,bytes: ByteArray=mp4(width=1440,duration=436),duration: Double=436.0) =
+            resolver(emptyMap()).resolveDeclaredHls(p,input,URI(p.url),body,duration) { uri,_,_ ->
             reads.add(uri);uri to bytes
         }
         val info=resolve()!!;assertEquals(1,reads.size);assertTrue(reads.single().toString().contains("issued=UNIT%2bEXACT%3D"))
@@ -26,6 +27,9 @@ class WebVideoNetworkCaptureTest {
         info.getJSONArray("formats").getJSONObject(0).put("browser_iqiyi",plan)
         val selected=WebVideoFormats.select(p,info){true};assertEquals(body,selected.video.browserManifest)
         assertEquals(436,selected.video.browserIqiyi!!.getJSONArray("requests").length())
+        assertNotNull(resolve(JSONObject(m.toString()).put("duration",437)))
+        assertNull(resolve(JSONObject(m.toString()).put("duration",437.1)))
+        assertNull(resolve(JSONObject(m.toString()).put("duration",437),duration=437.0))
         assertNull(resolve(JSONObject(m.toString()).put("protected",true)))
         assertNull(resolve(bytes=mp4(width=1440,duration=436,protected=true)))
         val wrong=JSONObject(plan.toString());wrong.getJSONArray("requests").getJSONObject(0).put("file",99)
@@ -271,6 +275,43 @@ class WebVideoNetworkCaptureTest {
         val missingAudio=JSONObject(voiced.toString());missingAudio.put("network",m.getJSONArray("network"))
         assertNull(resolver(mapOf(file to mp4(audio=false),audio to mp4(video=false))).resolveDeclaredInstagramFiles(p,missingAudio,URI(file),URI(audio),false))
     }
+    @Test fun rootedCurrentHlsIgnoresPrefetchedQualitiesOutsideTheDecodedRepresentation() {
+        val root="https://current.test/master.m3u8?selection=exact"
+        val video="https://current.test/low.m3u8";val audio="https://current.test/audio.m3u8"
+        val history=listOf(416 to 234,640 to 360,854 to 480,1280 to 720,1920 to 1080)
+        val master="#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"en\",DEFAULT=YES,URI=\"audio.m3u8\"\n"+
+            "#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=320x180,CODECS=\"avc1.4d400d,mp4a.40.2\",AUDIO=\"en\"\nlow.m3u8\n"+
+            history.mapIndexed { i,(w,h) -> "#EXT-X-STREAM-INF:BANDWIDTH=${200000+i*100000},RESOLUTION=${w}x$h,CODECS=\"avc1.640028,mp4a.40.2\",AUDIO=\"en\"\nhistory$i.m3u8\n" }.joinToString("")
+        val vod="#EXTM3U\n#EXTINF:10,\nsegment.ts\n#EXT-X-ENDLIST\n"
+        val data=mapOf(root to master.toByteArray(),video to vod.toByteArray(),audio to vod.toByteArray())
+        val observed=listOf(candidate(root,"hls",JSONObject().put("Authorization","root-only")),
+            candidate(video,"hls",JSONObject().put("Authorization","video-only")),candidate(audio,"hls",JSONObject().put("Authorization","audio-only")))+
+            history.indices.map { candidate("https://current.test/history$it.m3u8","hls") }
+        val m=media(*observed.toTypedArray()).put("width",320).put("height",180)
+        val reads=mutableListOf<Pair<URI,Map<String,String>>>()
+        val info=resolver(data,reads).resolveRootedCurrentHls(page,m,URI(root))
+        assertNotNull("Observed ABR history must not consume the current graph budget",info)
+        val selected=WebVideoFormats.select(page,info!!){true}
+        assertEquals(video,selected.video.url.toString());assertEquals(audio,selected.audio!!.url.toString())
+        assertEquals(listOf(URI(root),URI(video),URI(audio)),reads.map { it.first })
+        assertEquals(listOf("root-only","video-only","audio-only"),reads.map { it.second["authorization"] })
+        val missing=media(*observed.filterNot { it.optString("url")==video }.toTypedArray()).put("width",320).put("height",180)
+        assertNull(resolver(data).resolveRootedCurrentHls(page,missing,URI(root)))
+        val protected=JSONObject(m.toString()).put("protected",true)
+        assertNull(resolver(data).resolveRootedCurrentHls(page,protected,URI(root)))
+    }
+
+    @Test fun rootedCurrentHlsRetainsItsBudgetForManyObservedSameSizeAliases() {
+        val root="https://current.test/master.m3u8";val audio="https://current.test/audio.m3u8"
+        val aliases=(0..4).map { "https://current.test/alias$it.m3u8" }
+        val master="#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"en\",DEFAULT=YES,URI=\"$audio\"\n"+
+            aliases.joinToString("") { "#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=320x180,CODECS=\"avc1.4d400d,mp4a.40.2\",AUDIO=\"en\"\n$it\n" }
+        val m=media(*(listOf(candidate(root,"hls"),candidate(audio,"hls"))+aliases.map { candidate(it,"hls") }).toTypedArray()).put("width",320).put("height",180)
+        val reads=mutableListOf<Pair<URI,Map<String,String>>>()
+        assertNull(resolver(mapOf(root to master.toByteArray()),reads).resolveRootedCurrentHls(page,m,URI(root)))
+        assertEquals(listOf(URI(root)),reads.map { it.first })
+    }
+
     @Test fun rootedCurrentHlsRequiresTheObservedVideoAndAudioWithoutFetchingAnotherPlayer() {
         val root="https://current.test/root.m3u8?selection=exact";val video="https://current.test/video";val audio="https://current.test/audio"
         val advert="https://another-player.test/master.m3u8"

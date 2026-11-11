@@ -39,10 +39,11 @@ const Thru3DTwitchResponses=(stateFor,publish,hasFrame)=>{
     for(const e of active.values())if(e.state===value)e.state=s;
     update(s);
   };
-  const cancel=s=>{
+  const cancel=(s,keepDeclarations=false)=>{
     for(const e of active.values())if(e.state===s)release(e);
     for(const [key,value] of early)if(same(value,s))drop(key);
-    s.twitchMeta?.clear();s.twitchData?.clear();s.twitchStatus='idle';
+    if(!keepDeclarations)s.twitchMeta?.clear();
+    s.twitchData?.clear();s.twitchStatus='idle';
   };
   const navigate=d=>{for(const [key,s] of early)if(s.key===`${d.tabId}:${d.frameId}`||d.type==='main_frame'&&s.key.startsWith(`${d.tabId}:`))drop(key);};
   browser.webRequest.onBeforeRequest.addListener(d=>{

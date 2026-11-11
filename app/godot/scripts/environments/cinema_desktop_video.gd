@@ -215,7 +215,7 @@ func mode_action_allowed(operation: String) -> bool:
 		and not operation.begins_with("projection_") and not operation.begins_with("stereo_") and not operation.begins_with("fov_")
 
 
-func _request_revision(_position_ms: int = -1, _mode: String = "") -> void:
+func _request_revision(_position_ms: int = -1, _mode: String = "", _source_reset: bool = false) -> void:
 	# A desktop surface change never enters the Android MPV slot lifecycle.
 	geometry = Geometry.Geometry.FLAT
 	_apply_geometry()
@@ -306,7 +306,9 @@ func _commit_candidate(texture: Texture2D) -> void:
 	_desktop_session += 1
 	media.begin(_desktop_session)
 	media.decoder = "FFmpeg desktop software"
-	media.format = {"width": texture.get_width(), "height": texture.get_height(), "pixel_aspect": 1.0, "unapplied_rotation_degrees": 0}
+	var par := float(_desktop_player.stream.get_meta(&"sample_aspect_ratio", 1.0))
+	media.format = {"width": texture.get_width(), "height": texture.get_height(),
+		"pixel_aspect": par if is_finite(par) and par > 0.0 and par <= 16.0 else 1.0, "unapplied_rotation_degrees": 0}
 	media.format_revision += 1
 	local_uri = str(request.uri)
 	display_name = str(request.title)
@@ -424,7 +426,7 @@ func _desktop_error(message: String) -> bool:
 
 func _local_path(uri: String) -> String:
 	if uri.begins_with("file://"):
-		var path := uri.trim_prefix("file://").uri_decode()
+		var path := preload("res://scripts/media_uri.gd").decode_path(uri.trim_prefix("file://"))
 		# Canonical Windows file:///C:/ paths carry one leading URI slash.
 		return path.substr(1) if path.length() >= 3 and path[0] == "/" and path[2] == ":" else path
 	if uri.contains("://"):

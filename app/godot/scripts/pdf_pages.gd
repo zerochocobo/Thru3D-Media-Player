@@ -1,7 +1,7 @@
 extends RefCounted
 ## Document pages share the image UI but never persist session capabilities.
 static func named(uri: String, title: String = "") -> bool:
-	return title.get_extension().to_lower() == "pdf" or uri.get_slice("?", 0).get_extension().to_lower() == "pdf"
+	return title.get_extension().to_lower() == "pdf" or preload("res://scripts/media_uri.gd").filename(uri).get_extension().to_lower() == "pdf"
 
 static func page(uri: String) -> bool: return uri.begins_with("pdfpage://")
 static func container_page(uri: String) -> bool: return page(uri) or uri.begins_with("comic://")

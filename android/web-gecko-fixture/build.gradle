@@ -17,7 +17,7 @@ def sha256 = { File f ->
     }
     digest.digest().encodeHex().toString()
 }
-def shared = ['WebBrowserViewport.kt', 'WebBrowserAddress.kt', 'WebBrowserNetworkMedia.kt', 'WebBrowserMango.kt', 'WebBrowserIqiyi.kt']
+def shared = ['WebBrowserViewport.kt', 'WebBrowserAddress.kt', 'WebBrowserNetworkMedia.kt', 'WebBrowserMango.kt', 'WebBrowserIqiyi.kt', 'WebBrowserTwitch.kt', 'WebBrowserTed.kt']
 def stage = tasks.register('stageGeckoFixtureInputs') {
     inputs.file(pinFile)
     inputs.property('mangoTrace', mangoTrace)
@@ -122,6 +122,8 @@ configurations { fixtureEngine { canBeConsumed = false; transitive = false } }
 dependencies {
     implementation "${pin.artifact}:${pin.version}"
     fixtureEngine "${pin.artifact}:${pin.version}"
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20250517'
 }
 def verify = tasks.register('verifyGeckoFixtureEngine') {
     inputs.file(pinFile); inputs.files(configurations.fixtureEngine)

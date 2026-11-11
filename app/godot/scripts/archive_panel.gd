@@ -51,7 +51,7 @@ var progress_label: Label3D
 func _init(owner: Node) -> void: menu = owner
 
 static func named(uri: String, title: String = "") -> bool:
-	return Pdf.named(uri, title) or title.get_extension().to_lower() in EXTENSIONS or uri.get_slice("?", 0).get_extension().to_lower() in EXTENSIONS
+	return Pdf.named(uri, title) or title.get_extension().to_lower() in EXTENSIONS or preload("res://scripts/media_uri.gd").filename(uri).get_extension().to_lower() in EXTENSIONS
 
 func book(operation: String = "list", value: String = "") -> bool:
 	if not menu.PlatformMethods.supports(menu.platform, "archive_passwords"):

@@ -14,7 +14,7 @@ internal class OpenListLoginExchange(private val cancellation: CloudCancellation
 
     fun request(provider: String): String {
         val response = get(OpenListAuth.requestUrl(provider), true)
-        require(response.code == 200)
+        if (response.code != 200) throw CloudFailure(httpStatus = response.code)
         return authorizationTarget(JSONObject(response.body), provider)
     }
 
@@ -26,6 +26,7 @@ internal class OpenListLoginExchange(private val cancellation: CloudCancellation
     fun exchange(callback: String, provider: String): String {
         require(OpenListAuth.callback(callback, provider))
         val response = get(callback, false)
+        if (response.code !in redirectCodes) throw CloudFailure(httpStatus = response.code)
         return tokenRedirect(callback, response.code, response.location)
     }
 
@@ -64,6 +65,8 @@ internal class OpenListLoginExchange(private val cancellation: CloudCancellation
     }
 
     companion object {
+        private val redirectCodes = setOf(301, 302, 303, 307, 308)
+
         internal fun authorizationTarget(data: JSONObject, provider: String): String {
             val target = data.getString("text")
             require(target.length <= 16384 && !OpenListAuth.atTool(target) && OpenListAuth.allowed(target, provider, true))
@@ -87,7 +90,7 @@ internal class OpenListLoginExchange(private val cancellation: CloudCancellation
         }
 
         internal fun tokenRedirect(callback: String, code: Int, location: String?): String {
-            require(code in setOf(301, 302, 303, 307, 308) && location != null && location.length <= 90000)
+            require(code in redirectCodes && location != null && location.length <= 90000)
             val target = URI(callback).resolve(location).toString()
             val uri = URI(target)
             require(OpenListAuth.atTool(target) && uri.path in setOf("", "/") && uri.rawQuery.isNullOrEmpty() && !uri.rawFragment.isNullOrEmpty())

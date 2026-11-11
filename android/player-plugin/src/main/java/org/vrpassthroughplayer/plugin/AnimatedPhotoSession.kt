@@ -30,6 +30,9 @@ internal class AnimatedPhotoSession(private val source: PhotoSource,
     private var plays=1L
     private var completed=0L
     private var ended=false
+    private var frameId=0L // worker only; monotonic across loops, including skipped frames
+    private var ptsUs=0L
+    private var loop=0L
     init {source.retain();pump()}
     private fun now()=clock()
     private fun checkCurrent(){if(closed)throw InterruptedException()}
@@ -49,10 +52,13 @@ internal class AnimatedPhotoSession(private val source: PhotoSource,
                         completed++
                         if(plays!=0L && completed>=plays){synchronized(lock){eof=true};return@execute}
                         backend.reset(decoder)
+                        loop++;ptsUs=0
                         frame=backend.next(decoder,Runnable {checkCurrent()}) ?: error("PHOTO_DECODE_FAILED")
                         require(frame[0]>0)
                     }
-                    synchronized(lock){if(closed)backend.releaseFrame(frame[0]) else ready.addLast(frame)}
+                    val timed=frame+longArrayOf(++frameId,ptsUs,loop)
+                    ptsUs+=frame[3].coerceAtLeast(1000)
+                    synchronized(lock){if(closed)backend.releaseFrame(frame[0]) else ready.addLast(timed)}
                 }
             }catch(_: InterruptedException){}
             catch(error: Throwable){synchronized(lock){if(!closed){failed=true
@@ -80,6 +86,7 @@ internal class AnimatedPhotoSession(private val source: PhotoSource,
                 deadline=time+displayed!![3].coerceAtLeast(1000)
             if(!paused && eof&&ready.isEmpty()&&displayed!=null&&time>=deadline)ended=true
             JSONObject().put("token",displayed?.get(0)?:0).put("width",displayed?.get(1)?:0).put("height",displayed?.get(2)?:0)
+                .put("frame_id",displayed?.get(4)?:0).put("pts_us",displayed?.get(5)?:0).put("loop",displayed?.get(6)?:0)
                 .put("paused",paused).put("ended",ended).put("failed",failed).put("error",failureReason).toString()
         }
         pump();return json
@@ -95,6 +102,13 @@ internal class AnimatedPhotoSession(private val source: PhotoSource,
     }
     fun pixels(token: Long): ByteArray = synchronized(lock) {
         if(closed||displayed?.get(0)!=token)ByteArray(0) else backend.pixels(token)?:ByteArray(0)
+    }
+    /** Model-sized sampling runs only on DepthWorker, outside the presentation lock. Native get()
+     * retains the immutable frame while sampling; a token released before get() simply returns null. */
+    fun depthInput(rgb: ByteBuffer, width: Int, height: Int): AnimatedPhotoDepth.Input? {
+        val frame=synchronized(lock){if(closed)return null;displayed?.copyOf() ?: return null}
+        val rect=backend.depthInput(frame[0],rgb,width,height) ?: return null
+        return AnimatedPhotoDepth.Input(AnimatedPhotoDepth.Identity(frame[4],frame[5],frame[6]),rect)
     }
     /** Called on an effect worker; snapshot bytes and dimensions belong to the same immutable frame. */
     fun snapshot(check: ()->Unit): File? {

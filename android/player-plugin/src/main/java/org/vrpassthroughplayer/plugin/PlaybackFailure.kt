@@ -18,10 +18,14 @@ internal data class PlaybackFailure(
     val mpvCode: Int = 0,
     val sourceCode: String = "",
     val exceptionType: String = "",
+    /** Numbers only: the video's container parameters and this device's hardware decoder limits. */
+    val video: JSONObject? = null,
+    val decoder: JSONObject? = null,
 ) {
     fun json(): JSONObject = JSONObject().put("reason", reason).put("stage", stage)
         .put("detail", safeDetail(detail)).put("http_status", httpStatus).put("mpv_code", mpvCode)
         .put("source_code", safeDetail(sourceCode)).put("exception_type", exceptionType)
+        .also { if (video != null) it.put("video", video); if (decoder != null) it.put("decoder", decoder) }
 
     companion object {
         // Redact entire addresses, including local proxy tokens and non-HTTP credentials.
@@ -91,8 +95,19 @@ internal data class PlaybackFailure(
                 "nothing_to_play", "unknown_format" -> "parsing"
                 else -> "opening"
             } }
-            return PlaybackFailure(reason, stage, listOf(status.optString("error"), status.optString("render_error"))
+            val failure = PlaybackFailure(reason, stage, listOf(status.optString("error"), status.optString("render_error"))
                 .filter(String::isNotBlank).joinToString("; "), mpvCode = code)
+            val stream = DecoderCapacity.stream(status.optJSONObject("details")) ?: return failure
+            val decoder = runCatching { DecoderCapacity.describe(stream) }.getOrNull()
+            return withCapacity(failure, stream.json(), decoder)
+        }
+
+        /** Name the hardware limit when a decoding/output failure meets a video beyond what this device advertises. */
+        fun withCapacity(failure: PlaybackFailure, video: JSONObject, decoder: JSONObject?): PlaybackFailure {
+            val exceeded = decoder?.optBoolean("exceeded") == true
+            val reason = if (exceeded && failure.reason in setOf("unknown", "decoder_failed", "video_output_failed", "output_timeout"))
+                "decoder_capacity_exceeded" else failure.reason
+            return failure.copy(reason = reason, stage = if (reason != failure.reason) "decoding" else failure.stage, video = video, decoder = decoder)
         }
 
         /** Consult only the current video's stream, and keep native errors even when upstream is clearer. */

@@ -53,6 +53,21 @@ func run() -> void:
 	menu.update_pointer("right_hand", menu.to_global(Vector3(0, 0.13, 1)), -menu.global_basis.z, true)
 	check(menu._tooltip.position.y > 0.13, "Tooltip follows the tile's actual scrolled position")
 	var library := preload("res://scripts/library_menu.gd").new(); root.add_child(library); library.visible = true
+	var previous_language: String = library.I18n.choice
+	library.I18n.use("zh")
+	library.attach_platform(RefCounted.new())
+	library.section = library.Section.CLOUD
+	for compact in [false, true]:
+		library.compact = compact
+		library.refresh()
+		var refresh_buttons: Array = library._buttons.filter(func(button): return button.target == library.REFRESH)
+		var layout := "Compact" if compact else "Expanded"
+		check(refresh_buttons.size() == 1, layout + " cloud toolbar has a refresh button")
+		if refresh_buttons.size() != 1: continue
+		var button: Node3D = refresh_buttons[0].node
+		library.update_pointer("right_hand", button.to_global(Vector3(0, 0, 1)), -button.global_basis.z, true)
+		check(library._tooltip != null and library._tooltip.visible and library._tooltip.get_child(0).text == "刷新", layout + " cloud refresh shows its localized tooltip")
+	library.I18n.use(previous_language)
 	for section in [library.Section.LOCAL, library.Section.SMB, library.Section.DLNA, library.Section.CLOUD]:
 		for layout in ["grid", "list", "compact"]:
 			library._clear_layout(); library.section = section; library.compact = layout == "compact"; library.view_mode = "list"

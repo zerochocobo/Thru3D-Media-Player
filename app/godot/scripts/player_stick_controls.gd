@@ -9,6 +9,8 @@ var right_zooming := false
 var mapped_continuous := {}
 ## Only accepted actions keep feedback awake; suspend's blocked latches do not.
 var active_hands := {}
+## Last polling decision per hand; observational only, consumed by exported input diagnostics.
+var diagnostic_routes := {}
 
 ## UI captures own the input until each stick returns to center.
 func suspend() -> void:
@@ -23,12 +25,16 @@ func suspend() -> void:
 # With [zoom] the right stick's up/down zooms continuously instead of volume.
 func poll(left: Vector2, right: Vector2, zoom: bool = false) -> Array[Dictionary]:
 	var actions: Array[Dictionary] = []
+	diagnostic_routes.clear()
 	for hand in ["left", "right"]:
 		var stick: Vector2 = left if hand == "left" else right
+		diagnostic_routes[hand] = "ignored.diagonal_or_below_threshold"
 		if not is_finite(stick.x) or not is_finite(stick.y):
+			diagnostic_routes[hand] = "blocked.non_finite_stick"
 			active_hands.erase(hand)
 			continue
 		if stick.length() < 0.3:
+			diagnostic_routes[hand] = "idle.centered"
 			mapped_continuous.erase(hand)
 			active_hands.erase(hand)
 			if hand == "left":
@@ -38,6 +44,7 @@ func poll(left: Vector2, right: Vector2, zoom: bool = false) -> Array[Dictionary
 				right_zooming = false
 			continue
 		if hand == "right" and zoom and (right_zooming or (not right_latched and absf(stick.y) >= absf(stick.x))):
+			diagnostic_routes[hand] = "routed.zoom"
 			right_zooming = true
 			right_latched = true
 			actions.append({"operation": "zoom", "amount": stick.y})
@@ -45,6 +52,7 @@ func poll(left: Vector2, right: Vector2, zoom: bool = false) -> Array[Dictionary
 			continue
 		var latched := left_latched if hand == "left" else right_latched
 		if latched:
+			diagnostic_routes[hand] = "blocked.wait_for_center"
 			continue
 		# Cardinal pushes only: a diagonal does nothing (a stray diagonal once swapped the eyes).
 		# Left up/down is the volume (up also unmutes); mute lives on the menu's volume slider.
@@ -56,6 +64,7 @@ func poll(left: Vector2, right: Vector2, zoom: bool = false) -> Array[Dictionary
 		elif absf(stick.y) > 0.75 and absf(stick.x) < 0.3:
 			action = {"operation": "volume", "direction": 1 if stick.y > 0 else -1}
 		if not action.is_empty():
+			diagnostic_routes[hand] = "routed." + str(action.operation)
 			actions.append(action)
 			active_hands[hand] = true
 			if hand == "left":
@@ -67,10 +76,15 @@ func poll(left: Vector2, right: Vector2, zoom: bool = false) -> Array[Dictionary
 ## The resolver returns the semantic action for a direction, including grip-first combinations.
 func poll_mapped(left: Vector2, right: Vector2, resolver: Callable) -> Array[Dictionary]:
 	var actions: Array[Dictionary] = []
+	diagnostic_routes.clear()
 	for hand in ["left", "right"]:
 		var stick: Vector2 = left if hand == "left" else right
-		if not stick.is_finite(): active_hands.erase(hand); continue
+		diagnostic_routes[hand] = "ignored.diagonal_or_below_threshold"
+		if not stick.is_finite():
+			diagnostic_routes[hand] = "blocked.non_finite_stick"
+			active_hands.erase(hand); continue
 		if stick.length() < 0.3:
+			diagnostic_routes[hand] = "idle.centered"
 			# A centered stick releases its continuous action as well as its latch.
 			# Otherwise the old direction blocks reverse zoom and subsequent shortcuts.
 			mapped_continuous.erase(hand)
@@ -84,12 +98,19 @@ func poll_mapped(left: Vector2, right: Vector2, resolver: Callable) -> Array[Dic
 			elif absf(stick.y) >= absf(stick.x): input = "stick_up" if stick.y > 0 else "stick_down"
 		if input.is_empty(): continue
 		var resolved: Dictionary = resolver.call(hand + "_hand", input)
-		if resolved.is_empty(): continue
-		if mapped_continuous.has(hand) and mapped_continuous[hand].id != resolved.id: continue
+		if resolved.is_empty():
+			diagnostic_routes[hand] = "ignored.unbound"
+			continue
+		if mapped_continuous.has(hand) and mapped_continuous[hand].id != resolved.id:
+			diagnostic_routes[hand] = "blocked.wait_for_center"
+			continue
 		if mapped_continuous.has(hand):
 			var component: float = stick.y if input in ["stick_up", "stick_down"] else stick.x
-			if component * (1 if input in ["stick_up", "stick_right"] else -1) <= 0: continue
+			if component * (1 if input in ["stick_up", "stick_right"] else -1) <= 0:
+				diagnostic_routes[hand] = "blocked.wait_for_center"
+				continue
 		var latched: bool = left_latched if hand == "left" else right_latched
+		if latched: diagnostic_routes[hand] = "blocked.wait_for_center"
 		if resolved.get("continuous", false):
 			if mapped_continuous.has(hand) or not latched:
 				resolved.amount = stick.y if input in ["stick_up", "stick_down"] else stick.x
@@ -98,10 +119,12 @@ func poll_mapped(left: Vector2, right: Vector2, resolver: Callable) -> Array[Dic
 				if hand == "left": left_latched = true
 				else: right_latched = true
 				actions.append(resolved)
+				diagnostic_routes[hand] = "routed.shortcut:" + str(resolved.id)
 				active_hands[hand] = true
 		elif not latched and (absf(stick.x) > 0.75 and absf(stick.y) < 0.3 or absf(stick.y) > 0.75 and absf(stick.x) < 0.3):
 			if hand == "left": left_latched = true
 			else: right_latched = true
 			actions.append(resolved)
+			diagnostic_routes[hand] = "routed.shortcut:" + str(resolved.id)
 			active_hands[hand] = true
 	return actions

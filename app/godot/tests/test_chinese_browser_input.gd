@@ -16,16 +16,18 @@ func run() -> void:
 		for language in ["zh", "zh_Hant", "en", "ja", "auto"]:
 			for selected in [false, true]:
 				I18n.use(language); Chinese.configure(selected)
-				var original: bool = profile[1] and selected and I18n.language == "zh"
-				check(Chinese.enabled() == original, "App input policy unchanged: %s/%s/%s" % [profile[3], language, selected])
-				check(Chinese.browser_enabled() == (original or profile[3] == "openxr"), "Browser input policy: %s/%s/%s" % [profile[3], language, selected])
+				var quest_input: bool = profile[1] and selected and I18n.language == "zh"
+				var openxr: bool = profile[3] == "openxr"
+				check(Chinese.enabled() == (quest_input or (openxr and selected)), "App input policy: %s/%s/%s" % [profile[3], language, selected])
+				check(Chinese.browser_enabled() == (quest_input or openxr), "Browser input policy: %s/%s/%s" % [profile[3], language, selected])
 				Chinese.configure_browser("system")
-				check(Chinese.browser_enabled() == original, "System choice preserves vendor routes and disables generic fallback")
+				check(Chinese.browser_enabled() == quest_input, "System web choice is independent of the OpenXR app preference")
 				Chinese.configure_browser("invalid")
 				check(Chinese.browser_keyboard == "builtin", "Unknown setting safely defaults to built-in")
 		var settings_menu := Menu.new(); root.add_child(settings_menu)
 		settings_menu.section = Menu.Section.SETTINGS; settings_menu.tab = Menu.GENERAL_TAB; settings_menu.refresh()
 		check(settings_menu.rows.any(func(row): return row.get("key", "") == "web_keyboard") == (profile[3] == "openxr"), "Web keyboard setting is restricted to generic Android/OpenXR")
+		check(settings_menu.rows.any(func(row): return row.get("key", "") == "openxr_chinese_keyboard") == (profile[3] == "openxr"), "OpenXR app switch is restricted to the generic Android export")
 		settings_menu.queue_free()
 		await process_frame
 	await check_saved_choice()
@@ -131,5 +133,12 @@ func check_saved_choice() -> void:
 		Chinese.configure_browser("builtin" if value == "system" else "system")
 		Chinese.configure_browser(str(saved.get_value("ui", "web_keyboard", "builtin")))
 		check(Chinese.browser_enabled() == (value == "builtin"), "Saved selection restores the browser backend: " + value)
+	menu._on_choice_changed("web_keyboard", "system")
+	for enabled in [true, false]:
+		menu._on_choice_changed("openxr_chinese_keyboard", enabled)
+		var saved := ConfigFile.new()
+		check(saved.load(main.settings_path) == OK and saved.get_value("ui", "openxr_chinese_keyboard") == enabled, "OpenXR app setting persists independently")
+		check(Chinese.enabled() == enabled and not Chinese.browser_enabled() and saved.get_value("ui", "web_keyboard") == "system", "App toggle preserves the chosen system web keyboard")
+		check(not saved.has_section_key("ui", "quest_chinese_keyboard"), "OpenXR does not write the Quest app preference")
 	menu.queue_free(); main.free()
 	await process_frame

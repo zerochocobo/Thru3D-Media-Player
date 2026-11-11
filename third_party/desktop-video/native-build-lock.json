@@ -19,7 +19,7 @@
     "video_stream_ffmpeg_loader.cpp": "efd6252cd6318f9ed0e7c2e6bf4b879cf1920e2710e75f757bae85156c2f4929",
     "video_stream_ffmpeg_loader.h": "fc260df2da5a23d00967278281276c25e45c49a169df0c6bfc56fa21a6797341"
   },
-  "patch_sha256": "2baf7095b43d813a27b2ad8fc6c2f4ac5a1311c8ffba3f9d2b88ae1f8da2ae60",
+  "patch_sha256": "0810c7c228d9ebb5d1ea3bc701ff0e55bce036e714c7af56cf70497dba14aca5",
   "binding_classes": [
     "object",
     "ref_counted",

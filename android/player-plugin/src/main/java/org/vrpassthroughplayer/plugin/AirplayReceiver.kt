@@ -16,7 +16,8 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
     private val thread = HandlerThread("Thru3D-Airplay-Server").apply { start() }
     private val worker = Handler(thread.looper)
     private val leases = CastMirrorLease()
-    private val mirror = AirplayMirror(render)
+    private val captions = AirplayCaptions(context)
+    private val mirror = AirplayMirror(render, captions)
     private var handle = 0L
     private var wanted = false
     private var requirePassword = false
@@ -46,6 +47,7 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
     }
     @Synchronized private fun endMirror(protocol: String, epoch: Long) {
         if (!leases.release(protocol, epoch)) return
+        captions.configure("")
         mirror.detach(epoch)
         context()?.let { AirplayReceiverService.active(it, leases.current != null) }
     }
@@ -71,7 +73,7 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
     fun foreground(value: Boolean) {
         if (foreground == value) return
         foreground = value
-        if (!value) mirror.detachAndWait(active, keepSession = true)
+        if (!value) { captions.configure(""); mirror.detachAndWait(active, keepSession = true) }
         Log.i("Thru3D-Airplay", "Receiver foreground=$value (transport retained)")
     }
     private fun restart() {
@@ -144,13 +146,19 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
         }.onFailure { state = "failed"; error = "AirPlay receiver unavailable" }
     }
     fun poll(): String = mirror.frame().put("active", active).put("protocol", leases.current?.protocol ?: "AirPlay")
-        .put("state", state).put("pin", pin).put("receiver_error", error).put("foreground", foreground).toString()
+        .put("state", state).put("pin", pin).put("receiver_error", error).put("foreground", foreground).put("player_active", mirror.playerActive()).toString()
+    fun openPlayer(epoch: Long): Boolean = foreground && active == epoch && mirror.openPlayer(epoch)
+    fun claimPlayer(uri: String): android.os.ParcelFileDescriptor? =
+        if (uri == "airplayvideo://$active" && active > 0) mirror.claimPlayer() else null
     fun attach(epoch: Long, texture: Int): Boolean = active == epoch && mirror.attach(epoch, texture)
     fun attachLayer(epoch: Long, surface: Surface, slot: Int, width: Int, height: Int): Boolean = active == epoch && mirror.attachLayer(epoch, surface, slot, width, height)
     fun detachLayer(epoch: Long): Boolean = mirror.detachAndWait(epoch)
     fun suspend(epoch: Long): Boolean = mirror.detachAndWait(epoch, keepSession = true)
     fun disconnect(epoch: Long) { worker.post { if (active == epoch) restart() } }
     fun muted(value: Boolean) { mirror.muted = value }
+    @Synchronized fun captions(epoch: Long, language: String): Boolean =
+        epoch > 0 && active == epoch && (foreground || language.isEmpty()) && captions.configure(language)
+    fun captionStatus(epoch: Long): String = if (epoch > 0 && active == epoch) captions.status() else "{}"
     private fun stop() {
         haltMirror()
         ++generation
@@ -164,5 +172,5 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
         if (handle != 0L) { AirplayNative.stop(handle); handle = 0 }
         if (state !in listOf("unavailable", "failed")) state = "off"
     }
-    fun close() { haltMirror(); context()?.let { AirplayReceiverService.end(it) }; worker.post { wanted = false; stop(); mirror.close(); thread.quitSafely() } }
+    fun close() { haltMirror(); captions.close(); context()?.let { AirplayReceiverService.end(it) }; worker.post { wanted = false; stop(); mirror.close(); thread.quitSafely() } }
 }

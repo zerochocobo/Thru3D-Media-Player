@@ -113,7 +113,7 @@ func _run() -> void:
 	menu.file_actions.uncertain = false; menu.file_actions.set_enabled(true)
 	menu._local_entries = [{"title":"old.mp4","uri":"file:///storage/test/old.mp4","size":10,"modified":1,"can_delete":true}]
 	menu.refresh(); menu._activate(Actions.EDIT_MODE); menu._choose(menu.rows[0]); menu._activate(Actions.Rename.OPEN)
-	menu.file_actions.rename.name = "new"; menu._activate(Actions.Rename.PREVIEW)
+	menu.system_text_input.set_text("file_rename", "new"); menu._activate(Actions.Rename.PREVIEW)
 	check(platform.calls.back().operation == "rename_prepare" and preparing.size() == 3, "Rename preview does not mutate or stop playback")
 	platform.respond(8, "ready", {"preview": true,"plan":"rename-hash","moves":[{"from":"old.mp4","to":"new.mp4"},{"from":"old.srt","to":"new.srt"}]})
 	check(menu.file_actions.rename.phase == "preview" and menu.text_snapshot().contains("old.srt"), "Companion rename preview is visible before applying")
@@ -153,6 +153,31 @@ func _run() -> void:
 	menu._activate(Actions.CHECK_STATUS)
 	platform.respond(13,"ready",{"exists":true,"changed":true})
 	check(menu._cloud_entries.size() == 2 and not menu.file_actions.uncertain and menu.file_actions.target.is_empty(), "Replacement at deleted path clears stale confirmation and preserves replacement")
+	menu.file_actions.reset(); menu.section = Menu.Section.SMB
+	menu._smb_server = "saved"; menu._smb_path = "Share/目录#%2F"
+	var prefix := "smb://saved/" + menu._smb_path + "/"
+	var original := "原#片%2F.mp4"
+	var neighbor := "原#片%252F.mp4"
+	var replacement := "新#片%2F.mp4"
+	menu._smb_entries = [
+		{"title":original,"uri":prefix + original,"kind":"video","size":10,"modified":1,"can_delete":true,"can_rename":true},
+		{"title":neighbor,"uri":prefix + neighbor,"kind":"video","size":10,"modified":1,"can_delete":true,"can_rename":true}]
+	menu.refresh(); menu._activate(Actions.EDIT_MODE)
+	menu._choose(menu.rows.filter(func(row): return row.uri == prefix + original)[0])
+	menu._activate(Actions.Rename.OPEN)
+	menu.system_text_input.set_text("file_rename", replacement.get_basename()); menu._activate(Actions.Rename.PREVIEW)
+	check(platform.calls.back().target.uri == prefix + original and platform.calls.back().target.new_name == replacement.get_basename(), "SMB rename preview keeps the literal path and new name")
+	platform.respond(platform.calls.size(), "ready", {"preview":true,"plan":"smb-literal","moves":[{"from":original,"to":replacement,"old_uri":prefix + original,"new_uri":prefix + replacement}]})
+	menu._activate(Actions.Rename.APPLY)
+	check(platform.calls.back().target.uri == prefix + original and platform.calls.back().target.plan == "smb-literal", "SMB rename confirmation keeps the same literal path")
+	platform.respond(platform.calls.size(), "ready", {"renamed":true,"new_uri":prefix + replacement,"new_title":replacement})
+	menu._choose(menu.rows.filter(func(row): return row.uri == prefix + replacement)[0])
+	menu._activate(Actions.DELETE_FILE); menu._activate(Actions.CONFIRM)
+	check(platform.calls.back().operation == "delete" and platform.calls.back().target.uri == prefix + replacement, "SMB delete targets the renamed literal path")
+	platform.respond(platform.calls.size(), "uncertain"); menu._activate(Actions.CHECK_STATUS)
+	check(platform.calls.back().operation == "check" and platform.calls.back().target.uri == prefix + replacement, "SMB delete read-back keeps the same literal path")
+	platform.respond(platform.calls.size(), "ready", {"exists":false})
+	check(menu._smb_entries.size() == 1 and menu._smb_entries[0].uri == prefix + neighbor, "SMB delete preserves the similarly named neighbor")
 	menu.queue_free(); await process_frame; platform.free()
 	print("library file actions checks=%d failures=%d" % [checks, failures.size()])
 	for failure in failures: push_error(failure)
