@@ -11,6 +11,7 @@ uniform float spatial_disparity = 0.0;
 uniform vec2 generated_size = vec2(1.0);
 #include "res://shaders/video_coordinates.gdshaderinc"
 #include "res://shaders/sharpness.gdshaderinc"
+#include "res://shaders/photo_slideshow.gdshaderinc"
 uniform vec2 crop_center = vec2(0.5);
 uniform vec2 crop_aspect = vec2(1.0);
 uniform vec2 crop_skew = vec2(0.0);
@@ -51,10 +52,23 @@ vec4 photo_color(vec2 p) {
 	return texture(photo_texture, color_uv(p));
 }
 
+float slideshow_amount(vec2 frame_uv, vec2 photo_uv) {
+	if (slideshow_style == 1) { return slideshow_band(slideshow_mix, frame_uv.x, 0.2); }
+	if (slideshow_style == 2 && slideshow_depth_source > 0) {
+		float near_value = slideshow_depth_source == 1
+			? texture(depth_texture, clamp(depth_rect.xy + clamp(photo_uv, vec2(0.0), vec2(1.0)) * depth_rect.zw, depth_rect.xy, depth_rect.xy + depth_rect.zw)).r
+			: texture(slideshow_old_depth_texture, clamp(slideshow_old_depth_rect.xy + clamp(slideshow_uv(frame_uv, slideshow_old_mapping), vec2(0.0), vec2(1.0)) * slideshow_old_depth_rect.zw,
+				slideshow_old_depth_rect.xy, slideshow_old_depth_rect.xy + slideshow_old_depth_rect.zw)).r;
+		return slideshow_band(slideshow_mix, 1.0 - clamp(near_value, 0.0, 1.0), 0.25);
+	}
+	return slideshow_mix;
+}
+
 void vertex() { eye_index = test_eye >= 0 ? test_eye : int(VIEW_INDEX); media_direction = VERTEX; }
 void fragment() {
 	if (spatial_hidden) { discard; }
-	vec4 comic = comic_overlay_enabled ? texture(comic_overlay_texture, UV) : vec4(0.0);
+	vec2 photo_uv = video_geometry == 0 ? slideshow_uv(UV, slideshow_mapping) : UV;
+	vec4 comic = comic_overlay_enabled ? texture(comic_overlay_texture, photo_uv) : vec4(0.0);
 	bool translated = comic.a > 0.5;
 	if (!translated && layer_cut.z > 0.0 && all(greaterThanEqual(UV, layer_cut.xy)) && all(lessThanEqual(UV, layer_cut.xy + layer_cut.zw))) { discard; }
 	vec3 direction = media_direction;
@@ -63,7 +77,7 @@ void fragment() {
 		vec2 p = (UV - vec2(0.5)) * vec2(0.8, -0.5) / (1.4 * content_zoom);
 		direction = normalize(detail_forward + detail_right * p.x + detail_up * p.y);
 	}
-	vec2 shown = eye_uv(UV, direction);
+	vec2 shown = eye_uv(photo_uv, direction);
 	if (video_geometry == 0) {
 		vec2 offset = shown - vec2(0.5);
 		shown = crop_center + vec2(offset.x * crop_aspect.x + offset.y * crop_skew.x,
@@ -99,7 +113,7 @@ void fragment() {
 	ALPHA = outside ? (video_geometry == 0 ? 0.0 : 1.0) : color.a;
 	if (video_geometry == 0 && any(greaterThan(edge_feather, vec2(0.0)))) {
 		// Surface UV is per eye, independent of packed SBS/TB and depth reprojection.
-		vec2 fade = smoothstep(vec2(0.0), max(edge_feather, vec2(0.00001)), min(native_stereo ? shown : UV, vec2(1.0) - (native_stereo ? shown : UV)));
+		vec2 fade = smoothstep(vec2(0.0), max(edge_feather, vec2(0.00001)), min(native_stereo ? shown : photo_uv, vec2(1.0) - (native_stereo ? shown : photo_uv)));
 		ALPHA = outside ? 0.0 : color.a * fade.x * fade.y;
 	}
 	if (portrait_enabled) {
@@ -116,4 +130,8 @@ void fragment() {
 	}
 	// The loading cover also hides translated ink while the final stereo view is prepared.
 	ALPHA *= presentation_opacity * photo_reveal_clear(UV, reveal_progress);
+	if (slideshow_mix < 1.0) {
+		vec4 blended = slideshow_blend(slideshow_previous(UV), vec4(ALBEDO, ALPHA), slideshow_amount(UV, photo_uv));
+		ALBEDO = blended.rgb; ALPHA = blended.a;
+	}
 }

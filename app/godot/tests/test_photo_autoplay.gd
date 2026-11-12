@@ -48,6 +48,9 @@ func scheduler_checks() -> void:
 	var auto:=Auto.new(); auto.clock=func(): return now_us
 	var slide:=Slide.new()
 	check(not auto.enabled and auto.interval==5,"Autoplay starts off with five seconds")
+	check(auto.effect=="slide", "Existing settings default to the original slide")
+	for value in [null, 1, true, "unknown"]:
+		check(not auto.set_effect(value) and auto.effect=="slide", "Invalid transition cannot alter the saved style")
 	for value in [NAN,INF,-INF,"10",true]:
 		check(not auto.set_interval(value) and auto.interval==5,"Invalid interval cannot corrupt the timer")
 	auto.set_interval(1);check(auto.interval==3,"Minimum interval is three seconds")
@@ -272,6 +275,23 @@ func controls_checks(photo: Node3D) -> void:
 		I18n.use(language);menu.section=1;menu.refresh()
 		var sliders: Array=menu.choices.targets.values().filter(func(item):return item.get("key")=="autoplay_interval" and item.get("kind")=="slider")
 		check(sliders.size()==1,"Image settings provide the interval slider in "+language)
+		var openers: Array=menu.choices.targets.keys().filter(func(id):return menu.choices.targets[id].get("key")=="autoplay_effect" and menu.choices.targets[id].get("kind")=="open")
+		check(openers.size()==1 and menu.choices.targets.values().all(func(item):return item.get("key")!="autoplay_effect" or item.get("kind")=="open"),"Transition is one closed dropdown in "+language)
+		for effect in Photo.autoplay_effects():
+			var opener: int=menu.choices.targets.keys().filter(func(id):return menu.choices.targets[id].get("key")=="autoplay_effect" and menu.choices.targets[id].get("kind")=="open")[0]
+			menu.choices.action(opener)
+			var options: Array=menu.choices.targets.keys().filter(func(id):return menu.choices.targets[id].get("key")=="autoplay_effect" and menu.choices.targets[id].get("kind")=="choose")
+			check(menu.choices.opened=="autoplay_effect" and options.size()==Photo.autoplay_effects().size(),"Dropdown lists every transition in "+language)
+			menu.choices.action(options.filter(func(id):return menu.choices.targets[id].value==effect)[0])
+			check(photo.autoplay.effect==effect and photo.snapshot().autoplay_effect==effect and menu.choices.opened.is_empty(),"Choosing a transition applies it and closes the list")
+			var opened: int=menu.choices.targets.keys().filter(func(id):return menu.choices.targets[id].get("key")=="autoplay_effect")[0]
+			var face: Dictionary=menu._buttons.filter(func(item):return item.target==opened)[0]
+			check(face.select_caption.text==I18n.t({"cut":"Cut","fade":"Crossfade","wipe":"Soft wipe","depth":"Depth dissolve","slide":"Slide"}[effect]),"Closed dropdown shows the selected transition")
+	main._on_photo_adjustment("autoplay_effect","fade")
+	saved.load(main.settings_path)
+	var restored_effect:=Photo.new();restored_effect.restore_view_settings(saved)
+	check(restored_effect.autoplay.effect=="fade" and not restored_effect.autoplay.enabled,"Chosen effect persists without automatically starting playback")
+	restored_effect.free()
 	var slider_id: int=menu.choices.targets.keys().filter(func(id):return menu.choices.targets[id].get("key")=="autoplay_interval" and menu.choices.targets[id].get("kind")=="slider")[0]
 	var slider: Dictionary=menu.choices.sliders[slider_id]
 	var press: Vector3=slider.node.to_global(Vector3(slider.left+slider.width*.5,0,.5))

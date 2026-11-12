@@ -15,3 +15,9 @@ Distributed builds include beach cinema, loungers/free movement, sun/moon and da
 0.17.4 adds beach interaction/prop and shoreline/celestial source updates, corrected panel/controller ownership and shared inexpensive sky rendering. Raw scene/model/texture/audio payloads, celestial generated audio and tools/beach studies remain excluded. The public runtime integration is not a standalone licensed asset bundle or low-tier performance guarantee.
 
 0.17.5 retains beach teleport/tabletop/foley/meteor runtime updates without exporting model/scene/texture/audio payloads or modeling fixtures. External resources remain mandatory for complete builds; no personal audio samples are included.
+
+## User scene import in 0.17.7
+
+Debug builds expose glTF and supported Unity scene bundles under My scenes on supported platforms. The importer budgets geometry and textures, can compress eligible textures to ETC2, and can use the playing screen as a light source. Release builds expose the panorama collection. The repository includes importer source. Users supply scene bundles and scenery assets separately.
+
+0.17.7 的 Debug 构建可在支持平台的「我的场景」导入 glTF 和受支持的 Unity 场景包。Release 构建提供全景图库。场景包与场景资源由用户另行准备。

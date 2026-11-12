@@ -78,13 +78,24 @@ func _check_export_targets() -> void:
 
 func _check_controller_profiles(action_map: OpenXRActionMap) -> void:
 	_check(ProjectSettings.get_setting("xr/openxr/default_action_map") == "res://openxr_action_map.tres", "Startup must use the tested action map")
+	var touch_profile := "/interaction_profiles/oculus/touch_controller"
+	var generic_profile := "/interaction_profiles/khr/generic_controller"
+	var touch_system_menu := "/user/hand/right/input/system/click"
 	var profiles := {}
 	for profile in action_map.interaction_profiles:
 		_check(not profiles.has(profile.interaction_profile_path), "Duplicate interaction profile")
 		profiles[profile.interaction_profile_path] = profile
+	# One unsupported suggested path rejects the whole profile on some runtimes.
+	for path in profiles:
+		for binding in profiles[path].bindings:
+			var component: String = binding.binding_path
+			_check(not component.ends_with("/input/grip_surface/pose"), path + " must omit unused grip surface poses")
+			if component.ends_with("/input/system/click"):
+				_check(path == touch_profile and component == touch_system_menu and binding.action.resource_name == "menu_button",
+					"Only Touch uses a system-button path for an existing menu action")
 	for path in ["/interaction_profiles/bytedance/pico_neo3_controller", "/interaction_profiles/khr/simple_controller",
 		"/interaction_profiles/bytedance/pico4_controller", "/interaction_profiles/bytedance/pico4s_controller",
-		"/interaction_profiles/oculus/touch_controller"]:
+		touch_profile, generic_profile]:
 		_check(profiles.has(path), "Missing controller profile: " + path)
 		if not profiles.has(path): continue
 		var bindings := {}
@@ -94,18 +105,25 @@ func _check_controller_profiles(action_map: OpenXRActionMap) -> void:
 			bindings[action].append(binding.binding_path)
 		if path.ends_with("/pico4s_controller"):
 			_check("/user/hand/right/input/menu/click" not in bindings.get("menu_button", []), "Ultra has no right-hand menu button")
+		if path == touch_profile:
+			_check(touch_system_menu in bindings.get("menu_button", []), "Touch keeps its menu shortcut on runtimes exposing the right system button")
 		var simple: bool = path.ends_with("/simple_controller")
+		var generic: bool = path == generic_profile
 		for hand in ["left", "right"]:
 			var user_path: String = "/user/hand/" + hand
 			var required := {"default_pose": "/input/aim/pose", "aim_pose": "/input/aim/pose",
 				"grip_pose": "/input/grip/pose", "trigger_click": "/input/select/click" if simple else "/input/trigger/value",
 				"haptic": "/output/haptic"}
 			if not simple:
+				var first_button := "/input/x/click" if hand == "left" else "/input/a/click"
+				var second_button := "/input/y/click" if hand == "left" else "/input/b/click"
+				if generic:
+					first_button = "/input/primary/click"
+					second_button = "/input/secondary/click"
 				required.merge({"trigger": "/input/trigger/value", "grip_click": "/input/squeeze/value",
 					"primary": "/input/thumbstick", "primary_click": "/input/thumbstick/click",
-					"ax_button": "/input/x/click" if hand == "left" else "/input/a/click",
-					"by_button": "/input/y/click" if hand == "left" else "/input/b/click"})
-			if simple or path.ends_with("/pico_neo3_controller") or hand == "left":
+					"ax_button": first_button, "by_button": second_button})
+			if not generic and (simple or path.ends_with("/pico_neo3_controller") or hand == "left"):
 				required["menu_button"] = "/input/menu/click"
 			for action in required:
 				_check(user_path + required[action] in bindings.get(action, []), "%s %s missing %s" % [path, hand, action])

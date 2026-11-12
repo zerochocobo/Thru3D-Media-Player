@@ -33,6 +33,11 @@ func _draw() -> void:
 		_clear_layout(); online.draw(); _finish_surface_layout(); return
 	super._draw()
 
+## Photos have no subtitle panel; its per-draw "no video" reset would close this panel's own dropdowns.
+func _set_subtitle_detail(group: String) -> void:
+	if group.is_empty() and _subtitle_detail.is_empty(): return
+	super._set_subtitle_detail(group)
+
 func dismiss() -> void:
 	online.hide()
 	super.dismiss()
@@ -532,7 +537,7 @@ func _photo_background_button(target: int, caption: String, centre: Vector2, siz
 func _draw_panel() -> void:
 	var position_available: bool = _state.get("has_image", false) and int(_state.get("geometry", 0)) == 0 and not _state.get("native_stereo", false) and not _state.get("portrait_requested", false) and not _state.get("stereo", false)
 	var extra := 0.14 if position_available else 0.0
-	_set_backdrop(Vector2(1.16, 1.105 + extra), Vector2(0, -0.2775 - extra / 2))
+	_set_backdrop(Vector2(1.16, 1.205 + extra), Vector2(0, -0.3275 - extra / 2))
 	_button(10, "", Vector2(-0.48, 0.2), Vector2(0.085, 0.065), true, "up")
 	_label(I18n.t("Images"), Vector3(0, 0.2, 0.004), 21)
 	_button(PHOTO_STRENGTH, I18n.t("3D depth") + "  " + _depth_caption(), Vector2(-0.26, 0.035), Vector2(0.49, 0.105), _can_depth(), "depth")
@@ -563,9 +568,16 @@ func _draw_panel() -> void:
 	interval_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	choices.field(null, {"key":"autoplay_interval", "value":_state.get("autoplay_interval", 5.0), "slider":true,
 		"span":Vector3(3,30,1), "unit":"s", "decimals":0, "reset_value":5.0}, Vector2(0.18,-0.635-extra), 0.66, 0.055)
-	_status = _label(_photo_status(), Vector3(0, -0.755 - extra, 0.004), 15)
+	var effect_label := _label(I18n.t("Autoplay transition"), Vector3(-0.50, -0.745 - extra, 0.004), TEXT_BODY)
+	effect_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	var labels := {"cut": "Cut", "fade": "Crossfade", "wipe": "Soft wipe", "depth": "Depth dissolve", "slide": "Slide"}
+	# The list opens upward when the panel's lower edge leaves no room below the field.
+	choices.bounds = Vector2(-0.92 - extra, 0.25)
+	choices.field(null, {"key":"autoplay_effect", "value":_state.get("autoplay_effect", "slide"), "dropdown":true,
+		"choices":Photo.autoplay_effects().map(func(effect): return {"value":effect, "label":labels[effect]})}, Vector2(0.18,-0.745-extra), 0.66, 0.065)
+	_status = _label(_photo_status(), Vector3(0, -0.855 - extra, 0.004), 15)
 	_status.modulate = MUTED
-	_place_device_status(Vector2(0, -0.865 - extra))
+	_place_device_status(Vector2(0, -0.965 - extra))
 	choices.finish()
 
 func _draw_gallery() -> void:

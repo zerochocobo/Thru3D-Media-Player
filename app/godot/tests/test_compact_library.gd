@@ -75,7 +75,7 @@ func spherical_library(main: Node3D, controls: Node3D, library: Node3D) -> bool:
 func current_button_visible(library: Node3D, uri: String) -> bool:
 	for item in library._buttons:
 		if not library._row_target(item.target) or not item.node.visible: continue
-		var index: int = library._first_line() * library._cols() + item.target - Library.ROW_BASE
+		var index: int = library._row_index(item.target - Library.ROW_BASE)
 		if index < library.rows.size() and Library.Presentation.key(library.rows[index]) == uri:
 			return item.base_color == Library.SELECTED
 	return false

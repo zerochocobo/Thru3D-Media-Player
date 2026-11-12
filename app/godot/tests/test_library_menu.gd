@@ -360,7 +360,7 @@ func _run() -> void:
 		and about_text.contains("https://github.com/zerochocobo/Thru3D-Media-Player"), "About brand and support")
 	menu._activate(Menu.ROW_BASE + 5)
 	check(menu.rows[0].title == "Belfast Sunset (Pure Sky)" and menu.rows[0].detail.contains("Poly Haven · CC0 1.0")
-		and menu.rows[0].detail.contains("Dimitrios Savva / Greg Zaal / Jarod Guest") and menu.rows[1].title.begins_with("Godot "),
+		and menu.rows[0].detail.contains("Dimitrios Savva / Greg Zaal / Jarod Guest") and menu.rows.any(func(row): return str(row.title).begins_with("Godot ")),
 		"One panorama entry contains its source, license and all authors")
 	var credit_detail: Label3D = menu._buttons.filter(func(button): return button.target == Menu.ROW_BASE)[0].node.get_child(2)
 	check(credit_detail.text == menu.rows[0].detail, "Combined panorama attribution remains visible without truncation")
@@ -387,6 +387,17 @@ func _run() -> void:
 	menu.scroll = 0.0
 	menu.refresh()
 	check(menu.rows.size() == 30 and int(menu.scroll) == 0, "Folder with 30 videos starts at the top")
+	# A scene file is offered to the scene picker only: sources report it by name, as they do a video.
+	var room := {"id": "/big/room", "uri": "file:///big/room.glb", "title": "room.glb", "size": 1, "container": false}
+	menu._local_entries = many + [room]
+	menu.refresh()
+	check(menu._entry_row(room).kind == "scene" and menu.rows.size() == 30, "A scene file stays out of the ordinary listing")
+	menu.voice_picker_mode = true; menu.scene_picker_mode = true
+	menu.refresh()
+	check(menu.rows.any(func(row): return row.get("title", "") == "room.glb") and not menu.rows.any(func(row): return row.get("title", "") == "v00"), "The scene picker lists scene files and nothing else")
+	menu.voice_picker_mode = false; menu.scene_picker_mode = false
+	menu._local_entries = many
+	menu.refresh()
 	var direction := -menu.global_basis.z
 	# Videos are tiles, four per line; [scroll] counts lines.
 	var at := func(y: float) -> Vector3: return menu.to_global(Vector3(-0.36, y, 1.0))
@@ -419,7 +430,7 @@ func _run() -> void:
 	var gap_at := func(y: float) -> Vector3: return menu.to_global(Vector3(-0.36, y, 1.0))
 	check(menu.press_pointer("right_hand", gap_at.call(gap), direction, true), "Press between tiles starts a drag")
 	menu.update_pointer("right_hand", gap_at.call(gap + 1.5 * Menu.GRID_PITCH.y), direction, true)
-	check(is_equal_approx(menu.scroll, 1.5) and is_equal_approx(menu._list.position.y, 0.5 * Menu.GRID_PITCH.y),
+	check(is_equal_approx(menu.scroll, 1.5) and is_equal_approx(menu._list.position.y, (1.5 - menu._list_origin()) * Menu.GRID_PITCH.y),
 		"Drag scrolls by fractions of a line: %s" % menu.scroll)
 	var hidden := menu._buttons.filter(func(b): return menu._row_target(b.target) and not b.node.visible).size()
 	check(hidden == Menu.COLS * 2, "Half-way between lines both edge lines hide: %d" % hidden)

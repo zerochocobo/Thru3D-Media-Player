@@ -337,7 +337,7 @@ func action(id: int) -> bool:
 		elif id == CHECK_STATUS and uncertain and pending == 0: dispatch(true)
 		return true
 	if selection_target(id):
-		var index: int = menu._first_line() * menu._cols() + id - SELECT_BASE
+		var index: int = menu._row_index(id - SELECT_BASE)
 		if list_management() and index < menu.rows.size(): toggle(menu.rows[index])
 		return true
 	if id == SORT and sortable() and not editing and pending == 0:

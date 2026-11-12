@@ -63,7 +63,7 @@ func _run(host: Node, step: String) -> Dictionary:
 				var row: Dictionary = library.rows[index]
 				if str(row.get("uri", "")) != video.local_uri and row.has("uri"):
 					var expected := str(row.uri)
-					var accepted := tap(host, Library.ROW_BASE + index - library._first_line() * library._cols())
+					var accepted := tap(host, Library.ROW_BASE + library._row_slot(index))
 					return {"accepted": accepted and video.local_uri == expected and not library.visible}
 		"recovery_close":
 			return {"accepted": tap(host, Library.CLOSE) and not library.visible}

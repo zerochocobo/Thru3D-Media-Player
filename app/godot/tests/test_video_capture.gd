@@ -61,7 +61,7 @@ class Main extends "res://scripts/main.gd":
 
 class CapturedVideo extends "res://scripts/mpv_video_display.gd":
 	var revisions := 0
-	func _request_revision(_position_ms: int = -1, _mode: String = "") -> void: revisions += 1
+	func _request_revision(_position_ms: int = -1, _mode: String = "", _source_reset: bool = false, _initial_layout: bool = false) -> void: revisions += 1
 	func _apply_geometry() -> void: pass
 
 func check(value: bool, message: String) -> void:

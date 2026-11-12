@@ -4,7 +4,7 @@ param(
     [string[]]$Tests = @('test_filename_passthrough', 'test_media_naming', 'test_file_mode_memory',
         'test_packed_mask', 'test_alpha_background', 'test_video_playback_modes',
         'test_video_mode_transition', 'test_fisheye_layer', 'test_video_layer',
-        'test_cast_receiver', 'test_external_playback', 'test_subtitle_effect_recovery',
+        'test_cast_receiver', 'test_external_playback', 'test_video_auto_3d_startup', 'test_subtitle_effect_recovery',
         'test_privacy_memory', 'test_i18n')
 )
 $ErrorActionPreference = 'Stop'

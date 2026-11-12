@@ -48,3 +48,7 @@ The CodeLibs JCIFS jar is staged by Gradle with unused HTTP/HTTPS NTLM adapters 
 DVD ISO navigation: libdvdread 7.0.1 and libdvdnav 7.0.0 (GPL-2.0-or-later), pinned in `dvd/source-lock.json` with original license texts. Expanded runtime credits and notice provenance are in `player-licenses/additional-sources.json`; binary payloads are prepared separately.
 
 Offline pinyin dictionary: pinned rime-pinyin-simp source, AUTHORS and Apache-2.0 LICENSE are retained in `third_party/pinyin_simp`; reproducible generated indices and modification notices are in `app/godot/input`. See `tools/Build-ChineseLexicon.py`. No user dictionary is included.
+
+## Unity type-tree strings
+
+The common string offsets in native/unity-scene/common_strings.inc were checked against the public AssetStudio table. The matching portion is accompanied by the [AssetStudio MIT license](unity-scene/AssetStudio-LICENSE.txt). [Reference table](https://github.com/Perfare/AssetStudio/blob/d158e864b556b5970709c2a52e47944d53aa98a2/AssetStudio/CommonString.cs)

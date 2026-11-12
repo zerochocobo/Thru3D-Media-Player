@@ -38,6 +38,12 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
     @Volatile private var accepting = false
     @Volatile private var generation = 0L
     private var registeredServices = 0
+    private val discovery = AirplayDiscoveryDiagnostics()
+    fun discoveryDiagnostics(): String = discovery.snapshot()
+    private fun discoveryEvent(stage: String, code: Int? = null, failure: Throwable? = null) {
+        Log.i("Thru3D-Airplay", "Discovery " + discovery.record(stage, generation, state, port,
+            handle != 0L, registeredServices, code, failure))
+    }
     @Synchronized private fun beginMirror(): Long {
         val ticket = leases.claim("AirPlay") ?: return 0
         mirror.begin(ticket.epoch, !foreground, "AirPlay")
@@ -59,7 +65,10 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
         if (wanted == value && (!value || handle != 0L)) return@post
         val app = context() ?: return@post
         if (value) try { AirplayReceiverService.begin(app) { enable(false) } }
-        catch (_: Exception) { state = "failed"; error = "AirPlay receiver unavailable"; return@post }
+        catch (failure: Exception) {
+            state = "failed"; error = "AirPlay receiver unavailable"
+            discoveryEvent("foreground_start_failed", failure = failure); return@post
+        }
         else AirplayReceiverService.end(app)
         wanted = value; Log.i("Thru3D-Airplay", "Receiver enabled=$value"); restart()
     } }
@@ -79,7 +88,12 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
     private fun restart() {
         stop()
         if (!wanted) return
-        if (!AirplayNative.available) { state = "unavailable"; error = "AirPlay receiver unavailable"; return }
+        discoveryEvent("native_load_begin")
+        if (!AirplayNative.available) {
+            state = "unavailable"; error = "AirPlay receiver unavailable"
+            discoveryEvent("native_load_failed", failure = AirplayNative.loadFailure); return
+        }
+        discoveryEvent("native_load_ready")
         val app = context() ?: return
         val preferences = app.getSharedPreferences("airplay_receiver", Context.MODE_PRIVATE)
         val id = preferences.getString("id", null) ?: ByteArray(6).also { SecureRandom().nextBytes(it); it[0] = ((it[0].toInt() or 2) and 254).toByte() }
@@ -93,6 +107,7 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
             override fun event(kind: String, value: String) {
                 if (session != generation || !accepting) return
                 when (kind) {
+                    "startup_stage" -> discoveryEvent("native_$value")
                     "port" -> port = value.toIntOrNull() ?: 0
                     "airplay_txt", "raop_txt" -> {
                         val parts = value.split('=', limit = 2)
@@ -120,11 +135,20 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
                 if (session == generation && accepting && leases.current?.protocol == "AirPlay") mirror.packet(video, bytes, ns, codec)
             }
         }
-        handle = runCatching { AirplayNative.start(listener, "Thru3D", address, key.absolutePath, requirePassword) }.getOrDefault(0)
-        if (handle == 0L || port <= 0) { state = "failed"; error = "AirPlay receiver unavailable"; stop(); return }
+        discoveryEvent("native_start_begin")
+        handle = runCatching { AirplayNative.start(listener, "Thru3D", address, key.absolutePath, requirePassword) }
+            .onFailure { discoveryEvent("native_start_exception", failure = it) }.getOrDefault(0)
+        if (handle == 0L || port <= 0) {
+            state = "failed"; error = "AirPlay receiver unavailable"
+            discoveryEvent("native_start_failed"); stop(); return
+        }
+        discoveryEvent("native_listening")
         registeredServices = 0
         register(app, "Thru3D", "_airplay._tcp.", airplayTxt, session)
         register(app, raopName, "_raop._tcp.", raopTxt, session)
+        worker.postDelayed({
+            if (session == generation && registeredServices < 2) discoveryEvent("nsd_incomplete_after_10s")
+        }, 10_000)
     }
     private fun register(app: Context, name: String, type: String, txt: Map<String, String>, session: Long) {
         val nsd = app.getSystemService(Context.NSD_SERVICE) as NsdManager
@@ -133,17 +157,30 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
                 val registration = this
                 worker.post {
                     if (session != generation) runCatching { nsd.unregisterService(registration) }
-                    else if (++registeredServices == 2) state = "ready"
+                    else {
+                        if (++registeredServices == 2) state = "ready"
+                        discoveryEvent("${type}_registered")
+                    }
                 }
             }
             override fun onServiceUnregistered(info: NsdServiceInfo) {}
-            override fun onRegistrationFailed(info: NsdServiceInfo, code: Int) { worker.post { if (session == generation) { state = "failed"; error = "AirPlay receiver unavailable" } } }
-            override fun onUnregistrationFailed(info: NsdServiceInfo, code: Int) {}
+            override fun onRegistrationFailed(info: NsdServiceInfo, code: Int) { worker.post { if (session == generation) {
+                state = "failed"; error = "AirPlay receiver unavailable"
+                discoveryEvent("${type}_registration_failed", code)
+            } } }
+            override fun onUnregistrationFailed(info: NsdServiceInfo, code: Int) {
+                // Record the old generation separately; do not mutate the current receiver state.
+                Log.w("Thru3D-Airplay", "Unregistration failed type=$type generation=$session code=$code")
+            }
         }
         registrations.add(listener)
         runCatching {
+            discoveryEvent("${type}_register_begin")
             nsd.registerService(NsdServiceInfo().also { info -> info.serviceName = name; info.serviceType = type; info.port = port; txt.forEach { (k,v) -> info.setAttribute(k,v) } }, NsdManager.PROTOCOL_DNS_SD, listener)
-        }.onFailure { state = "failed"; error = "AirPlay receiver unavailable" }
+        }.onFailure {
+            state = "failed"; error = "AirPlay receiver unavailable"
+            discoveryEvent("${type}_register_exception", failure = it)
+        }
     }
     fun poll(): String = mirror.frame().put("active", active).put("protocol", leases.current?.protocol ?: "AirPlay")
         .put("state", state).put("pin", pin).put("receiver_error", error).put("foreground", foreground).put("player_active", mirror.playerActive()).toString()
@@ -170,7 +207,9 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
         registrations.clear()
         context()?.let { AirplayReceiverService.active(it, leases.current != null) }
         if (handle != 0L) { AirplayNative.stop(handle); handle = 0 }
+        port = 0; registeredServices = 0
         if (state !in listOf("unavailable", "failed")) state = "off"
+        discoveryEvent("stopped")
     }
     fun close() { haltMirror(); captions.close(); context()?.let { AirplayReceiverService.end(it) }; worker.post { wanted = false; stop(); mirror.close(); thread.quitSafely() } }
 }

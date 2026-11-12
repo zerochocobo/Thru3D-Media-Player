@@ -25,7 +25,7 @@ func run() -> void:
 	if used.position.x<8 or used.position.y<8 or used.end.x>248 or used.end.y>248:failures.append("Clipped icon strokes")
 	view=SubViewport.new();view.size=Vector2i(1440,1100);view.own_world_3d=true
 	view.render_target_update_mode=SubViewport.UPDATE_ALWAYS;root.add_child(view)
-	var camera:=Camera3D.new();camera.fov=58;camera.position=Vector3(0,-.25,0);view.add_child(camera)
+	var camera:=Camera3D.new();camera.fov=62;camera.position=Vector3(0,-.36,0);view.add_child(camera)
 	var menu:=Menu.new();view.add_child(menu);menu.set_process(false);menu.position.z=-1.8
 	var state: Dictionary={"title":"相册 · Photo album","has_image":true,"geometry":0,"count":12,"index":2,
 		"can_previous":true,"can_next":true,"autoplay_enabled":false,"autoplay_interval":5.0,"screen_curve":30.0}
@@ -37,15 +37,30 @@ func run() -> void:
 		if language=="zh":
 			state.autoplay_enabled=false;menu.refresh();await capture("bar-zh-off")
 		for interval in [3,5,30]:
-			menu.section=1;state.autoplay_interval=interval;menu.refresh()
+			menu.section=1;state.autoplay_interval=interval;state.autoplay_effect=["cut","depth","slide"][[3,5,30].find(interval)];menu.refresh()
 			var target: int=menu.choices.targets.keys().filter(func(id):return menu.choices.targets[id].get("key")=="autoplay_interval" and menu.choices.targets[id].get("kind")=="slider")[0]
 			var slider: Dictionary=menu.choices.sliders[target]
 			if slider.span!=Vector3(3,30,1) or slider.label.text!=str(interval)+"s":failures.append("Wrong interval slider "+language)
 			var half: Vector2=menu._backdrop.mesh.size/2
 			for button in menu._buttons:
+				if menu.choices.targets.get(button.target,{}).get("key")=="autoplay_effect":
+					if button.rect.position.y<menu._backdrop.position.y-half.y or button.rect.end.x>half.x:failures.append("Effect dropdown outside settings "+language)
+					if button.rect.end.y>=slider.node.position.y:failures.append("Effect dropdown is not below interval "+language)
 				if menu.choices.targets.get(button.target,{}).get("key")!="autoplay_interval":continue
 				if button.rect.position.y<menu._backdrop.position.y-half.y or button.rect.end.x>half.x:failures.append("Slider outside settings "+language)
 			await capture("settings-%s-%d"%[language,interval])
+		var opener: int=menu.choices.targets.keys().filter(func(id):return menu.choices.targets[id].get("key")=="autoplay_effect" and menu.choices.targets[id].get("kind")=="open")[0]
+		menu.choices.action(opener)
+		var half_open: Vector2=menu._backdrop.mesh.size/2
+		var listed:=0
+		for button in menu._buttons:
+			var item: Dictionary=menu.choices.targets.get(button.target,{})
+			if item.get("key")!="autoplay_effect" or item.get("kind")!="choose":continue
+			listed+=1
+			if button.rect.position.y<menu._backdrop.position.y-half_open.y or button.rect.end.y>menu._backdrop.position.y+half_open.y or absf(button.rect.position.x)>half_open.x or button.rect.end.x>half_open.x:failures.append("Effect option outside settings "+language)
+		if listed!=5:failures.append("Effect list incomplete "+language)
+		await capture("settings-%s-effects"%language)
+		menu.choices.reset()
 	menu.free();view.free()
 	for failure in failures:push_error(failure)
 	print("Photo autoplay render: %d images, %d failures"%[count,failures.size()])

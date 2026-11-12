@@ -1259,7 +1259,7 @@ func _record_history(force: bool = false) -> void:
 	if not recent_files.save():
 		Log.record("recent_file_save_failed", {"error": recent_files.last_error})
 
-func _request_revision(position_ms: int = -1, mode: String = "", source_reset: bool = false) -> void:
+func _request_revision(position_ms: int = -1, mode: String = "", source_reset: bool = false, initial_layout: bool = false) -> void:
 	if position_ms >= 0: captures.stop()
 	if not platform or not media.accepts(media.session_id):
 		return
@@ -1267,6 +1267,7 @@ func _request_revision(position_ms: int = -1, mode: String = "", source_reset: b
 		"depth": depth_requested and not alpha_requested and not stereo_sbs, "top_bottom": stereo_sbs and top_bottom,
 		"seek_mode": SeekPolicy.normalize(seek_mode if mode.is_empty() else mode)}
 	if source_reset: _pending_revision.source_reset = true
+	if initial_layout: _pending_revision.initial_layout = true
 	_set_backend_playing(media.session_id, false)
 	_waiting_first = true
 	_output_deadline_ms = Time.get_ticks_msec() + OUTPUT_TIMEOUT_MS
@@ -1352,15 +1353,16 @@ func _try_revision() -> void:
 	if _pending_revision.is_empty() or _freeze_request > 0 or _pixel_busy or _thumbnail_busy:
 		return
 	var source_reset: bool = _pending_revision.get("source_reset", false)
+	var initial_layout: bool = _pending_revision.get("initial_layout", false)
 	if mode_transition.capturing() or (not source_reset and mode_transition.active() and mode_transition.stage == "preparing" and _waiting_first): return
-	if not source_reset and int(_pending_revision.position_ms) < 0 and mode_transition.guard_revision(): return
+	if not source_reset and not initial_layout and int(_pending_revision.position_ms) < 0 and mode_transition.guard_revision(): return
 	if int(_pending_revision.position_ms) >= 0 and not mode_transition.active() and _start_seek_freeze(): return
 	if int(_pending_revision.position_ms) >= 0 and Time.get_ticks_msec() < _debug_seek_delay_until_ms:
 		return
 	var request := _pending_revision
 	if _layer_session and ((bool(request.alpha) and not _layer_alpha()) or bool(request.depth)):
 		_pending_revision = {}
-		_reopen_on_eye_buffer(int(request.position_ms), "revision_effect")
+		_reopen_on_eye_buffer(int(request.position_ms), "revision_effect", not initial_layout)
 		return
 	if _layer_session and bool(request.alpha) and not _layer_alpha_host:
 		# Alpha on a layer session opened without it: its decoder has no frame fan-out for the model.
@@ -2795,10 +2797,16 @@ func _complete_source_layout() -> void:
 	var wanted := auto_depth and geometry == Geometry.Geometry.FLAT and not stereo_sbs and not alpha_requested
 	revise = revise or depth_requested != wanted
 	depth_requested = wanted
-	if revise: _request_revision()
-	_apply_geometry()
+	# This first decoded pair resolves startup preferences before it has been drawn.
+	# Do not turn default conversion into a manual transition: a failed snapshot of
+	# provisional 2D would otherwise roll back auto_depth and even remember Off.
+	var initial_layout := media.frame_counter <= 1 and not _mode_user_changed
+	# Record the decoded dimensions/preferences before a revision clears the old session.
 	Log.record("auto_layout", {"geometry": geometry, "stereo_sbs": stereo_sbs, "swap_eyes": swap_eyes,
-		"width": media.format.width, "height": media.format.height})
+		"width": media.format.width, "height": media.format.height, "default_auto_depth": default_auto_depth,
+		"auto_depth": auto_depth, "depth_requested": depth_requested, "initial_layout": initial_layout})
+	if revise: _request_revision(-1, "", false, initial_layout)
+	_apply_geometry()
 
 func _clear_incompatible_packed_mask() -> void:
 	if packed_file and not packed_mask_available():
@@ -4509,20 +4517,20 @@ func _show_frame_picture(origin: XROrigin3D, extras: Array) -> bool:
 		VideoLayer.OPAQUE, extras)
 
 ## Same file and position, decoded for Godot's shader (Alpha, 2D->3D, fisheye, grading, Profile 5).
-func _reopen_on_eye_buffer(position_ms: int, trigger: String = "") -> void:
+func _reopen_on_eye_buffer(position_ms: int, trigger: String = "", preserve_frame: bool = true) -> void:
 	if local_uri != _layer_blocked_uri:
 		_layer_return_uri = local_uri
-	_reopen_at(position_ms, false, trigger)
+	_reopen_at(position_ms, false, trigger, preserve_frame)
 
 ## Reopen the shown file at its position (layer: may decode into the compositor layer).
 ## trigger: the caller, for the exported log only.
-func _reopen_at(position_ms: int, layer: bool, trigger: String = "") -> void:
+func _reopen_at(position_ms: int, layer: bool, trigger: String = "", preserve_frame: bool = true) -> void:
 	if local_uri.begins_with("airplayvideo://"):
 		_request_revision()
 		return
 	if local_uri.is_empty():
 		return
-	if mode_transition.guard_reopen(position_ms, layer): return
+	if preserve_frame and mode_transition.guard_reopen(position_ms, layer): return
 	var position := position_ms if position_ms >= 0 else maxi(0, int(int(media.last_pair.get("pts_us", control.observed_position_ms * 1000)) / 1000))
 	if position_ms < 0 and media.last_pair.is_empty(): position = maxi(position, int(media.playback.get("source_start_ms", 0)))
 	var remember := _remember_file

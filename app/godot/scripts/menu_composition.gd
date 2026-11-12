@@ -57,6 +57,15 @@ const KEEPALIVE_MS := 250
 ## Debug A/B only (0 disables the keepalive); read every frame.
 var keepalive_ms := KEEPALIVE_MS
 var _signature := 0
+## Repaints on consecutive frames (scrolling, dragging) skip the signature, which walks every
+## captured node (about 3 ms a frame on Quest 3); the first quiet frame repaints once more to record it.
+var _signature_stale := false
+var _last_repaint_frame := -1
+## Indices of the slots to repaint when only part of the menu changed (see repaint_nodes).
+var _partial: Array[int] = []
+## Slots holding each repaint_nodes subtree until the planes regroup. Recycled rows join a slot
+## already listed; a slot whose captured rows were all recycled away still repaints to clear them.
+var _subtree_slots := {}
 ## A menu refreshed its values without knowing whether anything visible changed: the next update
 ## compares the signature instead of repainting blindly (playback state refreshes several times a
 ## second, and each blind repaint re-renders the capture viewports for two or three frames).
@@ -163,6 +172,8 @@ func configure(target_origin: Node3D, target_camera: Camera3D, target_display: R
 		menu.composition_changed.connect(repaint)
 		menu.composition_layout_changed.connect(invalidate)
 		if menu.has_signal("composition_values_changed"): menu.composition_values_changed.connect(verify)
+		if menu.has_signal("composition_nodes_added"): menu.composition_nodes_added.connect(adopt)
+		if menu.has_signal("composition_nodes_changed"): menu.composition_nodes_changed.connect(repaint_nodes)
 		_watch_children(menu)
 	fallback_reason = ""
 
@@ -286,6 +297,22 @@ func invalidate() -> void:
 func repaint() -> void:
 	dirty = true
 
+## Only the slots capturing [nodes] or their descendants changed (a scrolled list): the other
+## planes keep their last capture instead of re-rendering every frame. A subtree may span several
+## planes (row buttons raised above their rows). Nodes no slot captures repaint everything.
+func repaint_nodes(nodes: Array) -> void:
+	if dirty: return
+	for node in nodes:
+		var key: int = node.get_instance_id()
+		if not _subtree_slots.has(key):
+			var found: Array[int] = []
+			for slot in slots:
+				if slot.used and slot.nodes.any(func(item): return is_instance_valid(item) and (item == node or node.is_ancestor_of(item))): found.append(slot.index)
+			_subtree_slots[key] = found
+		if _subtree_slots[key].is_empty(): dirty = true; return
+		for index in _subtree_slots[key]:
+			if not _partial.has(index): _partial.append(index)
+
 func verify() -> void:
 	_verify = true
 
@@ -296,6 +323,8 @@ func register_menu(menu: Node3D) -> void:
 	menu.composition_changed.connect(repaint)
 	menu.composition_layout_changed.connect(invalidate)
 	if menu.has_signal("composition_values_changed"): menu.composition_values_changed.connect(verify)
+	if menu.has_signal("composition_nodes_added"): menu.composition_nodes_added.connect(adopt)
+	if menu.has_signal("composition_nodes_changed"): menu.composition_nodes_changed.connect(repaint_nodes)
 	menu.tree_exiting.connect(unregister_menu.bind(menu))
 	_watch_children(menu); invalidate()
 
@@ -318,6 +347,8 @@ func unregister_menu(menu: Node3D) -> void:
 	if menu.composition_changed.is_connected(repaint): menu.composition_changed.disconnect(repaint)
 	if menu.composition_layout_changed.is_connected(invalidate): menu.composition_layout_changed.disconnect(invalidate)
 	if menu.has_signal("composition_values_changed") and menu.composition_values_changed.is_connected(verify): menu.composition_values_changed.disconnect(verify)
+	if menu.has_signal("composition_nodes_added") and menu.composition_nodes_added.is_connected(adopt): menu.composition_nodes_added.disconnect(adopt)
+	if menu.has_signal("composition_nodes_changed") and menu.composition_nodes_changed.is_connected(repaint_nodes): menu.composition_nodes_changed.disconnect(repaint_nodes)
 	var exiting := unregister_menu.bind(menu)
 	if menu.tree_exiting.is_connected(exiting): menu.tree_exiting.disconnect(exiting)
 	_unwatch_children(menu); invalidate()
@@ -336,8 +367,52 @@ func _node_added(node: Node) -> void:
 	for menu in menus:
 		if menu.is_ancestor_of(node):
 			_watch_children(node)
-			if menu == active: invalidate()
+			# Recycled list rows arrive through adopt() instead.
+			if menu == active and not menu.get_meta("composition_adopting", false): invalidate()
 			return
+
+## Recycled list rows join the slot that captures their sibling rows, with its render bit, without
+## regathering the menu (a full collect cost Quest 3 about 8 ms per scrolled line). Anything else
+## (no such slot, text bands) falls back to a full collect.
+## Recycled rows join the planes their list already spans: each node takes the plane at its own
+## height (row buttons are raised onto a plane of their own). A node fitting none regroups all.
+func adopt(nodes: Array, sibling: Node3D) -> void:
+	var list := sibling.get_parent() if is_instance_valid(sibling) else null
+	if geometry_dirty or not banded.is_empty() or not list:
+		invalidate(); return
+	originals = originals.filter(func(item): return is_instance_valid(item.node))
+	var planes: Array = []
+	for slot in slots:
+		if not slot.used: continue
+		slot.nodes = slot.nodes.filter(func(node): return is_instance_valid(node))
+		if slot.nodes.any(func(node): return list.is_ancestor_of(node)): planes.append(slot)
+	var visuals: Array = []
+	for node in nodes: _adoptable(node, visuals)
+	var root_inverse := _root_pose().affine_inverse()
+	var targets: Array = []
+	for node in visuals:
+		var local: Transform3D = root_inverse * node.global_transform
+		var best: Dictionary = {}
+		var distance := PLANE_GAP
+		for slot in planes:
+			var basis: Basis = slot.relative.basis
+			if basis.z.dot(local.basis.orthonormalized().z) <= NORMAL_DOT: continue
+			var gap := absf(basis.z.dot(local.origin - slot.relative.origin))
+			if gap <= distance: distance = gap; best = slot
+		if best.is_empty(): invalidate(); return
+		targets.append(best)
+	for index in visuals.size():
+		var node: VisualInstance3D = visuals[index]
+		var slot: Dictionary = targets[index]
+		originals.append({"node": node, "layers": node.layers})
+		node.layers = slot.camera.cull_mask
+		slot.nodes.append(node)
+		if not dirty and not _partial.has(slot.index): _partial.append(slot.index)
+
+func _adoptable(node: Node, visuals: Array) -> void:
+	if not is_instance_valid(node) or node.has_meta("menu_pointer") or node.has_meta("menu_eye_buffer"): return
+	if node is VisualInstance3D: visuals.append(node)
+	for child in node.get_children(): _adoptable(child, visuals)
 
 func _process(_delta: float) -> void:
 	# Frame rate cannot identify menu-layer faults; playback and style edits can also stall.
@@ -388,16 +463,24 @@ func update() -> void:
 		_collect(); geometry_dirty = false; dirty = true
 	var now := Time.get_ticks_msec()
 	var due := keepalive_ms > 0 and now - _painted_ms >= keepalive_ms
-	if not dirty and (due or _verify):
+	var settle := not dirty and _signature_stale
+	if settle: dirty = true
+	elif not dirty and _partial.is_empty() and (due or _verify):
 		if due: _painted_ms = now
 		dirty = _visual_signature() != _signature
 	_verify = false
-	if dirty:
+	if not banded.is_empty() and not _partial.is_empty(): dirty = true
+	if dirty or not _partial.is_empty():
 		for slot in slots:
-			if slot.used: _measure(slot)
-		for kind in banded: _measure_bands(kind)
+			if slot.used and (dirty or _partial.has(slot.index)): _measure(slot)
+		if dirty:
+			for kind in banded: _measure_bands(kind)
+		_partial.clear()
 		dirty = false; _painted_ms = now; repaints += 1; _place_pending = true
-		_signature = _visual_signature()
+		var frame := Engine.get_process_frames()
+		_signature_stale = not settle and _last_repaint_frame == frame - 1
+		_last_repaint_frame = frame
+		if not _signature_stale: _signature = _visual_signature()
 	var root := _root_pose()
 	var poses := [root, origin.global_transform]
 	if _place_pending or poses != _placed_poses or (slots + bands).any(func(slot): return slot.tail > 0):
@@ -455,6 +538,7 @@ func _root_pose() -> Transform3D:
 ## Groups visible menu geometry by plane. Each group keeps its slot (and swapchain size)
 ## across rebuilds of the same page, so hover tips and page redraws do not reallocate.
 func _collect() -> void:
+	_partial.clear(); _subtree_slots.clear()
 	_restore()
 	var root := _root_pose()
 	var inverse := root.affine_inverse()
@@ -738,8 +822,10 @@ func _measure(slot: Dictionary) -> void:
 	var root_inverse := _root_pose().affine_inverse()
 	var frame_inverse: Transform3D = slot.relative.affine_inverse()
 	var lo := Vector2(INF, INF); var hi := Vector2(-INF, -INF)
+	# Recycled rows free nodes of planes they did not rejoin.
+	slot.nodes = slot.nodes.filter(func(node): return is_instance_valid(node))
 	for node: VisualInstance3D in slot.nodes:
-		if not is_instance_valid(node) or not node.is_visible_in_tree(): continue
+		if not node.is_visible_in_tree(): continue
 		var box: AABB = node.get_meta("menu_capture_bounds", node.get_aabb())
 		if box.size.x <= 0 and box.size.y <= 0: continue
 		var to_frame: Transform3D = frame_inverse * root_inverse * node.global_transform

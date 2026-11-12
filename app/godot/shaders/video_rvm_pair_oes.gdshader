@@ -39,6 +39,27 @@ vec3 clarity_sample(vec2 p, vec2 lo, vec2 hi, vec3 center) {
 	return texture(color_texture, q * color_uv_scale).rgb;
 }
 
+// An in-scene screen (beach, cinema hall) can show several source texels per eye pixel. The video
+// has no mipmaps, so one bilinear tap skips most of them and fine edges crawl. Box-filter the pixel's
+// footprint instead: each tap sits on a texel corner and so averages exactly 2x2 texels, and taps two
+// texels apart tile the box without gaps. dx/dy come from uniform control flow. Layers filter themselves.
+vec3 footprint_color(vec2 p, vec2 dx, vec2 dy, vec2 lo, vec2 hi, vec3 center) {
+	vec2 span = (abs(dx) + abs(dy)) * source_size;
+	// A wrap seam, not a footprint: its derivative spans a large part of the frame.
+	if (max(span.x, span.y) > 32.0) { return center; }
+	ivec2 taps = ivec2(clamp(ceil(span * 0.5), vec2(1.0), vec2(3.0)));
+	if (taps.x * taps.y == 1 && max(span.x, span.y) < 1.5) { return center; }
+	vec2 corner = floor(p * source_size + 0.5);
+	vec3 sum = vec3(0.0);
+	for (int i = 0; i < taps.x; i++) {
+		for (int j = 0; j < taps.y; j++) {
+			vec2 texel = corner + vec2(float(2 * i - taps.x + 1), float(2 * j - taps.y + 1));
+			sum += clarity_sample(texel / source_size, lo, hi, center);
+		}
+	}
+	return sum / float(taps.x * taps.y);
+}
+
 vec2 raw_eye_uv(vec2 displayed_uv) {
 	vec2 p = displayed_uv;
 	if (rotation_degrees == 90) { p = vec2(p.y, 1.0 - p.x); }
@@ -128,11 +149,14 @@ void fragment() {
 	if (!projection_uv_packed && stereo_sbs && top_bottom) { color_p.y = (color_p.y + float(eye)) * 0.5; }
 	else if (!projection_uv_packed && stereo_sbs) { color_p.x = (color_p.x + float(eye)) * 0.5; }
 	vec3 rgb = texture(color_texture, color_p * color_uv_scale).rgb;
+	vec2 color_dx = dFdx(color_p);
+	vec2 color_dy = dFdy(color_p);
+	vec2 lo = vec2(0.5) / source_size;
+	vec2 hi = vec2(1.0) - lo;
+	if (stereo_sbs && top_bottom) { lo.y += float(eye) * 0.5; hi.y -= float(1 - eye) * 0.5; }
+	else if (stereo_sbs) { lo.x += float(eye) * 0.5; hi.x -= float(1 - eye) * 0.5; }
+	if (!projection_mesh) { rgb = footprint_color(color_p, color_dx, color_dy, lo, hi, rgb); }
 	if (sharpness > 0.0 && !projection_mesh) {
-		vec2 lo = vec2(0.5) / source_size;
-		vec2 hi = vec2(1.0) - lo;
-		if (stereo_sbs && top_bottom) { lo.y += float(eye) * 0.5; hi.y -= float(1 - eye) * 0.5; }
-		else if (stereo_sbs) { lo.x += float(eye) * 0.5; hi.x -= float(1 - eye) * 0.5; }
 		vec2 step_uv = max(vec2(1.0) / source_size, fwidth(color_p));
 		rgb = sharpen_rgb(rgb, clarity_sample(color_p + vec2(0.0, step_uv.y), lo, hi, rgb),
 			clarity_sample(color_p - vec2(0.0, step_uv.y), lo, hi, rgb),

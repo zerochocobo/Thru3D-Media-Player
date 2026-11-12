@@ -18,7 +18,8 @@ class Harness extends Main:
 	func _active_menu() -> Node3D: return test_menu if test_menu else (player_menu if player_menu and player_menu.visible else null)
 	func _vr_passthrough_active() -> bool: return false
 	func _controller_allowed(hand: String) -> bool: return force_action_route or super(hand)
-	func _process_stick_input(left: Vector2, right: Vector2, _delta: float) -> void: polled_sticks = [left, right]
+	func _process_stick_input(left: Vector2, right: Vector2, _delta: float) -> String:
+		polled_sticks = [left, right]; return ""
 
 class Pip extends RefCounted:
 	var cancels := 0

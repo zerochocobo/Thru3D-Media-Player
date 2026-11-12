@@ -4,6 +4,15 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.17.7 — 2026-11-12
+
+- Choose cut, crossfade, soft wipe or depth dissolve for photo slideshows. Keep the current image visible while autoplay waits for the next one.
+- Add a hand-model visibility setting and keep hands visible over cinema menu cutouts. Reduce menu redraws while scrolling and fix stale controls on recycled rows.
+- Reduce aliasing on distant in-scene video screens and use tiered eye-buffer multisampling to smooth scene edges.
+- Make short webpage trigger taps more tolerant of hand movement. Preserve the default video 2D-to-3D choice when starting playback, including external opens.
+- Try SMB guest access before asking for credentials and isolate folder requests so a stalled server does not block another listing. Improve PICO 4 controller bindings on older runtimes.
+- Add AirPlay startup and network discovery details to exported diagnostics.
+
 ## 0.17.6 — 2026-11-11
 
 - Expand an AirPlay mirror from picture-in-picture into the regular player for compatible 2D-to-3D, person passthrough, live captions and mute controls. Returning restores the original mirror window within the same session.

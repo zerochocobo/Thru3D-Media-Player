@@ -8,6 +8,9 @@ const ModeFixture := preload("res://tests/test_file_mode_memory.gd")
 class Platform extends Fixture.Platform:
 	var commands: Array = []
 	var acknowledge_capture := true
+	var direct_requests: Array = []
+	func web_video_open_captured(url: String, selection: String) -> int:
+		direct_requests.append([url, selection]); web_id += 1; return web_id
 	func web_browser_command(value: String) -> void:
 		var command: Dictionary = JSON.parse_string(value); commands.append(command)
 		if command.action == "pause_tab": browser.pause_token = command.pause_token
@@ -95,11 +98,34 @@ func run() -> void:
 	main.recent_menu = menu; main.video = video
 	await manual_return_checks(main, video)
 	await server_play_checks()
+	await direct_file_checks()
 	video.free(); main.free(); menu.free(); platform.free(); await process_frame
 	await format_checks()
 	print("Web fullscreen remains in browser: %d checks, %d failures" % [checks, failures.size()])
 	for failure in failures: push_error(failure)
 	quit(0 if failures.is_empty() else 1)
+
+func direct_file_checks() -> void:
+	platform.browser.merge({"url": "https://generic.test/watch", "tab_id": 1, "navigation": 50,
+		"active": true, "playing": true, "native_supported": true, "focused_window": 1,
+		"pause_confirmed": false, "direct_selection": "doc:video:1",
+		"videos": [{"id": "1", "selection": "doc:video:1", "direct_ready": true, "playing": true, "time": 12.5}]}, true)
+	menu.web_browser.open(platform.browser.url); poll()
+	var before_beta: int = platform.beta_requests
+	menu.web_browser.action(menu.web_browser.BASE + 6)
+	check(menu.web_browser.handoff_waiting_pause and platform.direct_requests.is_empty(), "Captured file waits for webpage pause before opening")
+	platform.browser.playing = false; platform.browser.videos[0].playing = false; platform.browser.pause_confirmed = true; poll()
+	check(platform.direct_requests == [["https://generic.test/watch", "doc:video:1"]], "Old button opens the exact captured selection")
+	check(platform.beta_requests == before_beta, "Generic file does not call Beta parsing")
+	resolve_ready()
+	check(menu.collections.selected_entry.get("start_ms") == 12500, "Direct file preserves selected video position")
+	menu.web_browser.restore_playback(false, 30000)
+	check(platform.commands.any(func(c): return c.action == "restore_direct" and c.selection == "doc:video:1" and c.position_ms == 30000), "Direct return addresses the same original video")
+	platform.browser.active = true; poll()
+	menu.web_browser.action(menu.web_browser.BASE + 6)
+	platform.browser.videos[0].selection = "doc:video:2"; poll()
+	check(not menu.web_browser.handoff, "Changed source cancels the pending direct open")
+	platform.browser.erase("direct_selection")
 
 func server_play_checks() -> void:
 	var origins := ["http://192.168.1.20:8096/web/index.html#!/videoosd", "http://192.168.1.20:8096/jellyfin/web/#/video",

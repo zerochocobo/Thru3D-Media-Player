@@ -67,6 +67,7 @@ func configure(target_viewport: Viewport, target_environment: Environment, inter
 	xr = interface
 	preview = desktop_preview
 	_set_background(false)
+	_apply_msaa()
 	if preview:
 		session_state = "desktop_preview"
 		status_changed.emit()
@@ -191,6 +192,17 @@ func set_scene_relief(enabled: bool) -> void:
 	_apply_foveation()
 	_apply_render_scale()
 	DiagnosticLog.record("xr_scene_relief", {"enabled": enabled, "render_scale": render_scale, "relief_max_scale": relief_max_scale})
+
+## Every eye-buffer edge (beach and cinema silhouettes, menu panels, controllers, rays) steps and
+## crawls without multisampling. Quest 3, separate cold starts at 545 MHz: cinema 7.5 -> 8.8 ms, beach
+## about +1.3 ms too; low-end GPUs have no such headroom and keep it off. Applied once before the
+## session renders: a later change does not rebuild the XR eye-buffer targets and has no effect.
+const EYE_MSAA := Viewport.MSAA_4X
+var eye_msaa := EYE_MSAA
+func _apply_msaa() -> void:
+	if viewport == null or viewport.msaa_3d == eye_msaa: return
+	viewport.msaa_3d = eye_msaa
+	DiagnosticLog.record("xr_msaa", {"msaa_3d": eye_msaa})
 
 ## Keep the reduced eye buffers for the whole layer playback, including menus and seek generations.
 ## Changing size on every menu toggle leaked GLES3 targets on Quest; a settle delay alone did not help.
@@ -354,6 +366,7 @@ func capabilities() -> Dictionary:
 		"meta_dynamic_resolution_enabled": bool(ProjectSettings.get_setting("xr/openxr/extensions/meta/dynamic_resolution", true)),
 		"render_target_size_scope": "allocated_eye_buffer",
 		"viewport_scaling_3d_scale": viewport.scaling_3d_scale if viewport else 1.0,
+		"viewport_msaa_3d": viewport.msaa_3d if viewport else 0,
 		"captured_ticks_usec": Time.get_ticks_usec(),
 	}
 	if xr != null and xr.is_initialized() and not preview:

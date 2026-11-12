@@ -6,6 +6,8 @@ render_mode unshaded, blend_sub, cull_disabled, depth_draw_never, shadows_disabl
 
 // Surface UV rectangle to clear; the rest of the mesh stays (a photo's soft edge drawn beside it).
 uniform vec4 keep_rect = vec4(0.0, 0.0, 1.0, 1.0);
+// A photo can be letterboxed inside a fixed slideshow window. Alignment is per source eye.
+uniform vec4 content_rect = vec4(0.0, 0.0, 1.0, 1.0);
 #include "res://shaders/video_coordinates.gdshaderinc"
 
 void vertex() {
@@ -19,7 +21,8 @@ void fragment() {
 	// edges. VR180/360 holes cover most of each eye, and the trigonometry per pixel cost frame
 	// rate on XR2 Gen1 headsets that scales with the display quality setting.
 	if (stereo_sbs && viewing_eye == 0 && any(notEqual(stereo_offset, vec2(0.0)))) {
-		if (outside_alignment(aligned_eye_uv(eye_uv(UV, media_direction)))) { discard; }
+		vec2 content_uv = video_geometry == 0 ? (UV - content_rect.xy) / content_rect.zw : UV;
+		if (outside_alignment(aligned_eye_uv(eye_uv(content_uv, media_direction)))) { discard; }
 	}
 	ALBEDO = vec3(1.0);
 	ALPHA = 1.0;

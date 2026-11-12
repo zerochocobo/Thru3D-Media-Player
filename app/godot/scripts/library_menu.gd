@@ -23,6 +23,10 @@ signal image_selected(uri: String, title: String)
 var image_picker_mode := false
 var selected_pdf := {}
 var voice_picker_mode := false
+## Single scene file pick; rides on the voice picker's single-file browsing.
+signal scene_file_selected(uri: String, title: String)
+signal scene_picker_cancelled
+var scene_picker_mode := false
 var _image_picker_dlna_retry := {}
 signal subtitle_picker_cancelled
 signal subtitle_selected(uri: String, title: String, location: Dictionary)
@@ -136,6 +140,9 @@ const SubtitleStyle := preload("res://scripts/subtitle_style.gd")
 ## Language rows in About: each language named in itself.
 const LANGUAGE_NAMES := I18n.NAMES
 const VISIBLE_ROWS := 7
+## A settings page up to this many rows draws every row once; scrolling then only moves them.
+## Redrawing the page at each line cost Quest 3 60-75 ms frames (2026-11-12).
+const FULL_LIST_ROWS := 48
 const DRAG_START := 0.015          # metres of ray travel on the panel before a press becomes a drag
 const STICK_DEADZONE := 0.2
 const STICK_SPEED := 1.5           # visible pages per second at full deflection
@@ -221,6 +228,7 @@ var section := Section.RECENT:
 	set(value):
 		# Main can open settings directly, without activating a sidebar button.
 		if section == Section.MEDIA_SERVER and value != section: server_browser.leave_section()
+		if section == Section.SMB and value != section: _cancel_smb_connect()
 		section = value
 var tab := 0
 var scroll := 0.0                  # first visible line; fractional while moving, settles on a whole line
@@ -228,6 +236,7 @@ var _drag := {}                    # hand, target, start_y, start_scroll, moved,
 var _fling := 0.0                  # lines per second left by a released drag
 var _stick_ms := -1000             # last thumbstick scroll; the list settles once the stick is released
 var _list: Node3D                  # drawn rows; moved for fractional scrolling
+var _row_records := {}             # recycled lists: row index -> buttons and nodes it drew
 var _bar_thumb: MeshInstance3D
 var _settings_scroll_hint: MeshInstance3D
 var _settings_scroll_hint_y := 0.0
@@ -257,6 +266,8 @@ var _smb_found: Array = []
 var _smb_server := ""
 var _smb_path := ""
 var _smb_entries: Array = []
+var _smb_connect := {}
+var _smb_auth_request := -1
 var _dlna_servers: Array = []
 var _dlna_stack: Array = []        # [{id, title}] containers from the server root
 var _dlna_server := ""
@@ -499,6 +510,7 @@ func toggle() -> void:
 			_load_cloud(); refresh()
 
 func dismiss() -> void:
+	_cancel_smb_connect(false)
 	if theme_editor.opened: theme_editor.close(false)
 	# Website authentication is a modal workflow. Losing focus, an outside ray or
 	# another controls toggle must not discard a phone/MFA step in progress.
@@ -546,7 +558,14 @@ func dismiss() -> void:
 	composition_layout_changed.emit()
 
 func _voice_sample_source(row: Dictionary) -> bool:
+	if scene_picker_mode: return row.get("kind", "") == "scene"
 	return row.get("kind", "video") in ["video", "audio"]
+
+func begin_scene_picker() -> void:
+	if audio_import_mode or subtitle_picker_mode or image_picker_mode or voice_picker_mode: return
+	_capture_file_picker_context()
+	voice_picker_mode = true; scene_picker_mode = true; voice_manager.opened = false
+	_start_file_picker()
 
 func begin_voice_picker() -> void:
 	if audio_import_mode or subtitle_picker_mode or image_picker_mode or voice_picker_mode: return
@@ -555,6 +574,11 @@ func begin_voice_picker() -> void:
 	_start_file_picker()
 
 func finish_voice_picker(uri: String = "", title: String = "") -> void:
+	if scene_picker_mode:
+		_restore_audio_import_context()
+		if uri.is_empty(): scene_picker_cancelled.emit()
+		else: scene_file_selected.emit(uri, title)
+		refresh(); return
 	_restore_audio_import_context()
 	voice_manager.opened = true
 	if not uri.is_empty(): voice_manager.sample.selected(uri, title)
@@ -665,6 +689,7 @@ func _restore_audio_import_context() -> void:
 	image_picker_mode = false
 	background_picker_mode = false
 	voice_picker_mode = false
+	scene_picker_mode = false
 	_image_picker_dlna_retry.clear()
 	audio_selection.clear()
 	_cancel_cloud()
@@ -1018,14 +1043,16 @@ func _set_scroll(value: float, user_activity: bool = true) -> void:
 	if clamped == scroll:
 		if (section == Section.MEDIA_SERVER and not archives.browsing): server_browser.scroll_changed()
 		return
-	var redraw := floori(clamped + 0.001) != _first_line()
+	# An open dropdown follows its field, so a full list still redraws it at each line.
+	var redraw := floori(clamped + 0.001) != _visible_line() and (not _full_list() or not choices.opened.is_empty())
 	scroll = clamped
 	_browse_focus = {}
 	if user_activity: _browse_activity()
 	else:
 		_browse_save_scope = _browse_scope(); _browse_save_at = Time.get_ticks_msec() + 500
 	if redraw:
-		if _plain_file_grid(): _redraw_file_rows()
+		if _recycled() and is_instance_valid(_list): _recycle_rows()
+		elif _plain_file_grid(): _redraw_file_rows()
 		else: _draw()
 	else:
 		_place_list()
@@ -1035,29 +1062,132 @@ func _scroll_to_bar(y: float) -> void:
 	var span := _bar_span()
 	_set_scroll((span.x - y) / span.y * (_max_scroll() + 1.0) - 0.5)
 
-## First drawn line (float noise from dragging cannot drop a line).
+## First drawn line; row targets count from it.
 func _first_line() -> int:
+	return 0 if _full_list() else _visible_line()
+
+## First visible line (float noise from dragging cannot drop a line).
+func _visible_line() -> int:
 	return floori(scroll + 0.001)
 
-## Drawn rows: the visible lines plus one, which shows while the list is between lines.
+## Drawn rows: the visible lines plus one, which shows while the list is between lines, or the
+## whole of a short settings page.
 func _drawn_slots() -> int:
-	return _cols() * (_lines() + 1)
+	return _cols() * (_line_count() if _full_list() else _lines() + 1)
+
+## Settings rows built only from row buttons and their fields (no task rows, controls or account
+## pages), short enough to draw at once.
+func _full_list() -> bool:
+	return section == Section.SETTINGS and not compact and not archives.browsing and not subtitle_queue_open \
+		and not controls_page.active() and not account_panel.active() and not subtitle_filter.active() \
+		and _editor.is_empty() and rows.size() <= FULL_LIST_ROWS and _cols() == 1
+
+## Plain file lists and grids keep their drawn rows while scrolling: a line that scrolls out is
+## freed and the line that scrolls in is drawn into the same target slots (row index modulo the
+## drawn slots). Rebuilding every row at each line cost Quest 3 25-36 ms frames (2026-11-12).
+func _recycled() -> bool:
+	return section in [Section.RECENT, Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] \
+		and not compact and not archives.browsing and browser_content() and _editor.is_empty() \
+		and not account_panel.active() and not cloud_search.active and cloud_accounts.mode.is_empty() \
+		and file_actions.modal.is_empty() and not subtitle_filter.active() and not audio_import_mode \
+		and not background_picker_mode and not cloud_error.opened and not cloud_error.shows_notice()
+
+## The line row positions count from: full and recycled lists place rows by their own index.
+func _list_origin() -> int:
+	return 0 if _full_list() or _recycled() else _visible_line()
+
+## The target slot of row [index] (its offset from ROW_BASE and the other per-row bases).
+func _row_slot(index: int) -> int:
+	return posmod(index, _drawn_slots()) if _recycled() else index - _first_line() * _cols()
+
+## The row drawn in target slot [slot].
+func _row_index(slot: int) -> int:
+	var first := _first_line() * _cols()
+	return first + posmod(slot - first, _drawn_slots()) if _recycled() else first + slot
+
+## Draws row [index] and remembers what it added, so recycling can free exactly that row.
+func _draw_recorded_row(index: int) -> void:
+	var buttons := _buttons.size(); var children := _list.get_child_count()
+	var decorations := _decorations.size(); var labels := _labels.size()
+	_draw_row(index)
+	_row_records[index] = {"buttons": _buttons.slice(buttons), "nodes": _list.get_children().slice(children)
+		+ _decorations.slice(decorations) + _labels.slice(labels)}
+
+func _free_recorded_row(index: int) -> void:
+	var record: Dictionary = _row_records[index]
+	_row_records.erase(index)
+	var removed := {}
+	for button: Dictionary in record.buttons:
+		removed[button.target] = true
+		_tips.erase(button.target)
+		_buttons.erase(button)
+	for hand in _hover:
+		if removed.has(_hover[hand]): _hover[hand] = NONE
+	for node: Node in record.nodes:
+		_decorations.erase(node)
+		if node is Label3D: _labels.erase(node)
+		if is_instance_valid(node): node.free()
+	# A button parented outside the row's nodes (none today) still goes with its row.
+	for button: Dictionary in record.buttons:
+		if is_instance_valid(button.node): button.node.free()
+
+## Scrolled past a line: free the rows that left the drawn window and draw the ones that entered.
+## The new nodes join the capture of the rows that stayed, so the compositor need not regroup.
+func _recycle_rows() -> void:
+	var first := _first_line() * _cols()
+	var last := mini(rows.size(), first + _drawn_slots())
+	var hovered := _hover.values().duplicate()
+	for index in _row_records.keys():
+		if index < first or index >= last: _free_recorded_row(index)
+	if _hover.values() != hovered: _hide_tooltip()
+	var sibling: Node3D
+	for index in _row_records:
+		var nodes: Array = _row_records[index].nodes
+		if not nodes.is_empty() and nodes[0] is VisualInstance3D: sibling = nodes[0]; break
+	var added: Array[Node] = []
+	set_meta("composition_adopting", true)
+	for index in range(first, last):
+		if _row_records.has(index): continue
+		_draw_recorded_row(index)
+		added.append_array(_row_records[index].nodes)
+	set_meta("composition_adopting", false)
+	if sibling: composition_nodes_added.emit(added, sibling)
+	else: composition_layout_changed.emit()
+	_place_list()
 
 ## Shift the drawn rows by the fractional scroll; rows past the edges of the list hide.
 func _place_list() -> void:
 	if not is_instance_valid(_list):
 		return
-	var fraction := scroll - _first_line()
-	_list.position.y = fraction * _pitch()
-	composition_changed.emit()
+	# Runs every scrolling frame: the layout queries are evaluated once.
+	var full := _full_list()
+	var fraction := scroll - _list_origin()
+	var pitch := _pitch()
+	var cols := _cols()
+	var last_line := _lines() - 0.65
+	var slots := _drawn_slots()
+	var recycled := _recycled()
+	var first := _first_line() * cols
+	_list.position.y = fraction * pitch
+	# Only the list's planes (rows, their raised buttons and the scrollbar) move; the side column keeps its capture.
+	var moved: Array = [_list]
+	if is_instance_valid(_bar_thumb): moved.append(_bar_thumb)
+	composition_nodes_changed.emit(moved)
 	var last_row_bottom := INF
 	for button in _buttons:
 		var row_target := int(button.get("list_row", button.target))
-		if _row_target(row_target):
-			var line := float((row_target - ROW_BASE) / _cols()) - fraction
-			button.node.visible = line > -0.35 and line < _lines() - 0.65
+		if row_target >= ROW_BASE and row_target < ROW_BASE + slots:
+			var slot := row_target - ROW_BASE
+			var index := first + (posmod(slot - first, slots) if recycled else slot)
+			var line := float(index / cols) - scroll
+			button.node.visible = line > -0.35 and line < last_line
 			if is_instance_valid(_settings_scroll_hint) and button.node.visible:
 				last_row_bottom = minf(last_row_bottom, to_local(button.node.global_position).y - button.rect.size.y / 2)
+	if full:
+		# Rows drawn without a button of their own (captions beside a field) hide by their line.
+		for child in _list.get_children():
+			var line := roundf((LIST_TOP - child.position.y) / pitch) - fraction
+			child.visible = line > -0.35 and line < last_line
 	collections.update_hover()
 	if is_instance_valid(_bar_thumb):
 		var span := _bar_span()
@@ -1526,6 +1656,10 @@ func _request(kind: String, id: Variant) -> void:
 		if kind.begins_with("dlna") and kind not in ["dlna_save", "dlna_remove"]:
 			for previous in _pending.keys():
 				if _pending[previous] == kind: _pending.erase(previous)
+		if kind == "smb_browse":
+			_smb_auth_request = id
+			for previous in _pending.keys():
+				if _pending[previous] == kind: _pending.erase(previous)
 		_pending[id] = kind
 		if kind == "local":
 			for previous in _pending.keys():
@@ -1583,6 +1717,7 @@ func _on_media_list(id: int, payload: String) -> void:
 	var kind: String = _pending[id]
 	_pending.erase(id)
 	if kind.begins_with("dlna") and section != Section.DLNA: return
+	if kind.begins_with("smb") and section != Section.SMB: return
 	if kind == "cloud": _cloud_busy = false
 	if kind == "cloud" and section != Section.CLOUD:
 		return
@@ -1628,6 +1763,44 @@ func _on_media_list(id: int, payload: String) -> void:
 		result = _continue_browse_restore(result)
 		if result.is_empty(): return
 	var state := str(result.get("state", "error"))
+	if kind == "smb_connect":
+		if int(_smb_connect.get("request_id", -1)) != id: return
+		var found: Dictionary = _smb_connect.server
+		_smb_connect = {}
+		if not visible or not _editor.is_empty() or not _smb_server.is_empty(): return
+		if state == "ready":
+			_smb_servers = result.get("servers", [])
+			_smb_server = str(result.get("server_id", "")); _smb_path = ""
+			_smb_entries = result.get("entries", [])
+			scroll = 0.0
+			_browse_loaded_scope = _browse_scope()
+			_restore_folder_position()
+		elif bool(result.get("auth_required", false)):
+			_open_editor(found)
+			_editor["connect_path"] = ""
+		else: status = str(result.get("error", "Error")).left(80)
+		refresh()
+		return
+	if kind == "smb_connect_save":
+		if int(_editor.get("request_id", -1)) != id or not visible: return
+		if state == "ready":
+			_smb_servers = result.get("servers", [])
+			_smb_server = str(result.get("saved_id", ""))
+			_smb_path = str(_editor.get("connect_path", "")) if _editor.host == _editor.get("connect_host", _editor.host) else ""
+			_smb_entries = []; _editor = {}; scroll = 0.0
+			_request("smb_browse", _browse_smb(_smb_server, _smb_path))
+		else: status = str(result.get("error", "Error")).left(80)
+		refresh()
+		return
+	if kind == "smb_browse":
+		if str(result.get("server_id", "")) != _smb_server or str(result.get("path", "")) != _smb_path: return
+		if state != "ready" and bool(result.get("auth_required", false)) and id == _smb_auth_request and visible and _editor.is_empty():
+			var saved: Array = _smb_servers.filter(func(server): return str(server.id) == _smb_server)
+			if not saved.is_empty():
+				_open_editor(saved[0])
+				_editor["connect_path"] = _smb_path
+				_editor["connect_host"] = _editor.host
+				return
 	# Auto-discovered DLNA servers are session-only in the backend. Discover once
 	# on cold resume, then retry the same saved directory, never a media resource URL.
 	if kind == "dlna_picker_resume":
@@ -2053,6 +2226,8 @@ func _rebuild_rows() -> void:
 				theme_row.title = I18n.t(theme_row.title); rows.append(theme_row)
 				var watch_row := WatchPalette.row(settings.get("watch_color", WatchPalette.DEFAULT))
 				watch_row.title = I18n.t(watch_row.title); rows.append(watch_row)
+				rows.append(_choice_row("Hand model", "hand_model", str(settings.get("hand_model", "auto")),
+					[{"value": "auto", "label": "Auto", "hint": "Hidden in passthrough"}, {"value": "show", "label": "On"}, {"value": "hide", "label": "Off"}]))
 				rows.append({"title": I18n.t("Control bar transparency"), "icon": "settings", "setting": ["bar_transparency", true]})
 				var quality_choices: Array = [{"value": Quality.AUTO, "label": "Auto", "hint": Quality.SCALE_AUTO_HINT}]
 				for i in Quality.SCALES.size():
@@ -2131,7 +2306,7 @@ func _rebuild_rows() -> void:
 	elif voice_picker_mode:
 		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("folder", false) or row.get("kind", "") == "folder" or _voice_sample_source(row)))
 	else:
-		rows.assign(rows.filter(func(row): return row.get("kind", "") != "audio"))
+		rows.assign(rows.filter(func(row): return row.get("kind", "") not in ["audio", "scene"]))
 	if not audio_import_mode and not subtitle_picker_mode and not voice_picker_mode and media_filter > 0 and section not in [Section.SETTINGS, Section.MEDIA_SERVER]:
 		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "") == "folder" or row.get("kind", "video") in (["image", "archive", "pdf"] if media_filter == 2 and not image_picker_mode else ["image", "pdf"] if media_filter == 2 else ["video"])))
 	file_actions.sort_rows()
@@ -2286,6 +2461,8 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 		row.kind = "pdf" if preload("res://scripts/pdf_pages.gd").named(str(entry.get("uri", "")), str(entry.title)) else "archive"; row.icon = "folder"
 	if entry.get("kind", "") == "audio" or AudioCatalog.supported(str(entry.title)):
 		row.kind = "audio"; row.icon = "music"
+	if entry.get("kind", "") == "scene" or preload("res://scripts/scene_import/scene_import_library.gd").supported(str(entry.title)):
+		row.kind = "scene"; row.icon = "cube"
 	if subtitle:
 		row.kind = "subtitle"; row.icon = "subtitle"
 	for field in ["size", "modified", "can_delete", "can_rename", "delete_reason", "id", "cloud_id", "delete_effect", "duration_ms", "width", "height"]:
@@ -2536,7 +2713,7 @@ func _activate(target: int) -> void:
 		if image_picker_mode or voice_picker_mode: return
 		_change_media_filter(target - FILTER_BASE)
 	elif _row_target(target):
-		var index := _first_line() * _cols() + target - ROW_BASE
+		var index := _row_index(target - ROW_BASE)
 		if index < rows.size():
 			_choose(rows[index])
 	elif not _editor.is_empty():
@@ -2646,6 +2823,7 @@ func _choose(row: Dictionary) -> void:
 		dismiss()
 		chosen.emit(str(row.uri), str(row.title))
 	elif row.has("smb_server"):
+		_cancel_smb_connect()
 		_save_folder_position()
 		_smb_server = str(row.smb_server)
 		_smb_path = ""
@@ -2654,7 +2832,7 @@ func _choose(row: Dictionary) -> void:
 		scroll = 0.0
 		refresh()
 	elif row.has("smb_found"):
-		_open_editor({"name": str(row.smb_found.name), "host": str(row.smb_found.host)})
+		_connect_smb_found(row.smb_found)
 	elif row.has("dlna_server"):
 		_save_folder_position()
 		_dlna_server = str(row.dlna_server)
@@ -2932,7 +3110,34 @@ func _refresh_source() -> void:
 
 # --- Network server editor with a ray keyboard --------------------------------------------------
 
+func _cancel_smb_connect(include_browse: bool = true) -> void:
+	_smb_auth_request = -1
+	if not _smb_connect.is_empty() or (include_browse and _pending.values().has("smb_browse")):
+		if PlatformMethods.supports(platform, "media_smb_cancel_browse"): platform.media_smb_cancel_browse()
+	_smb_connect = {}
+	for id in _pending.keys():
+		if _pending[id] in ["smb_connect", "smb_connect_save"] or (include_browse and _pending[id] == "smb_browse"):
+			_pending.erase(id)
+			if status == "Loading…": status = ""
+
+func _connect_smb_found(found: Dictionary) -> void:
+	_cancel_smb_connect()
+	var server := {"name": str(found.get("name", "")), "host": str(found.get("host", ""))}
+	var saved: Array = _smb_servers.filter(func(item): return str(item.host).to_lower() == server.host.to_lower())
+	if not saved.is_empty():
+		_choose({"smb_server": str(saved[0].id)})
+		return
+	if not PlatformMethods.supports(platform, "media_smb_connect"):
+		_open_editor(server)
+		return
+	_save_folder_position()
+	var id: int = platform.media_smb_connect(JSON.stringify(server))
+	_smb_connect = {"request_id": id, "server": server}
+	_request("smb_connect", id)
+	refresh()
+
 func _open_editor(server: Dictionary) -> void:
+	_cancel_smb_connect()
 	system_text_input.cancel()
 	_editor_system_keyboard = false
 	file_actions.reset()
@@ -3058,9 +3263,14 @@ func _editor_input(target: int) -> void:
 		elif platform:
 			var request := {"id": _editor.id, "name": _editor.name, "host": _editor.host, "user": _editor.user,
 				"password": _editor.password}
-			_request("smb_servers", platform.media_smb_save(JSON.stringify(request)))
-			_smb_server = ""
-			_editor = {}
+			if _editor.has("connect_path"):
+				var id: int = platform.media_smb_save(JSON.stringify(request))
+				_request("smb_connect_save", id)
+				_editor.request_id = id
+			else:
+				_request("smb_servers", platform.media_smb_save(JSON.stringify(request)))
+				_smb_server = ""
+				_editor = {}
 	refresh()
 
 # --- drawing --------------------------------------------------------------------------------
@@ -3491,6 +3701,7 @@ func _draw_crumbs(crumbs: Array, base: int = CRUMB_BASE) -> void:
 
 func _header_title() -> String:
 	if archives.browsing: return " / ".join(archives.crumbs())
+	if scene_picker_mode: return I18n.t("Choose scene file")
 	if voice_picker_mode: return I18n.t("Choose audio or video")
 	if image_picker_mode: return I18n.t("Choose panorama images" if background_picker_mode else "Choose image")
 	if audio_import_mode: return I18n.t("Import audio")
@@ -3525,79 +3736,11 @@ func _draw_rows() -> void:
 	add_child(_list)
 	_decorations.append(_list)
 	_bar_thumb = null
+	_row_records.clear()
 	var first := _first_line() * _cols()
-	var row_top: float = 0.22 if subtitle_filter.active() else 0.045 if (cloud_search.active and not archives.browsing) else (server_browser.list_top() if (section == Section.MEDIA_SERVER and not archives.browsing) and not account_panel.active() else LIST_TOP)
 	for i in range(first, mini(rows.size(), first + _drawn_slots())):
-		var row: Dictionary = rows[i]
-		var k := i - first
-		if _grid():
-			if (section == Section.MEDIA_SERVER and not archives.browsing):
-				var cols := _cols()
-				var size: Vector2 = server_browser.tile_size() if server_browser.media_content() else TILE_SIZE
-				var step: float = size.x + 0.025 if server_browser.media_content() else GRID_PITCH.x
-				var left: float = -0.53 + size.x / 2 if server_browser.media_content() else -0.36
-				server_browser.tile(ROW_BASE + k, row, Vector2(left + (k % cols) * step, server_browser.list_top() - size.y / 2 - (k / cols) * _pitch()))
-			else:
-				var center := Vector2(-0.36 + (k % COLS) * GRID_PITCH.x, (0.095 if (cloud_search.active and not archives.browsing) else GRID_TOP) - TILE_SIZE.y * 0.5 - (k / COLS) * GRID_PITCH.y)
-				_tile(ROW_BASE + k, row, center)
-				if background_picker_mode: _decorate_audio_selection(row)
-				if not archives.browsing: collections.decorate_row(k, row, center, true, _list)
-		else:
-			if (section == Section.MEDIA_SERVER and not archives.browsing) and server_browser.media_content():
-				server_browser.media_row(ROW_BASE + k, row, Vector2(0.17, row_top - k * _pitch())); continue
-			if browser_content():
-				var center := Vector2(0.17, row_top - k * _pitch())
-				_media_row_button(ROW_BASE + k, row, center)
-				_decorate_audio_selection(row)
-				if not archives.browsing: collections.decorate_row(k, row, center, false, _list)
-				continue
-			if row.get("voice_manager", false):
-				_voice_manager_entry(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
-				continue
-			if row.has("task_actions"):
-				_subtitle_task_entry(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
-				continue
-			if row.has("choices") or row.get("slider", false):
-				_setting_field(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
-				continue
-			_row_button(ROW_BASE + k, str(row.title), "" if row.get("about_info", false) else str(row.get("detail", "")), str(row.get("icon", "video")),
-				Vector2(0.17, row_top - k * _pitch()), bool(row.get("selected", false)), section == Section.WEB)
-			if row.has("tip"): _tips[ROW_BASE + k] = I18n.t(str(row.tip))
-			if not bool(row.get("enabled", true)):
-				_buttons.back().enabled = false
-				_buttons.back().foreground = MUTED
-				_buttons.back().node.get_child(0).modulate = MUTED
-			_decorate_audio_selection(row)
-			if row.get("group_header", false):
-				var heading: Dictionary = _buttons.back()
-				heading.enabled = true; heading.base_color = Color(TILE, 0)
-				heading.node.material_override.set_shader_parameter("surface_color", Color(TILE, 0))
-				set_label_size(heading.node.get_child(0), TEXT_TITLE)
-				heading.node.get_child(0).font = ui_bold_font()
-				if row.get("subgroup", false):
-					# Nested sections step in and drop to body weight beneath their parent heading.
-					set_label_size(heading.node.get_child(0), TEXT_BODY)
-					heading.node.get_child(0).font = ui_font()
-					for child in heading.node.get_children():
-						if child is Node3D: child.position.x += 0.05
-			if bool(row.get("about_info", false)):
-				_buttons.back().enabled = false
-				var node: MeshInstance3D = _buttons.back().node
-				var title: Label3D = node.get_child(0)
-				title.position.y = 0.023
-				title.text = _fit_title(str(row.title), "", 1.08, 21)
-				set_label_size(title, 21)
-				# Informational rows use two lines, leaving long contacts and credits readable.
-				var detail := _label(_fit_title(str(row.detail), "", 1.08, 17), Vector3(-0.48, -0.024, 0.004), 17, node)
-				detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-				detail.modulate = MUTED
-				if account_panel.view == "license":
-					_buttons.back().base_color = Color(0, 0, 0, 0)
-					node.material_override.set_shader_parameter("surface_color", Color(0, 0, 0, 0))
-					node.get_child(1).visible = false
-					title.position.x = -0.58; detail.position.x = -0.58
-					set_label_size(title, 19); set_label_size(detail, 19); detail.modulate = UiTheme.color("label")
-					title.text = str(row.title); detail.text = str(row.detail)
+		if _recycled(): _draw_recorded_row(i)
+		else: _draw_row(i)
 	if _max_scroll() > 0:
 		# Scrollbar: the thumb shows position and length; pointing at the track jumps there.
 		var top := _bar_span().x
@@ -3622,6 +3765,81 @@ func _draw_rows() -> void:
 		empty.modulate = MUTED
 	_place_list()
 	choices.finish()
+
+## One row (or tile) of the list: [k] is its target slot, [place] its position from the list origin.
+func _draw_row(i: int) -> void:
+	var row: Dictionary = rows[i]
+	var k := _row_slot(i)
+	var place := i - _list_origin() * _cols()
+	var row_top: float = 0.22 if subtitle_filter.active() else 0.045 if (cloud_search.active and not archives.browsing) else (server_browser.list_top() if (section == Section.MEDIA_SERVER and not archives.browsing) and not account_panel.active() else LIST_TOP)
+	if _grid():
+		if (section == Section.MEDIA_SERVER and not archives.browsing):
+			var cols := _cols()
+			var size: Vector2 = server_browser.tile_size() if server_browser.media_content() else TILE_SIZE
+			var step: float = size.x + 0.025 if server_browser.media_content() else GRID_PITCH.x
+			var left: float = -0.53 + size.x / 2 if server_browser.media_content() else -0.36
+			server_browser.tile(ROW_BASE + k, row, Vector2(left + (k % cols) * step, server_browser.list_top() - size.y / 2 - (k / cols) * _pitch()))
+		else:
+			var center := Vector2(-0.36 + (place % COLS) * GRID_PITCH.x, (0.095 if (cloud_search.active and not archives.browsing) else GRID_TOP) - TILE_SIZE.y * 0.5 - (place / COLS) * GRID_PITCH.y)
+			_tile(ROW_BASE + k, row, center)
+			if background_picker_mode: _decorate_audio_selection(row)
+			if not archives.browsing: collections.decorate_row(k, row, center, true, _list)
+	else:
+		if (section == Section.MEDIA_SERVER and not archives.browsing) and server_browser.media_content():
+			server_browser.media_row(ROW_BASE + k, row, Vector2(0.17, row_top - k * _pitch())); return
+		if browser_content():
+			var center := Vector2(0.17, row_top - place * _pitch())
+			_media_row_button(ROW_BASE + k, row, center)
+			_decorate_audio_selection(row)
+			if not archives.browsing: collections.decorate_row(k, row, center, false, _list)
+			return
+		if row.get("voice_manager", false):
+			_voice_manager_entry(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
+			return
+		if row.has("task_actions"):
+			_subtitle_task_entry(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
+			return
+		if row.has("choices") or row.get("slider", false):
+			_setting_field(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
+			return
+		_row_button(ROW_BASE + k, str(row.title), "" if row.get("about_info", false) else str(row.get("detail", "")), str(row.get("icon", "video")),
+			Vector2(0.17, row_top - k * _pitch()), bool(row.get("selected", false)), section == Section.WEB)
+		if row.has("tip"): _tips[ROW_BASE + k] = I18n.t(str(row.tip))
+		if not bool(row.get("enabled", true)):
+			_buttons.back().enabled = false
+			_buttons.back().foreground = MUTED
+			_buttons.back().node.get_child(0).modulate = MUTED
+		_decorate_audio_selection(row)
+		if row.get("group_header", false):
+			var heading: Dictionary = _buttons.back()
+			heading.enabled = true; heading.base_color = Color(TILE, 0)
+			heading.node.material_override.set_shader_parameter("surface_color", Color(TILE, 0))
+			set_label_size(heading.node.get_child(0), TEXT_TITLE)
+			heading.node.get_child(0).font = ui_bold_font()
+			if row.get("subgroup", false):
+				# Nested sections step in and drop to body weight beneath their parent heading.
+				set_label_size(heading.node.get_child(0), TEXT_BODY)
+				heading.node.get_child(0).font = ui_font()
+				for child in heading.node.get_children():
+					if child is Node3D: child.position.x += 0.05
+		if bool(row.get("about_info", false)):
+			_buttons.back().enabled = false
+			var node: MeshInstance3D = _buttons.back().node
+			var title: Label3D = node.get_child(0)
+			title.position.y = 0.023
+			title.text = _fit_title(str(row.title), "", 1.08, 21)
+			set_label_size(title, 21)
+			# Informational rows use two lines, leaving long contacts and credits readable.
+			var detail := _label(_fit_title(str(row.detail), "", 1.08, 17), Vector3(-0.48, -0.024, 0.004), 17, node)
+			detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+			detail.modulate = MUTED
+			if account_panel.view == "license":
+				_buttons.back().base_color = Color(0, 0, 0, 0)
+				node.material_override.set_shader_parameter("surface_color", Color(0, 0, 0, 0))
+				node.get_child(1).visible = false
+				title.position.x = -0.58; detail.position.x = -0.58
+				set_label_size(title, 19); set_label_size(detail, 19); detail.modulate = UiTheme.color("label")
+				title.text = str(row.title); detail.text = str(row.detail)
 
 func _decorate_audio_selection(row: Dictionary) -> void:
 	if not (audio_import_mode or background_picker_mode) or not row.has("uri") or (not background_picker_mode and not AudioCatalog.supported(str(row.get("title", "")))): return
@@ -4124,7 +4342,7 @@ func move_focus(direction: int) -> void:
 		return
 	focus_index = posmod(focus_index + direction, rows.size())
 	var line := focus_index / _cols()
-	scroll = clampf(float(line - _lines() + 1) if line >= _first_line() + _lines() else minf(_first_line(), line), 0.0, _max_scroll())
+	scroll = clampf(float(line - _lines() + 1) if line >= _visible_line() + _lines() else minf(_visible_line(), line), 0.0, _max_scroll())
 	_draw()
 
 func activate_desktop() -> void:

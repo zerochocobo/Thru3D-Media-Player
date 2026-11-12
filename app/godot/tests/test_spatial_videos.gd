@@ -12,7 +12,7 @@ class Probe extends "res://scripts/mpv_video_display.gd":
 	var revisions := 0
 	var advance_session := false
 	var requests: Array[Dictionary] = []
-	func _request_revision(_position_ms: int = -1, _mode: String = "") -> void:
+	func _request_revision(_position_ms: int = -1, _mode: String = "", _source_reset: bool = false, _initial_layout: bool = false) -> void:
 		revisions += 1
 		requests.append({"alpha": alpha_requested, "stereo": stereo_sbs, "depth": depth_requested, "geometry": geometry})
 		if advance_session: media.begin(media.session_id + 1)

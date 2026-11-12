@@ -173,3 +173,7 @@ This source snapshot includes the latest committed0.17.4 source. Four delivered 
 ## 0.17.5 release input cut
 
 This source follows the fixed release input records, not temporary channel overrides or later experiments. TED manifest/script/test inputs match the recorded release hashes; this establishes source correspondence, not site acceptance. Required source metadata is retained. Build completion/progress is recorded independently; source-only checks do not create an APK, signing identity or headset acceptance.
+
+## Dated release archives
+
+Use the optional PowerShell parameter -ReleaseDate YYYYMMDD with Release builds to choose the date stamp in APK archive names. Standard 0.17.7 Android source uses versionCode 89 and the PICO China store build uses 90.

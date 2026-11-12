@@ -19,7 +19,9 @@ if(NOT mnn_symbols_status EQUAL 0 OR NOT mnn_symbols MATCHES "VulkanRuntime")
 endif()
 unset(mnn_symbols)
 add_library(quest_rvm SHARED rvm_backend.cpp rvm_channel_mean.cpp rvm_identity_tile.cpp rvm_state_guard.cpp rvm_benchmark_jni.cpp
-    rvm_runtime_jni.cpp rvm_mnn_backend.cpp mnn_rvm_graph.cpp depth_runtime_jni.cpp depth_stabilizer.cpp photo_depth.cpp media_delete.cpp)
+    rvm_runtime_jni.cpp rvm_mnn_backend.cpp mnn_rvm_graph.cpp depth_runtime_jni.cpp depth_stabilizer.cpp photo_depth.cpp media_delete.cpp
+    # Scene import (experimental): Unity scene bundle unpacker and ETC2 texture encoder.
+    ../unity-scene/unity_scene.cpp ../unity-scene/etc2_encoder.cpp ../unity-scene/unity_scene_jni.cpp)
 target_compile_features(quest_rvm PRIVATE cxx_std_17)
 target_compile_definitions(quest_rvm PRIVATE QUEST_DIAGNOSTIC_MODELS=$<BOOL:${QUEST_DIAGNOSTIC_MODELS}>)
 target_include_directories(quest_rvm PRIVATE "${RVM_PROFILE_INCLUDE}")
@@ -32,7 +34,8 @@ target_compile_options(quest_rvm PRIVATE "$<$<CONFIG:Debug>:-O2>" -fno-fast-math
 # The ncnn package exports -fno-exceptions for its own build. This JNI wrapper
 # catches its validation errors; source options take precedence over that interface.
 set_source_files_properties(rvm_backend.cpp rvm_channel_mean.cpp rvm_identity_tile.cpp rvm_state_guard.cpp rvm_benchmark_jni.cpp rvm_runtime_jni.cpp
-    rvm_mnn_backend.cpp mnn_rvm_graph.cpp depth_runtime_jni.cpp depth_stabilizer.cpp photo_depth.cpp PROPERTIES COMPILE_OPTIONS "-fexceptions")
+    rvm_mnn_backend.cpp mnn_rvm_graph.cpp depth_runtime_jni.cpp depth_stabilizer.cpp photo_depth.cpp
+    ../unity-scene/unity_scene.cpp ../unity-scene/etc2_encoder.cpp ../unity-scene/unity_scene_jni.cpp PROPERTIES COMPILE_OPTIONS "-fexceptions")
 # MNN registers its OpenCL backend from static initializers; keep every object.
 target_link_libraries(quest_rvm PRIVATE ncnn -Wl,--whole-archive "${MNN_LIB}" -Wl,--no-whole-archive log android dl nativewindow)
 target_link_options(quest_rvm PRIVATE "-Wl,-z,max-page-size=16384")

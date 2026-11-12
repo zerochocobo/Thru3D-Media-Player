@@ -75,8 +75,10 @@ const RECT := Rect2(-0.59, -0.48, 1.44, 0.90)
 const HOVER_DEADZONE_CSS := 2.0
 const HOVER_INTERVAL_MS := 33
 const SCROLL_HOVER_HOLD_MS := 250
-const TAP_SLOP_CSS := 8.0
-const TAP_SLOP_UV := 0.01
+# Ray travel on the page before a press becomes a drag, matching the library
+# list. Farther pages (the cinema screen) widen it with distance so the same
+# hand jitter still taps.
+const TAP_SLOP_METRES := 0.015
 var menu: Node
 var opened := false
 var scene_suspended := false
@@ -267,7 +269,7 @@ func tick() -> void:
 	sync_effects()
 	if handoff and (str(data.get("url", "")) != handoff_uri or int(data.get("tab_id", 0)) != handoff_tab or int(data.get("navigation", 0)) != handoff_navigation):
 		_cancel_handoff()
-	if handoff and not str(handoff_context.get("selection", "")).is_empty() and selected_beta_target(data, str(handoff_context.selection)).is_empty():
+	if handoff and not str(handoff_context.get("selection", "")).is_empty() and (direct_target(data, str(handoff_context.selection)).is_empty() if handoff_context.get("direct", false) else selected_beta_target(data, str(handoff_context.selection)).is_empty()):
 		menu.web_video.result = {"error_code": "browser_page_changed"}; _handoff_failed()
 	if not menu.system_text_input.active("web_browser"):
 		draft = "" if data.get("url", "") == "about:blank" else str(data.get("url", ""))
@@ -280,7 +282,8 @@ func tick() -> void:
 			handoff_waiting_pause = false
 			handoff_start_ms = _playhead(true)
 			handoff_context.position_ms = _playhead()
-			menu.web_video.resolve(true, str(handoff_context.get("selection", "")))
+			if handoff_context.get("direct", false): menu.web_video.open_captured(str(handoff_context.selection))
+			else: menu.web_video.resolve(true, str(handoff_context.get("selection", "")))
 			if menu.web_video.pending == 0: _handoff_failed()
 		elif Time.get_ticks_msec() - pause_started > 5000:
 			menu.web_video.result = {"error_code": "browser_pause_timeout"}
@@ -314,7 +317,7 @@ func tick() -> void:
 	var chrome: Array = data.get("windows", []).map(func(item): return [item.get("id"), item.get("tab_id"), item.get("url"),
 		item.get("title"), item.get("back"), item.get("forward"), item.get("error"), item.get("editing"), item.get("loading"), item.get("start_page"), item.get("network_capture_available"), item.get("network_capture_enabled"), beta_site_available(item), beta_media_ready(item)])
 	var signature := str([draft, data.get("back"), data.get("forward"), data.get("error"), handoff_error,
-		chrome, not (cinema_provider.call() if cinema_provider.is_valid() else {}).is_empty(), data.get("tab_list", []), data.get("operation_error", ""), data.get("loading"), data.get("start_page"), data.get("videos", []).size(), handoff, handoff_beta, data.get("editing", false), data.get("network_capture_available"), data.get("network_capture_enabled"), beta_site_available(data), beta_media_ready(data), menu.web_video.result.get("state", "")])
+		chrome, not (cinema_provider.call() if cinema_provider.is_valid() else {}).is_empty(), data.get("tab_list", []), data.get("operation_error", ""), data.get("loading"), data.get("start_page"), data.get("videos", []).size(), data.get("direct_selection", ""), data.get("native_supported", false), handoff, handoff_beta, data.get("editing", false), data.get("network_capture_available"), data.get("network_capture_enabled"), beta_site_available(data), beta_media_ready(data), menu.web_video.result.get("state", "")])
 	if signature != _signature and hand.is_empty():
 		# Do not consume changes while the page owns the pointer: release must redraw
 		# even if media readiness and the rest of the native snapshot stay unchanged.
@@ -410,7 +413,20 @@ func douyin_target(current: Dictionary, selection: String = "") -> Dictionary:
 	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("douyin_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
 	return candidates[0] if candidates.size() == 1 else {}
 
+func direct_target(current: Dictionary, selection: String) -> Dictionary:
+	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("direct_ready", false) and not item.get("protected", false) and str(item.get("selection", "")) == selection)
+	return candidates[0] if not selection.is_empty() and candidates.size() == 1 else {}
+
 func _begin_handoff(beta: bool = false, selection: String = "") -> void:
+	var direct := false
+	if not beta and not str(data.get("direct_selection", "")).is_empty() and Methods.supports(menu.platform, "web_video_open_captured"):
+		var fresh: Variant = JSON.parse_string(menu.platform.web_browser_status())
+		if not fresh is Dictionary or int(fresh.get("focused_window", 1)) != focused_window: return
+		for key in ["url", "tab_id", "navigation", "direct_selection"]:
+			if fresh.get(key) != data.get(key): return
+		selection = str(fresh.get("direct_selection", ""))
+		if direct_target(fresh, selection).is_empty(): return
+		direct = true
 	if beta:
 		# The button snapshot can be one poll behind a sidebar navigation or media change.
 		# Revalidate before pausing or disturbing an existing resolver.
@@ -500,13 +516,13 @@ func _begin_handoff(beta: bool = false, selection: String = "") -> void:
 	handoff_started_ms = Time.get_ticks_msec(); pause_started = 0
 	handoff_uri = str(data.get("url", ""))
 	handoff_tab = int(data.get("tab_id", 0)); handoff_navigation = int(data.get("navigation", 0))
-	handoff_context = {"tab": handoff_tab, "window": focused_window, "navigation": handoff_navigation,
+	handoff_context = {"direct": direct, "tab": handoff_tab, "window": focused_window, "navigation": handoff_navigation,
 		"douyin": data.get("douyin_beta_available", false), "iqiyi": data.get("iqiyi_beta_available", false), "youku": data.get("youku_beta_available", false), "niconico": data.get("niconico_beta_available", false), "twitch": data.get("twitch_beta_available", false), "tiktok": data.get("tiktok_beta_available", false), "instagram": data.get("instagram_beta_available", false), "ted": data.get("ted_beta_available", false), "redbull": data.get("redbull_beta_available", false), "naver": data.get("naver_beta_available", false), "reddit": data.get("reddit_beta_available", false), "streamable": data.get("streamable_beta_available", false), "archive": data.get("archive_beta_available", false), "odysee": data.get("odysee_beta_available", false), "dailymotion": data.get("dailymotion_beta_available", false), "mango": data.get("mango_beta_available", false), "origin": handoff_uri, "request": int(data.get("fullscreen_request", 0)), "selection": selection,
 		"was_playing": data.get("videos", []).any(func(item): return (selection.is_empty() or str(item.get("selection", "")) == selection) and item.get("playing", false))}
 	handoff_context.position_ms = _playhead()
 	menu.web_video.address = handoff_uri
-	if beta:
-		# The Beta button always resolves its current, explicitly selected source.
+	if beta or direct:
+		# The selected button always uses its current, explicitly selected source.
 		if menu.web_video.pending > 0: menu.web_video.close()
 		menu.web_video.result = {}
 		handoff = true
@@ -524,6 +540,7 @@ func beta_site_available(current: Dictionary) -> bool:
 
 func handoff_status() -> String:
 	if handoff_waiting_pause: return I18n.t("Pausing web video…")
+	if handoff_context.get("direct", false): return I18n.t("Loading…")
 	return I18n.t("Finding video…")
 
 func _begin_beta_pause() -> void:
@@ -592,7 +609,8 @@ func restore_playback(failed: bool, position_ms: int = -1) -> void:
 		# The button can hand off without a fullscreen video capture. Restore the
 		# original tab/window without navigating again or addressing stale media.
 		if not context.get("retained", false): _video_command("select", context)
-		if not str(context.get("selection", "")).is_empty(): _video_command("restore_douyin" if context.get("douyin", false) else "restore_iqiyi" if context.get("iqiyi", false) else "restore_dailymotion" if context.get("dailymotion", false) else "restore_odysee" if context.get("odysee", false) else "restore_archive" if context.get("archive", false) else "restore_naver" if context.get("naver", false) else "restore_reddit" if context.get("reddit", false) else "restore_streamable" if context.get("streamable", false) else "restore_redbull" if context.get("redbull", false) else "restore_ted" if context.get("ted", false) else "restore_instagram" if context.get("instagram", false) else "restore_tiktok" if context.get("tiktok", false) else "restore_twitch" if context.get("twitch", false) else "restore_niconico" if context.get("niconico", false) else "restore_youku" if context.get("youku", false) else "restore_mango" if context.get("mango", false) else "restore_weibo", context)
+		if context.get("direct", false): _video_command("restore_direct", context)
+		elif not str(context.get("selection", "")).is_empty(): _video_command("restore_douyin" if context.get("douyin", false) else "restore_iqiyi" if context.get("iqiyi", false) else "restore_dailymotion" if context.get("dailymotion", false) else "restore_odysee" if context.get("odysee", false) else "restore_archive" if context.get("archive", false) else "restore_naver" if context.get("naver", false) else "restore_reddit" if context.get("reddit", false) else "restore_streamable" if context.get("streamable", false) else "restore_redbull" if context.get("redbull", false) else "restore_ted" if context.get("ted", false) else "restore_instagram" if context.get("instagram", false) else "restore_tiktok" if context.get("tiktok", false) else "restore_twitch" if context.get("twitch", false) else "restore_niconico" if context.get("niconico", false) else "restore_youku" if context.get("youku", false) else "restore_mango" if context.get("mango", false) else "restore_weibo", context)
 	menu.web_video.result = {}; next_poll = 0
 
 func live_window_ids() -> Array:
@@ -995,7 +1013,7 @@ func action(target: int) -> bool:
 
 func _playhead(native_start: bool = false) -> int:
 	var best := {}; var score := -1.0
-	var selection := str(handoff_context.get("selection", "")) if handoff_beta else ""
+	var selection := str(handoff_context.get("selection", ""))
 	for item in data.get("videos", []):
 		if not selection.is_empty() and str(item.get("selection", "")) != selection: continue
 		var area := float(item.get("width", 0)) * float(item.get("height", 0))
@@ -1069,18 +1087,17 @@ func press(owner: String, origin: Vector3, direction: Vector3, tracked: bool, bu
 	_page_dragging = false
 	page.show_press(point)
 	_pointer("down", point); return true
-func _within_tap_slop(location: Vector2) -> bool:
-	# Until a drag starts, point is the original touch-down position. Cap the
-	# tolerance in visible UV too so a tight focus crop still drags promptly.
-	var offset := location - point
-	var pixels: Vector2 = offset * windows[pointer_window].page_css_scale()
-	return offset.length_squared() <= TAP_SLOP_UV * TAP_SLOP_UV and pixels.length_squared() <= TAP_SLOP_CSS * TAP_SLOP_CSS
+func _within_tap_slop(origin: Vector3, location: Vector2) -> bool:
+	# Until a drag starts, point is the original touch-down position.
+	var page: Node = windows[pointer_window]
+	var start: Vector3 = page.page_world_point(point)
+	return start.distance_to(page.page_world_point(location)) <= TAP_SLOP_METRES * maxf(1.0, origin.distance_to(start))
 func move(owner: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	if not active(): return
 	if hand == owner:
 		var projected: Variant = windows[pointer_window].page_point(origin, direction) if tracked else null
 		if projected == null: cancel(); return
-		if not _page_dragging and _within_tap_slop(projected): return
+		if not _page_dragging and _within_tap_slop(origin, projected): return
 		if projected.distance_squared_to(point) < 1.0e-8: return
 		_page_dragging = true
 		point = projected; _pointer("move", point)
@@ -1105,7 +1122,7 @@ func release(owner: String, origin: Vector3, direction: Vector3, tracked: bool, 
 	var projected: Variant = windows[pointer_window].page_point(origin, direction) if tracked else null
 	if projected == null:
 		cancel(); return true
-	if not _page_dragging and _within_tap_slop(projected):
+	if not _page_dragging and _within_tap_slop(origin, projected):
 		projected = point
 	elif not Rect2(Vector2.ZERO, Vector2.ONE).has_point(projected):
 		cancel(); return true

@@ -24,8 +24,14 @@ param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT }
     [switch]$UncompressedNativeLibraries,
     # Legacy: every build includes the private beach now; accepted so older commands still run.
     [switch]$IncludePrivateBeach,
-    [ValidateRange(0,2100000000)][int]$AndroidVersionCode = 0)
+    [ValidateRange(0,2100000000)][int]$AndroidVersionCode = 0,
+    [ValidatePattern('^[0-9]{8}$')][string]$ReleaseDate = '')
 $ErrorActionPreference = 'Stop'
+$releaseStamp = if ($ReleaseDate) {
+    if ($BuildType -ne 'Release') { throw 'ReleaseDate is limited to Release builds.' }
+    [void][datetime]::ParseExact($ReleaseDate, 'yyyyMMdd', [Globalization.CultureInfo]::InvariantCulture)
+    $ReleaseDate
+} else { Get-Date -Format 'yyyyMMdd' }
 if (($PicoChinaStore -or $AndroidVersionCode -gt 0) -and ($BuildType -ne 'Release' -or $XrVendor -ne 'Pico')) {
     throw 'PicoChinaStore and AndroidVersionCode are limited to PICO Release builds.'
 }
@@ -118,14 +124,14 @@ $expectedVersionCode = if ($AndroidVersionCode -gt 0) { $AndroidVersionCode } el
 if ($AndroidVersionCode -gt 0 -and $AndroidVersionCode -le $sourceVersionCode) { throw 'Upload AndroidVersionCode must exceed the source versionCode. Choose a value above the last code already uploaded to either PICO channel.' }
 if ($XrVendor -eq 'Pico' -and $BuildType -eq 'Release' -and -not $customApkName) {
     $channelName = if ($PicoChinaStore) { 'PICO-CN-STORE' } else { 'PICO' }
-    $ApkName = "Thru3D-$channelName-$appVersion-vc$expectedVersionCode-release-$(Get-Date -Format 'yyyyMMdd').apk"
+    $ApkName = "Thru3D-$channelName-$appVersion-vc$expectedVersionCode-release-${releaseStamp}.apk"
 }
 if ($UncompressedNativeLibraries -and -not $customApkName) {
-    $ApkName = "Thru3D-QUEST-$appVersion-NO-NATIVE-COMPRESSION-release-$(Get-Date -Format 'yyyyMMdd').apk"
+    $ApkName = "Thru3D-QUEST-$appVersion-NO-NATIVE-COMPRESSION-release-${releaseStamp}.apk"
 }
 if ($QuestStore -and -not $customApkName) {
     $suffix = if ($UncompressedNativeLibraries) { '-NO-NATIVE-COMPRESSION' } else { '' }
-    $ApkName = "Thru3D-QUEST-META-STORE-$appVersion$suffix-release-$(Get-Date -Format 'yyyyMMdd').apk"
+    $ApkName = "Thru3D-QUEST-META-STORE-$appVersion$suffix-release-${releaseStamp}.apk"
 }
 $originalProjectConfig = [IO.File]::ReadAllBytes($projectConfigPath)
 $projectText = [Text.Encoding]::UTF8.GetString($originalProjectConfig)
@@ -738,14 +744,13 @@ $buildManifest = [ordered]@{
 if ($BuildType -eq 'Release') {
     $platformName = switch ($XrVendor) { 'Pico' { 'PICO' } 'OpenXR' { 'OpenXR' } default { 'QUEST' } }
     if ($appVersion -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]*$') { throw 'Unsafe release version path.' }
-    $releaseDate = Get-Date -Format 'yyyyMMdd'
-    $releaseDirectory = Join-Path $workspace ("releases/$appVersion/$releaseDate/" + $buildManifest.apk_sha256.Substring(0,12))
+    $releaseDirectory = Join-Path $workspace ("releases/$appVersion/$releaseStamp/" + $buildManifest.apk_sha256.Substring(0,12))
     New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
     if ($PicoChinaStore) { $platformName = 'PICO-CN-STORE' }
     if ($QuestStore) { $platformName = 'QUEST-META-STORE' }
     $codeSuffix = if ($XrVendor -eq 'Pico') { "-vc$expectedVersionCode" } else { '' }
     $compressionSuffix = if ($UncompressedNativeLibraries) { '-NO-NATIVE-COMPRESSION' } else { '' }
-    $releaseApk = Join-Path $releaseDirectory "Thru3D-$platformName-$appVersion$codeSuffix$compressionSuffix-release-$releaseDate.apk"
+    $releaseApk = Join-Path $releaseDirectory "Thru3D-$platformName-$appVersion$codeSuffix$compressionSuffix-release-$releaseStamp.apk"
     if (Test-Path -LiteralPath $releaseApk) {
         if ((Get-FileHash -LiteralPath $releaseApk).Hash.ToLowerInvariant() -ne $buildManifest.apk_sha256) { throw 'Permanent release archive already contains different bytes.' }
     } else { Copy-Item -LiteralPath $apkPath -Destination $releaseApk }

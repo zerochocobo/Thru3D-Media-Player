@@ -78,6 +78,21 @@ function fixture(count = 1, blob = true, options = {}) {
     emit(name,value={}) { (events[name] || []).forEach(f=>f(value)); } };
 }
 
+test('direct file return seeks only its original live element and media epoch',()=>{
+  const f=fixture(1,false),video=f.videos[0],current=f.report()[0];
+  const command={action:'restore_direct',id:String(current.id),epoch:current.network_epoch,source:video.currentSrc,time:42,play:false};
+  f.native.onMessage.fire(command);
+  assert.equal(video.currentTime,42);assert.equal(video.paused,true);
+  video.play();assert.equal(video.paused,true,'Seek-completion autoplay stays paused on return');
+  f.emit('pointerdown',{isTrusted:true});video.play();assert.equal(video.paused,false,'A real page gesture can resume playback');
+  video.currentTime=5;
+  for(const change of [{epoch:command.epoch+1},{source:'https://cdn.test/other.mp4'},{id:'another'},{time:-1}]){
+    f.native.onMessage.fire({...command,...change});assert.equal(video.currentTime,5);
+  }
+  video.mediaKeys={};f.native.onMessage.fire(command);assert.equal(video.currentTime,5);
+  video.mediaKeys=null;video.isConnected=false;f.native.onMessage.fire(command);assert.equal(video.currentTime,5);
+});
+
 test('Red Bull discovers a root attached after all initial scans from an existing snapshot',()=>{
   const host={isConnected:true,shadowRoot:null},f=fixture(1,true,{redbull:true,page:'https://www.redbull.tv/en_US/',shadowHosts:[host]});
   const late={...f.videos[0],events:{},videoWidth:1280,videoHeight:720},root={nodeType:11,querySelectorAll:s=>s==='video'?[late]:[]};

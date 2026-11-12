@@ -60,7 +60,7 @@ func run() -> void:
 				var selected: Dictionary = menu.rows[menu._first_line() * menu._cols() + menu._cols()]
 				var identity := menu.Presentation.key(selected)
 				var offset: float = float(menu.rows.find(selected) / menu._cols()) - menu.scroll
-				menu._activate(Menu.ROW_BASE + menu.rows.find(selected) - menu._first_line() * menu._cols()); await process_frame
+				menu._activate(Menu.ROW_BASE + menu._row_slot(menu.rows.find(selected))); await process_frame
 				menu.file_actions.choose_order("name_desc", false)
 				platform.inserted = menu._cols() * 2
 				if breadcrumb: menu._activate(Menu.CRUMB_BASE + 1)

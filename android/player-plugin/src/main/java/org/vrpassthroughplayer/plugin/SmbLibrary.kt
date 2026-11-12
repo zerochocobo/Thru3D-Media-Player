@@ -86,13 +86,39 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
                 val base = BaseContext(PropertyConfiguration(properties))
                 if (server.user.isEmpty()) base.withGuestCredentials()
                 else base.withCredentials(NtlmPasswordAuthenticator(server.domain, server.user, server.password))
-            }, dispose = { it.close() })
+            }, dispose = ::closeLater)
         }
     }
 
+    /** Closing a pool whose server went silent can block on its transport; never on a request thread. */
+    private fun closeLater(context: CIFSContext) {
+        Thread({ runCatching { context.close() } }, "QuestSmbClose").apply { isDaemon = true }.start()
+    }
+
+    /** A listing outlived its deadline: drop the pool so the next request reconnects. */
+    fun retire(id: String) { synchronized(contexts) { contexts[id] }?.retireCurrent() }
+
     /** path "" lists shares; otherwise "share/dir/...". Folders first, then video files. */
-    fun browse(id: String, path: String, subtitlesOnly: Boolean = false): JSONArray {
-        val server = server(id)
+    fun browse(id: String, path: String, subtitlesOnly: Boolean = false): JSONArray = browse(server(id), path, subtitlesOnly)
+
+    /** Probe a selected discovery result before saving it. Never replace an existing account. */
+    fun connectDiscovered(request: JSONObject, probeId: String): JSONObject {
+        val host = SmbClientPolicy.address(request.getString("host"))
+        val existing = servers().firstOrNull { it.host.equals(host, ignoreCase = true) }
+        val candidate = existing ?: Server(probeId, request.optString("name").ifEmpty { host }, host, "", "", "")
+        try {
+            val entries = browse(candidate, "", false)
+            if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("SMB connection cancelled")
+            if (existing == null) save(JSONObject().put("id", candidate.id).put("name", candidate.name).put("host", host))
+            return JSONObject().put("server_id", candidate.id).put("path", "")
+                .put("entries", entries).put("servers", serversJson())
+        } finally {
+            if (existing == null) synchronized(contexts) { contexts.remove(candidate.id) }?.close()
+        }
+    }
+
+    private fun browse(server: Server, path: String, subtitlesOnly: Boolean): JSONArray {
+        val id = server.id
         val clean = path.trim('/')
         val url = "smb://${server.host}/" + if (clean.isEmpty()) "" else "$clean/"
         return connection(server).read { current ->

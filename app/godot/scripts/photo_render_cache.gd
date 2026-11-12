@@ -31,6 +31,7 @@ func optional_memory(seen: Dictionary) -> int:
 	resources["warming_color"] = photo._display_result.get("warming_texture")
 	resources["warming_depth"] = photo._display_depth_data.get("warming_texture")
 	resources["warming_mask"] = photo._display_depth_data.get("portrait_data", {}).get("warming_texture")
+	resources["slideshow"] = photo.slideshow.resources()
 	return photo.reading_render.memory(resources, seen)
 
 func total_memory() -> int:

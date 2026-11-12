@@ -25,6 +25,7 @@ internal class SmbConnection<T : Any>(private val create: () -> T, private val d
         }
         if (removed) runCatching { dispose(expected) }
     }
+    fun retireCurrent() { synchronized(this) { value }?.let(::invalidate) }
     fun close() {
         val previous = synchronized(this) { closed = true; value.also { value = null } }
         previous?.let { runCatching { dispose(it) } }

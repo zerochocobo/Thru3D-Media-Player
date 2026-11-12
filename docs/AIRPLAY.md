@@ -27,3 +27,7 @@ Miracast is hidden and detached from the shared receiver in all builds; it is an
 An AirPlay mirror starts in picture-in-picture and can be expanded into the regular live player. Compatible streams can use 2D-to-3D or person passthrough, alongside live captions and mute. The return control restores the original window position and size in the same session and adapts to the current phone orientation. Playback controls reflect the live stream. Phone and low-end headset performance varies. The protocol and its existing authentication limitation above remain unchanged.
 
 AirPlay 从画中画进入普通实时播放器，可使用兼容的 2D 转 3D 或人物透视，并可同时开启实时字幕。返回时在同一会话恢复原窗口位置和大小，按手机当前横竖屏重新布局。
+
+## 0.17.7 discovery diagnostics
+
+Exported diagnostics include native receiver startup and Android service registration outcomes. Discovery reliability remains under investigation.

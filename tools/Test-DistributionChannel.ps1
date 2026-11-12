@@ -61,10 +61,11 @@ function Test-UploadResolution([bool]$China, [int]$Code) {
     $QuestStore = $false; $UncompressedNativeLibraries = $false
     $PicoChinaStore = $China; $AndroidVersionCode = $Code
     $customApkName = $false; $appVersion = '0.15.0'
+    $releaseStamp = '20261112'
     . $resolve
     if ($expectedVersionCode -ne $Code) { throw 'Explicit upload build number was lost.' }
     $name = if ($China) { 'PICO-CN-STORE' } else { 'PICO' }
-    if ($ApkName -notmatch ("Thru3D-$name-0\.15\.0-vc$Code-release-\d{8}\.apk")) { throw 'Channel/build number missing from APK filename.' }
+    if ($ApkName -cne "Thru3D-$name-0.15.0-vc$Code-release-20261112.apk") { throw 'Channel, build number or fixed date missing from APK filename.' }
 }
 $sourceCode = [int][regex]::Match([IO.File]::ReadAllText((Join-Path $workspace 'app/godot/export_presets.cfg')), '(?m)^version/code=(\d+)').Groups[1].Value
 Test-UploadResolution $false ($sourceCode + 1)

@@ -416,6 +416,9 @@ func _update_feedback() -> void:
 		var mesh: MeshInstance3D = _feedback.get_node("selection" + str(index))
 		_feedback_rect(mesh, masks[index])
 		mesh.visible = mesh.visible and selecting and selection.has_area()
+func page_world_point(uv: Vector2) -> Vector3:
+	var layout := page_layout()
+	return layout.pose * Vector3((uv.x - 0.5) * layout.size.x, (0.5 - uv.y) * layout.size.y, 0.0)
 func page_point(origin: Vector3, direction: Vector3) -> Variant:
 	var layout := page_layout()
 	# The page is its own XR surface, outside the mono toolbar capture.

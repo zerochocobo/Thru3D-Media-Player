@@ -164,6 +164,7 @@ func _run() -> void:
 	root.add_child(main)
 	check(main.display.render_scale == 1.0 and main._library_settings().display_quality == Quality.AUTO and not main._library_settings().display_quality_pending, "Low-end tier starts at Standard through auto quality")
 	check(main.low_end_gpu and main.video.sharpness == 0.0 and main.photo.sharpness == 0.0, "Low-end tier starts without sharpening")
+	check(main.get_viewport().msaa_3d == Viewport.MSAA_2X, "Low-end tier takes 2x multisampling")
 	check(main._library_settings().output_width == Quality.AUTO_OUTPUT and main._library_settings().sharpness == 0.0, "Menu shows auto output and sharpness off")
 	main.recent_menu.section = main.recent_menu.Section.SETTINGS
 	main.recent_menu.tab = main.recent_menu.VIDEO_TAB

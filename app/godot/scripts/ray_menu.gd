@@ -5,6 +5,10 @@ signal scenery_requested
 signal placement_changed
 signal composition_changed
 signal composition_layout_changed
+## Nodes added to an already captured plane (recycled list rows), beside [sibling].
+signal composition_nodes_added(nodes: Array, sibling: Node3D)
+## Only the planes holding [nodes] changed (a scrolled list).
+signal composition_nodes_changed(nodes: Array)
 signal app_action_requested(operation: String)
 signal app_action_feedback(hand: String)
 

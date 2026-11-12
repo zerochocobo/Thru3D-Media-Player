@@ -4,6 +4,9 @@ const DEFAULT_INTERVAL := 5.0
 const INTERVAL_LIMITS := Vector2(3, 30)
 var enabled := false
 var interval := DEFAULT_INTERVAL
+const EFFECTS := ["cut", "fade", "wipe", "depth", "slide"]
+var effect := "slide" # Existing installations keep their familiar transition.
+var advancing := false
 var _elapsed := 0.0
 var _identity: Array = []
 var _armed := false
@@ -24,6 +27,10 @@ func set_interval(value: Variant) -> bool:
 	if is_equal_approx(interval, seconds): return false
 	interval = seconds; reset(); return true
 
+func set_effect(value: Variant) -> bool:
+	if not value is String or value not in EFFECTS or value == effect: return false
+	effect = value; reset(); return true
+
 func tick(photo: Node3D, delta: float, blocked: bool) -> bool:
 	if not enabled: return false
 	if photo.autoplay_failed() or (photo.queue.size() < 2 and photo.queue_complete and not photo.loading):
@@ -39,6 +46,9 @@ func tick(photo: Node3D, delta: float, blocked: bool) -> bool:
 	_elapsed = maxf(0, (now - _started_us) / 1000000.0)
 	if _elapsed + 0.000001 < interval: return false
 	reset()
-	if photo.navigate(1): return true
+	advancing = true
+	var accepted: bool = photo.navigate(1)
+	advancing = false
+	if accepted: return true
 	set_enabled(false); photo.changed.emit()
 	return false

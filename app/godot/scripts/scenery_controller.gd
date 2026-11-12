@@ -16,6 +16,7 @@ var _picker_parent: Node
 var _picker_pose := Transform3D.IDENTITY
 var _picker_compact := false
 var _dialog: FileDialog
+var _scene_dialog: FileDialog
 var _migrations := {}
 var _epochs := {}
 var _targets := {}
@@ -42,6 +43,8 @@ func setup(owner: Node, target: Node3D) -> void:
 			_manager_import=false; menu.finish_import(result))
 	app.recent_menu.background_images_selected.connect(_files_selected)
 	app.recent_menu.background_picker_cancelled.connect(_picker_cancelled)
+	app.recent_menu.scene_file_selected.connect(_scene_file_selected)
+	app.recent_menu.scene_picker_cancelled.connect(_picker_cancelled)
 	for mode in library.visible_modes():
 		var background: Node=_background(mode.id)
 		var section: String=mode.section
@@ -107,6 +110,8 @@ func close() -> void:
 
 func select(mode: String,id: String,advance: bool = true) -> void:
 	if not library.allowed(mode,id) or not _targets.has(mode) or _delete.has(id): return
+	# An imported scene sits on the dark background; choosing any background ends it.
+	if mode=="global" and is_instance_valid(app.get("scene_import")): app.scene_import.background_selected()
 	if advance: _epochs[mode]=int(_epochs.get(mode,0))+1
 	_error=""
 	if library.assets.has(id) and not FileAccess.file_exists(library.image_path(id)):
@@ -227,6 +232,7 @@ func snapshot(mode: String) -> Dictionary:
 		pending=selected
 	state.merge({"selected":selected,"pending":pending,"choice":background.choice,"yaw":background.yaw,"brightness":background.brightness,
 		"busy":library.busy or not _pending.is_empty(),"status":status,"can_import":app.photo_active and app.photo.can_background(),"catalog":library.assets,"reviews":library.reviews,"import_progress":library.import_progress},true)
+	if is_instance_valid(app.get("scene_import")): state["scene_import"]=app.scene_import.snapshot()
 	return state
 
 func _command(operation: String,value: Variant) -> void:
@@ -236,6 +242,10 @@ func _command(operation: String,value: Variant) -> void:
 		"select": select(str(value.mode),str(value.id))
 		"use_current": import_current(app.photo.background_source(),app.photo.display_name,str(value))
 		"add": _begin_import()
+		"scene_add": _begin_scene_import()
+		"scene_select": app.scene_import.activate(str(value))
+		"scene_remove": app.scene_import.remove(value)
+		"scene_rename": app.scene_import.library.rename(str(value.id),str(value.title))
 		"home": app._on_setting_changed("cinema_home",true)
 		"edit_beach_screen":
 			if app.background.choice=="private_beach" and app.beach_environment.is_ready:
@@ -249,7 +259,9 @@ func _command(operation: String,value: Variant) -> void:
 				if value.has(library.bindings[mode].get("id","")) and library.valid_mode(mode): select(mode,library.fallback(mode))
 		"adjust":
 			var mode:=str(value.mode); var key:=str(value.key)
-			if key.begins_with("cinema_") or key.begins_with("beach_"): app._on_setting_changed(key,value.value)
+			if key=="scene_screen_light": app.scene_import.set_screen_light(float(value.value))
+			elif key=="scene_bake": app.scene_import.set_bake(float(value.value))
+			elif key.begins_with("cinema_") or key.begins_with("beach_"): app._on_setting_changed(key,value.value)
 			else:
 				var background: Node=_background(mode)
 				if key=="background_yaw": background.set_yaw(float(value.value))
@@ -275,6 +287,28 @@ func _begin_import() -> void:
 	picker.begin_background_picker()
 	if picker.get_parent()!=app: picker.reparent(app,true)
 	picker.set_compact(false); app._place_menu(picker,true); picker.visible=true; picker.refresh()
+
+func _begin_scene_import() -> void:
+	if _picker or not is_instance_valid(app.get("scene_import")) or app.scene_import.library.busy: return
+	if use_native_dialogs:
+		if not _scene_dialog:
+			_scene_dialog=FileDialog.new(); _scene_dialog.use_native_dialog=true; _scene_dialog.access=FileDialog.ACCESS_FILESYSTEM
+			_scene_dialog.file_mode=FileDialog.FILE_MODE_OPEN_FILE; _scene_dialog.filters=PackedStringArray(["*.glb,*.unity3d,*.assetbundle,*.bundle,*.vrcw,*.omission;Scene"])
+			_scene_dialog.file_selected.connect(func(path): app.scene_import.add(str(path),str(path).get_file()); menu.refresh())
+			add_child(_scene_dialog)
+		_scene_dialog.popup_centered_ratio(.75); return
+	_picker=true; menu.visible=false
+	var picker: Node3D=app.recent_menu
+	_picker_parent=picker.get_parent(); _picker_pose=picker.transform; _picker_compact=picker.compact
+	picker.begin_scene_picker()
+	if picker.get_parent()!=app: picker.reparent(app,true)
+	picker.set_compact(false); app._place_menu(picker,true); picker.visible=true; picker.refresh()
+
+func _scene_file_selected(uri: String,title: String) -> void:
+	if not _picker: return
+	_return_from_picker()
+	if is_instance_valid(app.get("scene_import")): app.scene_import.add(uri,title)
+	menu.refresh()
 
 func _return_from_picker() -> void:
 	var picker: Node3D=app.recent_menu

@@ -104,7 +104,11 @@ Java_org_vrpassthroughplayer_plugin_AirplayNative_start(JNIEnv* env, jobject, jo
     auto cls = env->GetObjectClass(listener);
     s->event = env->GetMethodID(cls, "event", "(Ljava/lang/String;Ljava/lang/String;)V");
     s->packet = env->GetMethodID(cls, "packet", "(Z[BJI)V"); env->DeleteLocalRef(cls);
-    if (!s->event || !s->packet) { if (env->ExceptionCheck()) env->ExceptionClear(); destroy(s.release(), env); return 0; }
+    if (!s->event || !s->packet) {
+        __android_log_write(ANDROID_LOG_ERROR, "Thru3D-Airplay", "Discovery native_callback_lookup_failed");
+        if (env->ExceptionCheck()) env->ExceptionClear(); destroy(s.release(), env); return 0;
+    }
+    event(s.get(), "startup_stage", "raop_init_begin");
     raop_callbacks_t cb{}; cb.cls = s.get(); cb.video_process = video; cb.audio_process = audio;
     cb.video_report_size = size; cb.audio_get_format = audioFormat; cb.mirror_video_running = running;
     cb.conn_init = nop; cb.conn_destroy = nop; cb.conn_reset = reset; cb.video_pause = nop; cb.video_resume = nop;
@@ -115,22 +119,25 @@ Java_org_vrpassthroughplayer_plugin_AirplayNative_start(JNIEnv* env, jobject, jo
     cb.display_pin = pin; cb.report_client_request = admit; cb.register_client = registered; cb.check_register = known;
     cb.video_set_codec = codec;
     s->raop = raop_init(&cb);
-    if (!s->raop) { destroy(s.release(), env); return 0; }
+    if (!s->raop) { event(s.get(), "startup_stage", "raop_init_failed"); destroy(s.release(), env); return 0; }
     // UxPlay asserts on any enabled log message without a callback, including rejected PINs.
     raop_set_log_callback(s->raop, protocolLog, nullptr);
     raop_set_log_level(s->raop, LOGGER_ERR);
     char address[6]; env->GetByteArrayRegion(mac, 0, 6, reinterpret_cast<jbyte*>(address));
     char id[18]; snprintf(id, sizeof(id), "%02X:%02X:%02X:%02X:%02X:%02X", static_cast<unsigned char>(address[0]), static_cast<unsigned char>(address[1]), static_cast<unsigned char>(address[2]), static_cast<unsigned char>(address[3]), static_cast<unsigned char>(address[4]), static_cast<unsigned char>(address[5]));
+    event(s.get(), "startup_stage", "pairing_init_begin");
     auto path = env->GetStringUTFChars(keyfile, nullptr); int result = raop_init2(s->raop, 0, id, path); env->ReleaseStringUTFChars(keyfile, path);
-    if (result < 0) { destroy(s.release(), env); return 0; }
+    if (result < 0) { event(s.get(), "startup_stage", "pairing_init_failed_" + std::to_string(result)); destroy(s.release(), env); return 0; }
     // Do not set the "pin" plist item, even to zero: that enables use_pin in UxPlay.
+    event(s.get(), "startup_stage", "txt_init_begin");
     auto title = env->GetStringUTFChars(name, nullptr); int dnsError{};
     s->dns = dnssd_init(title, static_cast<int>(strlen(title)), address, 6, &dnsError, airplay_access_mode(s->password_required)); env->ReleaseStringUTFChars(name, title);
-    if (!s->dns) { destroy(s.release(), env); return 0; }
+    if (!s->dns) { event(s.get(), "startup_stage", "txt_init_failed_" + std::to_string(dnsError)); destroy(s.release(), env); return 0; }
     airplay_configure_profile(s->raop, s->dns);
     raop_set_dnssd(s->raop, s->dns);
     unsigned short port = 0;
-    if (raop_start_httpd(s->raop, &port) < 0) { destroy(s.release(), env); return 0; }
+    event(s.get(), "startup_stage", "socket_bind_begin");
+    if (raop_start_httpd(s->raop, &port) < 0) { event(s.get(), "startup_stage", "socket_bind_failed"); destroy(s.release(), env); return 0; }
     raop_set_port(s->raop, port); dnssd_register_raop(s->dns, port); dnssd_register_airplay(s->dns, port);
     event(s.get(), "port", std::to_string(port));
     for (int type = 0; type < 2; ++type) {

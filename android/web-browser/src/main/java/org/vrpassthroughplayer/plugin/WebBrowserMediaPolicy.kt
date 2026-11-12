@@ -9,7 +9,7 @@ internal object WebBrowserMediaPolicy {
     fun selectedCandidate(candidates: List<JSONObject>, selection: String): JSONObject? =
         candidates.singleOrNull { selection.isNotEmpty() && selection.length <= 512 &&
             it.optString("capture_identity") == selection && !it.optBoolean("protected") &&
-            (it.optBoolean("weibo_enabled") && it.optBoolean("weibo_ready") && WebBrowserWeibo.metadata(it, it.optString("frame")) != null ||
+            (WebBrowserDirectFile.resource(it) != null || it.optBoolean("weibo_enabled") && it.optBoolean("weibo_ready") && WebBrowserWeibo.metadata(it, it.optString("frame")) != null ||
                 it.optBoolean("bilibili_enabled") && it.optBoolean("bilibili_ready") && it.optJSONObject("bilibili")?.let { data ->
                     data.optString("page") == it.optString("frame") && Regex("[1-9][0-9]{0,19}").matches(data.optString("cid"))
                 } == true || it.optBoolean("tencent_enabled") && it.optBoolean("tencent_ready") && WebBrowserTencent.metadata(it,it.optString("frame")) != null ||

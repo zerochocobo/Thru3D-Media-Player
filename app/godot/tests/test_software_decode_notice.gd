@@ -5,7 +5,7 @@ var failures: Array[String] = []
 
 class RetryProbe extends "res://scripts/mpv_video_display.gd":
 	var reopens: Array = []
-	func _reopen_at(position_ms: int, layer: bool, _trigger: String = "") -> void:
+	func _reopen_at(position_ms: int, layer: bool, _trigger: String = "", _preserve_frame: bool = true) -> void:
 		reopens.append([position_ms, layer])
 
 func _check(value: bool, message: String) -> void:

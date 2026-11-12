@@ -343,6 +343,7 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 	var type := 0
 	if surface.geometry == Geometry.Geometry.FLAT:
 		var size: Vector2 = surface._flat.size * Vector2(scale.x, scale.y) * (Vector2.ONE - 2.0 * inset)
+		if surface.has_method("layer_content_scale"): size *= surface.layer_content_scale()
 		if surface.screen_curve <= 0.0:
 			shape = PackedFloat32Array([size.x, size.y])
 			# A rotated source on the decoder surface keeps its coded orientation: turn the quad about its

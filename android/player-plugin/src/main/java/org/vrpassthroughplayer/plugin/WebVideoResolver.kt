@@ -51,7 +51,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
         }
     }
 
-    @Synchronized fun begin(url: String, bilibiliBeta: Boolean = false, selection: String = ""): Int {
+    @Synchronized fun begin(url: String, bilibiliBeta: Boolean = false, selection: String = "", directFile: Boolean = false): Int {
         if (closed) return 0
         cancel()
         val id = ++sequence
@@ -61,7 +61,6 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
         state = JSONObject().put("id", id).put("state", "resolving")
         job = executor.submit {
             try {
-                val app = context() ?: error("Activity unavailable")
                 attempt.check()
                 val media = if (bilibiliBeta && publicPage?.site == "bilibili") {
                     attempt.stage = "browser_capture"
@@ -70,6 +69,23 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                         ?: throw ExtractionFailure(reason)
                 } else currentMedia()
                 if (media?.optBoolean("protected") == true) throw ExtractionFailure("protected_content")
+                if (directFile) {
+                    attempt.stage = "browser_capture"
+                    if (selection.isEmpty() || media == null || media.optString("capture_identity") != selection)
+                        throw ExtractionFailure("browser_page_changed")
+                    val descriptor = WebVideoDirectFile.descriptor(url, media) ?: throw ExtractionFailure("browser_playback_required")
+                    val latest = currentMedia() ?: throw ExtractionFailure("browser_page_changed")
+                    if (latest.optString("capture_identity") != selection ||
+                        WebBrowserDirectFile.resource(latest)?.optString("url") != descriptor.video.url.toString())
+                        throw ExtractionFailure("browser_stream_changed")
+                    synchronized(this) {
+                        if (closed || active !== attempt || attempt.cancelled.get()) return@submit
+                        ready(descriptor)
+                        state = descriptor.publicJson().put("id", id).put("state", "ready").put("resolution_route", "captured_file")
+                    }
+                    return@submit
+                }
+                val app = context() ?: error("Activity unavailable")
                 val sourcePage = (if (selection.isNotEmpty()) publicPage?.takeIf { it.site == "bilibili" } ?: WebVideoDouyinCapture.page(url,media) ?: WebVideoIqiyiCapture.page(url,media) ?: WebVideoDailymotionCapture.page(url,media) ?: WebVideoOdyseeCapture.page(url,media) ?: WebVideoArchiveCapture.page(url,media) ?: WebVideoNaverCapture.page(url,media) ?: WebVideoRedditCapture.page(url,media) ?: WebVideoStreamableCapture.page(url,media) ?: WebVideoRedBullCapture.page(url,media) ?: WebVideoTedCapture.page(url,media) ?: WebVideoInstagramCapture.page(url,media) ?: WebVideoTikTokCapture.page(url,media) ?: WebVideoTwitchCapture.page(url,media) ?: WebVideoNiconicoCapture.page(url,media) ?: WebVideoYoukuCapture.page(url,media) ?: WebVideoMangoCapture.page(url,media) ?: WebVideoTencentCapture.page(url,media) ?: WebVideoWeiboCapture.page(url, media) else publicPage ?: media?.let { WebVideoBrowserCapture.serverPage(url, it) ?: WebVideoNetworkCapture.page(url, it) })
                     ?: throw ExtractionFailure("unsupported_page")
                 val pgc = sourcePage.site == "bilibili" && sourcePage.id.matches(Regex("(?:ep|ss)[1-9][0-9]{0,19}:1"))

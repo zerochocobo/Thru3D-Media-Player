@@ -5,6 +5,10 @@ const PicoModel := preload("res://scripts/pico_controller_model.gd")
 const Log := preload("res://scripts/diagnostic_log.gd")
 const LEFT_HAND := preload("res://models/hands/LeftHandHumanoid.gltf")
 const RIGHT_HAND := preload("res://models/hands/RightHandHumanoid.gltf")
+## Input models draw in the ordered pass after every menu layer hole (9, text bands 25), so the
+## cinema/beach overlay holes, which ignore depth, cannot cut a hand out; still before the wrist
+## watch (28+) and the pointers, which depth-test against the model.
+const MODEL_PRIORITY := 26
 var use_runtime_models := true
 var hands := {}
 var _material: ShaderMaterial
@@ -16,8 +20,10 @@ func _ready() -> void:
 	_material = ShaderMaterial.new()
 	var shader := Shader.new()
 	# Readable in dark video environments without adding lights or disabling depth.
-	shader.code = "shader_type spatial; render_mode unshaded; uniform vec4 tint : source_color = vec4(0.72,0.79,0.85,1.0); void fragment(){ float light = 0.55 + 0.45 * max(dot(normalize(NORMAL), normalize(vec3(-0.3,0.7,0.6))),0.0); ALBEDO=tint.rgb*light; }"
+	# Opaque output (ALPHA 1) that still writes depth, so the eye buffer stays solid over a hole.
+	shader.code = "shader_type spatial; render_mode unshaded, depth_draw_always; uniform vec4 tint : source_color = vec4(0.72,0.79,0.85,1.0); void fragment(){ float light = 0.55 + 0.45 * max(dot(normalize(NORMAL), normalize(vec3(-0.3,0.7,0.6))),0.0); ALBEDO=tint.rgb*light; ALPHA=1.0; }"
 	_material.shader = shader
+	_material.render_priority = MODEL_PRIORITY
 	var xr := XRServer.find_interface("OpenXR")
 	var runtime := use_runtime_models and xr != null and xr.is_initialized()
 	_diagnostics_enabled = xr != null and xr.is_initialized()
@@ -74,7 +80,8 @@ func _ready() -> void:
 				tracked_hand.add_child(mesh)
 				entry.hand_mesh = mesh
 
-func update_visibility(focused: bool, controller_opacity: Dictionary = {}, interaction_visible: bool = true, hidden_hands: Dictionary = {}) -> void:
+## show_hand_models only hides the optical hand meshes; controllers and pointers stay.
+func update_visibility(focused: bool, controller_opacity: Dictionary = {}, interaction_visible: bool = true, hidden_hands: Dictionary = {}, show_hand_models: bool = true) -> void:
 	for hand in hands:
 		var entry: Dictionary = hands[hand]
 		var tracker := XRServer.get_tracker("/user/hand_tracker/" + hand.trim_suffix("_hand")) as XRHandTracker
@@ -83,7 +90,7 @@ func update_visibility(focused: bool, controller_opacity: Dictionary = {}, inter
 		entry["interaction_visible"] = interaction_visible
 		entry["optical"] = optical
 		entry["opacity_visible"] = float(controller_opacity.get(hand, 1.0)) > 0.0
-		entry.hand_gate.visible = focused and interaction_visible and optical and not hidden_hands.get(hand, false)
+		entry.hand_gate.visible = focused and interaction_visible and optical and not hidden_hands.get(hand, false) and show_hand_models
 		entry.controller_gate.visible = focused and interaction_visible and not optical and _pose_tracked(entry.grip) and float(controller_opacity.get(hand, 1.0)) > 0.0 and not hidden_hands.get(hand, false)
 		# A runtime container may exist before its drawable model, or retain hidden
 		# meshes. Neither condition may suppress the bundled controller fallback.

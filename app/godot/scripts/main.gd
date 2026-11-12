@@ -233,6 +233,8 @@ var background: Node
 var photo_background: Node
 var scenery: Node
 var scenery_menu: Node3D
+## Viewer-imported scenes (experimental; null when the feature is off).
+var scene_import: Node
 var view_follow := ViewFollow.new()
 var temporary_passthrough := false
 var vr_passthrough_menu: Node3D
@@ -275,6 +277,10 @@ func _ready() -> void:
 		var material := StandardMaterial3D.new()
 		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		material.albedo_color = Color(0.15, 0.9, 1.0) if hand == "left_hand" else Color(1.0, 0.65, 0.15)
+		# Same ordered slot as the hand models, so a cinema overlay menu cannot cut it out.
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		material.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_ALWAYS
+		material.render_priority = InputVisuals.MODEL_PRIORITY
 		mark.material_override = material
 		mark.visible = false
 		origin.add_child(mark)
@@ -366,6 +372,8 @@ func _ready() -> void:
 	low_end_gpu = Quality.is_low_end_gpu(gpu_adapter)
 	display.render_scale = Quality.render_scale(display_quality, low_end_gpu)
 	_apply_memory_mode(null)
+	# Older GPUs (Quest 2, Neo3) take the cheaper 2x pass.
+	if low_end_gpu: display.eye_msaa = Viewport.MSAA_2X
 	display.configure(get_viewport(), world.environment, XRServer.find_interface("OpenXR"), desktop)
 	display.configure_low_end(low_end_gpu)
 	display.attach_backdrop(camera)
@@ -668,6 +676,12 @@ func _ready() -> void:
 	photo_background.custom_saved.connect(_on_photo_background_saved)
 	add_child(photo_background)
 	scenery.setup(self, scenery_menu)
+	var scene_import_script := load("res://scripts/scene_import/scene_import_controller.gd") as GDScript
+	if scene_import_script and scene_import_script.enabled():
+		scene_import = scene_import_script.new()
+		add_child(scene_import)
+		scene_import.setup(self)
+		scenery_menu.scene_import = scene_import
 	if Engine.has_singleton("QuestPlayer"):
 		platform_plugin = Engine.get_singleton("QuestPlayer")
 		if PlatformMethods.supports(platform_plugin, "crash_trail"): DiagnosticLog.trail_sink = platform_plugin
@@ -2517,6 +2531,14 @@ func _controller_activity(hand: String) -> Dictionary:
 	if not grip.transform.is_finite() or not aim.transform.is_finite(): return {}
 	return {"position": grip.transform.origin, "direction": -aim.transform.basis.z}
 
+## "auto" hides the hand meshes over passthrough: the camera already shows the real hands, and
+## its near-field reprojection makes a drawn hand look offset from them.
+func _hand_models_visible() -> bool:
+	match str(settings.get_value("ui", "hand_model", "auto")):
+		"show": return true
+		"hide": return false
+	return not display.applied_passthrough
+
 func _input_feedback_visible() -> bool:
 	if is_instance_valid(screen_edit_lock.control) and screen_edit_lock.control.visible: return true
 	# Photos remain interactive even when their controls are closed.
@@ -2598,7 +2620,7 @@ func _update_controller_feedback(delta: float) -> void:
 			for hand in ["left_hand", "right_hand"]: alphas[hand] = 1.0
 		var hidden_hands := {}
 		for hand in ["left_hand", "right_hand"]: hidden_hands[hand] = hand_lock.blocked(hand)
-		input_visuals.update_visibility(focused, alphas, feedback_visible or watching, hidden_hands)
+		input_visuals.update_visibility(focused, alphas, feedback_visible or watching, hidden_hands, _hand_models_visible())
 
 func _menu_pointer_owned(menu: Node3D, hand: String) -> bool:
 	if menu == null: return false
@@ -3640,6 +3662,11 @@ func _on_photo_adjustment(key: String, value: Variant) -> void:
 		settings.set_value("photo", key, photo.autoplay.interval)
 		if not photo_menu.has_pointer_capture(): settings.save(settings_path)
 		return
+	if key == "autoplay_effect":
+		if not photo.autoplay.set_effect(value): return
+		photo.changed.emit()
+		photo.save_layout_settings(settings); settings.save(settings_path)
+		return
 	if key == "ground_vertical":
 		if not value is bool: return
 		if _grab.has("rotate"): _finish_screen_rotation(true)
@@ -4509,6 +4536,7 @@ func _library_settings() -> Dictionary:
 		"alpha_cold": video.ALPHA_PROFILES.filter(func(p): return not video.profile_ready(p)),
 		"alpha_feather": _alpha_edge_value("alpha_feather"), "alpha_shrink": _alpha_edge_value("alpha_shrink"), "alpha_mask_blend": _alpha_mask_blend(),
 		"show_status_info": bool(settings.get_value("ui", "show_status_info", true)),
+		"hand_model": str(settings.get_value("ui", "hand_model", "auto")),
 		"show_fps": fps_overlay != null and fps_overlay.visible,
 		"display_quality": display_quality, "display_quality_pending": not is_equal_approx(display.render_scale, Quality.render_scale(display_quality, low_end_gpu)),
 		"sharpness": Quality.load_video_sharpness(settings),
@@ -4763,6 +4791,10 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			settings.save(settings_path)
 			if playback_status_overlay: playback_status_overlay.refresh()
 			if player_menu and player_menu.visible: player_menu.refresh()
+			if recent_menu and recent_menu.visible: recent_menu.refresh()
+		"hand_model":
+			settings.set_value("ui", "hand_model", str(value) if str(value) in ["auto", "show", "hide"] else "auto")
+			settings.save(settings_path)
 			if recent_menu and recent_menu.visible: recent_menu.refresh()
 		"show_fps":
 			if fps_overlay: fps_overlay.set_shown(bool(value))
@@ -6162,6 +6194,9 @@ func _update_background() -> void:
 		for key in _beach_ambient_saved: display.environment.set(key, _beach_ambient_saved[key])
 		_beach_ambient_saved.clear()
 		display.set_scenery(null if hide_scenery or wants_passthrough else scenery.ready_sky(), scenery.yaw)
+	# An imported scene shows over the plain dark background, under the same rules as scenery.
+	if scene_import and scene_import.present(scenery.choice == "dark" and not hide_scenery and not wants_passthrough and not photo_active) and scene_import.sky():
+		display.set_scenery(scene_import.sky(), 0.0)
 	var passthrough: bool = wants_passthrough and display.supports_passthrough()
 	if display.applied_passthrough != passthrough or display.requested_passthrough != passthrough:
 		display.set_passthrough(passthrough)
@@ -7015,6 +7050,14 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		if bool(command.get("quiet", false)):
 			_report_tooling_until = -1
 			if video: video.set_deferred("_debug_request", 0)
+	elif operation == "scene_import" and OS.is_debug_build():
+		# Experimental user-scene import bench; loaded on demand so normal runs never touch it.
+		var importer := get_node_or_null("SceneImportDebug")
+		if importer == null:
+			importer = (load("res://scripts/scene_import/scene_import_debug.gd") as GDScript).new()
+			importer.name = "SceneImportDebug"
+			add_child(importer)
+		importer.run(self, command)
 	elif operation == "perf_sample" and OS.is_debug_build():
 		var sampler := preload("res://scripts/perf_sample_probe.gd").new()
 		add_child(sampler)

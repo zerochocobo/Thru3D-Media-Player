@@ -2,6 +2,11 @@ extends "res://scripts/media_surface.gd"
 var source_location := {}
 signal changed
 var autoplay := preload("res://scripts/photo_autoplay.gd").new()
+var slideshow := preload("res://scripts/photo_slideshow_transition.gd").new(self)
+
+static func autoplay_effects() -> Array:
+	return preload("res://scripts/photo_autoplay.gd").EFFECTS
+
 var _image_rotations := {} # Album-session viewing transforms; never modify source pixels.
 var _rotation_preview := false
 var _rotation_depth := false
@@ -221,6 +226,7 @@ func _init() -> void:
 
 func restore_view_settings(settings: ConfigFile) -> void:
 	autoplay.set_interval(settings.get_value("photo", "autoplay_interval", autoplay.DEFAULT_INTERVAL))
+	autoplay.set_effect(settings.get_value("photo", "autoplay_effect", "slide"))
 	ground_vertical = bool(settings.get_value("photo_screen", "ground_vertical", false))
 	cache_each = clampi(int(settings.get_value("photo", "cache_each", 1)), 1, 2)
 	magazine.right_to_left = bool(settings.get_value("photo_screen", "magazine_rtl", false))
@@ -240,6 +246,7 @@ func restore_view_settings(settings: ConfigFile) -> void:
 
 func save_layout_settings(settings: ConfigFile) -> void:
 	settings.set_value("photo", "autoplay_interval", autoplay.interval)
+	settings.set_value("photo", "autoplay_effect", autoplay.effect)
 	settings.set_value("photo_screen", "ground_vertical", ground_vertical)
 	settings.set_value("photo", "cache_each", cache_each)
 	gallery.save_settings(settings)
@@ -264,13 +271,21 @@ func set_screen_scale(value: float) -> void:
 	_shape_screen()
 
 func _screen_dimensions(aspect: float) -> Vector2:
+	if slideshow.locked(): return slideshow.frame_size
 	var width := minf(IMMERSIVE_SIZE.x, IMMERSIVE_SIZE.y * aspect)
 	return Vector2(width, width / aspect)
 
 func _curve_radius() -> float:
 	return _photo_curve_radius(_flat.size, _curve_rotation())
 
-func _curve_rotation() -> float: return deg_to_rad(screen_rotation)
+func _curve_rotation() -> float: return deg_to_rad(slideshow.frame_rotation if slideshow.locked() else screen_rotation)
+
+func _apply_flat_pose() -> void:
+	super._apply_flat_pose()
+	if slideshow.locked(): panel.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, deg_to_rad(slideshow.frame_rotation)), Vector3.ZERO)
+
+func layer_content_scale() -> Vector2:
+	return slideshow.content_scale() if geometry == Geometry.Geometry.FLAT else Vector2.ONE
 
 func _photo_curve_radius(size: Vector2, rotation: float) -> float:
 	return curve_radius_for(size, rotation)
@@ -293,13 +308,15 @@ func soft_edge_metres(size: Vector2) -> float:
 
 func _edge_feather() -> Vector2:
 	# Only Magazine / Comics disables feathering, including its standalone cover and last page.
-	return Vector2.ZERO if magazine.active() else Vector2.ONE * soft_edge_metres(_flat.size) / _flat.size
+	var content_size: Vector2 = slideshow.content_size()
+	return Vector2.ZERO if magazine.active() else Vector2.ONE * soft_edge_metres(content_size) / content_size
 
 func _layer_keep() -> Vector2:
 	# Shrink the opaque seam overlap with the soft edge, so tiny/narrow photos
 	# retain a valid compositor centre instead of an inverted hole rectangle.
-	var overlap := minf(LAYER_OVERLAP_METRES, minf(_flat.size.x, _flat.size.y) * SOFT_EDGE_SHORT_SIDE_RATIO * LAYER_OVERLAP_METRES / SOFT_EDGE_METRES)
-	return _edge_feather() + Vector2.ONE * overlap / _flat.size
+	var content_size: Vector2 = slideshow.content_size()
+	var overlap := minf(LAYER_OVERLAP_METRES, minf(content_size.x, content_size.y) * SOFT_EDGE_SHORT_SIDE_RATIO * LAYER_OVERLAP_METRES / SOFT_EDGE_METRES)
+	return _edge_feather() + Vector2.ONE * overlap / content_size
 
 func _shape_screen() -> void:
 	super._shape_screen()
@@ -415,6 +432,7 @@ func _source_size() -> Vector2:
 	return _size
 
 func open_image(uri: String, title: String, entries: Array = [], location: Dictionary = {}, retained: Dictionary = {}, container: Dictionary = {}) -> bool:
+	slideshow.clear(true)
 	var pdf_key := preload("res://scripts/pdf_pages.gd").session(uri)
 	if not pdf_key.is_empty() and (not Methods.supports(platform, "pdf_retain") or not platform.pdf_retain(pdf_key)): return false
 	source_location = location.duplicate(true) if not location.is_empty() else preload("res://scripts/media_location.gd").infer(uri)
@@ -517,6 +535,7 @@ func autoplay_failed() -> bool:
 		or not panorama_tiles.error.is_empty() or animation.failed
 
 func autoplay_ready() -> bool:
+	if slideshow.busy(): return false
 	if local_uri.is_empty() or _texture == null or not panel.is_visible_in_tree() or loading or _presentation_pending \
 		or _transition_active or _reveal_seconds > 0 or placeholder_visible() or _rotation_preview or inspect \
 		or gallery.overview() or gallery.returning or gallery.has_capture() or not _presentation_effects_ready(): return false
@@ -649,6 +668,10 @@ func _refresh_rotated_depth() -> void:
 
 func select_image(target: int, direction: int = 0) -> bool:
 	if target < 0 or target >= queue.size(): return false
+	if autoplay.advancing:
+		if not slideshow.begin(autoplay.effect): slideshow.clear(true)
+	else:
+		slideshow.clear(true)
 	if spatial_requested: set_spatial(false, true)
 	if portrait_requested and target == index: return false
 	if auto_portrait:
@@ -670,6 +693,7 @@ func select_image(target: int, direction: int = 0) -> bool:
 	var was_focused: bool = gallery.focus >= 0
 	if was_focused: gallery.clear_focus()
 	var accepted := _select(target, direction)
+	if not accepted: slideshow.finish()
 	if gallery.mode in [Gallery.Layout.WALL, Gallery.Layout.FRAGMENTS] and ((gallery.mode == Gallery.Layout.FRAGMENTS and not was_focused) or not gallery.cards.has(target)): gallery.new_window(target)
 	if was_focused:
 		gallery.synchronize(); gallery.activate(target)
@@ -906,6 +930,10 @@ func _copy_departing(surface: MeshInstance3D) -> void:
 	_departing_pose = _departing.transform
 
 func _show_placeholder(target: int, info: Dictionary, outgoing: MeshInstance3D = null) -> void:
+	if slideshow.waiting:
+		if outgoing != null: outgoing.free()
+		_placeholder.visible = false
+		return
 	# Selection feedback starts before IO, colour decoding or conversion completes.
 	if outgoing != null:
 		_departing = outgoing; add_child(_departing); _departing_pose = _departing.transform
@@ -928,6 +956,7 @@ func _show_placeholder(target: int, info: Dictionary, outgoing: MeshInstance3D =
 	_update_transition()
 
 func _restore_display() -> void:
+	slideshow.finish()
 	if _portrait_switching and not error.is_empty():
 		_portrait_switching = false
 		if gallery.mode in [Gallery.Layout.WALL, Gallery.Layout.FRAGMENTS]:
@@ -1149,6 +1178,9 @@ func _process(delta: float) -> void:
 	if _transition_active:
 		_transition_time += delta
 		_update_transition()
+	slideshow.tick(delta)
+	# Stopping autoplay returns the window to the picture's own size and rotation.
+	if slideshow.locked() and not autoplay.enabled and not slideshow.busy(): slideshow.clear(true)
 	if _reveal_seconds > 0:
 		_reveal_seconds = maxf(0, _reveal_seconds - delta)
 		var progress := 1.0 - _reveal_seconds / REVEAL_SECONDS
@@ -1576,6 +1608,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	var accept_started := Time.get_ticks_usec()
 	var mark := accept_started
 	loading = false
+	slideshow.cover()
 	_hide_layer() # before the departing copy of the material: it slides out whole, in the eye buffers
 	if result.has("error"):
 		# Release only this failed selection's promoted data; a different request owns
@@ -1606,7 +1639,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 		if previous_request != int(job.id): _discard_native_depth(previous_request)
 	var previous_flat := _texture != null and geometry == Geometry.Geometry.FLAT and panel.visible
 	var old_surface: MeshInstance3D
-	if previous_flat and not had_placeholder:
+	if previous_flat and not had_placeholder and not slideshow.waiting:
 		old_surface = MeshInstance3D.new()
 		old_surface.mesh = panel.mesh.duplicate() as Mesh
 		old_surface.material_override = _departing_material(panel)
@@ -1650,6 +1683,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	_size = Vector2(result.image.get_width(), result.image.get_height())
 	_depth_texture = null; _stereo_texture = null; depth_requested = false; depth_enabled = false; _depth_busy = false; depth_error = ""
 	geometry = int(mode.geometry); stereo_sbs = bool(mode.stereo_sbs)
+	if geometry != Geometry.Geometry.FLAT: slideshow.clear()
 	screen_rotation = float(_image_rotations.get(local_uri, 0.0)) if geometry == 0 else 0.0
 	top_bottom = stereo_sbs and bool(mode.top_bottom); swap_eyes = bool(mode.swap_eyes); fisheye_fov = int(mode.fisheye_fov)
 	if _portrait_switching and (depth_failed or animation.available() or not can_portrait()):
@@ -1680,16 +1714,21 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 		_release_photo(previous_request)
 	_prune_prefetch()
 	if reading_render.active(): reading_render.trim()
-	_presentation_pending = not depth_failed and (_portrait_switching or _requires_depth(index, _metadata) or \
+	_presentation_pending = slideshow.waiting or (not depth_failed and (_portrait_switching or _requires_depth(index, _metadata) or \
 		(spatial_preferred and bool(_metadata.get("native_stereo", false)) and geometry == Geometry.Geometry.FLAT \
-		and Methods.supports(platform, "prepare_photo_scene_depth")))
+		and Methods.supports(platform, "prepare_photo_scene_depth"))))
 	reset_view()
 	material.set_shader_parameter("photo_texture", _texture)
 	_detail_material.set_shader_parameter("sharpness", sharpness)
 	_detail_material.set_shader_parameter("photo_texture", _texture)
 	_apply_geometry()
 	panel.visible = true
-	if _presentation_pending:
+	if slideshow.waiting:
+		_placeholder.visible = false
+		_reveal_seconds = 0.0
+		material.set_shader_parameter("reveal_progress", 1.0)
+		material.set_shader_parameter("presentation_opacity", 0.0)
+	elif _presentation_pending:
 		# Cache hits still avoid IO, but colour readiness does not reveal a 3D selection.
 		_size_placeholder(index, _metadata)
 		_placeholder.visible = true
@@ -1814,6 +1853,7 @@ func _finish_presentation() -> void:
 	_reveal_seconds = 0.0
 	material.set_shader_parameter("reveal_progress", 1.0)
 	material.set_shader_parameter("presentation_opacity", 1.0)
+	slideshow.present()
 	_remember_last_mode()
 	changed.emit()
 
@@ -1844,6 +1884,7 @@ func _set_flat_world_pose(pose: Transform3D, remember_viewing: bool) -> void:
 	super.set_flat_world_pose(pose)
 	if geometry == 0 and remember_viewing: gallery.remember_focus_pose(pose)
 	var movement := flat_pose * previous.affine_inverse()
+	slideshow.move(movement)
 	if is_instance_valid(_departing):
 		_departing_pose = movement * _departing_pose
 	if _placeholder:
@@ -1856,7 +1897,10 @@ func _set_flat_world_pose(pose: Transform3D, remember_viewing: bool) -> void:
 		_detail.transform = movement * _detail.transform
 
 func _apply_geometry() -> void:
-	if geometry != Geometry.Geometry.FLAT: finish_transition()
+	if geometry != Geometry.Geometry.FLAT:
+		slideshow.clear(); finish_transition()
+	var aspect := _size.x / maxf(_size.y, 1.0) * ((2.0 if top_bottom else 0.5) if stereo_sbs else 1.0)
+	slideshow.update_mapping(aspect)
 	super._apply_geometry()
 	if not _detail_material: return
 	# Show 3D only in its final form: while the generated pair is on its way, the bare depth warp would
@@ -2148,7 +2192,14 @@ func _update_inspect() -> void:
 	if not _detail.visible: hide_inspect_pointer()
 	_detail_zoom.text = "%.1f×" % magnification
 	_detail_material.set_shader_parameter("detail_projection", geometry != Geometry.Geometry.FLAT)
-	_detail_material.set_shader_parameter("crop_center", crop_center)
+	var detail_center := crop_center
+	if geometry == Geometry.Geometry.FLAT and slideshow.locked():
+		var transform_uv: Vector4 = slideshow.mapping
+		var offset := crop_center - Vector2(0.5, 0.5)
+		detail_center = Vector2(transform_uv.x * offset.x + transform_uv.y * offset.y, transform_uv.z * offset.x + transform_uv.w * offset.y) + Vector2(0.5, 0.5)
+		mapping = Vector4(transform_uv.x * mapping.x + transform_uv.y * mapping.z, transform_uv.x * mapping.y + transform_uv.y * mapping.w,
+			transform_uv.z * mapping.x + transform_uv.w * mapping.z, transform_uv.z * mapping.y + transform_uv.w * mapping.w)
+	_detail_material.set_shader_parameter("crop_center", detail_center)
 	_detail_material.set_shader_parameter("crop_aspect", Vector2(mapping.x, mapping.w))
 	_detail_material.set_shader_parameter("crop_skew", Vector2(mapping.y, mapping.z))
 	_detail_material.set_shader_parameter("content_zoom", magnification)
@@ -2460,9 +2511,11 @@ func snapshot() -> Dictionary:
 	var shown_size: Vector2=Vector2(panorama_tiles.dimensions) if panorama_tiles.active() else _size
 	var progress: Dictionary = _loading_status.duplicate()
 	progress.elapsed_ms = Time.get_ticks_msec() - _loading_started_ms
-	return {"autoplay_enabled":autoplay.enabled,"autoplay_interval":autoplay.interval,"ground_vertical":ground_vertical,"cache_each":cache_each,"animated":animation.available(),"animation_paused":animation.paused,"animation_ended":animation.ended,"animation_failed":animation.failed,"raw_preview":_metadata.get("raw_preview",false),
+	# A ready autoplay picture held for one frame under the old one is not loading or preparing 3D.
+	var preparing := _presentation_pending and not (slideshow.waiting and _presentation_effects_ready())
+	return {"autoplay_enabled":autoplay.enabled,"autoplay_interval":autoplay.interval,"autoplay_effect":autoplay.effect,"ground_vertical":ground_vertical,"cache_each":cache_each,"animated":animation.available(),"animation_paused":animation.paused,"animation_ended":animation.ended,"animation_failed":animation.failed,"raw_preview":_metadata.get("raw_preview",false),
 		"spatial_preferred":spatial_preferred,"spatial_requested":spatial_requested,"spatial_ready":_spatial.prepared if is_instance_valid(_spatial) else false,"spatial_available":can_spatial(),"spatial_error":spatial_error,
-		"spatial_report":_spatial.report if is_instance_valid(_spatial) else {},"has_image": _texture != null, "loading": loading or _presentation_pending, "loading_caption": Loading.caption(progress) if loading else "", "placeholder": placeholder_visible(), "preparing_depth": _presentation_pending or not _pending_display.is_empty(), "title": title, "index": position, "count": queue.size(),
+		"spatial_report":_spatial.report if is_instance_valid(_spatial) else {},"has_image": _texture != null, "loading": loading or preparing, "loading_caption": Loading.caption(progress) if loading else "", "placeholder": placeholder_visible(), "preparing_depth": preparing or not _pending_display.is_empty(), "title": title, "index": position, "count": queue.size(),
 		"magazine_single": magazine.single(position), "magazine_pages": magazine.count(position) if magazine.active() else 1, "magazine_rtl": magazine.right_to_left,
 		"archive_mode": archive_mode, "source_uri": local_uri, "layout": gallery.mode, "gallery_overview": gallery.overview(), "wall_rows": gallery.wall_rows, "gallery_scale": gallery.view_scale, "gallery_distance": gallery.view_distance, "gallery_swapping": gallery._swap_phase != 0, "gallery_focus": gallery.focus, "directory_loading": directory.loading, "directory_error": directory_error, "queue_complete": queue_complete,
 		"can_save_pictures":can_save_pictures(), "pictures_save":pictures_status(),
@@ -2652,6 +2705,7 @@ func suspend_gallery_photo() -> void:
 ## Full-size colour, generated eyes and native leases belong only to the expanded photo.
 ## Album identity, the directory scan and bounded preview cards have independent lifetimes.
 func _release_full_photo(release_runtime: bool = true, release_reading_cache: bool = true) -> void:
+	slideshow.clear()
 	render_cache.cancel(); _display_proxy = null
 	_cached_render_active = false
 	resource_budget.stop()
@@ -2697,6 +2751,7 @@ func _release_full_photo(release_runtime: bool = true, release_reading_cache: bo
 	hide_inspect_pointer()
 
 func close_image(notify: bool = true, next_online_uri: String = "") -> void:
+	slideshow.clear()
 	autoplay.set_enabled(false)
 	_cancel_rotation_preview()
 	_image_rotations.clear(); screen_rotation = 0.0
@@ -2730,6 +2785,7 @@ func close_image(notify: bool = true, next_online_uri: String = "") -> void:
 	if notify: changed.emit()
 
 func _exit_tree() -> void:
+	slideshow.clear()
 	comic.close()
 	close_image(false)
 	if _thread: _thread.wait_to_finish(); magazine.cleanup_job(_decoding); _thread = null
@@ -2888,6 +2944,7 @@ func _layer_source() -> Dictionary:
 
 ## The layer can show the photo as the shader would now: no shader-only effects or transitions.
 func _layer_eligible(preparing: bool = false) -> bool:
+	if slideshow.busy() or not slideshow.layer_compatible(): return false
 	return not animation.available() and not spatial_requested and _display_request > 0 and _texture != null and panel.visible and not loading and error.is_empty() \
 		and not _rotation_preview and not (geometry == 0 and screen_curve > 0.0 and absf(sin(_curve_rotation())) > 0.00001) \
 		and not gallery.overview() and ((_presentation_pending and preparing and _presentation_effects_ready()) or \
@@ -2907,6 +2964,16 @@ func _origin() -> XROrigin3D:
 
 var _diagnosed_request := 0
 func _process_layer() -> void:
+	# Until selection accepts new pixels, leave the old native picture submitted.
+	if slideshow.waiting and loading:
+		var held := _layer_source()
+		var origin := _origin()
+		if layer_shown and origin != null and not held.is_empty() and held.image != null:
+			var image: Image = held.image
+			# A user may still move the window while the next source loads.
+			if not video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(image.get_width(), image.get_height()), int(held.stereo), _edge_feather()): _hide_layer()
+			if _hole: _hole.transform = panel.transform
+		return
 	var source := _layer_source()
 	if _display_request != _diagnosed_request and _display_request > 0 and not loading:
 		_diagnosed_request = _display_request
@@ -2936,7 +3003,10 @@ func _process_layer() -> void:
 		# antialiased hole edge are both part transparent, and meeting on one line they showed a
 		# see-through frame between the soft edge and the picture.
 		var keep := _layer_keep() if opaque_flat else Vector2.ZERO
-		var cut := Vector4(keep.x, keep.y, 1.0 - 2.0 * keep.x, 1.0 - 2.0 * keep.y)
+		var content := layer_content_scale()
+		var start := (Vector2.ONE - content) * 0.5 + keep * content
+		var extent := (Vector2.ONE - 2.0 * keep) * content
+		var cut := Vector4(start.x, start.y, extent.x, extent.y)
 		var pano := Info.panorama_rect(_metadata) if geometry == Geometry.Geometry.EQUIRECT_360 and not stereo_sbs else Vector4(0, 0, 1, 1)
 		var picture: Image = source.image
 		var image := Vector2(picture.get_width(), picture.get_height())
@@ -2949,6 +3019,7 @@ func _process_layer() -> void:
 			_hole.mesh = panel.mesh
 			_hole.transform = panel.transform
 			_hole_material.set_shader_parameter("keep_rect", cut if flat else Vector4(0, 0, 1, 1))
+			_hole_material.set_shader_parameter("content_rect", Vector4((1.0-content.x)*0.5, (1.0-content.y)*0.5, content.x, content.y))
 			# A shifted spatial pair leaves part of each eye without picture: it stays in the eye buffers.
 			var offset := stereo_offset_uv()
 			_hole_material.set_shader_parameter("stereo_sbs", offset != Vector2.ZERO)
@@ -2994,7 +3065,8 @@ func _magnifier_layers(origin: XROrigin3D, image: Vector2, stereo: int) -> Dicti
 		_record_magnifier(false, {"aspect": str(aspect), "skew": str(skew)})
 		return none
 	var span: Vector2 = aspect / magnification
-	var start := crop_center - span * 0.5
+	var center: Vector2 = _detail_material.get_shader_parameter("crop_center")
+	var start := center - span * 0.5
 	var crop := Rect2(start, span).intersection(Rect2(0, 0, 1, 1))
 	if crop.size.x <= 0 or crop.size.y <= 0: return none
 	var window := Rect2((crop.position - start) / span, crop.size / span)

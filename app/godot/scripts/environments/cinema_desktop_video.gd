@@ -215,7 +215,7 @@ func mode_action_allowed(operation: String) -> bool:
 		and not operation.begins_with("projection_") and not operation.begins_with("stereo_") and not operation.begins_with("fov_")
 
 
-func _request_revision(_position_ms: int = -1, _mode: String = "", _source_reset: bool = false) -> void:
+func _request_revision(_position_ms: int = -1, _mode: String = "", _source_reset: bool = false, _initial_layout: bool = false) -> void:
 	# A desktop surface change never enters the Android MPV slot lifecycle.
 	geometry = Geometry.Geometry.FLAT
 	_apply_geometry()

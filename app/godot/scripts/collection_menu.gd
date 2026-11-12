@@ -78,9 +78,9 @@ func row_target(id: int) -> bool:
 		if id >= base and id < base + 64: return true
 	return false
 func row_index(id: int) -> int:
-	if menu._row_target(id): return menu._first_line() * menu._cols() + id - menu.ROW_BASE
+	if menu._row_target(id): return menu._row_index(id - menu.ROW_BASE)
 	for base in [MORE, PLAY_ROW, DIRECTORY_ROW, REMOVE_ROW, SELECT_ROW]:
-		if id >= base and id < base + 64: return menu._first_line() * menu._cols() + id - base
+		if id >= base and id < base + 64: return menu._row_index(id - base)
 	return -1
 
 func home() -> bool: return menu.section == menu.Section.RECENT and not active()
@@ -133,7 +133,7 @@ func update_hover() -> void:
 	for button in menu._buttons:
 		if not button.has("collection_hover"): continue
 		var row_id: int = button.collection_hover
-		var line: float = float((row_id - menu.ROW_BASE) / menu._cols()) - (menu.scroll - menu._first_line())
+		var line: float = float(menu._row_index(row_id - menu.ROW_BASE) / menu._cols()) - menu.scroll
 		button.node.visible = hovered.has(row_id) and line > -0.35 and line < menu._lines() - 0.65
 
 func _row_button(id: int, slot: int, point: Vector2, icon: String, tip: String, enabled: bool, parent: Node3D, hover_only: bool = false) -> void:
@@ -308,7 +308,7 @@ func action(id: int) -> bool:
 	if not active() and home():
 		for base in [PLAY_ROW, DIRECTORY_ROW, REMOVE_ROW, SELECT_ROW]:
 			if id < base or id >= base + 64: continue
-			var index: int = menu._first_line() * menu._cols() + id - base
+			var index: int = menu._row_index(id - base)
 			if index >= menu.rows.size(): return true
 			var row: Dictionary = menu.rows[index].duplicate(true)
 			if base == PLAY_ROW: menu._choose(row)
@@ -352,7 +352,7 @@ func action(id: int) -> bool:
 		else: callback.call()
 		return true
 	if id >= MORE and id < MORE + 64 and not active():
-		var index: int = menu._first_line() * menu._cols() + id - MORE
+		var index: int = menu._row_index(id - MORE)
 		if index < menu.rows.size(): target = menu.rows[index].duplicate(true); modal = "item"; menu.refresh()
 		return true
 	if not active(): return false

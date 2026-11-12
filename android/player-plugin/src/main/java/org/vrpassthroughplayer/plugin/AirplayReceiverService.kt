@@ -11,6 +11,7 @@ import android.net.wifi.WifiManager
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.util.Log
 
 /** Same connected-device lifetime as WebBookmarkService, owned only by the receive switch.
  * The listener stays available while the headset sleeps; CPU/Wi-Fi locks cover active senders only. */
@@ -29,6 +30,7 @@ class AirplayReceiverService : Service() {
             if (current.active == value) return
             current.active = value
             runCatching { context.startService(Intent(context, AirplayReceiverService::class.java)) }
+                .onFailure { Log.e("Thru3D-Airplay", "Service active update failed exception=${it.javaClass.simpleName}") }
         }
         internal fun end(context: Context) { lease = null; context.stopService(Intent(context, AirplayReceiverService::class.java)) }
     }
@@ -39,7 +41,9 @@ class AirplayReceiverService : Service() {
     private val renew = object : Runnable {
         override fun run() {
             if (owner !== lease || owner?.active != true) return
-            if (runCatching { cpu?.acquire(4 * 60 * 1000L) }.isFailure) { finish(); return }
+            if (runCatching { cpu?.acquire(4 * 60 * 1000L) }
+                .onFailure { Log.e("Thru3D-Airplay", "Service CPU lease failed exception=${it.javaClass.simpleName}") }
+                .isFailure) { finish(); return }
             handler.postDelayed(this, 3 * 60 * 1000L)
         }
     }
@@ -62,7 +66,10 @@ class AirplayReceiverService : Service() {
                 if (wifi == null) wifi = (applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager)
                     .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Thru3D:Airplay").apply { setReferenceCounted(false); acquire() }
             } else releaseLocks()
-        } catch (_: Exception) { finish() }
+        } catch (failure: Exception) {
+            Log.e("Thru3D-Airplay", "Foreground service failed exception=${failure.javaClass.simpleName}")
+            finish()
+        }
         return START_NOT_STICKY
     }
     private fun releaseLocks() {

@@ -726,7 +726,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val dailymotion=if(dailymotionEnabled && item.optString("frame")==port.sender.url)WebBrowserDailymotion.metadata(item,tab.url) else null
                             val iqiyi = if(iqiyiEnabled) WebBrowserIqiyi.metadata(item,tab.url) else null
                             val biliIdentity = bilibili?.let { "${it.optString("id")}:${it.optString("cid")}:${it.optInt("part")}:${it.optString("ep")}" }.orEmpty()
-                            val captureIdentity = "${tab.id}:${tab.navigation}:${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}:${tab.bilibiliProbe}:${tab.douyinCaptureEnabled}:${weibo?.optString("page").orEmpty()}:$biliIdentity" +
+                            var captureIdentity = "${tab.id}:${tab.navigation}:${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}:${tab.bilibiliProbe}:${tab.douyinCaptureEnabled}:${weibo?.optString("page").orEmpty()}:$biliIdentity" +
                                 (tencent?.let { ":tencent:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
                                 (mango?.let { ":mango:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
                                 (youku?.let { ":youku:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
@@ -744,7 +744,17 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                 (dailymotion?.let { ":dailymotion:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
                                 (iqiyi?.let { ":iqiyi:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
                                 (douyin?.let { ":douyin:${it.optString("id")}:${it.optString("revision")}" } ?: "")
-                            safe.put(JSONObject().put("width", item.optInt("width").coerceIn(0, 32768))
+                            val directAllowed = networkEnabled && !server && !listOf(bilibiliEnabled, douyinEnabled, weiboEnabled,
+                                tencentEnabled, mangoEnabled, youkuEnabled, iqiyiEnabled, niconicoEnabled, twitchEnabled, tiktokEnabled,
+                                instagramEnabled, tedEnabled, redbullEnabled, naverEnabled, redditEnabled, streamableEnabled,
+                                archiveEnabled, odyseeEnabled, dailymotionEnabled).any { it }
+                            val directFile = WebBrowserDirectFile.resource(JSONObject(item.toString())
+                                .put("network", network).put("network_enabled", networkEnabled).put("direct_allowed", directAllowed))
+                            val direct = directFile != null
+                            if (directFile != null) captureIdentity += ":file:" + java.security.MessageDigest.getInstance("SHA-256")
+                                .digest((item.optString("source") + "\n" + directFile.getString("url")).toByteArray())
+                                .joinToString("") { "%02x".format(it) }
+                            safe.put(JSONObject().put("direct_ready", direct).put("width", item.optInt("width").coerceIn(0, 32768))
                                 .put("id", id).put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play"))
                                 .put("server_play", server && item.optBoolean("server_play"))
                                 .put("server_media", server)
@@ -776,7 +786,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                 .put("mango_capture", if (mangoEnabled) WebBrowserMango.captureDiagnostics(data)
                                     .put("frame_matches", item.optString("frame") == tab.url).put("binding_valid", mango != null) else null)
                                 .put("mango_page",mango?.let { "https://www.mgtv.com/b/${it.optString("id")}.html" }.orEmpty())
-                                .put("selection", if (weibo != null || bilibili != null || tencent != null || mango != null || youku != null || iqiyi != null || douyin != null || niconico != null || twitch != null || tiktok != null || instagram != null || ted != null || redbull != null || naver != null || reddit != null || streamable != null || archive != null || odysee != null || dailymotion != null) captureIdentity else "")
+                                .put("selection", if (weibo != null || bilibili != null || tencent != null || mango != null || youku != null || iqiyi != null || douyin != null || niconico != null || twitch != null || tiktok != null || instagram != null || ted != null || redbull != null || naver != null || reddit != null || streamable != null || archive != null || odysee != null || dailymotion != null || direct) captureIdentity else "")
                                 .put("network_media", networkEnabled && (network.length() > 0 || !item.optBoolean("protected") && WebBrowserNetworkMedia.address(item.optString("source")) != null))
                                 .put("media_epoch", "${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}")
                                 .put("protected", item.optBoolean("protected"))
@@ -789,7 +799,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                 (source.isEmpty() || (source.length <= 16384 && (source.startsWith("https://") || source.startsWith("http://"))) || item.optBoolean("protected"))) {
                                 privateSources.put(JSONObject(item.toString()).put("source", source.take(16384)).put("server", server)
                                     .put("network", network)
-                                    .put("network_enabled", networkEnabled)
+                                    .put("network_enabled", networkEnabled).put("direct_allowed", directAllowed)
                                     .put("bilibili_enabled", bilibiliEnabled).put("bilibili", bilibili)
                                     .put("douyin_enabled", douyinEnabled).put("douyin", douyin).put("douyin_source",if(douyin!=null)item.optString("douyin_source") else "")
                                     .put("weibo_enabled", weiboEnabled).put("weibo", weibo)
@@ -1441,6 +1451,18 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                         .put("time",request.optLong("position_ms").coerceAtLeast(0)/1000.0).put("play",request.optBoolean("play")))
                 }
             }
+            "restore_direct" -> {
+                val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id } ?: return@dispatch
+                if (!tab.awake || window(id).tab != tab.id || tab.navigation != request.optLong("navigation", -1) ||
+                    tab.url != request.optString("origin")) return@dispatch
+                for ((port, list) in tab.sources) for (index in 0 until list.length()) {
+                    val item = list.getJSONObject(index)
+                    if (item.optString("capture_identity") != request.optString("selection") || WebBrowserDirectFile.resource(item) == null) continue
+                    port.postMessage(JSONObject().put("action", "restore_direct").put("id", item.optString("id"))
+                        .put("epoch", item.optLong("network_epoch")).put("source", item.optString("source"))
+                        .put("time", request.optLong("position_ms").coerceAtLeast(0) / 1000.0).put("play", request.optBoolean("play")))
+                }
+            }
             "pause_tab", "resume_tab" -> {
                 val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id } ?: return@dispatch
                 if (!tab.awake || window(id).tab != tab.id || tab.navigation != request.optLong("navigation", -1) ||
@@ -1896,7 +1918,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         val videos = JSONArray()
         tab?.media?.values?.flatMap { list -> (0 until list.length()).map { list.getJSONObject(it) } }
             ?.sortedByDescending { it.optBoolean("weibo_selected") }?.take(16)?.forEach(videos::put)
-        return JSONObject().put("tab_id", tab?.id ?: 0).put("navigation", tab?.navigation ?: 0)
+        return JSONObject().put("direct_selection", WebBrowserDirectFile.selection((0 until videos.length()).map { videos.getJSONObject(it) }))
+            .put("tab_id", tab?.id ?: 0).put("navigation", tab?.navigation ?: 0)
             .put("network_capture_available", tab != null && WebBrowserNetworkPolicy.available(tab.url))
             .put("network_capture_enabled", tab != null && networkEnabled(tab))
             .put("bilibili_beta_available", tab != null && bilibiliEligible(tab))

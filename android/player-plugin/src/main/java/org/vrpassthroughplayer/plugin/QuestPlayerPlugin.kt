@@ -211,9 +211,9 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
                 val videos = state.optJSONArray("videos")
                 val server = videos != null && (0 until videos.length()).any {
                     val item = videos.optJSONObject(it)
-                    item != null && !item.optBoolean("protected") && (item.optBoolean("server_media") || item.optBoolean("network_media"))
+                    item != null && !item.optBoolean("protected") && (item.optBoolean("server_media") || item.optBoolean("network_media") && !item.optBoolean("direct_ready"))
                 }
-                state.put("native_supported", server || runCatching { WebVideoPage.parse(state.optString("url")) }.isSuccess)
+                state.put("native_supported", state.optString("direct_selection").isNotEmpty() || server || runCatching { WebVideoPage.parse(state.optString("url")) }.isSuccess)
             }.toString()
         }.getOrDefault("{}")
     }
@@ -317,6 +317,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         if (!closed.get()) webBrowser.pointer(command, x, y, scroll)
     }
     @UsedByGodot fun web_video_resolve(url: String): Int = if (closed.get()) 0 else webVideoResolver.begin(url)
+    @UsedByGodot fun web_video_open_captured(url: String, selection: String): Int = if (closed.get()) 0 else webVideoResolver.begin(url, selection = selection, directFile = true)
     @UsedByGodot fun web_video_resolve_beta(url: String): Int = if (closed.get()) 0 else webVideoResolver.begin(url, bilibiliBeta = true)
     @UsedByGodot fun web_video_resolve_selected(url: String, selection: String): Int =
         if (closed.get() || selection.isEmpty() || selection.length > 512) 0 else webVideoResolver.begin(url, bilibiliBeta = true, selection = selection)
@@ -562,6 +563,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         SignalInfo("background_image_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("background_audio_imported", Int::class.javaObjectType, String::class.java),
+        SignalInfo("scene_file_imported", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_portrait", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_preload_portrait", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_preview_ready", Int::class.javaObjectType, String::class.java),
@@ -654,7 +656,10 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
      * the result arrives as "diagnostic_log". */
     @UsedByGodot fun diagnostic_log(action: String, header: String, full: Boolean) {
         val host = activity ?: return
-        if (!closed.get()) DiagnosticLogs.request(host, action, header, full) { emitSignal("diagnostic_log", it.toString()) }
+        if (!closed.get()) DiagnosticLogs.request(host, action,
+            header + "\nAirPlay discovery: " + airplayReceiver.discoveryDiagnostics(), full) {
+            emitSignal("diagnostic_log", it.toString())
+        }
     }
     /** A Godot-side step for the crash ring (stage names and sizes only). */
     @UsedByGodot fun crash_trail(stage: String, detail: String) { CrashTrail.mark(stage.take(40), detail.take(140)) }
@@ -752,6 +757,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun media_smb_discover(): Int = if (closed.get()) -1 else sources.smbDiscover()
     /** {id?, name, host, domain, user, password}; an empty password keeps the saved one. */
     @UsedByGodot fun media_smb_save(json: String): Int = if (closed.get()) -1 else sources.smbSave(json)
+    @UsedByGodot fun media_smb_connect(json: String): Int = if (closed.get()) -1 else sources.smbConnect(json)
+    @UsedByGodot fun media_smb_cancel_browse() { if (!closed.get()) sources.smbCancelBrowse() }
     @UsedByGodot fun media_smb_remove(id: String): Int = if (closed.get()) -1 else sources.smbRemove(id)
     @UsedByGodot fun media_smb_browse(server: String, path: String): Int = if (closed.get()) -1 else sources.smbBrowse(server, path)
     /** Background OpenCL compile/tune for an Alpha profile; progress via "rvm_warmup". */
@@ -970,6 +977,17 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         !closed.get() && mpv.requestPixelMask(request, id, token)
     @UsedByGodot fun release_mpv_pixel_pin(id: Int, token: Long): Boolean = mpv.unpinPixelPair(id, token)
     @UsedByGodot fun debug_monotonic_us(): Long = if (BuildConfig.DEBUG) System.nanoTime()/1000 else 0
+    // Experimental scene import (Debug builds only for now).
+    @UsedByGodot fun unity_scene_unpack(bundle: String, output: String, maxTexture: Int, maxSkyTexture: Int): String =
+        if (BuildConfig.DEBUG) UnityScene.run(bundle, output, maxTexture, maxSkyTexture) else "Unity scenes are not supported on this build"
+    @UsedByGodot fun scene_texture_etc2(rgba: ByteArray, width: Int, height: Int, alpha: Boolean): ByteArray =
+        if (BuildConfig.DEBUG) UnityScene.etc2(rgba, width, height, alpha) else ByteArray(0)
+    private val sceneFiles = SceneFileImport({ activity?.applicationContext }, sources::audioDownload, sources::releasePhotoStream) { id, json ->
+        if (!closed.get()) emitSignal("scene_file_imported", id, json)
+    }
+    @UsedByGodot fun import_scene_file(uri: String, title: String): Int = if (closed.get() || !BuildConfig.DEBUG) -1 else sceneFiles.start(uri, title)
+    @UsedByGodot fun cancel_scene_file_import(id: Int) = sceneFiles.cancel(id)
+    @UsedByGodot fun scene_file_import_progress(id: Int): Double = sceneFiles.progress(id)
     internal fun requestMpvPlayerCommand(json: String): Int {
         if (closed.get()) return -1
         if (BuildConfig.DEBUG) {
@@ -1102,6 +1120,6 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         webVideoResolver.close()
         webBrowser.close()
         WebBrowserDepthBridge.closeAll()
-        if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); airplayReceiver.close(); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); backgroundImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
+        if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); airplayReceiver.close(); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); sceneFiles.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); backgroundImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

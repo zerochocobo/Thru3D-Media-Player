@@ -11,6 +11,13 @@
   let handoff = null;
   let pauseLease = null, lastPauseToken = 0;
   const resuming = new WeakMap();
+  let directReturnPause = null;
+  const keepDirectReturnPaused = video => {
+    const saved=directReturnPause;if(!saved)return false;
+    const age=Date.now()-saved.at;
+    if(age<0||age>30000||saved.page!==location.href||!saved.video.isConnected||saved.video.currentSrc!==saved.source||mediaEpoch.get(saved.video)?.id!==saved.epoch){directReturnPause=null;return false;}
+    return video===saved.video;
+  };
   let iqiyiReturnPause = null;
   let tiktokReturnPause = null;
   const keepTikTokReturnPaused=video=>{
@@ -106,7 +113,7 @@
   // The site's seek completion can call play again after we restored a paused
   // position. Preserve that return intent through buffering, until a real gesture.
   for(const name of ['pointerdown','mousedown','touchstart','keydown'])addEventListener(name,event=>{
-    if(event.isTrusted){iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;tiktokReturnPause=null;instagramReturnPause=null;instagramRestore=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;redditReturnPause=null;naverReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;}
+    if(event.isTrusted){directReturnPause=null;iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;tiktokReturnPause=null;instagramReturnPause=null;instagramRestore=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;redditReturnPause=null;naverReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;}
   },true);
   const holdPaused = video => {
     if (pauseLease && pauseLease.page !== location.href) pauseLease = null;
@@ -1220,8 +1227,8 @@
       video.addEventListener("encrypted", () => { encrypted.add(video); changed(); });
       for (const event of ["loadedmetadata", "resize", "durationchange", "play", "playing", "seeked", "pause", "emptied", "ended", "timeupdate"])
         video.addEventListener(event, changed);
-      video.addEventListener("play", () => { if (suspended||keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)||keepTikTokReturnPaused(video)||keepInstagramReturnPaused(video)||keepTedReturnPaused(video)||keepRedBullReturnPaused(video)||keepStreamableReturnPaused(video)||keepRedditReturnPaused(video)||keepNaverReturnPaused(video)||keepArchiveReturnPaused(video)||keepOdyseeReturnPaused(video)||keepDailymotionReturnPaused(video)) video.pause(); else holdPaused(video); });
-      for(const event of ['loadeddata','playing','seeked'])video.addEventListener(event,()=>{if(keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)||keepTikTokReturnPaused(video)||keepInstagramReturnPaused(video)||keepTedReturnPaused(video)||keepRedBullReturnPaused(video)||keepStreamableReturnPaused(video)||keepRedditReturnPaused(video)||keepNaverReturnPaused(video)||keepArchiveReturnPaused(video)||keepOdyseeReturnPaused(video)||keepDailymotionReturnPaused(video))video.pause();});
+      video.addEventListener("play", () => { if (suspended||keepDirectReturnPaused(video)||keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)||keepTikTokReturnPaused(video)||keepInstagramReturnPaused(video)||keepTedReturnPaused(video)||keepRedBullReturnPaused(video)||keepStreamableReturnPaused(video)||keepRedditReturnPaused(video)||keepNaverReturnPaused(video)||keepArchiveReturnPaused(video)||keepOdyseeReturnPaused(video)||keepDailymotionReturnPaused(video)) video.pause(); else holdPaused(video); });
+      for(const event of ['loadeddata','playing','seeked'])video.addEventListener(event,()=>{if(keepDirectReturnPaused(video)||keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)||keepTikTokReturnPaused(video)||keepInstagramReturnPaused(video)||keepTedReturnPaused(video)||keepRedBullReturnPaused(video)||keepStreamableReturnPaused(video)||keepRedditReturnPaused(video)||keepNaverReturnPaused(video)||keepArchiveReturnPaused(video)||keepOdyseeReturnPaused(video)||keepDailymotionReturnPaused(video))video.pause();});
       holdPaused(video);
     }
     // Feeds and comments mutate constantly; only a new <video> changes the report.
@@ -1330,6 +1337,16 @@
       if (weibo !== weiboEnabled) { weiboEnabled = weibo; weiboChoice = null; network = []; networkContext(true); changed(); }
       if (enabled !== networkEnabled) { networkEnabled = enabled; network = []; networkContext(true); changed(); }
       else networkContext();
+    } else if (message?.action === "restore_direct") {
+      const video = [...videos.keys()].find(v => String(videos.get(v)) === String(message.id));
+      if (!video || !video.isConnected || encrypted.has(video) || video.mediaKeys ||
+          mediaEpoch.get(video)?.id !== message.epoch || video.currentSrc !== message.source ||
+          !/^https?:\/\//i.test(video.currentSrc) || !Number.isFinite(message.time) || message.time < 0) return;
+      directReturnPause=message.play===true?null:{video,source:video.currentSrc,epoch:message.epoch,page:location.href,at:Date.now()};
+      video.pause();
+      video.currentTime = Number.isFinite(video.duration) ? Math.min(message.time, Math.max(0, video.duration - .05)) : message.time;
+      if (message.play === true) { try { Promise.resolve(video.play()).catch(() => {}); } catch (_) {} }
+      send();
     } else if (message?.action === "pause_media") {
       const token = message.token;
       if (!Number.isSafeInteger(token) || token <= lastPauseToken) return;

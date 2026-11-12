@@ -98,6 +98,10 @@ func resolve(beta: bool = false, selection: String = "") -> void:
 	result = {}
 	pending = int(menu.platform.web_video_resolve_selected(address, selection) if not selection.is_empty() else menu.platform.web_video_resolve_beta(address) if beta else menu.platform.web_video_resolve(address))
 	next_poll = 0; menu.refresh()
+func open_captured(selection: String) -> void:
+	result = {}
+	pending = int(menu.platform.web_video_open_captured(address, selection))
+	next_poll = 0; menu.refresh()
 func tick() -> void:
 	if not active():
 		if pending > 0: close()

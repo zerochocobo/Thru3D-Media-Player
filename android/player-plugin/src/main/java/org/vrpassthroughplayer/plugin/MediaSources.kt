@@ -39,6 +39,7 @@ internal class MediaSources(
     fun rememberWebVideo(descriptor: WebVideoDescriptor) = webVideo.remember(descriptor)
     fun webVideoProjection(uri: String): String = webVideo.descriptor(uri)?.projection?.toString() ?: "{}"
     private val smb by lazy { SmbLibrary(context() ?: error("Activity unavailable")) { streams() } }
+    private val smbBrowseRequests = SmbBrowseRequests(stalled = { smb.retire(it) }) { id, json -> if (!stopped) emit(id, json) }
     private val mediaServers = MediaServerLibrary(::context, ::streams, ::nextId, emit = emit)
     fun serverRequest(json: String): Int = mediaServers.request(json)
     fun serverCancel(id: Int) = mediaServers.cancel(id)
@@ -129,8 +130,27 @@ internal class MediaSources(
         JSONObject().put("saved_id", smb.save(JSONObject(request))).put("servers", smb.serversJson())
     }
     fun smbRemove(id: String): Int = run("smb") { smb.remove(id); JSONObject().put("servers", smb.serversJson()) }
-    fun smbBrowse(serverId: String, path: String, subtitlesOnly: Boolean = false): Int = run("smb") {
-        JSONObject().put("server_id", serverId).put("path", path).put("entries", smb.browse(serverId, path, subtitlesOnly))
+    fun smbConnect(request: String): Int {
+        val id = nextId()
+        val probeId = java.util.UUID.randomUUID().toString()
+        fun reply(result: JSONObject) = result.put("source", "smb").toString()
+        smbBrowseRequests.submit(id, probeId, {
+            reply(try { smb.connectDiscovered(JSONObject(request), probeId).put("state", "ready") }
+            catch (error: Throwable) { smbFailure(error) })
+        }, { reply(JSONObject().put("state", "error").put("error", "SMB server not responding. Refresh to retry")) })
+        return id
+    }
+    fun smbCancelBrowse() = smbBrowseRequests.cancel()
+    private fun smbFailure(error: Throwable) = JSONObject().put("state", "error")
+        .put("error", error.message ?: error.javaClass.simpleName).put("auth_required", SmbClientPolicy.needsCredentials(error))
+    fun smbBrowse(serverId: String, path: String, subtitlesOnly: Boolean = false): Int {
+        val id = nextId()
+        fun reply(result: JSONObject) = result.put("source", "smb").put("server_id", serverId).put("path", path).toString()
+        smbBrowseRequests.submit(id, serverId, {
+            reply(try { JSONObject().put("entries", smb.browse(serverId, path, subtitlesOnly)).put("state", "ready") }
+            catch (error: Throwable) { smbFailure(error) })
+        }, { reply(JSONObject().put("state", "error").put("error", "SMB server not responding. Refresh to retry")) })
+        return id
     }
 
     fun cloudBrowse(path: String, refresh: Boolean, offset: Int = 0, order: String = "", folderId: String = "", subtitlesOnly: Boolean = false, pageSize: Int = CloudDrive.PAGE_SIZE): Int {
@@ -529,7 +549,7 @@ internal class MediaSources(
         externalVideo.close()
         CloudAccountChanges.unsubscribe(cloudAccountChanged)
         mediaServers.close()
-        cloudBrowseRequests.close(); photoDirectoryRequests.close()
+        cloudBrowseRequests.close(); photoDirectoryRequests.close(); smbBrowseRequests.close()
         network.shutdownNow(); cloudNetwork.shutdownNow(); local.close(); usb.close()
         CloudLibrary.stopStreams()
         CloudWebDav.stop()

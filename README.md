@@ -4,11 +4,13 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.17.6** (Android versionCode **87**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.17.7** (Android versionCode **89**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
 ## Features
+
+- Photo slideshows with cut, crossfade, soft wipe and depth dissolve. A hand-model visibility setting is available for VR viewing.
 
 - Expand AirPlay mirroring into the regular player with compatible 3D, person passthrough and live captions, then return to the original mirror window. See [AirPlay scope](docs/AIRPLAY.md).
 - Real-time 2D-to-3D for supported animated photos and standalone VOB playback, including listings in 115 and OpenList.

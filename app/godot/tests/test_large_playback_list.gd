@@ -83,7 +83,7 @@ func click(menu: Node3D, target: int) -> bool:
 
 func select_index(menu: Node3D, index: int) -> bool:
 	menu._set_scroll(float(index / menu._cols()))
-	var slot: int = index - menu._first_line() * menu._cols()
+	var slot: int = menu._row_slot(index)
 	return click(menu, (menu.file_actions.SELECT_BASE if menu.view_mode == "list" else Library.ROW_BASE) + slot)
 
 func selection_cases() -> void:
@@ -207,7 +207,7 @@ func run() -> void:
 				menu._set_scroll(menu._max_scroll())
 				buttons = row_buttons(menu)
 				var last: Dictionary = buttons.filter(func(button): return button.node.visible).back()
-				var expected := str(menu.rows[menu._first_line() * menu._cols() + last.target - Library.ROW_BASE].uri)
+				var expected := str(menu.rows[menu._row_index(last.target - Library.ROW_BASE)].uri)
 				var node: Node3D = last.node
 				var origin := node.global_position + node.global_basis.z * 0.3
 				menu.press_pointer("right_hand", origin, -node.global_basis.z, true)

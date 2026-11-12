@@ -10,6 +10,19 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 class SmbClientPolicyTest {
+    @Test fun credentialPromptDistinguishesAuthenticationFromTransportAndMissingShares() {
+        for (status in listOf(0xC0000022.toInt(), 0xC000006D.toInt(), 0xC0000072.toInt(), 0xC0000234.toInt())) {
+            val error = org.codelibs.jcifs.smb.impl.SmbException(status, false)
+            assertTrue(SmbClientPolicy.needsCredentials(java.io.IOException("Browse failed", error)))
+        }
+        for (error in listOf(java.net.SocketTimeoutException(), java.net.UnknownHostException(),
+            java.io.IOException("access denied text is not an SMB status"),
+            org.codelibs.jcifs.smb.impl.SmbException(0xC00000CC.toInt(), false),
+            org.codelibs.jcifs.smb.impl.SmbException(0xC00000C9.toInt(), false))) {
+            assertFalse(SmbClientPolicy.needsCredentials(error))
+        }
+    }
+
     @Test fun acceptsDirectSharesWithoutChangingExistingServerAddresses() {
         assertEquals("192.168.1.2", SmbClientPolicy.address("smb://192.168.1.2/"))
         assertEquals("PC/Movies/Sub folder", SmbClientPolicy.address("\\\\PC\\Movies\\Sub folder"))

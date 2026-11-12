@@ -51,7 +51,7 @@ func run() -> void:
 			var selected: Dictionary = menu.rows[index]
 			var expected_order: String = visited.get(str(selected.container.id), "name_asc")
 			var offset: float = float(index / menu._cols()) - menu.scroll
-			menu._activate(Menu.ROW_BASE + index - menu._first_line() * menu._cols())
+			menu._activate(Menu.ROW_BASE + menu._row_slot(index))
 			check(platform.calls.back().offset == 0 and platform.calls.back().order == expected_order, "Child restores its own sort and pagination")
 			platform.reply(); await settle(menu)
 			menu.file_actions.choose_order("name_desc"); platform.reply(); await settle(menu)

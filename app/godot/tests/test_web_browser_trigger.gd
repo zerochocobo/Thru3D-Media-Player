@@ -20,9 +20,9 @@ static func trigger(main: Node3D, hand: String) -> void:
 	main._on_controller_button("trigger_click", hand)
 	main._on_controller_release("trigger_click", hand)
 
-static func page_ray(host: Node3D, uv: Vector2) -> Array:
+static func page_ray(host: Node3D, uv: Vector2, depth: float = 0.4) -> Array:
 	var layout: Dictionary = host.page_layout()
-	var offset := Vector3((uv.x - 0.5) * layout.size.x, (0.5 - uv.y) * layout.size.y, 0.4)
+	var offset := Vector3((uv.x - 0.5) * layout.size.x, (0.5 - uv.y) * layout.size.y, depth)
 	return [layout.pose * offset, -layout.pose.basis.z]
 
 func check_touch(events: Array, commands: Array, endpoint: Vector2, message: String) -> void:
@@ -33,13 +33,14 @@ func check_touch(events: Array, commands: Array, endpoint: Vector2, message: Str
 func touch_slop(main: InputMain, host: Node3D, platform: Fixture.Platform, mode: String, button: String) -> void:
 	const HAND := "right_hand"
 	const CENTRE := Vector2(0.5, 0.5)
-	var pixel := Vector2(1.0 / float(host.page_css_scale().x), 0)
-	var edge := Vector2(pixel.x * 0.5, 0.5)
+	# One millimetre of ray travel across the page.
+	var mm := Vector2(0.001 / float(host.page_layout().size.x), 0)
+	var edge := Vector2(mm.x * 2, 0.5)
 	var first := platform.pointers.size()
 	main.rays[HAND] = page_ray(host, CENTRE)
 	main._on_controller_button(button, HAND)
-	for drift in [1, -3, 5, -6]:
-		main.rays[HAND] = page_ray(host, CENTRE + drift * pixel)
+	for drift in [2, -6, 10, -14]:
+		main.rays[HAND] = page_ray(host, CENTRE + drift * mm)
 		main._update_menu_pointer(HAND)
 	main._on_controller_release(button, HAND)
 	check_touch(platform.pointers.slice(first), ["down", "up"], CENTRE, mode + ": jitter within the tap tolerance")
@@ -47,7 +48,7 @@ func touch_slop(main: InputMain, host: Node3D, platform: Fixture.Platform, mode:
 	first = platform.pointers.size()
 	main.rays[HAND] = page_ray(host, edge)
 	main._on_controller_button(button, HAND)
-	main.rays[HAND] = page_ray(host, edge - pixel)
+	main.rays[HAND] = page_ray(host, edge - 4 * mm)
 	main._update_menu_pointer(HAND)
 	main._on_controller_release(button, HAND)
 	check_touch(platform.pointers.slice(first), ["down", "up"], edge, mode + ": tap jitters across the webpage edge")
@@ -55,26 +56,34 @@ func touch_slop(main: InputMain, host: Node3D, platform: Fixture.Platform, mode:
 	first = platform.pointers.size()
 	main.rays[HAND] = page_ray(host, CENTRE)
 	main._on_controller_button(button, HAND)
-	main.rays[HAND] = page_ray(host, CENTRE + 30 * pixel)
+	main.rays[HAND] = page_ray(host, CENTRE + 40 * mm)
 	main._update_menu_pointer(HAND)
-	main.rays[HAND] = page_ray(host, CENTRE + pixel)
+	main.rays[HAND] = page_ray(host, CENTRE + 2 * mm)
 	main._update_menu_pointer(HAND)
 	main._on_controller_release(button, HAND)
-	check_touch(platform.pointers.slice(first), ["down", "move", "move", "up"], CENTRE + pixel, mode + ": drag stays active after returning near the start")
+	check_touch(platform.pointers.slice(first), ["down", "move", "move", "up"], CENTRE + 2 * mm, mode + ": drag stays active after returning near the start")
 
 	first = platform.pointers.size()
 	main.rays[HAND] = page_ray(host, CENTRE)
 	main._on_controller_button(button, HAND)
-	main.rays[HAND] = page_ray(host, CENTRE + 30 * pixel)
+	main.rays[HAND] = page_ray(host, CENTRE + 40 * mm)
 	main._on_controller_release(button, HAND)
-	check_touch(platform.pointers.slice(first), ["down", "move", "up"], CENTRE + 30 * pixel, mode + ": fast drag first moves on release")
+	check_touch(platform.pointers.slice(first), ["down", "move", "up"], CENTRE + 40 * mm, mode + ": fast drag first moves on release")
 
 	first = platform.pointers.size()
 	main.rays[HAND] = page_ray(host, edge)
 	main._on_controller_button(button, HAND)
-	main.rays[HAND] = page_ray(host, edge - 30 * pixel)
+	main.rays[HAND] = page_ray(host, edge - 40 * mm)
 	main._on_controller_release(button, HAND)
 	check_touch(platform.pointers.slice(first), ["down", "cancel"], edge, mode + ": large drag released outside the webpage")
+
+	first = platform.pointers.size()
+	main.rays[HAND] = page_ray(host, CENTRE, 10.0)
+	main._on_controller_button(button, HAND)
+	main.rays[HAND] = page_ray(host, CENTRE + 40 * mm, 10.0)
+	main._update_menu_pointer(HAND)
+	main._on_controller_release(button, HAND)
+	check_touch(platform.pointers.slice(first), ["down", "up"], CENTRE, mode + ": a distant page widens the tap tolerance")
 
 	first = platform.pointers.size()
 	main.rays[HAND] = page_ray(host, CENTRE)

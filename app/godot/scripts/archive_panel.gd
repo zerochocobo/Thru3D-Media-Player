@@ -296,7 +296,7 @@ func browser_action(id: int) -> bool:
 		var row := target.duplicate(true); close(); menu.refresh(); open(row)
 	elif id >= CRUMB and id < CRUMB + crumbs().size(): go_to(id-CRUMB)
 	elif menu._row_target(id):
-		var index: int = menu._first_line() * menu._cols() + id - menu.ROW_BASE
+		var index: int = menu._row_index(id - menu.ROW_BASE)
 		if index < menu.rows.size(): choose(menu.rows[index])
 	else: menu._activate_footer(id)
 	return true
