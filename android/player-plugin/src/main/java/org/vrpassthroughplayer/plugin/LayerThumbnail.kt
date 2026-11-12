@@ -76,4 +76,12 @@ internal object LayerThumbnail {
 
     fun pixels(id: Int): ByteArray = results.take(id)
     fun cancel(id: Int) = results.cancel(id)
+
+    // JavaClassWrapper entry points for a Surface Godot already holds (the browser page's
+    // producer surface): passthrough relighting samples the focused page region like a video.
+    @JvmStatic fun requestSurface(surface: Surface?, width: Int, height: Int, x: Float, y: Float, w: Float, h: Float,
+                                  outWidth: Int, outHeight: Int): Int =
+        runCatching { request(surface, width, height, 0, floatArrayOf(x, y, w, h), outWidth, outHeight) }.getOrDefault(0)
+    @JvmStatic fun surfaceState(id: Int): String = state(id)
+    @JvmStatic fun takeSurface(id: Int): ByteArray = pixels(id)
 }

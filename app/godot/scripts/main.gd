@@ -67,6 +67,7 @@ const BEACH_NIGHT_HOURS := 21.0
 const BEACH_SWEEP_HOURS_PER_SECOND := 3.0
 const TimeOfDay := preload("res://scripts/environments/private_beach_time.gd")
 const CinemaFilmLight := preload("res://scripts/environments/cinema_film_light.gd")
+const PassthroughRelight := preload("res://scripts/passthrough_relight.gd")
 const CinemaScreenBorder := preload("res://scripts/environments/cinema_screen_border.gd")
 const CinemaPictureResize := preload("res://scripts/environments/cinema_picture_resize.gd")
 const CinemaFeature := preload("res://scripts/environments/cinema_feature.gd")
@@ -88,6 +89,7 @@ var _beach_ambient_saved := {}
 var cinema_screen_border: MeshInstance3D
 ## Samples the picture so the baked screen light follows the film.
 var cinema_film_light: Node
+var passthrough_relight: Node
 var _cinema_screen_saved := {}
 var _cinema_transport_saved := {}
 var _cinema_desktop_look := false
@@ -1619,6 +1621,7 @@ func _process(delta: float) -> void:
 	_sync_display_policy()
 	_sync_cinema_screen()
 	_update_cinema_film_light(delta)
+	_update_passthrough_relight(delta)
 	_update_beach_time(delta)
 	_update_beach_handhelds()
 	if beach_environment: beach_environment.set_surf(_beach_surf_audible())
@@ -4793,6 +4796,13 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			settings.set_value("ui", "show_fps", bool(value))
 			settings.save(settings_path)
 			if player_menu and player_menu.visible: player_menu.refresh()
+		"passthrough_relight":
+			# Like person passthrough it is a session choice: off whenever the app opens.
+			relight_wanted = bool(value)
+			DiagnosticLog.record("passthrough_relight", {"enabled": bool(value)})
+			_update_background()
+			_refresh_session_controls()
+			if player_menu and player_menu.visible: player_menu.refresh()
 		"stick_seek_overlay":
 			settings.set_value("ui", "stick_seek_overlay", bool(value))
 			settings.save(settings_path)
@@ -5089,7 +5099,7 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		"loop": _set_playback_mode("repeat_one" if bool(value) else "single")
 		"reuse_last_mode": video.set_reuse_last_mode(bool(value))
 		"playback_mode": _set_playback_mode(str(value))
-		"show_status_info", "show_fps": _on_setting_changed(key, value)
+		"show_status_info", "show_fps", "passthrough_relight": _on_setting_changed(key, value)
 		"screen_curve": video.set_screen_curve(float(value)); _save_screen(); video.changed.emit()
 		"disc_title": video.select_disc_title(int(value))
 		"disc_menu":
@@ -5287,6 +5297,7 @@ func _menu_state() -> Dictionary:
 		"video_aspect_preset": video.video_aspect_preset, "video_aspect_factor": video.video_aspect_factor,
 		"alpha_fps": _alpha_fps(), "alpha_feather": _alpha_edge_value("alpha_feather"), "alpha_shrink": _alpha_edge_value("alpha_shrink"), "alpha_mask_blend": _alpha_mask_blend(),
 		"alpha_keep_background": _alpha_keep_background(),
+		"passthrough_relight": relight_wanted,
 		"show_status_info": bool(settings.get_value("ui", "show_status_info", true)),
 		"show_fps": fps_overlay != null and fps_overlay.visible,
 		"subtitle_size": video.subtitle_size * 100, "subtitle_flat_position": video.subtitle_flat_position * 100,
@@ -5951,6 +5962,52 @@ func _update_cinema_film_light(delta: float) -> void:
 	if cinema_film_light.update(delta, video, _cinema_scene_active() and not photo_active, fraction):
 		cinema_environment.set_film_light(cinema_film_light.colors)
 
+## Video-driven passthrough lighting for the flat player (regular and 3D videos alike).
+func _update_passthrough_relight(delta: float) -> void:
+	var wanted := relight_wanted
+	var page := _passthrough_relight_page()
+	if not passthrough_relight:
+		if not wanted and page == null: return
+		passthrough_relight = PassthroughRelight.new(); passthrough_relight.name = "PassthroughRelight"; add_child(passthrough_relight)
+	var floor_y := xr_origin.global_position.y if xr_origin else 0.0
+	# An open browser window with relighting on (Browser effects) takes over from the video.
+	if page != null:
+		passthrough_relight.set_enabled(true)
+		passthrough_relight.update_browser(delta, page, display.applied_passthrough and not display.preview, floor_y)
+		return
+	passthrough_relight.set_enabled(wanted)
+	var flat: bool = video != null and video.geometry == Geometry.Geometry.FLAT
+	var active: bool = display.applied_passthrough and not display.preview and flat and not photo_active
+	passthrough_relight.update(delta, video, active, floor_y)
+
+## The light button's state for the player. Not saved: like person passthrough, it starts off.
+var relight_wanted := false
+
+## Relighting needs the real room, so while it is on it asks for the camera the way person
+## passthrough does: _update_background() shows passthrough without changing the saved scenery,
+## and the session's passthrough button is disabled until the light is turned off.
+func _relight_wants_camera() -> bool:
+	if not display.supports_passthrough(): return false
+	if recent_menu is LibraryMenu and recent_menu.web_browser != null and recent_menu.web_browser.active():
+		for window in recent_menu.web_browser.windows.values():
+			if is_instance_valid(window) and window.visible and window.depth.relight: return true
+	if not relight_wanted or photo_active or (puzzle_game and puzzle_game.active): return false
+	return video != null and video.has_active_presentation() and video.geometry == Geometry.Geometry.FLAT
+
+## The browser window that lights the room: a focus-selected one first, then the nearest.
+func _passthrough_relight_page() -> Node:
+	if not display.applied_passthrough or not recent_menu is LibraryMenu: return null
+	var browser: RefCounted = recent_menu.web_browser
+	if browser == null or not browser.active(): return null
+	var best: Node = null
+	var best_score := INF
+	for window in browser.windows.values():
+		if not is_instance_valid(window) or not window.visible or not window.depth.relight or window.surface == null: continue
+		var score: float = window.page_layout().pose.origin.distance_to(window.head().origin) - (100.0 if window.is_focused() else 0.0)
+		if score < best_score:
+			best = window; best_score = score
+	return best
+
 func _cinema_curve_max(width: float = -1.0) -> float:
 	if width < 0.0: width = video._flat.size.x if video else 32.0
 	# Never bend more tightly than the old Full radius, even with a smaller picture.
@@ -6157,10 +6214,11 @@ func _update_background() -> void:
 	# projection hole. Preserve the saved player policy for when the browser ends.
 	var keep_background := _alpha_keep_background() and not surface_alpha
 	# Keep the original camera/scenery policy intact unless retention is active.
-	var wants_passthrough: bool = alpha or temporary_passthrough or scenery.choice == "passthrough"
+	var relight := _relight_wants_camera()
+	var wants_passthrough: bool = alpha or temporary_passthrough or relight or scenery.choice == "passthrough"
 	var hide_scenery: bool = immersive
 	if alpha and keep_background:
-		wants_passthrough = scenery.choice == "passthrough"
+		wants_passthrough = relight or scenery.choice == "passthrough"
 		hide_scenery = false
 	if video: video.alpha_over_scenery = keep_background and scenery.choice != "passthrough"
 	if cinema_environment:
@@ -6233,7 +6291,7 @@ func _session_controls_state() -> Dictionary:
 	return {"follow": view_follow.enabled, "follow_enabled": not _cinema_scene_active() or photo_active,
 		"passthrough_visible": _active_background() != null and (_active_background().choice != "passthrough" or _vr_video_present()),
 		"passthrough_supported": display.supports_passthrough(),
-		"passthrough": _vr_passthrough_active() if _vr_video_present() and not _person_passthrough() else display.applied_passthrough, "alpha": _person_passthrough(),
+		"passthrough": _vr_passthrough_active() if _vr_video_present() and not _person_passthrough() else display.applied_passthrough, "alpha": _person_passthrough() or _relight_wants_camera(),
 		"cinema_visible": _cinema_scene_active() and not photo_active, "cinema_moving": _cinema_interaction_owns(),
 		"cinema_light_tip": _beach_time_tip() if _beach_active() else _cinema_light_tip(),
 		"cinema_lights": {"auto": "auto", "day": "on", "night": "off"}[_beach_time_mode()] if _beach_active() else str(settings.get_value("appearance", "cinema_lights", "auto"))}
@@ -6274,7 +6332,7 @@ func _on_session_control(operation: String) -> void:
 	if operation == "temporary_passthrough":
 		if _vr_video_present() and not _person_passthrough():
 			_enter_vr_passthrough(); return
-		if _person_passthrough() or not _active_background() or _active_background().choice == "passthrough" or not display.supports_passthrough(): return
+		if _person_passthrough() or _relight_wants_camera() or not _active_background() or _active_background().choice == "passthrough" or not display.supports_passthrough(): return
 		var previous := temporary_passthrough
 		temporary_passthrough = not previous
 		_update_background()

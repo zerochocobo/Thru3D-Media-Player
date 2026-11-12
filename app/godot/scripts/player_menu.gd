@@ -91,6 +91,8 @@ var _audio_source := ""
 var choices := ChoiceFields.new(self)
 signal setting_requested(key: String, value: Variant)
 const MODE := 120
+## Bar shortcut for passthrough relighting (also in Settings › More).
+const RELIGHT_BAR := 987200
 static var SELECTED: Color:
 	get: return UiTheme.color("selected")
 const MODE_PROJECTION := 130
@@ -964,6 +966,9 @@ func _draw_bar() -> void:
 	if _cast_allowed("favorite"): _draw_favorite(Vector2(0.28, 0.215))
 	disc_titles.draw_button(Vector2(0.56 if _state.get("capture", {}).get("available", false) else 0.42, 0.215))
 	_draw_capture_action()
+	# Past the capture and disc-title buttons, which take 0.42 and 0.56 when present.
+	_round(RELIGHT_BAR, "light", Vector2(0.70 if _state.get("capture", {}).get("available", false) else 0.56, 0.215), 0.08, true,
+		bool(_state.get("passthrough_relight", false)), I18n.t("Passthrough relighting"))
 	if _state.get("audio_play_during_video", false):
 		if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): action_requested.emit("music_toggle"))
 		music_quick.draw(MUSIC_OPEN, Vector2(-0.56 if not _state.get("bookmarks", []).is_empty() else -0.42, 0.215), _state)
@@ -1965,7 +1970,7 @@ func release_pointer(hand: String, _origin: Vector3, _direction: Vector3, _track
 		_volume_hand = ""
 
 func _bar_key() -> String:
-	return str([_state.get("hand_lock_available", false), _state.get("subtitle_encoding_row", {}), _state.get("audio_play_during_video", false), _state.get("audio_current", ""), _state.get("audio_title", ""), _state.get("audio_paused", true), _state.get("audio_active", false),
+	return str([_state.get("passthrough_relight", false), _state.get("hand_lock_available", false), _state.get("subtitle_encoding_row", {}), _state.get("audio_play_during_video", false), _state.get("audio_current", ""), _state.get("audio_title", ""), _state.get("audio_paused", true), _state.get("audio_active", false),
 		_state.get("narration_voice_kind", "preset"), _state.get("narration_custom_voice", ""), _state.get("narration_personal_voices", []), _state.get("narration_voice_warning", ""), _state.get("narration_preview_status", ""), _state.get("narration_clone_state", {}).get("revision", 0)]) + _base_bar_key()
 
 func _base_bar_key() -> String:
@@ -2147,6 +2152,7 @@ func _draw_panel() -> void:
 	var depth_position_setting: bool = section == 1 and _cast_allowed(DepthPosition.KEY)
 	var height := 0.12 + tile_rows * 0.105 + (0.430 + ((0.085 + (0.355 if _alpha_expanded else 0.0)) if alpha_fps else 0.0) if section == 1 else 0.36)
 	if depth_position_setting: height += 0.085
+	if section == 1: height += 0.085 # Passthrough relighting
 	if alpha_fps and _alpha_expanded and _state.get("portrait_requested", false): height += 0.17
 	if alpha_fps and _state.get("flat_passthrough_requested", false): height += 0.17
 	var top := _settings_frame(height)
@@ -2192,6 +2198,8 @@ func _draw_panel() -> void:
 			_slider_tick(453, 1.0, "1×", y)
 		y -= 0.085
 		_keep_background_row(y)
+		y -= 0.085
+		_passthrough_relight_row(y)
 		if alpha_fps:
 			y -= 0.085
 			_alpha_group_header(y)
@@ -2293,6 +2301,15 @@ func _keep_background_row(y: float) -> void:
 	choices.field(null, {"key": "alpha_keep_background", "value": _state.get("alpha_keep_background", false),
 		"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}, Vector2(0.21, y), 0.46, 0.05)
 
+## Video-driven room lighting: the picture tints the passthrough room, glows around the
+## screen and grounds it with a floor shadow. Shared by regular and 3D videos.
+func _passthrough_relight_row(y: float) -> void:
+	var heading := _label(I18n.t("Passthrough relighting"), Vector3(-0.50, y, 0.004), TEXT_BODY)
+	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	choices.field(null, {"key": "passthrough_relight", "value": _state.get("passthrough_relight", false),
+		"hint": "The picture's colour lights the room, glows around the screen and casts a floor shadow while passthrough is shown.",
+		"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}, Vector2(0.21, y), 0.46, 0.05)
+
 func _alpha_group_header(y: float) -> void:
 	_button(ALPHA_GROUP, "", Vector2(0, y), Vector2(1.02, 0.06))
 	var node: MeshInstance3D = _buttons.back().node
@@ -2309,7 +2326,7 @@ func _settings_key() -> String:
 	return str([_state.get("cast", {})]) + str([_state.get("source_uri", ""), _state.get("has_video", false),
 		_state.get("portrait_requested", false), _state.get("flat_passthrough_requested", false), _state.get("portrait_auto", true), _state.get("portrait_enhanced", false),
 		_state.get("playback_mode", "single"), _state.get("seek_mode", "speed"), _state.get("depth_render", "stretch"), _state.get("depth_text_protection", true), _state.get("stereo", false), _state.get("geometry", 0),
-		_state.get("show_status_info", true), _state.get("show_fps", false), _state.get("alpha_keep_background", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
+		_state.get("show_status_info", true), _state.get("show_fps", false), _state.get("alpha_keep_background", false), _state.get("passthrough_relight", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
 		_state.get("immersive_adjustment_gauges", true), _state.get("video_auto_3d", false),
 		_state.get("screen_edit_locked", false), _state.get("screen_default_locked", false), _state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("screen_scene_curve", true), _state.get("cinema_lights", "auto"),
@@ -2410,6 +2427,12 @@ func _activate_hit(hit: Dictionary) -> void:
 		super._activate_hit(hit)
 
 func _activate(target: int) -> void:
+	if target == RELIGHT_BAR:
+		var on := not bool(_state.get("passthrough_relight", false))
+		_state["passthrough_relight"] = on
+		setting_requested.emit("passthrough_relight", on)
+		refresh()
+		return
 	if screen_lock_ui.activate(target): return
 	if section == 0 and _subtitle_open and target in [SUBTITLE_GENERATE, SUBTITLE_TASK_CANCEL, SUBTITLE_TASKS]:
 		setting_requested.emit("listening_generate" if target == SUBTITLE_GENERATE else ("listening_cancel" if target == SUBTITLE_TASK_CANCEL else "subtitle_tasks_open"), _state.get("subtitle_task", {}).get("id", ""))
@@ -2763,6 +2786,7 @@ func _surface_color(button: Dictionary, color: Color) -> Color:
 		return SELECTED
 	if button.target == 10 + section and not hovered: return UiTheme.color("selected")
 	if button.target == 104 and button.enabled and not hovered and _state.get("alpha_requested", false): return UiTheme.color("selected")
+	if button.target == RELIGHT_BAR and not hovered and _state.get("passthrough_relight", false): return UiTheme.color("selected")
 	if button.target == _depth_icon_target() and button.enabled:
 		var active: bool = _state.get("depth_requested", false) or _state.get("native_stereo", false)
 		return SELECTED if active else (UiTheme.color("muted_hover") if hovered else button.base_color)

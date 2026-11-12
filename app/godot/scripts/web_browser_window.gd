@@ -529,13 +529,17 @@ func _depth_changed(key: String, value: Variant) -> void:
 		for peer in browser.windows.values():
 			peer.depth.auto_3d_hidden = depth.auto_3d_hidden
 			if peer != self and peer.depth_settings: peer.refresh()
+	if key == "relight":
+		for peer in browser.windows.values():
+			peer.depth.relight = depth.relight
+			if peer != self and peer.depth_settings: peer.refresh()
 	if key == "matte": depth.error = ""; depth.state = "preparing"
 	if key == "strength" and depth.strength <= 0.0: depth.enabled = false
 	refresh()
 	browser.effects_changed.emit()
 
 func _draw_depth_settings() -> void:
-	var panel := _quad(Vector2(0.98, 0.56), Vector3(0.13, 0.095, 0.028), PANEL, 30)
+	var panel := _quad(Vector2(0.98, 0.69), Vector3(0.13, 0.03, 0.028), PANEL, 30)
 	add_child(panel); _decorations.append(panel); _pointer_panels.append(panel)
 	var title := _label(I18n.t("Browser effects"), Vector3(-0.30, 0.325, 0.04), 24)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; title.render_priority = 32
@@ -559,6 +563,14 @@ func _draw_depth_settings() -> void:
 		"choices":[{"value":false,"label":"Off"},{"value":true,"label":"On"}],
 		"hint":"Automatically enable 2D to 3D when browser menus are hidden."}, Vector2(0.50, -0.05), 0.09, 0.055)
 	for button in _buttons.slice(auto_first):
+		button.node.position.z += 0.038; _depth_overlay_priority(button.node)
+	var relight_title := _label(I18n.t("Passthrough relighting"), Vector3(-0.30, -0.18, 0.04), 20)
+	relight_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; relight_title.render_priority = 32
+	var relight_first := _buttons.size()
+	depth_choices.field(null, {"key":"relight", "value":depth.relight, "switch":true,
+		"choices":[{"value":false,"label":"Off"},{"value":true,"label":"On"}],
+		"hint":"The page lights the room, glows around the window and shades the floor."}, Vector2(0.50, -0.18), 0.09, 0.055)
+	for button in _buttons.slice(relight_first):
 		button.node.position.z += 0.038; _depth_overlay_priority(button.node)
 	var popup_buttons := _buttons.size()
 	var popup_panels := _decorations.size()

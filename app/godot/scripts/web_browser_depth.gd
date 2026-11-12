@@ -8,6 +8,9 @@ var strength := Strength.VIDEO_DEFAULT
 var position := 0.0
 var render_mode := "stretch"
 var auto_3d_hidden := false
+## Passthrough relighting from the page (shared by every window). Not saved: like person
+## passthrough (matte) it is off whenever the app opens.
+var relight := false
 var state := ""
 var error := ""
 var config_path := "user://browser_depth.cfg"
@@ -28,6 +31,7 @@ func change(key: String, value: Variant) -> void:
 	elif key == "render_mode" and value in ["stretch", "fill"]: render_mode = value
 	elif key == "matte": matte = bool(value)
 	elif key == "auto_3d_hidden": auto_3d_hidden = bool(value)
+	elif key == "relight": relight = bool(value)
 	var config := ConfigFile.new()
 	config.set_value("depth", "strength", strength)
 	config.set_value("depth", "position", position)
