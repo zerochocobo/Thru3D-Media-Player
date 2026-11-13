@@ -373,6 +373,7 @@ internal class MediaSources(
     private fun directPlayable(uri: String): String = when {
         uri.startsWith("externalvideo://") -> externalVideo.playable(uri) ?: error("External video unavailable")
         webVideo.descriptor(uri) != null -> webVideo.prepare(webVideo.descriptor(uri)!!)
+        uri.startsWith("webvideo:") -> error("Captured video session is no longer available")
         runCatching { WebVideoPage.parse(uri) }.isSuccess -> error("Resolve this video from the browser before playing")
         uri.startsWith("dlna://") -> dlna.playable(uri)
         (uri.startsWith("http://") || uri.startsWith("https://")) && java.net.URI(uri).path.orEmpty().endsWith(".iso", true) -> {

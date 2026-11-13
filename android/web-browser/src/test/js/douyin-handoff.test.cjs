@@ -16,7 +16,7 @@ function fixture(){
    Thru3DPlayButton:{visible:()=>true,create(doc,overlay,site,clicked){const host={dataset:{},isConnected:true,hidden:false};buttons.push({host,clicked});return {host,enabled(){},dispose(){host.isConnected=false}}}},
    browser:{runtime:{connect(){const p={onMessage:signal(),onDisconnect:signal(),postMessage(){}};ports.push(p);return p},
      connectNative(){const p={onMessage:signal(),onDisconnect:signal(),messages:[],postMessage(m){this.messages.push(m)}};ports.push(p);return p}}}};
- vm.createContext(context);for(const name of ['douyin.js','douyin-current.js','media.js'])vm.runInContext(fs.readFileSync(path.join(root,name),'utf8'),context);
+ vm.createContext(context);for(const name of ['douyin.js','douyin-current.js','direct-return.js','media.js'])vm.runInContext(fs.readFileSync(path.join(root,name),'utf8'),context);
  const flush=()=>{let n=0;while(timers.length){assert.ok(++n<100);timers.shift()()}};flush();
  const native=ports.find(p=>p.messages),network=ports.find(p=>!p.messages);
  native.onMessage.emit({action:'network_policy',douyin:true});flush();

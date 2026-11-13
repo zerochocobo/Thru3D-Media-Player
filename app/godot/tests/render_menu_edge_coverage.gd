@@ -62,6 +62,27 @@ func _run() -> void:
 			for channel in 3:
 				check(absf(after[channel] - before[channel] * keep) < 0.02,
 					"Premultiplied channel %d follows coverage %d, background %s" % [channel, x, alpha])
+	# Opaque scenery: the layer underneath already carries its coverage, so the projection alpha is
+	# cleared and only RGB is scaled; the compositor then shows menu*c + scene*(1-c), not menu*c*c.
+	plate.albedo_color.a = 1.0
+	material.set_shader_parameter("opaque_scene", true)
+	hole.visible = false
+	await process_frame; await RenderingServer.frame_post_draw
+	var opaque_reference := viewport.get_texture().get_image()
+	hole.visible = true
+	await process_frame; await RenderingServer.frame_post_draw
+	var opaque_result := viewport.get_texture().get_image()
+	for x in 5:
+		var point := Vector2i(32 + 64 * x, 40)
+		var before := opaque_reference.get_pixelv(point)
+		var after := opaque_result.get_pixelv(point)
+		var coverage := mask.get_pixel(x, 0).a
+		# Without coverage the filtered mask may still graze coverage_min; RGB then stays unscaled.
+		if coverage > 0.0: check(after.a < 0.015, "Opaque scenery clears projection alpha under coverage %d" % x)
+		for channel in 3:
+			check(absf(after[channel] - before[channel] * (1.0 - coverage)) < 0.02,
+				"Opaque scenery scales channel %d by coverage %d" % [channel, x])
+	material.set_shader_parameter("opaque_scene", false)
 	# A tooltip's fractional hole must not prevent the opaque menu hole behind it
 	# from clearing the same pixels. Their transparent draw order changes with view angle.
 	var panel := MeshInstance3D.new()

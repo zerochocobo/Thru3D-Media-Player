@@ -11,13 +11,14 @@
   let handoff = null;
   let pauseLease = null, lastPauseToken = 0;
   const resuming = new WeakMap();
-  let directReturnPause = null;
-  const keepDirectReturnPaused = video => {
-    const saved=directReturnPause;if(!saved)return false;
-    const age=Date.now()-saved.at;
-    if(age<0||age>30000||saved.page!==location.href||!saved.video.isConnected||saved.video.currentSrc!==saved.source||mediaEpoch.get(saved.video)?.id!==saved.epoch){directReturnPause=null;return false;}
-    return video===saved.video;
-  };
+  const directReturn = Thru3DDirectReturn.create({
+    valid:saved => !closed && saved.page===location.href && saved.video.isConnected &&
+      saved.video.currentSrc===saved.source && mediaEpoch.get(saved.video)?.id===saved.epoch &&
+      !encrypted.has(saved.video) && !saved.video.mediaKeys,
+    available:() => !closed && !suspended && !pauseLease && !document.hidden,
+    changed:() => changed()
+  });
+  const keepDirectReturnPaused = video => directReturn.holds(video);
   let iqiyiReturnPause = null;
   let tiktokReturnPause = null;
   const keepTikTokReturnPaused=video=>{
@@ -113,7 +114,8 @@
   // The site's seek completion can call play again after we restored a paused
   // position. Preserve that return intent through buffering, until a real gesture.
   for(const name of ['pointerdown','mousedown','touchstart','keydown'])addEventListener(name,event=>{
-    if(event.isTrusted){directReturnPause=null;iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;tiktokReturnPause=null;instagramReturnPause=null;instagramRestore=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;redditReturnPause=null;naverReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;}
+    directReturn.gesture(event);
+    if(event.isTrusted){iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;tiktokReturnPause=null;instagramReturnPause=null;instagramRestore=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;redditReturnPause=null;naverReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;}
   },true);
   const holdPaused = video => {
     if (pauseLease && pauseLease.page !== location.href) pauseLease = null;
@@ -861,9 +863,10 @@
     const root = document.fullscreenElement;
     return !!root && (root === element || !!root.contains?.(element));
   };
-  const send = () => {
+  const send = (snapshotRequest = '') => {
     scheduled = false;
     if (closed) return;
+    directReturn.sync();
     if(redbullEnabled&&!suspended&&!pauseLease&&!document.hidden)discoverRedBullShadow();
     weiboControls?.sync(weiboEnabled);
     if (networkPage !== location.href) {
@@ -1171,6 +1174,7 @@
     }
     const controlled = [...videos.keys()].filter(v => v.isConnected && (v.currentSrc || v.readyState > 0));
     const report = { type: "media", videos: items,
+      ...(typeof snapshotRequest==='string' && /^[A-Za-z0-9_-]{1,64}$/.test(snapshotRequest) ? {snapshot_request:snapshotRequest} : {}),
       ...(mangoEnabled?{mango_capture:mangoCapture}:{}),
       ...(youkuEnabled?{youku_capture:youkuCapture}:{}),
       ...(niconicoEnabled?{niconico_capture:niconicoCapture}:{}),
@@ -1236,6 +1240,7 @@
   };
   const mutation = new MutationObserver((records) => {
     for (const record of records) for (const node of record.addedNodes) observe(node);
+    directReturn.sync();
   });
   mutation.observe(document, { childList: true, subtree: true });
   observe(document);
@@ -1342,7 +1347,8 @@
       if (!video || !video.isConnected || encrypted.has(video) || video.mediaKeys ||
           mediaEpoch.get(video)?.id !== message.epoch || video.currentSrc !== message.source ||
           !/^https?:\/\//i.test(video.currentSrc) || !Number.isFinite(message.time) || message.time < 0) return;
-      directReturnPause=message.play===true?null:{video,source:video.currentSrc,epoch:message.epoch,page:location.href,at:Date.now()};
+      directReturn.clear();
+      if(message.play!==true)directReturn.restore({video,source:video.currentSrc,epoch:message.epoch,page:location.href});
       video.pause();
       video.currentTime = Number.isFinite(video.duration) ? Math.min(message.time, Math.max(0, video.duration - .05)) : message.time;
       if (message.play === true) { try { Promise.resolve(video.play()).catch(() => {}); } catch (_) {} }
@@ -1351,6 +1357,7 @@
       const token = message.token;
       if (!Number.isSafeInteger(token) || token <= lastPauseToken) return;
       lastPauseToken = token;
+      directReturn.clear();
       instagramRestore=null;
       // MediaSession.pause may have completed before this message arrives. Preserve
       // the native snapshot of this port's original playing IDs, not the new pause.
@@ -1383,6 +1390,7 @@
       // Ordinary tab/background suspension still releases its temporary hold.
       if(message.keep_pause!==true||message.pause_token!==pauseLease?.token)pauseLease = null;
       suspended = true;
+      directReturn.sync();
       for (const video of videos.keys()) video.pause();
       send(); // A background page's timer may be throttled after Gecko becomes inactive.
     } else if (message?.action === "resume") {
@@ -1601,9 +1609,10 @@
       if (message.play === true) { try { Promise.resolve(video.play()).catch(()=>{}); } catch (_) {} }
       else video.pause();
       send();
-    } else if (message?.action === "snapshot") send();
+    } else if (message?.action === "snapshot") send(message.snapshot_request);
     });
     port.onDisconnect.addListener(() => { if (port === connection) {
+      directReturn.clear();
       closed = true; pauseLease = null; weiboChoice = null; bilibiliChoice=null;mangoChoice=null;
       mangoButton?.dispose();mangoButton=null;
       youkuButton?.dispose();youkuButton=null;youkuChoice=null;
@@ -1648,6 +1657,7 @@
     if (event.persisted) { if(!closed){closed=true;port.disconnect();} connected(); networkPort.disconnect(); connectNetwork(); }
   });
   addEventListener("pagehide", (event) => {
+    directReturn.clear();
     network = []; networkPort.disconnect();
     if (!event.persisted) { handoff = null; mutation.disconnect(); videos.clear(); if(!closed){closed=true;port.disconnect();} }
   });

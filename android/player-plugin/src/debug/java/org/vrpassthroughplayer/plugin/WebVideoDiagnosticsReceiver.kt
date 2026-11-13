@@ -13,6 +13,18 @@ class WebVideoDiagnosticsReceiver : BroadcastReceiver() {
         if (!request.matches(Regex("[A-Za-z0-9_-]{1,64}"))) return
         if (intent.getStringExtra("operation") == "browser_capture") { capture(context, request); return }
         if (intent.getStringExtra("operation") == "browser_system_input") { systemInput(context, request); return }
+        if (intent.getStringExtra("operation") == "browser_snapshot") {
+            val pending = goAsync()
+            Thread({
+                val result = JSONObject().put("request", request)
+                try {
+                    val source = DiagnosticRequests.current()?.refreshWebBrowserForDiagnostics() ?: error("Player not running")
+                    result.put("browser", safeBrowserSnapshot(source)).put("ok", true)
+                } catch (_: Exception) { result.put("ok", false).put("error", "Fresh browser snapshot unavailable") }
+                finally { writeResult(context, request, result); pending.finish() }
+            }, "BrowserMediaReadback").start()
+            return
+        }
         if (intent.getStringExtra("operation") == "browser_media") {
             val pending = goAsync()
             Thread({
@@ -32,32 +44,7 @@ class WebVideoDiagnosticsReceiver : BroadcastReceiver() {
                 "resolve" -> result.put("id", plugin.web_video_resolve(intent.getStringExtra("url").orEmpty()))
                 "status" -> result.put("video", JSONObject(plugin.web_video_status()))
                 "cancel" -> plugin.web_video_cancel()
-                "browser_status" -> {
-                    val source = JSONObject(plugin.web_browser_status())
-                    val safe = JSONObject()
-                    for (key in listOf("engine", "progress", "error", "active", "attached", "playing", "generation",
-                        "detached_through", "needs_surface", "extension", "videos", "tabs", "native_supported", "editing", "session_ready", "tab_id", "navigation", "focused_window", "operation_error", "live_tabs", "network_capture_enabled", "network_capture_available", "bilibili_beta_available", "douyin_beta_available", "weibo_beta_available", "tencent_beta_available", "mango_beta_available", "youku_beta_available", "iqiyi_beta_available", "niconico_beta_available", "twitch_beta_available", "tiktok_beta_available", "instagram_beta_available", "ted_beta_available", "redbull_beta_available", "streamable_beta_available", "reddit_beta_available", "naver_beta_available", "archive_beta_available", "odysee_beta_available", "dailymotion_beta_available", "retained_for_playback", "weibo_request", "weibo_selection", "beta_request", "beta_selection", "pause_token", "pause_confirmed")) {
-                        if (source.has(key)) safe.put(key, source.get(key))
-                    }
-                    for (key in listOf("pause_ports", "pause_report_ports", "pause_media_ports", "pause_missing_media_ports", "media_report_age_ms")) {
-                        if (source.has(key)) safe.put(key, source.optLong(key))
-                    }
-                    safe.put("page", runCatching { WebVideoPage.parse(source.optString("url")).url }.getOrNull()
-                        ?: WebVideoDouyinCapture.page(source.optString("url"))?.url
-                        ?: source.optString("url").takeIf { WebBrowserWeibo.document(it) || WebBrowserTencent.document(it) || WebBrowserTikTok.feed(it) || WebBrowserInstagram.feed(it) || WebBrowserReddit.enabled(it) || WebBrowserNaver.observing(it) }?.let { java.net.URI(it).let { u -> "${u.scheme}://${u.host}${u.rawPath}" } }.orEmpty())
-                    val windows = org.json.JSONArray()
-                    for (entry in source.optJSONArray("windows")?.let { array -> (0 until array.length()).map { array.getJSONObject(it) } }.orEmpty()) {
-                        val item = JSONObject()
-                        for (key in listOf("id", "tab_id", "navigation", "attached", "generation", "detached_through", "needs_surface", "editing", "error", "progress")) item.put(key, entry.opt(key))
-                        windows.put(item)
-                    }
-                    val tabs = org.json.JSONArray()
-                    for (entry in source.optJSONArray("tab_list")?.let { array -> (0 until array.length()).map { array.getJSONObject(it) } }.orEmpty()) {
-                        tabs.put(JSONObject().put("id", entry.optInt("id")).put("window", entry.optInt("window")).put("sleeping", entry.optBoolean("sleeping")).put("protected", entry.optBoolean("protected")))
-                    }
-                    safe.put("windows", windows).put("tab_list", tabs)
-                    result.put("browser", safe)
-                }
+                "browser_status" -> result.put("browser", safeBrowserSnapshot(JSONObject(plugin.web_browser_status())))
                 "browser_command" -> {
                     val action = intent.getStringExtra("command").orEmpty()
                     require(action in setOf("new", "select", "close", "detach", "merge", "focus"))
@@ -90,6 +77,33 @@ class WebVideoDiagnosticsReceiver : BroadcastReceiver() {
             result.put("ok", true)
         } catch (_: Exception) { result.put("ok", false).put("error", "Web video diagnostic unavailable") }
         writeResult(context, request, result)
+    }
+
+    private fun safeBrowserSnapshot(source: JSONObject): JSONObject {
+        val safe = JSONObject()
+        for (key in listOf("engine", "progress", "error", "active", "attached", "playing", "generation", "direct_selection",
+            "detached_through", "needs_surface", "extension", "videos", "tabs", "native_supported", "editing", "session_ready", "tab_id", "navigation", "focused_window", "operation_error", "live_tabs", "network_capture_enabled", "network_capture_available", "bilibili_beta_available", "douyin_beta_available", "weibo_beta_available", "tencent_beta_available", "mango_beta_available", "youku_beta_available", "iqiyi_beta_available", "niconico_beta_available", "twitch_beta_available", "tiktok_beta_available", "instagram_beta_available", "ted_beta_available", "redbull_beta_available", "streamable_beta_available", "reddit_beta_available", "naver_beta_available", "archive_beta_available", "odysee_beta_available", "dailymotion_beta_available", "retained_for_playback", "weibo_request", "weibo_selection", "beta_request", "beta_selection", "pause_token", "pause_confirmed")) {
+            if (source.has(key)) safe.put(key, source.get(key))
+        }
+        for (key in listOf("snapshot_ports", "pause_ports", "pause_report_ports", "pause_media_ports", "pause_missing_media_ports", "media_report_age_ms")) {
+            if (source.has(key)) safe.put(key, source.optLong(key))
+        }
+        safe.put("page", runCatching { WebVideoPage.parse(source.optString("url")).url }.getOrNull()
+            ?: WebVideoDouyinCapture.page(source.optString("url"))?.url
+            ?: source.optString("url").takeIf { WebBrowserWeibo.document(it) || WebBrowserTencent.document(it) || WebBrowserTikTok.feed(it) || WebBrowserInstagram.feed(it) || WebBrowserReddit.enabled(it) || WebBrowserNaver.observing(it) }?.let { java.net.URI(it).let { u -> "${u.scheme}://${u.host}${u.rawPath}" } }.orEmpty())
+        val windows = org.json.JSONArray()
+        for (entry in source.optJSONArray("windows")?.let { array -> (0 until array.length()).map { array.getJSONObject(it) } }.orEmpty()) {
+            val item = JSONObject()
+            for (key in listOf("id", "tab_id", "navigation", "attached", "generation", "detached_through", "needs_surface", "editing", "error", "progress")) item.put(key, entry.opt(key))
+            windows.put(item)
+        }
+        val tabs = org.json.JSONArray()
+        for (entry in source.optJSONArray("tab_list")?.let { array -> (0 until array.length()).map { array.getJSONObject(it) } }.orEmpty()) {
+            tabs.put(JSONObject().put("id", entry.optInt("id")).put("window", entry.optInt("window")).put("sleeping", entry.optBoolean("sleeping")).put("protected", entry.optBoolean("protected")))
+        }
+        safe.put("windows", windows).put("tab_list", tabs)
+        for (key in listOf("snapshot_request", "snapshot_confirmed")) if (source.has(key)) safe.put(key, source.get(key))
+        return safe
     }
 
     private fun systemInput(context: Context, request: String) {

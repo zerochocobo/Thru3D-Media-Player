@@ -194,7 +194,10 @@ func close(force_release: bool = false) -> void:
 	opened = false; handoff = false; handoff_waiting_pause = false; pause_started = 0
 	opening = false; window_action.clear()
 	handoff_context.clear()
-	for item in windows.values(): item.save_layout(); item.dismiss()
+	# Hidden windows hold a stale world pose relative to the current head.
+	for item in windows.values():
+		if item.visible: item.save_layout()
+		item.dismiss()
 	tabs_open = false
 
 func set_scene_suspended(value: bool) -> void:

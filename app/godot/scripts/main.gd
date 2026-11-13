@@ -96,6 +96,8 @@ var _cinema_was_active := false
 var _cinema_move_hands := {}
 var _cinema_stick_direction := Vector2.ZERO
 var _cinema_stick_waiting_for_neutral := true
+var _cinema_stick_hand := "right_hand"
+var _scene_move_hint_until := 0
 var _cinema_menu_overlays := {}
 var _cinema_viewing_preview := false
 var _cinema_gesture_hint := ""
@@ -676,7 +678,7 @@ func _ready() -> void:
 	add_child(photo_background)
 	scenery.setup(self, scenery_menu)
 	var scene_import_script := load("res://scripts/scene_import/scene_import_controller.gd") as GDScript
-	if scene_import_script and scene_import_script.enabled():
+	if scene_import_script:
 		scene_import = scene_import_script.new()
 		add_child(scene_import)
 		scene_import.setup(self)
@@ -1036,7 +1038,7 @@ func _route_controller_button(action: String, hand: String = "") -> String:
 		_controller_consumed[hand + "/" + action] = true; return "handled.beach_scene"
 	# Free movement uses an otherwise unclaimed trigger to retrieve controls.
 	if action == "trigger_click" and first_press and _cinema_interaction_owns() and not _cinema_input_blocked():
-		cinema_environment.suspend(); _show_player_menu()
+		_move_host().suspend(); _show_player_menu()
 		_controller_consumed[hand + "/" + action] = true; return "handled.cinema_menu"
 	if action == "grip_click" and first_press and _beach_screen_grab(hand):
 		_controller_consumed[hand + "/" + action] = true; return "handled.beach_screen_grab"
@@ -1480,7 +1482,7 @@ func _on_pointer_button(action: String, hand: String) -> void:
 	if action == "by_button" and hand == "right_hand" and video and video.captures.stop(): return
 	if action == "trigger_click" and _cinema_interaction_owns() and not _cinema_input_blocked():
 		if not _picture_pinch_allowed(hand): return
-		cinema_environment.suspend(); _show_player_menu(); _controller_consumed[hand + "/" + action] = true; return
+		_move_host().suspend(); _show_player_menu(); _controller_consumed[hand + "/" + action] = true; return
 	if action == "by_button" and _cinema_interaction_owns() and not _active_menu():
 		_cinema_request_interaction("watch"); return
 	if puzzle_game and puzzle_game.active:
@@ -1801,6 +1803,7 @@ func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> String
 		_immersive_zoom_pending = false
 		if video: video.commit_stereo_view()
 	if cinema_environment and _cinema_input_blocked(): cinema_environment.suspend()
+	if scene_import and _cinema_input_blocked(): scene_import.suspend()
 	if not _cinema_interaction_owns() or _cinema_input_blocked(): _suspend_cinema_move_stick()
 	if not _flat_zoom_hand.is_empty() and (photo_active or video.geometry != Geometry.Geometry.FLAT \
 		or (left if _flat_zoom_hand == "left_hand" else right).length() < 0.3): _finish_flat_zoom()
@@ -1829,6 +1832,8 @@ func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> String
 			for target in interface_move.capture.get("targets", []):
 				if target.kind == "screen" and is_instance_valid(target.node): target.node.set_screen_distance(_surface_distance(target.node))
 			if menu and not interface_move.capture.is_empty(): _update_menu_pointer(interface_move.capture.hand)
+		if not chord_pending and _resize_gripped_video(held, delta):
+			stick_controls.suspend(); return "routed.flat_grip_size"
 		if not chord_pending: stick_controls.suspend(); return "routed.interface_distance"
 	if not interface_move.capture.is_empty() and interface_move.capture.moved:
 		stick_controls.suspend(); return "blocked.interface_move"
@@ -2279,6 +2284,7 @@ func _cancel_pointer(hand: String) -> void:
 	_vr_release_guard.erase(hand)
 	if video and video.get("pip"): video.pip.cancel_pointer(hand)
 	if cinema_environment: cinema_environment.cancel_pointer(hand)
+	if scene_import: scene_import.cancel_pointer(hand)
 	controller_bindings.cancel_hand(hand)
 	if _video_control_tap.get("hand", "") == hand: _video_control_tap = {}
 	if not interface_move.capture.is_empty() and interface_move.capture.hand == hand: interface_move.cancel()
@@ -2303,6 +2309,7 @@ func _on_input_session_changed() -> void:
 		_immersive_zoom_pending = false
 		if video: video.commit_stereo_view()
 	if cinema_environment: cinema_environment.suspend()
+	if scene_import: scene_import.suspend()
 	if not _input_focused() and _cinema_desktop_look:
 		_cinema_desktop_look = false; Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	if puzzle_game and puzzle_game.active and not _input_focused():
@@ -2565,6 +2572,8 @@ func _update_controller_feedback(delta: float) -> void:
 			if _beach_active() and beach_environment.scene_hover(hand, ray[0] if ray != null else Vector3.ZERO, ray[1] if ray != null else Vector3.FORWARD, focused and not _beach_scene_blocked(ray) and screen_edit_lock.beach_hover_allowed(ray)):
 				_scene_target_pulse(hand)
 			cinema_environment.update_pointer(hand, ray[0] if ray != null else Vector3.ZERO, ray[1] if ray != null else Vector3.FORWARD, valid_cinema_ray)
+		if scene_import and scene_import.movable():
+			scene_import.update_pointer(hand, ray[0] if ray != null else Vector3.ZERO, ray[1] if ray != null else Vector3.FORWARD, ray != null and focused and _cinema_interaction_owns() and not _cinema_input_blocked())
 		var engaged: bool = not controller_bindings.down[hand].is_empty() \
 			or interface_move.capture.get("hand", "") == hand or _grab.get("hand", "") == hand \
 			or (photo_active and photo.gallery.capture.get("hand", "") == hand)
@@ -3054,6 +3063,25 @@ func _zoom_video(amount: float, hand: String = "right_hand") -> void:
 		video.zoom_view(amount)
 		_immersive_zoom_pending = true
 		_show_immersive_adjustment("view_zoom")
+
+## The captured video's own grip owns horizontal resizing; menus/photos keep their existing input.
+func _resize_gripped_video(stick: Vector2, delta: float) -> bool:
+	if photo_active or not video or video.geometry != Geometry.Geometry.FLAT or screen_edit_lock.locked() or _cinema_video_locked(): return false
+	var capture := interface_move.capture
+	if capture.is_empty() or capture.input != "grip_click" or not capture.get("depth_ready", false): return false
+	if not stick.is_finite() or not is_finite(delta) or delta <= 0.0 or absf(stick.x) <= 0.2 or absf(stick.x) <= absf(stick.y): return false
+	if _move_pose(capture.hand) == null or controller_bindings.down[capture.hand].has("trigger_click"): return false
+	for target in capture.targets:
+		if target.node != video or target.kind != "screen": continue
+		var before: Transform3D = video.global_transform * video.flat_pose
+		var amount := signf(stick.x) * (absf(stick.x) - 0.2) / 0.8 * ZOOM_SPEED * minf(delta, 0.1)
+		_zoom_video(amount, capture.hand)
+		# Upright screens resize about their bottom edge. Keep the grip's original
+		# movement baseline in step so its next update cannot undo that placement.
+		if target.get("cinema", false): target.pose.origin += (video.global_transform * video.flat_pose).origin - before.origin
+		capture.moved = true
+		return true
+	return false
 
 func _finish_flat_zoom() -> void:
 	if _flat_zoom_hand.is_empty(): return
@@ -4262,7 +4290,7 @@ func _toggle_player_menu() -> void:
 func _show_player_menu() -> void:
 	if _vr_passthrough_active(): return
 	if recent_menu is LibraryMenu and recent_menu.account_panel.view == "web": return
-	if _cinema_interaction_owns(): cinema_environment.suspend(); stick_controls.suspend()
+	if _cinema_interaction_owns(): _move_host().suspend(); stick_controls.suspend()
 	if music_menu: music_menu.dismiss()
 	memory_swipe.cancel()
 	if photo: photo.gallery.cancel_all()
@@ -4504,6 +4532,7 @@ func _apply_memory_mode(plugin: Object) -> void:
 func _restore_seek_settings() -> void:
 	video.seek_mode = video.SeekPolicy.normalize(settings.get_value("video", "seek_mode", video.SeekPolicy.SPEED))
 	video.bookmark_seek_mode = video.SeekPolicy.bookmark_override(settings.get_value("video", "bookmark_seek_mode", video.SeekPolicy.GLOBAL))
+	video.set_hdr_to_sdr(str(settings.get_value("video", "hdr_to_sdr", "")))
 
 func _restore_playback_speed() -> void:
 	var saved: Variant = settings.get_value("video", "playback_speed", 1.0)
@@ -4538,6 +4567,7 @@ func _library_settings() -> Dictionary:
 		"library_restore_position": bool(settings.get_value("library", "restore_position", true)),
 		"airplay_require_password": bool(settings.get_value("casting", "airplay_require_password", false)),
 		"seek_mode": video.SeekPolicy.normalize(video.seek_mode),
+		"hdr_to_sdr": video.hdr_to_sdr_mode(),
 		SeekStep.KEY: SeekStep.seconds(settings),
 		"depth_render": _depth_render_mode(),
 		"depth_position_default": video.depth_position,
@@ -4652,6 +4682,11 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			video.seek_mode = video.SeekPolicy.normalize(value)
 			settings.set_value("video", "seek_mode", video.seek_mode)
 			settings.save(settings_path)
+		"hdr_to_sdr":
+			video.set_hdr_to_sdr(str(value))
+			settings.set_value("video", "hdr_to_sdr", video.hdr_to_sdr)
+			settings.save(settings_path)
+			if recent_menu: recent_menu.refresh()
 		SeekStep.KEY:
 			value = SeekStep.normalize(value)
 			settings.set_value("video", SeekStep.KEY, value)
@@ -5080,7 +5115,7 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		"subtitle_delay", "secondary_subtitle_delay":
 			if value is Dictionary and not video.commit_subtitle_delay(float(value.value), str(value.source_uri), str(value.get("subtitle_key", "__current__"))):
 				if is_instance_valid(player_menu): player_menu.refresh()
-		"alpha_keep_background", "alpha_mask_blend", "seek_mode", "depth_render", "video_auto_3d", "depth_text_protection", "subtitle_distance", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line": _on_setting_changed(key, value)
+		"alpha_keep_background", "alpha_mask_blend", "seek_mode", "hdr_to_sdr", "depth_render", "video_auto_3d", "depth_text_protection", "subtitle_distance", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line": _on_setting_changed(key, value)
 		"viewing_eye": video.set_viewing_eye(int(value))
 		"spatial_auto_disparity": video.set_spatial_auto_disparity(bool(value))
 		"spatial_match_fov":
@@ -5236,7 +5271,7 @@ func _menu_state() -> Dictionary:
 		"playing": video.requested_play, "playback_state": video.media.state, "loading_caption": _video_loading_caption(),
 		"alpha_requested": video.alpha_wanted(), "alpha_enabled": video.alpha_enabled,
 		"loop": video.loop_enabled, "playback_mode": playback_mode, "stereo": video.stereo_sbs, "swap_eyes": video.swap_eyes,
-		"viewing_eye": video.viewing_eye, "stereo_horizontal": video.stereo_horizontal, "stereo_vertical": video.stereo_vertical,
+		"viewing_eye": video.viewing_eye, "stereo_horizontal": video.stereo_horizontal, "stereo_vertical": video.stereo_vertical, "stereo_focus": video.stereo_focus,
 		"view_horizontal": video.view_horizontal * 100.0, "view_vertical": video.view_vertical * 100.0, "view_zoom": video.view_zoom * 100.0,
 		"immersive_adjustment_gauges": bool(settings.get_value("ui", "immersive_adjustment_gauges", true)),
 		"top_bottom": video.stereo_sbs and video.top_bottom, "stereo_half": video.stereo_sbs and video.stereo_half, "fisheye_fov": video.fisheye_fov,
@@ -5330,6 +5365,7 @@ func _menu_state() -> Dictionary:
 	result["hand_locked"] = hand_lock.locked
 	result["depth_render"] = _depth_render_mode()
 	result["video_auto_3d"] = video.default_auto_depth
+	result["hdr_to_sdr"] = video.hdr_to_sdr_mode()
 	result["reuse_last_mode"] = video.reuse_last_mode
 	result["depth_text_protection"] = false
 	result["watch_enabled"] = bool(settings.get_value("watch", "enabled", true))
@@ -5617,15 +5653,23 @@ func _save_beach_view(view: Dictionary) -> void:
 	settings.set_value("private_beach", "view", view)
 	settings.save(settings_path)
 
+## Free movement belongs to whichever scene is showing: a built-in one, or the viewer's own.
+func _move_host() -> Object:
+	if _cinema_scene_active(): return cinema_environment
+	return scene_import if scene_import != null and scene_import.movable() else null
+
 func _cinema_interaction_owns() -> bool:
-	return _cinema_scene_active() and cinema_environment.interaction != "watch"
+	var host := _move_host()
+	return host != null and host.interaction != "watch"
 
 func _cinema_input_blocked() -> bool:
 	return not _input_focused() or _active_menu() != null or not interface_move.capture.is_empty() \
 		or not _grab.is_empty() or not _inspect_blocked.is_empty() or photo_active or (puzzle_game != null and puzzle_game.active)
 
 func _cinema_request_interaction(value: String) -> bool:
-	if not cinema_environment or not cinema_environment.set_interaction(value): return false
+	var host: Object = _move_host()
+	if host == null: host = cinema_environment
+	if host == null or not host.set_interaction(value): return false
 	_suspend_cinema_move_stick()
 	interface_move.cancel(); _grab.clear(); _video_control_tap.clear(); stick_controls.suspend()
 	if value != "watch":
@@ -5647,7 +5691,7 @@ func _cinema_pointer_press(hand: String) -> bool:
 	if ray == null: return false
 	_video_control_tap.clear(); stick_controls.suspend()
 	_cinema_move_hands[hand] = true
-	cinema_environment.pointer_press(hand, ray[0], ray[1])
+	_move_host().pointer_press(hand, ray[0], ray[1])
 	return true
 
 ## Scene gestures also work with the playback bar open, unless the ray is on the bar.
@@ -5779,12 +5823,13 @@ func _on_cinema_seat_hovered(hand: String) -> void:
 func _cinema_pointer_release(hand: String) -> bool:
 	if not _cinema_move_hands.has(hand): return false
 	_cinema_move_hands.erase(hand)
-	if not cinema_environment: return true
+	var host := _move_host()
+	if not host: return true
 	var ray: Variant = _ray(hand)
 	if _cinema_input_blocked() or ray == null:
-		cinema_environment.cancel_pointer(hand)
+		host.cancel_pointer(hand)
 	else:
-		cinema_environment.pointer_release(hand, ray[0], ray[1], true)
+		host.pointer_release(hand, ray[0], ray[1], true)
 	stick_controls.suspend()
 	return true
 
@@ -5793,31 +5838,42 @@ func _suspend_cinema_move_stick() -> void:
 	_cinema_stick_waiting_for_neutral = true
 	for hand in _cinema_move_hands:
 		if cinema_environment: cinema_environment.cancel_pointer(hand)
+		if scene_import: scene_import.cancel_pointer(hand)
 	_cinema_move_hands.clear()
 
 func _process_cinema_move_stick(left: Vector2, right: Vector2, delta: float) -> void:
+	var host := _move_host()
+	if host == null: return
 	if not left.is_finite() or not right.is_finite():
-		_suspend_cinema_move_stick(); cinema_environment.suspend(); return
+		_suspend_cinema_move_stick(); host.suspend(); return
 	if _cinema_stick_waiting_for_neutral:
 		if left.length() <= .18 and right.length() <= .18:
-			cinema_environment.poll_sticks(Vector2.ZERO, Vector2.ZERO, delta)
+			host.poll_sticks(Vector2.ZERO, Vector2.ZERO, delta)
 			_cinema_stick_waiting_for_neutral = false
 		return
+	# Either stick does the same, so one controller is enough.
+	if host == scene_import and scene_import.motion.mode == "fly":
+		host.poll_sticks(left if left.length() > right.length() else right, Vector2.ZERO, delta)
+		return
+	if _cinema_stick_direction == Vector2.ZERO:
+		_cinema_stick_hand = "left_hand" if left.length() > right.length() else "right_hand"
+	if _cinema_stick_hand == "left_hand": right = left
+	left = Vector2.ZERO
 	if right.length() <= .18:
-		if _cinema_stick_direction.y > 0: _cinema_pointer_release("right_hand")
+		if _cinema_stick_direction.y > 0: _cinema_pointer_release(_cinema_stick_hand)
 		_cinema_stick_direction = Vector2.ZERO
-		cinema_environment.poll_sticks(left, Vector2.ZERO, delta)
+		host.poll_sticks(left, Vector2.ZERO, delta)
 		return
 	if _cinema_stick_direction == Vector2.ZERO:
 		if maxf(absf(right.x), absf(right.y)) < .65: return
 		if absf(right.x) > absf(right.y): _cinema_stick_direction = Vector2(signf(right.x), 0)
 		elif absf(right.y) > absf(right.x): _cinema_stick_direction = Vector2(0, signf(right.y))
-		if _cinema_stick_direction.y > 0: _cinema_pointer_press("right_hand")
+		if _cinema_stick_direction.y > 0: _cinema_pointer_press(_cinema_stick_hand)
 	# Keep the chosen gesture until neutral, even if the thumb rolls sideways.
 	var turn := Vector2.ZERO
 	if _cinema_stick_direction.x != 0: turn.x = _cinema_stick_direction.x
 	elif _cinema_stick_direction.y < 0: turn.y = -1
-	cinema_environment.poll_sticks(left, turn, delta)
+	host.poll_sticks(left, turn, delta)
 
 func _on_cinema_view_relocated(previous: Transform3D, current: Transform3D) -> void:
 	# The beach lands the viewer after its scene loads, far from where menus were placed.
@@ -6117,13 +6173,13 @@ func _cinema_desktop_input(event: InputEvent) -> bool:
 		xr_camera.rotation.x = clampf(xr_camera.rotation.x - event.relative.y * MOUSE_TURN, -1.3, 1.3)
 		return true
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if event.pressed: cinema_environment.suspend(); _show_player_menu()
+		if event.pressed: _move_host().suspend(); _show_player_menu()
 		return true
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT:
 		var origin := xr_camera.project_ray_origin(event.position)
 		var direction := xr_camera.project_ray_normal(event.position)
-		if event.pressed: cinema_environment.pointer_press("desktop", origin, direction)
-		else: cinema_environment.pointer_release("desktop", origin, direction, not _cinema_input_blocked())
+		if event.pressed: _move_host().pointer_press("desktop", origin, direction)
+		else: _move_host().pointer_release("desktop", origin, direction, not _cinema_input_blocked())
 		return true
 	return false
 
@@ -6188,7 +6244,7 @@ func _update_background() -> void:
 		display.set_scenery(null if hide_scenery or wants_passthrough else scenery.ready_sky(), scenery.yaw)
 	# An imported scene shows over the plain dark background, under the same rules as scenery.
 	if scene_import and scene_import.present(scenery.choice == "dark" and not hide_scenery and not wants_passthrough and not photo_active) and scene_import.sky():
-		display.set_scenery(scene_import.sky(), 0.0)
+		display.set_scenery(scene_import.sky(), 0.0, scene_import.backdrop())
 	var passthrough: bool = wants_passthrough and display.supports_passthrough()
 	if display.applied_passthrough != passthrough or display.requested_passthrough != passthrough:
 		display.set_passthrough(passthrough)
@@ -6235,6 +6291,7 @@ func _session_controls_state() -> Dictionary:
 		"passthrough_supported": display.supports_passthrough(),
 		"passthrough": _vr_passthrough_active() if _vr_video_present() and not _person_passthrough() else display.applied_passthrough, "alpha": _person_passthrough(),
 		"cinema_visible": _cinema_scene_active() and not photo_active, "cinema_moving": _cinema_interaction_owns(),
+		"scene_move": scene_import.motion.mode if scene_import != null and scene_import.movable() and not photo_active else "",
 		"cinema_light_tip": _beach_time_tip() if _beach_active() else _cinema_light_tip(),
 		"cinema_lights": {"auto": "auto", "day": "on", "night": "off"}[_beach_time_mode()] if _beach_active() else str(settings.get_value("appearance", "cinema_lights", "auto"))}
 
@@ -6262,6 +6319,15 @@ func _on_session_control(operation: String) -> void:
 		var modes := ["auto", "on", "off"]
 		var current := modes.find(str(settings.get_value("appearance", "cinema_lights", "auto")))
 		_on_setting_changed("cinema_lights", modes[(current + 1) % modes.size()])
+		_refresh_session_controls(); return
+	if operation == "scene_move_cycle":
+		if scene_import == null or not scene_import.movable() or photo_active: return
+		# The same switch as the built-in scenes', with flying as a third stop.
+		scene_import.cycle_movement()
+		_cinema_request_interaction(scene_import.interaction)
+		# The controls go away with the switch; say what it left the viewer in.
+		_scene_move_hint_until = Time.get_ticks_msec() + 6000
+		if playback_status_overlay: playback_status_overlay.refresh()
 		_refresh_session_controls(); return
 	if operation == "cinema_move_toggle":
 		if not _cinema_scene_active() or photo_active: return
@@ -6629,6 +6695,9 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 	if key in ["stereo_horizontal", "stereo_vertical"]:
 		if not photo_active: video.set_stereo_alignment(key, float(value))
 		return
+	if key == "stereo_focus":
+		if not photo_active: video.set_stereo_focus(float(value))
+		return
 	elif key in ImmersiveAdjustments.KEYS:
 		if not photo_active: video.set_immersive_adjustment(key, float(value) / 100.0)
 		return
@@ -6748,6 +6817,9 @@ func _playback_status_sample() -> Dictionary:
 	var lock_caption := screen_edit_lock.caption()
 	if not lock_caption.is_empty():
 		return {"caption": I18n.t(lock_caption), "fps_visible": fps_overlay != null and fps_overlay.visible}
+	var move_caption := _scene_move_caption()
+	if not move_caption.is_empty():
+		return {"caption": move_caption, "fps_visible": fps_overlay != null and fps_overlay.visible}
 	# Hide only the passive HUD; loading, subtitle and narration state stay live.
 	if not bool(settings.get_value("ui", "show_status_info", true)): return {}
 	if _cinema_scene_active() and _cinema_video_locked() and video and video.geometry == Geometry.Geometry.FLAT \
@@ -6755,6 +6827,19 @@ func _playback_status_sample() -> Dictionary:
 		return {"caption": I18n.t(_cinema_gesture_hint), "fps_visible": fps_overlay != null and fps_overlay.visible}
 	if not video or photo_active or (video_menu and video_menu.visible) or not _seek_overlay_sample().is_empty(): return {}
 	return {"caption": I18n.t("Loading next video…") if not _video_queue_wait.is_empty() else video.hud_caption(), "fps_visible": fps_overlay != null and fps_overlay.visible}
+
+## After the movement switch in the viewer's own scene: the mode it is now in and how to use it.
+func _scene_move_caption() -> String:
+	if scene_import == null or not scene_import.movable() or photo_active or not _input_focused(): return ""
+	var mode: String = scene_import.motion.mode
+	var searching: bool = mode == "walk" and not scene_import.motion.prepared
+	if Time.get_ticks_msec() >= _scene_move_hint_until and not searching: return ""
+	var lines := [I18n.t({"walk": "Free movement", "fly": "Fly"}.get(mode, "Stay in place"))]
+	if searching: lines.append(I18n.t("Finding the floor…"))
+	elif mode == "walk": lines.append(I18n.t("Push either stick forward to aim, release to land · Sideways to turn"))
+	elif mode == "fly": lines.append(I18n.t("Push either stick forward or back to fly where you look · Sideways to turn"))
+	if mode != "fixed": lines.append(I18n.t("Trigger opens the menu"))
+	return "\n".join(lines)
 
 func _video_loading_caption() -> String:
 	return I18n.t("Loading next video…") if not _video_queue_wait.is_empty() else video.loading_caption()
@@ -6927,9 +7012,15 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 						(0.5 - clampf(float(command.get("y", 0.5)), 0, 1)) * layout.size.y, 0.2)
 					var origin: Vector3 = layout.pose * point
 					var direction: Vector3 = -layout.pose.basis.z
-					browser.input_host().press_pointer("left", origin, direction, true)
+					# A real controller's tracking update must not cancel the diagnostic ray between down/up.
+					var owner := "diagnostic_browser"
+					var pressed: bool = browser.input_host().press_pointer(owner, origin, direction, true)
 					await get_tree().create_timer(0.12).timeout
-					browser.input_host().release_pointer("left", origin, direction, true)
+					var held: bool = browser.owns_pointer(owner, "trigger_click")
+					browser.input_host().release_pointer(owner, origin, direction, true)
+					var file := FileAccess.open("user://diagnostics/browser_click_" + str(command.request_key) + ".json", FileAccess.WRITE)
+					if file: file.store_string(JSON.stringify({"request": command.request_key, "pressed": pressed, "held": held,
+						"released": not browser.owns_pointer(owner, "trigger_click")}))
 			"effect":
 				var browser: RefCounted = recent_menu.web_browser
 				var target := int(command.get("target", 0))
@@ -7189,6 +7280,8 @@ func _notification(what: int) -> void:
 
 func _photo_menu_state() -> Dictionary:
 	var state: Dictionary = photo.snapshot() if photo else {}
+	# Keep per-frame depth telemetry in the diagnostic snapshot.
+	state.erase("animation_depth")
 	state["alpha_keep_background"] = _alpha_keep_background()
 	if photo and video:
 		video.narration.voice_manager_snapshot() # Refresh the shared saved-voice catalogue.

@@ -11,6 +11,10 @@ uniform float coverage_min = 0.001;
 uniform float inset_v = 0.0;
 // UV distance that must also be covered around the pixel: keeps silhouettes out of the hole.
 uniform vec2 erode = vec2(0.0);
+// Opaque scenery with nothing beneath the layers: the layer already carries its own coverage, so
+// the projection's alpha is cleared instead of scaled. Scaling both darkened every fractional edge
+// to menu*c*c + scene*(1-c) (Quest 3 2026-11-13). Passthrough keeps the scaled alpha.
+uniform bool opaque_scene = false;
 void fragment() {
 	if (UV.y < inset_v || UV.y > 1.0 - inset_v) { discard; }
 	float coverage = texture(menu_texture, UV).a;
@@ -22,5 +26,5 @@ void fragment() {
 	// Multiplication attenuates premultiplied RGB and alpha together, including passthrough.
 	float keep = 1.0 - coverage;
 	ALBEDO = vec3(keep);
-	ALPHA = keep;
+	ALPHA = opaque_scene ? 0.0 : keep;
 }

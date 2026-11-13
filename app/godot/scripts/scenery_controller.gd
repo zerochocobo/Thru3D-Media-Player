@@ -246,6 +246,7 @@ func _command(operation: String,value: Variant) -> void:
 		"scene_select": app.scene_import.activate(str(value))
 		"scene_remove": app.scene_import.remove(value)
 		"scene_rename": app.scene_import.library.rename(str(value.id),str(value.title))
+		"scene_home": app.scene_import.home()
 		"home": app._on_setting_changed("cinema_home",true)
 		"edit_beach_screen":
 			if app.background.choice=="private_beach" and app.beach_environment.is_ready:
@@ -294,7 +295,7 @@ func _begin_scene_import() -> void:
 		if not _scene_dialog:
 			_scene_dialog=FileDialog.new(); _scene_dialog.use_native_dialog=true; _scene_dialog.access=FileDialog.ACCESS_FILESYSTEM
 			_scene_dialog.file_mode=FileDialog.FILE_MODE_OPEN_FILE; _scene_dialog.filters=PackedStringArray(["*.glb,*.unity3d,*.assetbundle,*.bundle,*.vrcw,*.omission;Scene"])
-			_scene_dialog.file_selected.connect(func(path): app.scene_import.add(str(path),str(path).get_file()); menu.refresh())
+			_scene_dialog.file_selected.connect(func(path): app.scene_import.add(str(path),str(path).get_file(),FileAccess.get_size(str(path))); menu.show_added_scene())
 			add_child(_scene_dialog)
 		_scene_dialog.popup_centered_ratio(.75); return
 	_picker=true; menu.visible=false
@@ -304,11 +305,11 @@ func _begin_scene_import() -> void:
 	if picker.get_parent()!=app: picker.reparent(app,true)
 	picker.set_compact(false); app._place_menu(picker,true); picker.visible=true; picker.refresh()
 
-func _scene_file_selected(uri: String,title: String) -> void:
+func _scene_file_selected(uri: String,title: String,bytes: int = -1) -> void:
 	if not _picker: return
 	_return_from_picker()
-	if is_instance_valid(app.get("scene_import")): app.scene_import.add(uri,title)
-	menu.refresh()
+	if is_instance_valid(app.get("scene_import")): app.scene_import.add(uri,title,bytes)
+	menu.show_added_scene()
 
 func _return_from_picker() -> void:
 	var picker: Node3D=app.recent_menu

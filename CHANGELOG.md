@@ -4,6 +4,14 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.17.9 — 2026-11-13
+
+- Import compatible GLB and Unity scenes in Release builds. My scenes groups imported 3D scenes and panoramas, with movement and flying controls for compatible 3D scenes.
+- Open compatible ordinary webpage videos with the existing built-in player button when it becomes available. The original page pauses during native playback and offers explicit resume after returning. Browser windows reopen in view when their saved placement would be out of sight.
+- Add an HDR-to-SDR On/Off setting. It defaults to Off on Meta and On on other runtimes. Add manual focus distance for supported immersive stereo video.
+- Resize flat video and the beach screen with Grip and horizontal stick movement. Improve animated-photo menu hover and reduce dark menu edges over opaque scenery.
+- Keep AirPlay multicast discovery active independently of DLNA.
+
 ## 0.17.8 — 2026-11-13
 
 - Fix a Quest freeze when repeatedly switching between 8K videos and seeking. XR eye buffers now keep the size chosen at startup, avoiding the GPU memory leak triggered by resizing them during playback.

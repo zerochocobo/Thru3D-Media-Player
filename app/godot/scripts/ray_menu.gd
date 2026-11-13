@@ -455,6 +455,7 @@ func _activate_footer(target: int) -> bool:
 		if state.get("cinema_visible", false): session_control_requested.emit("cinema_lights_cycle")
 	elif target == FREE_MOVEMENT:
 		if state.get("cinema_visible", false): session_control_requested.emit("cinema_move_toggle")
+		elif not str(state.get("scene_move", "")).is_empty(): session_control_requested.emit("scene_move_cycle")
 	elif target == FOLLOW:
 		session_control_requested.emit("follow")
 	elif state.get("passthrough_visible", false) and state.get("passthrough_supported", true) and not state.get("alpha", false):
@@ -613,6 +614,11 @@ func refresh_session_controls(force: bool = false) -> void:
 			false,true,I18n.t(state.get("cinema_light_tip",LIGHT_TIPS.get(lights,LIGHT_TIPS.auto))))
 		_footer_button(FREE_MOVEMENT,"standing",Vector2(cinema_left+pitch+FOOTER_DIAMETER*.5,_footer_centre.y),
 			state.get("cinema_moving",false),true,I18n.t("Free movement"))
+	elif not str(state.get("scene_move","")).is_empty():
+		# The viewer's own scene has the same switch, with flying as a third stop.
+		var movement:=str(state.scene_move)
+		_footer_button(FREE_MOVEMENT,"fly" if movement=="fly" else "standing",Vector2(scene_centre.x+.09+FOOTER_GAP+FOOTER_DIAMETER*.5,_footer_centre.y),
+			movement!="fixed",true,I18n.t({"walk":"Free movement","fly":"Fly"}.get(movement,"Stay in place")))
 	_footer_button(FOLLOW, "head_follow", Vector2(follow_left + FOOTER_DIAMETER * 0.5, _footer_centre.y),
 		state.get("follow", false), state.get("follow_enabled", true), I18n.t("Disable follow" if state.get("follow", false) else "Enable follow"))
 	if show_passthrough:

@@ -7,6 +7,9 @@ const Loader := preload("res://scripts/scene_import/scene_import_loader.gd")
 const Budget := preload("res://scripts/scene_import/scene_import_budget.gd")
 const Unity := preload("res://scripts/scene_import/scene_import_unity.gd")
 const Platform := preload("res://scripts/scene_import/scene_import_platform.gd")
+const Motion := preload("res://scripts/scene_import/scene_import_motion.gd")
+## The card that stands for a file still being copied in.
+const ADDING := "adding"
 const SECTION := "scene_import"
 const BAKE_STEPS := [1.0, 0.5, 0.0]
 const THUMBNAIL_SIZE := Vector2i(384, 216)
@@ -42,10 +45,10 @@ var _ambient_saved := {}
 var _sampled_ms := 0
 var _thrown := Color.BLACK
 var _settle_due := false
-
-## Experimental: Debug builds only until it has been tried on every supported headset.
-static func enabled() -> bool:
-	return OS.is_debug_build()
+var _backdrop: ShaderMaterial
+var _loader: RefCounted
+var _layout := {}
+var motion := Motion.new()
 
 func setup(owner: Node) -> void:
 	app = owner
@@ -53,6 +56,8 @@ func setup(owner: Node) -> void:
 	if Engine.has_singleton("QuestPlayer"): library.platform = Engine.get_singleton("QuestPlayer")
 	add_child(library)
 	library.load_catalog()
+	library.added.connect(_added)
+	add_child(motion)
 	bake = clampf(float(app.settings.get_value(SECTION, "bake", 1.0)), 0.0, 1.0)
 	screen_light = clampf(float(app.settings.get_value(SECTION, "screen_light", 0.7)), 0.0, 1.0)
 	Unity.ensure_globals()
@@ -71,14 +76,31 @@ func tier() -> String:
 	return Budget.LOW if app.get("low_end_gpu") else Budget.HIGH
 
 func snapshot() -> Dictionary:
-	return {"rows": library.rows(), "active": active_id, "pending": pending_id, "busy": library.busy,
-		"adding": library.adding if library.busy else "", "progress": snappedf(library.progress(), 0.02) if library.busy else 0.0,
+	var rows := library.rows()
+	# What is happening to the scene being brought in, for its card: copying first, then each import stage.
+	var stage := ""
+	var fraction := -1.0
+	if library.busy:
+		rows.append({"id": ADDING, "title": library.adding.get_basename(), "added": int(Time.get_unix_time_from_system()) + 1, "summary": {}, "thumb": false})
+		stage = "Copying file"
+		fraction = library.progress()
+	elif not pending_id.is_empty() and _loader:
+		var state: Dictionary = _loader.progress()
+		stage = str(state.stage)
+		fraction = float(state.fraction)
+	return {"rows": rows, "active": active_id, "pending": ADDING if library.busy else pending_id, "busy": library.busy,
+		"stage": stage, "stage_progress": snappedf(fraction, 0.01) if fraction >= 0.0 else -1.0,
 		"error": error if not error.is_empty() else library.error, "bake": bake, "tier": tier(), "screen_light": screen_light,
-		"baked": _source == "unity" and _root != null}
+		"baked": _source == "unity" and _root != null, "movement": motion.mode, "floor_ready": motion.prepared or motion.mode == Motion.FIXED}
 
-func add(uri: String, title: String) -> void:
+func add(uri: String, title: String, bytes: int = -1) -> void:
 	error = ""
-	library.add(uri, title)
+	library.add(uri, title, bytes)
+
+## A picked file is in the library: go straight on to showing it, so one choice reads as one action.
+func _added(id: String, fresh: bool) -> void:
+	activate(id)
+	if not fresh: error = "Already in My scenes"
 
 func remove(ids: Array) -> void:
 	if ids.has(active_id) or ids.has(pending_id): deactivate()
@@ -94,13 +116,14 @@ func activate(id: String) -> void:
 		_selecting = true
 		app.scenery.select("global", "dark")
 		_selecting = false
-	var loader := Loader.new()
-	loader.finished.connect(func(result: Dictionary) -> void: _loaded(result, id), CONNECT_ONE_SHOT)
-	loader.start(library.source_path(id), tier(), {"cache_dir": library.directory})
+	_loader = Loader.new()
+	_loader.finished.connect(func(result: Dictionary) -> void: _loaded(result, id), CONNECT_ONE_SHOT)
+	_loader.start(library.source_path(id), tier(), {"cache_dir": library.directory})
 
 func _loaded(result: Dictionary, id: String) -> void:
 	var wanted := pending_id == id and library.entries.has(id)
-	pending_id = ""
+	if wanted: _loader = null
+	pending_id = "" if wanted else pending_id
 	if not wanted or result.has("error"):
 		if result.has("root"): result.root.free()
 		if wanted: error = str(result.get("error", "Scene could not be read")).left(120)
@@ -109,6 +132,8 @@ func _loaded(result: Dictionary, id: String) -> void:
 	var info: Dictionary = result.info
 	_root = result.root
 	_sky = info.get("sky") as Sky
+	_backdrop = Unity.sky_backdrop(_sky)
+	_layout = info.layout
 	_source = str(info.get("source", ""))
 	# The viewer's floor position lands on the scene's spawn point, facing what the spawn faces.
 	var origin := (app.xr_origin as Node3D).global_transform
@@ -121,7 +146,8 @@ func _loaded(result: Dictionary, id: String) -> void:
 	_root.visible = false
 	app.add_child(_root)
 	if _source == "unity": Unity.set_look(_root, 1.0, bake)
-	_place_screen(info.layout)
+	motion.attach(_root, info.stats.bounds)
+	_place_screen()
 	active_id = id
 	app.settings.set_value(SECTION, "active", id)
 	app.settings.save(app.settings_path)
@@ -145,9 +171,12 @@ func deactivate() -> void:
 func _release() -> void:
 	_ambient(false)
 	_throw(Color.BLACK, Transform3D.IDENTITY, Vector2.ONE)
+	motion.detach()
 	if _root: _root.queue_free()
 	_root = null
 	_sky = null
+	_backdrop = null
+	_layout = {}
 	_source = ""
 	_shown = false
 
@@ -156,15 +185,72 @@ func present(allowed: bool) -> bool:
 	_shown = allowed and _root != null
 	if _root: _root.visible = _shown
 	_ambient(_shown and _source != "unity")
-	if not _shown: _throw(Color.BLACK, Transform3D.IDENTITY, Vector2.ONE)
+	if not _shown:
+		_throw(Color.BLACK, Transform3D.IDENTITY, Vector2.ONE)
+		motion.suspend()
 	return _shown
 
 ## A scene that names its screen gets the picture there; otherwise the ordinary screen stays in front.
-func _place_screen(layout: Dictionary) -> void:
+func _place_screen() -> void:
 	var video: Node = app.get("video")
-	if video == null or app.get("photo_active") or layout.get("source", "") not in ["marker", "sidecar"] or not layout.get("screen") is Transform3D: return
+	if video == null or app.get("photo_active") or _layout.get("source", "") not in ["marker", "sidecar"] or not _layout.get("screen") is Transform3D: return
 	if video.geometry != Geometry.Geometry.FLAT or not video.has_method("set_flat_world_pose"): return
-	video.set_flat_world_pose(_root.transform * (layout.screen as Transform3D))
+	video.set_flat_world_pose(_root.transform * (_layout.screen as Transform3D))
+
+# Free movement, to the player, is the same thing here as in the built-in scenes: the members
+# below are the ones it drives on whichever scene is showing.
+
+## Whether there is a scene on show to move through.
+func movable() -> bool:
+	return _shown
+
+## "watch" while the viewer stays put, "move" while walking or flying.
+var interaction: String:
+	get: return "move" if _shown and motion.moving() else "watch"
+
+func set_interaction(value: String) -> bool:
+	if not _shown: return false
+	motion.set_mode(motion.resume_mode() if value == "move" else Motion.FIXED)
+	return true
+
+## Stay in place, then walk, then fly.
+func cycle_movement() -> void:
+	if _shown: motion.set_mode(Motion.MODES[(Motion.MODES.find(motion.mode) + 1) % Motion.MODES.size()])
+
+func _feet() -> Vector3:
+	var head := (app.xr_camera as Node3D).global_position
+	return Vector3(head.x, (app.xr_origin as Node3D).global_position.y, head.z)
+
+func poll_sticks(stick: Vector2, turn: Vector2, delta: float, _blocked: bool = false) -> bool:
+	if not _shown or not motion.moving(): return false
+	var before := _root.transform
+	motion.poll_sticks(stick, turn, delta, (app.xr_camera as Node3D).global_transform, _feet())
+	# A screen the scene placed goes with the scene.
+	if not before.is_equal_approx(_root.transform): _place_screen()
+	return true
+
+func pointer_press(hand: String, origin: Vector3, direction: Vector3) -> bool:
+	return _shown and motion.pointer_press(hand, origin, direction)
+
+func pointer_release(hand: String, origin: Vector3, direction: Vector3, valid: bool) -> bool:
+	if not _shown: return false
+	var before := _root.transform
+	var handled := motion.pointer_release(hand, origin, direction, valid, _feet())
+	if not before.is_equal_approx(_root.transform): _place_screen()
+	return handled
+
+func update_pointer(hand: String, origin: Vector3, direction: Vector3, valid: bool = true) -> void:
+	motion.update_pointer(hand, origin, direction, valid and _shown, (app.xr_camera as Node3D).global_position)
+
+func cancel_pointer(hand: String) -> void:
+	motion.cancel_pointer(hand)
+
+func suspend() -> void:
+	motion.suspend()
+
+func home() -> void:
+	motion.home()
+	if _root: _place_screen()
 
 func _ambient(wanted: bool) -> void:
 	var display: Variant = app.get("display")
@@ -236,6 +322,10 @@ func set_screen_light(level: float) -> void:
 
 func sky() -> Sky:
 	return _sky if _shown else null
+
+## The scene's sky for the display's layer backdrop; null when the display can show the sky itself.
+func backdrop() -> ShaderMaterial:
+	return _backdrop if _shown else null
 
 ## The picture on a scene's card; null until the scene has been shown once.
 func thumbnail(id: String) -> Texture2D:

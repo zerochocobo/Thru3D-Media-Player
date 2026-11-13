@@ -68,6 +68,8 @@ Twitch public clips, TikTok detail, TED and Dailymotion have bounded reported he
 
 0.17.5 adapts ordinary rendered-player ownership/SPA changes, large HLS/MP4 declarations and complete iQIYI bridge payloads. Naver Clip/Reddit retain separate limited page/device evidence, but have no accepted Featured-entry chain; their new source is not catalog acceptance. The TED manifest/script/test inputs match the recorded release cut; their inclusion is not headset acceptance or a new Featured badge. No observed cookies, tokens, signed media addresses or user profiles are exported. Synthetic large-wire fixtures use declared.test/sdk.test data, not captured account payloads.
 
-## 0.17.7 browser input and direct-file handoff
+## Ordinary video files and browser placement
 
-Short trigger taps tolerate more ray travel. The source includes an experimental manual handoff of a captured ordinary video file from the current page, with a page-pause step and scoped request handling. Quest validation of the direct-file flow remains open following a failed headset check. Featured Beta coverage is listed above.
+On supported pages, the existing Open in built-in player button becomes available when the browser detects a compatible ordinary video file. Clicking it pauses playback in the original document and starts the native player. Returning leaves the original page paused until the user explicitly resumes it. The return action is tied to the original document, media element and source. A Quest test covered playing a compatible video, seeking, returning, resuming the page and opening it again. Compatibility varies with the site and media.
+
+Short trigger taps tolerate more ray travel. Browser windows reopen in front of the viewer when saved positions fall outside the visible placement range. Featured Beta coverage is listed above.

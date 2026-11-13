@@ -281,6 +281,15 @@ func set_filter(supersampling_mode: int, sharpening_mode: int) -> void:
 	supersampling = clampi(supersampling_mode, 0, 2); sharpening = clampi(sharpening_mode, 0, 2)
 	for slot in slots + bands: _apply_filter(slot.layer)
 
+## Opaque scenery (no passthrough beneath the layers) clears the projection alpha under menu
+## coverage instead of scaling it; see opaque_scene in the hole shaders.
+var _opaque_scene := false
+func _sync_opaque_scene() -> void:
+	var opaque: bool = display != null and display.get("applied_passthrough") == false
+	if opaque == _opaque_scene: return
+	_opaque_scene = opaque
+	for slot in slots + bands: slot.hole.material_override.set_shader_parameter("opaque_scene", opaque)
+
 func set_debug_holes(visible: bool) -> void:
 	debug_hide_holes = not visible
 	for slot in slots + bands: slot.hole.visible = visible and slot.used and not slot.empty and slot.rect.has_area()
@@ -456,6 +465,7 @@ func update() -> void:
 		invalidate()
 	if not active:
 		return
+	_sync_opaque_scene()
 	var peer_poses := []
 	for peer in _visible_peers(): peer_poses.append([peer.get_instance_id(),active.global_transform.affine_inverse()*peer.global_transform])
 	if peer_poses!=_peer_poses: _peer_poses=peer_poses; geometry_dirty=true
@@ -656,6 +666,7 @@ func _assign(slot: Dictionary, group: Dictionary, root: Transform3D, bit: int) -
 		var owner: Object = instance_from_id(id)
 		return is_instance_valid(owner) and owner.get("scene_overlay") == true)
 	slot.hole.material_override.shader = OVERLAY_HOLE_SHADER if overlay else HOLE_SHADER
+	slot.hole.material_override.set_shader_parameter("opaque_scene", _opaque_scene)
 	# An HD popup crossing live eye-buffer chrome must clear that chrome after
 	# it draws. Opt in per surface; ordinary menu holes keep their existing order.
 	# Always reset reused slots so closing a popup cannot raise another menu's hole.

@@ -27,3 +27,7 @@ Persistent screen/edit_locked defaults off, links the flat-video corner and scre
 ## 0.17.5 viewing-hand and photo defaults
 
 Viewing-hand lock is session-only with guarded recovery and separate gesture ownership; it is distinct from persistent screen/edit_locked. Locking can close conflicting submenus without lifting unrelated locks. Photos independently select a fixed default or last playback mode, with format/native-result gates preserved. Video settings add an explicit180-degree preset. PICO projected controls/direct USB fallback and capability-gated QIYU passthrough do not establish every device/provider behavior.
+
+## 0.17.9 video controls
+
+HDR to SDR can be enabled or disabled globally. The initial setting is Off on Meta and On on other runtimes. Supported immersive stereo video also offers a manual focus distance in the stereo viewing panel. For flat video and the beach screen, hold Grip and move the stick horizontally to resize the screen.

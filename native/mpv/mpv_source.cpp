@@ -860,6 +860,10 @@ struct Source final {
             // Cost: no chroma-location/linear-light processing; R09 RGB mean 0.21/255,
             // p99 5/255, max 40/255 at high-contrast edges.
             option("gpu-dumb-mode", "yes");
+            // HDR (once gpu-dumb-mode is off): the default bt.2390 curve dimmed 203-nit reference
+            // white to 194/255 and desaturated; mobius 0.6 keeps SDR-range colors (75% bars 196/255,
+            // white 230) and still grades 203-4000 nit highlights, at the same cost (Quest 3, 2026-11-13).
+            option("tone-mapping", "mobius"); option("tone-mapping-param", "0.6");
 #ifndef NDEBUG
             {
                 char value[PROP_VALUE_MAX] = {};

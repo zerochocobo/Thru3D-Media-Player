@@ -506,6 +506,12 @@ func _run() -> void:
 	menu._set_adjustment_at(Menu.SLIDER_LEFT + 0.6 * Menu.SLIDER_WIDTH)
 	check(is_equal_approx(video.stereo_horizontal, 2.0) and not menu.allows_playback_sticks(), "Expanded alignment slider reaches production controller and blocks playback sticks")
 	check(click(menu, Menu.ALIGNMENT_RESET) and video.stereo_horizontal == 0.0 and video.stereo_vertical == 0.0, "Alignment reset reaches production controller")
+	check(menu._adjust_rows.has(Menu.STEREO_FOCUS), "Immersive stereo offers the focus distance slider")
+	menu._adjust_target = Menu.STEREO_FOCUS
+	menu._set_adjustment_at(Menu.SLIDER_LEFT + 0.3 * Menu.SLIDER_WIDTH)
+	check(is_equal_approx(video.stereo_focus, 1.5) and is_equal_approx(video.stereo_focus_shape().x, 1.5), "Focus slider reaches the production controller")
+	menu._set_adjustment_at(Menu.SLIDER_LEFT + 0.04 * Menu.SLIDER_WIDTH)
+	check(video.stereo_focus == 0.0 and video.stereo_focus_shape() == Vector2.ZERO, "Below the nearest focus the slider turns focus off")
 	check(click(menu, 400) and click(menu, Menu.MODE) and menu.section == 0 and menu._mode_open, "Eye settings give way to the mode popup")
 	check(click(menu, Menu.MODE_PROJECTION + 1) and video.geometry == 1, "Projection tile sets actual video geometry")
 	check(click(menu, 108), "Recenter routed through preview-safe Main")

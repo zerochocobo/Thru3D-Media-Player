@@ -35,6 +35,7 @@ const context = {
   } } }
 };
 const flush = () => { let n = 0; while (timers.length) { assert.ok(++n < 100); timers.shift()(); } };
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../android/web-browser/src/main/assets/web-browser/direct-return.js'), 'utf8'), context);
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../android/web-browser/src/main/assets/web-browser/media.js'), 'utf8'), context);
 flush();
 assert.equal(ports[0].messages.at(-1).videos[0].playing, true);

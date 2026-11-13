@@ -33,6 +33,8 @@ const ISSUES := 10119
 ## What the add card offers once the viewer can add 3D scenes as well as panoramas.
 const ADD_IMAGE := 10120
 const ADD_SCENE := 10121
+const ADDING_CARD := "adding"
+var _followed := ""
 var scene_import: Node
 var screen_edit := preload("res://scripts/environments/private_beach_screen_edit.gd").new()
 const MODE := 10200
@@ -100,14 +102,29 @@ func _scene_row(id: String) -> Dictionary:
 func _scene_active() -> bool:
 	return mode=="global" and not str(_scene_state().get("active","")).is_empty()
 
-## Everything the viewer added, oldest first: panoramas, and 3D scenes where they can be used.
+## Everything the viewer added, newest first: panoramas, and 3D scenes where they can be used.
+## A file still being copied in has a card on the main page only; there is nothing to manage yet.
 func _custom_rows(everywhere: bool = false) -> Array:
 	var rows: Array=library.rows()
-	if not everywhere and mode!="global": return rows
-	for row in _scene_state().get("rows",[]):
-		var item: Dictionary=row.duplicate(); item["scene"]=true; item["created"]=int(row.get("added",0)); rows.append(item)
-	rows.sort_custom(func(a,b): return int(a.get("created",0))<int(b.get("created",0)))
+	if everywhere or mode=="global":
+		for row in _scene_state().get("rows",[]):
+			if everywhere and str(row.id)==ADDING_CARD: continue
+			var item: Dictionary=row.duplicate(); item["scene"]=true; item["created"]=int(row.get("added",0)); rows.append(item)
+	rows.sort_custom(func(a,b): return int(a.get("created",0))>int(b.get("created",0)))
 	return rows
+
+## After a scene file is picked: the main page, where its card leads the viewer's scenes.
+func show_added_scene() -> void:
+	mode="global"; view="scene"; modal=""; bulk=false; selected.clear(); page=0; _followed=""
+	refresh()
+
+## What is being done to the scene on its way in, in the viewer's language.
+func _stage_text() -> String:
+	var scenes:=_scene_state()
+	var stage:=str(scenes.get("stage",""))
+	if stage.is_empty(): return ""
+	var progress:=float(scenes.get("stage_progress",-1.0))
+	return I18n.t(stage)+(" %d%%"%roundi(progress*100.0) if progress>=0.0 else "…")
 
 ## The card that reads as chosen: a 3D scene in use stands in for the dark background beneath it.
 func _chosen() -> String:
@@ -119,9 +136,9 @@ func _chosen() -> String:
 
 func _scene_status() -> String:
 	var scenes:=_scene_state()
-	if scenes.get("busy",false):
-		var progress:=float(scenes.get("progress",0.0))
-		return "%s  %s"%[str(scenes.get("adding","")),"%d%%"%roundi(progress*100.0) if progress>0.0 else "…"]
+	var pending:=str(scenes.get("pending",""))
+	if not pending.is_empty() and not _stage_text().is_empty(): return "%s · %s"%[str(_scene_row(pending).get("title","")),_stage_text()]
+	if _scene_active() and not scenes.get("floor_ready",true): return I18n.t("Finding the floor…")
 	return I18n.t(str(scenes.get("error","")))
 
 func _selected_title() -> String:
@@ -232,7 +249,7 @@ func _draw() -> void:
 	elif view in ["manage","review"]:
 		var count: int=library.reviews.size() if view=="review" else _custom_rows(true).size()
 		height=.46+clampi(ceili(count/3.0),1,2)*.30
-	elif view=="adjust": height=1.0 if _state.get("choice","")=="cinema" else .87 if _state.get("choice","")=="private_beach" else .62
+	elif view=="adjust": height=(.74 if _scene_state().get("baked",false) else .62) if _scene_active() else 1.0 if _state.get("choice","")=="cinema" else .87 if _state.get("choice","")=="private_beach" else .62
 	elif view=="beach_screen": height=1.12
 	elif view in ["import","import_error"]: height=.82
 	_top=height/2; _bottom=-_top
@@ -287,12 +304,11 @@ func _draw() -> void:
 	choices.finish()
 
 ## Two kinds of thing can be added; each opens its own file picker.
-## Where 3D scenes are not offered yet, their button stays in view, announced and inert.
 func _draw_add() -> void:
 	var scenes:=_scene_state()
 	var offered:=is_instance_valid(scene_import)
 	for option in [[ADD_IMAGE,"panorama","Panorama image","JPG / PNG / WebP · 360° 2:1 · VR180 1:1",-.345,not _state.get("busy",false)],
-			[ADD_SCENE,"cube","3D scene" if offered else "3D scene (coming soon)","GLB · Unity scene bundle",.345,offered and not scenes.get("busy",false) and str(scenes.get("pending","")).is_empty()]]:
+			[ADD_SCENE,"cube","3D scene","GLB · Unity scene bundle",.345,offered and not scenes.get("busy",false) and str(scenes.get("pending","")).is_empty()]]:
 		_button(option[0],"",Vector2(option[4],_top-.30),Vector2(.65,.22),option[5])
 		var node: Node3D=_buttons.back().node
 		_icon(option[1],Vector3(0,.035,.007),.085,UiTheme.color("label") if option[5] else MUTED,node)
@@ -367,6 +383,12 @@ func _draw_cards() -> void:
 		_rule(footer_rule)
 		var footer_y:=footer_rule-SCENE_FOOTER.x
 		var per_page := SCENE_CUSTOM_PER_PAGE
+		# A scene on its way in is followed to its card once, wherever the viewer had paged to.
+		var arriving:=str(_scene_state().get("pending","")) if mode=="global" else ""
+		if arriving!=_followed:
+			_followed=arriving
+			var at:=rows.find_custom(func(row): return str(row.id)==arriving)
+			if at>=0: page=at/per_page
 		page=clampi(page,0,maxi(0,ceili(rows.size()/float(per_page))-1))
 		for item in rows.slice(page*per_page,page*per_page+per_page): _cards.append(item)
 		for i in builtin_count: _card(_cards[i],i,_scene_slot(i%SCENE_COLUMNS,builtin_y-(i/SCENE_COLUMNS)*SCENE_PITCH.y),SCENE_CARD)
@@ -444,7 +466,7 @@ func _card(item: Dictionary,index: int,point: Vector2,size: Vector2 = CARD_SIZE)
 	var loading: bool = not bulk and view!="review" and id==pending
 	# A press answers at once: the chosen card takes the highlight while its scene loads.
 	var active: bool = selected.has(id) if bulk or view=="review" else id == _chosen()
-	_button(CARD+index,"",point,size)
+	_button(CARD+index,"",point,size,id!=ADDING_CARD)
 	var node: Node3D=_buttons.back().node
 	var layout := _card_layout(size)
 	if active:
@@ -462,8 +484,8 @@ func _card(item: Dictionary,index: int,point: Vector2,size: Vector2 = CARD_SIZE)
 			var crop: float=(16.0/9.0)/(float(texture.get_width())/texture.get_height())
 			image.material_override.uv1_scale=Vector3(crop,1,1); image.material_override.uv1_offset=Vector3((1-crop)/2,0,0)
 		node.add_child(image)
-	else: _icon("cube" if scene else "passthrough" if id=="passthrough" else "circle",Vector3(0,layout.image_y,.007),.065,MUTED,node)
-	if loading: _loading_overlay(node,layout)
+	elif not (scene and loading): _icon("cube" if scene else "passthrough" if id=="passthrough" else "circle",Vector3(0,layout.image_y,.007),.065,MUTED,node)
+	if loading: _loading_overlay(node,layout,_stage_text() if scene else "")
 	var caption:=str(item.title)
 	if view=="review": caption+=" · "+("VR180" if item.get("geometry",3)==1 else "360°")
 	var has_actions:=view=="manage" and not bulk
@@ -514,10 +536,12 @@ func _card(item: Dictionary,index: int,point: Vector2,size: Vector2 = CARD_SIZE)
 			badge.material_override.set_shader_parameter("corner_radius",.008); node.add_child(badge)
 			_label(" · ".join(names),Vector3(badge_centre,.097,.015),12,node).render_priority=16
 
-func _loading_overlay(card: Node3D,layout: Dictionary) -> void:
+func _loading_overlay(card: Node3D,layout: Dictionary,stage: String = "") -> void:
 	var shade:=MeshInstance3D.new(); var mesh:=QuadMesh.new(); mesh.size=layout.image; shade.mesh=mesh
 	shade.position=Vector3(0,layout.image_y,.008); shade.material_override=_material(Color(0,0,0,.45),13); card.add_child(shade)
-	_spinner=Node3D.new(); _spinner.position=Vector3(0,layout.image_y,.010); card.add_child(_spinner)
+	# With a stage to name, the spinner moves up and the stage reads beneath it.
+	_spinner=Node3D.new(); _spinner.position=Vector3(0,layout.image_y+(.022 if not stage.is_empty() else 0.0),.010); card.add_child(_spinner)
+	if not stage.is_empty(): _label(_fit_title(stage,"",layout.image.x-.02,12),Vector3(0,layout.image_y-.045,.012),12,card).render_priority=15
 	for index in SPINNER_DOTS:
 		var angle := TAU*index/SPINNER_DOTS
 		var dot:=_quad(Vector2.ONE*.014,Vector3(cos(angle),sin(angle),0)*.036,Color(1,1,1,.15+.85*index/float(SPINNER_DOTS-1)),14)
@@ -547,6 +571,7 @@ func _draw_adjust() -> void:
 		var scenes:=_scene_state()
 		rows=[{"key":"scene_screen_light","value":scenes.get("screen_light",.7),"choices":[{"value":0.0,"label":"Off"},{"value":.35,"label":"Low"},{"value":.7,"label":"Medium"},{"value":1.0,"label":"High"}]}]
 		names=["Screen ambient light"]
+		_button(CURRENT,I18n.t("Return to start"),Vector2(.44,_bottom+.13),Vector2(.46,.075))
 		if scenes.get("baked",false):
 			rows.append({"key":"scene_bake","value":scenes.get("bake",1.0),"choices":[{"value":0.0,"label":"Off"},{"value":.5,"label":"50%"},{"value":1.0,"label":"100%"}]})
 			names.append("Baked lighting")
@@ -626,7 +651,7 @@ func _activate(target: int) -> void:
 	elif target==ADD:
 		modal="add"
 	elif target==CURRENT:
-		command.emit("home" if view=="adjust" else "use_current",mode); return
+		command.emit("scene_home" if view=="adjust" and _scene_active() else "home" if view=="adjust" else "use_current",mode); return
 	elif target==ADJUST: view="adjust"
 	elif target==REVIEW: view="review"; page=0; selected=library.reviews.keys().duplicate()
 	elif target==APPROVE:
@@ -656,6 +681,7 @@ func _activate(target: int) -> void:
 		if bulk or view=="review":
 			if selected.has(id): selected.erase(id)
 			else: selected.append(id)
+		elif id==ADDING_CARD: return
 		elif _cards[target-CARD].get("scene",false): command.emit("scene_select",id)
 		else: command.emit("select",{"mode":mode,"id":id})
 	refresh()

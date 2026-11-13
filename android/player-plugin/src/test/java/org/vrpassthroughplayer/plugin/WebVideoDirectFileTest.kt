@@ -22,9 +22,21 @@ class WebVideoDirectFileTest {
         assertEquals("https://example/", descriptor.video.headers["referer"])
         assertFalse(descriptor.video.headers.containsKey("range"))
         assertNull(descriptor.audio)
+        assertTrue("Captured file must pass the actual native player input gate",
+            MpvInputUri.accepts(descriptor.publicJson().getString("uri")))
         assertFalse(descriptor.publicJson().toString().contains("private"))
         assertFalse(descriptor.publicJson().toString().contains("sig="))
         assertNotNull(WebVideoDirectFile.descriptor("https://example/watch", media().put("width", 0).put("height", 0)))
+    }
+
+    @Test fun nativeInputGateAcceptsOnlyOpaqueCaptureHandlesAndKeepsExistingSources() {
+        val valid = "webvideo://capture/" + "a1".repeat(32)
+        assertTrue(MpvInputUri.accepts(valid))
+        for (invalid in listOf("webvideo://capture/", valid + "?url=https://example/video.mp4", valid + "#fragment",
+            valid + "/extra", valid.replace("capture/", "other/"), "webvideo://capture/not-a-hash",
+            "javascript:alert(1)", "data:video/mp4,test")) assertFalse(invalid, MpvInputUri.accepts(invalid))
+        for (scheme in listOf("content", "file", "usb", "smb", "cloud", "medialib", "dlna", "http", "https", "externalvideo", "airplayvideo"))
+            assertTrue(scheme, MpvInputUri.accepts("$scheme://source/video.mp4"))
     }
 
     @Test fun rejectsPreloadsSegmentsProtectedSourcesAndDisabledCapture() {
