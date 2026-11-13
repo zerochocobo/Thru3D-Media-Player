@@ -116,4 +116,8 @@ From 0.13.2, archive pages use bounded local/stream indexers and encrypted app-p
 
 ## 0.17.5 Alpha scheduling and eye buffers
 
-A bounded capture pipeline and frame-associated mask scheduler retain ownership/cancellation boundaries and expose optional cut-out interpolation around a frame without its own mask. Compositor-only video may use reduced XR eye buffers; menu/seek transitions avoid repeated buffer resizing. Neither mechanism changes the existing depth-capture cadence or promises universal memory/performance acceptance. Failed layer-return retries are bounded while later valid recovery remains possible.
+A bounded capture pipeline and frame-associated mask scheduler retain ownership/cancellation boundaries and expose optional cut-out interpolation around a frame without its own mask. The existing depth-capture cadence is preserved. Failed layer-return retries are bounded while later valid recovery remains possible.
+
+## XR eye-buffer sizing since 0.17.8
+
+The display-quality setting selects the eye-buffer size at startup. Switching between compositor video, in-scene playback and menus keeps that size. On Quest with Godot 4.7.2 this avoids retaining old GPU render targets after a live resize. The heavy-scene policy can still request higher fixed foveation when the runtime supports it.

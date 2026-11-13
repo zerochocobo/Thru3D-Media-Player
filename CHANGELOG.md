@@ -4,6 +4,11 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.17.8 — 2026-11-13
+
+- Fix a Quest freeze when repeatedly switching between 8K videos and seeking. XR eye buffers now keep the size chosen at startup, avoiding the GPU memory leak triggered by resizing them during playback.
+- Release archives use the build completion date by default. Use -ReleaseDate to set a specific archive date.
+
 ## 0.17.7 — 2026-11-12
 
 - Choose cut, crossfade, soft wipe or depth dissolve for photo slideshows. Keep the current image visible while autoplay waits for the next one.

@@ -174,24 +174,21 @@ func _apply_foveation() -> void:
 		xr.foveation_level = level
 		DiagnosticLog.record("xr_foveation", {"level": level, "applied": xr.foveation_level, "scene_relief": scene_relief})
 
-## A heavy eye-buffer scene (the cinema hall) above 90 Hz: high fixed foveation and at most 1.0x
-## eye buffers. Quest 3 cinema 2D at 120 Hz: 85 fps / Stale 44/s -> 120 fps / Stale 0.7/s; video
-## and menus are compositor layers and keep their resolution. Both apply and restore at runtime.
+## A heavy eye-buffer scene (the cinema hall) above 90 Hz: high fixed foveation. Video and menus
+## are compositor layers and keep their resolution. Applies and restores at runtime.
+## The eye-buffer size never changes while the session runs: every live render_target_size_multiplier
+## change leaks the old GLES3 targets on Quest (Godot 4.7.2, 8K playback: +44..82 MB per change, never
+## freed). Shrinking per video open (layer relief, scene relief's 1.0x cap) reached 3 GB and froze the
+## headset on 2026-11-13.
 const SCENE_RELIEF_FOVEATION := 3
 ## Debug A/B only: replaces SCENE_RELIEF_FOVEATION when 0 or more.
 var debug_relief_foveation := -1
-const SCENE_RELIEF_MAX_SCALE := 1.0
-## Adreno 6xx without runtime foveation (Quest 2 beach from a lounger: 11.4 ms at
-## foveation 3, 15.4 ms without) also gives up a tenth of each axis while relieved.
-const SCENE_RELIEF_UNFOVEATED_SCALE := 0.9
-var relief_max_scale := SCENE_RELIEF_MAX_SCALE
 var scene_relief := false
 func set_scene_relief(enabled: bool) -> void:
 	if enabled == scene_relief: return
 	scene_relief = enabled
 	_apply_foveation()
-	_apply_render_scale()
-	DiagnosticLog.record("xr_scene_relief", {"enabled": enabled, "render_scale": render_scale, "relief_max_scale": relief_max_scale})
+	DiagnosticLog.record("xr_scene_relief", {"enabled": enabled, "render_scale": render_scale})
 
 ## Every eye-buffer edge (beach and cinema silhouettes, menu panels, controllers, rays) steps and
 ## crawls without multisampling. Quest 3, separate cold starts at 545 MHz: cinema 7.5 -> 8.8 ms, beach
@@ -204,33 +201,6 @@ func _apply_msaa() -> void:
 	viewport.msaa_3d = eye_msaa
 	DiagnosticLog.record("xr_msaa", {"msaa_3d": eye_msaa})
 
-## Keep the reduced eye buffers for the whole layer playback, including menus and seek generations.
-## Changing size on every menu toggle leaked GLES3 targets on Quest; a settle delay alone did not help.
-const LAYER_RELIEF_MAX_SCALE := 0.8
-const LAYER_RELIEF_SETTLE_MS := 1500
-var layer_relief := false
-var _layer_relief_since := -1
-func request_layer_relief(wanted: bool, now_ms: int, retain_for_playback: bool = false) -> void:
-	if layer_relief and retain_for_playback: return
-	if not wanted: _layer_relief_since = -1
-	elif layer_relief: return
-	elif _layer_relief_since < 0: _layer_relief_since = now_ms; return
-	elif now_ms - _layer_relief_since < LAYER_RELIEF_SETTLE_MS: return
-	if wanted == layer_relief: return
-	layer_relief = wanted
-	_apply_render_scale()
-	DiagnosticLog.record("xr_layer_relief", {"enabled": wanted, "scale": effective_render_scale()})
-
-func effective_render_scale() -> float:
-	var scale := render_scale
-	if scene_relief: scale = minf(scale, relief_max_scale)
-	if layer_relief: scale = minf(scale, LAYER_RELIEF_MAX_SCALE)
-	return scale
-
-func _apply_render_scale() -> void:
-	if xr is OpenXRInterface and xr.is_initialized() and "render_target_size_multiplier" in xr:
-		var wanted := effective_render_scale()
-		if not is_equal_approx(xr.render_target_size_multiplier, wanted): xr.render_target_size_multiplier = wanted
 ## Debug A/B only: one of PERFORMANCE_LEVELS' keys.
 var debug_performance_level := ""
 var performance_demand := false
@@ -338,11 +308,6 @@ func set_refresh_rate(rate: float) -> bool:
 func _on_presence_changed(present: bool) -> void:
 	DiagnosticLog.record("user_presence_changed", {"present": present})
 
-## Old GPUs whose runtime ignores foveation_level; called once the session exists.
-func configure_low_end(low_end: bool) -> void:
-	var foveated: bool = xr is OpenXRInterface and xr.is_initialized() and xr.has_method("is_foveation_supported") and xr.is_foveation_supported()
-	relief_max_scale = SCENE_RELIEF_UNFOVEATED_SCALE if low_end and not foveated and not preview else SCENE_RELIEF_MAX_SCALE
-
 func capabilities() -> Dictionary:
 	var report := {
 		"preview": preview,
@@ -358,8 +323,6 @@ func capabilities() -> Dictionary:
 		"performance_levels": performance_levels,
 		"foveation_level": foveation_level,
 		"render_scale": render_scale,
-		"relief_max_scale": relief_max_scale,
-		"layer_relief": layer_relief,
 		"menu_layers": menu_layers,
 		"browser_layer": browser_layer,
 		# Vendors can shrink the actual render region without changing the allocated eye buffers.

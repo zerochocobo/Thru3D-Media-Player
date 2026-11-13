@@ -4,7 +4,7 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.17.7** (Android versionCode **89**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.17.8** (Android versionCode **91**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
@@ -16,7 +16,7 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Real-time 2D-to-3D for supported animated photos and standalone VOB playback, including listings in 115 and OpenList.
 
 - Session-only viewing-hand lock, independent photo default/last-mode memory and a 180-degree video rotation preset.
-- Bounded Alpha mask scheduling/interpolation and reduced compositor-only XR eye buffers; device, memory and media limits apply.
+- Bounded Alpha mask scheduling and interpolation. XR eye-buffer sizing follows the startup display-quality setting.
 
 - AI GPU compatibility with OpenCL preference and Vulkan fallback, lossless internal image transfers, linked flat-video screen-edit locking and optional passive status display. See [GPU/model scope](docs/MODELS.md).
 - Shared browser/global controls. Quest-tested Featured Beta paths include Niconico, TikTok, Instagram Reels, Internet Archive, TED Talks and Dailymotion. Foreign-site Beta starts from supported in-page controls. See [current site status](docs/WEB_BROWSER.md).

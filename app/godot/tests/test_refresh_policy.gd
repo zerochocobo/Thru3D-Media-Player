@@ -43,29 +43,16 @@ func _initialize() -> void:
 	setting(Quality.load_refresh_cap(settings, false) == 72, "Unknown values fall back to the default")
 	setting(Quality.refresh_choices(false) == [120, 90, 72] and Quality.refresh_choices(true) == [90, 72], "Low-end devices do not list 120 Hz")
 	setting(Quality.REFRESH_NAMES.keys().all(func(cap): return Quality.REFRESH_HINTS.has(cap)), "Every choice explains its refresh rates")
-	# Cinema relief: high foveation and at most 1.0x eye buffers, restored when it ends.
+	# Cinema relief: high foveation only, restored when it ends. The eye buffers keep their size:
+	# a live resize leaks GLES3 targets on Quest.
 	var display = Display.new()
 	display.foveation_level = 1; display.render_scale = 1.1
 	display.set_scene_relief(true)
 	setting(display.scene_relief and display.foveation_level == 1 and display.render_scale == 1.1, "Relief keeps the user's own foveation and scale")
-	setting(Display.SCENE_RELIEF_FOVEATION == 3 and Display.SCENE_RELIEF_MAX_SCALE == 1.0, "Relief uses high foveation and 1.0x eye buffers")
+	setting(Display.SCENE_RELIEF_FOVEATION == 3, "Relief uses high foveation")
+	setting(not display.has_method("request_layer_relief") and not ("relief_max_scale" in display), "Nothing resizes the eye buffers at runtime")
 	display.set_scene_relief(false)
 	setting(not display.scene_relief, "Relief ends")
-	# Menus must not restore full-size eye buffers; seek generations retain the same playback scale.
-	display.request_layer_relief(true, 1000, true)
-	setting(not display.layer_relief, "Layer playback waits for its initial settle")
-	display.request_layer_relief(true, 1000 + Display.LAYER_RELIEF_SETTLE_MS, true)
-	setting(display.layer_relief and is_equal_approx(display.effective_render_scale(), 0.8), "Layer playback enters 0.8 once")
-	for cycle in range(30):
-		display.request_layer_relief(false, 3000 + cycle * 3000, true)
-		setting(display.layer_relief and is_equal_approx(display.effective_render_scale(), 0.8), "Seek keeps eye buffers while playback is open")
-		display.request_layer_relief(true, 5000 + cycle * 3000, true)
-		setting(display.layer_relief and is_equal_approx(display.effective_render_scale(), 0.8), "Ready playback and menus keep 0.8")
-	display.render_scale = 0.7
-	setting(is_equal_approx(display.effective_render_scale(), 0.7), "Playback never enlarges a smaller user scale")
-	display.render_scale = 1.1
-	display.request_layer_relief(false, 100000, false)
-	setting(not display.layer_relief and is_equal_approx(display.effective_render_scale(), 1.1), "Closing layer playback restores the user's scale")
 	# CPU/GPU levels: a seek's brief non-playing state must not drop sustained-high.
 	display.request_performance_demand(true, 1000)
 	setting(display.performance_demand, "Playback raises the levels at once")

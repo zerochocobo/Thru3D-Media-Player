@@ -176,4 +176,4 @@ This source follows the fixed release input records, not temporary channel overr
 
 ## Dated release archives
 
-Use the optional PowerShell parameter -ReleaseDate YYYYMMDD with Release builds to choose the date stamp in APK archive names. Standard 0.17.7 Android source uses versionCode 89 and the PICO China store build uses 90.
+Release APK archives default to the build completion date. Use the optional PowerShell parameter -ReleaseDate YYYYMMDD with Release builds to choose the archive date. Standard 0.17.8 Android source uses versionCode 91 and the PICO China store build uses 92.

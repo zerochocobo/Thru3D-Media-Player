@@ -375,7 +375,6 @@ func _ready() -> void:
 	# Older GPUs (Quest 2, Neo3) take the cheaper 2x pass.
 	if low_end_gpu: display.eye_msaa = Viewport.MSAA_2X
 	display.configure(get_viewport(), world.environment, XRServer.find_interface("OpenXR"), desktop)
-	display.configure_low_end(low_end_gpu)
 	display.attach_backdrop(camera)
 	input_visuals = InputVisuals.new()
 	input_visuals.name = "InputVisuals"
@@ -1716,13 +1715,6 @@ func _sync_display_policy() -> void:
 	# The cinema hall renders in the eye buffers: lighten it while playback runs above 90 Hz.
 	# The beach fills the whole view at every rate: 11.8 -> 9.0 ms from the centre lounger at night.
 	display.set_scene_relief(_cinema_scene_active() and not photo_active and (display.refresh_preference > 90.5 or _beach_active()))
-	# Menus keep the playback scale. A seek replaces the processing generation and briefly loses
-	# its playing/layer-ready state; retain the scale while that layer playback is still open.
-	# Repeated live OpenXR resizing retains GLES3 targets on Quest (2026-11-10 device regression).
-	var layer_playback: bool = video != null and not photo_active and not _vr_passthrough_active() \
-		and video.media.session_id > 0 and video.media.state not in ["closed", "failed"] \
-		and video.layer_capable() and not _cinema_scene_active() and display.scenery == null and not video.pip.active()
-	display.request_layer_relief(layer_playback and playing and video.video_layer_shown, now, layer_playback)
 	_sample_playback_diagnostics(playing and video.media.state == "playing")
 
 ## Once a second: playback windows for the exported log (see playback_diagnostics.gd).

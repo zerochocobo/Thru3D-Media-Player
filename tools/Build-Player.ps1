@@ -744,6 +744,7 @@ $buildManifest = [ordered]@{
 if ($BuildType -eq 'Release') {
     $platformName = switch ($XrVendor) { 'Pico' { 'PICO' } 'OpenXR' { 'OpenXR' } default { 'QUEST' } }
     if ($appVersion -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]*$') { throw 'Unsafe release version path.' }
+    if (-not $ReleaseDate) { $releaseStamp = Get-Date -Format 'yyyyMMdd' }
     $releaseDirectory = Join-Path $workspace ("releases/$appVersion/$releaseStamp/" + $buildManifest.apk_sha256.Substring(0,12))
     New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
     if ($PicoChinaStore) { $platformName = 'PICO-CN-STORE' }
