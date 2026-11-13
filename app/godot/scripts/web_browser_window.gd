@@ -343,6 +343,47 @@ func finish_selection() -> void:
 		selecting = false
 	end_drag(); refresh()
 	browser.effects_changed.emit()
+## Auto select: watch the page for a moment, find the playing picture anywhere on it (motion,
+## then the player's border, then black bars; see Focus.smart_rect) and focus exactly that.
+const AUTO_FRAMES := 5
+const AUTO_FRAME_GAP_MS := 180
+const AUTO_SIZE := Vector2i(320, 180)
+var _auto_selecting := false
+func auto_select() -> void:
+	if _auto_selecting or not selecting or OS.get_name() != "Android" or surface == null or surface.layer == null: return
+	var sampler: Object = JavaClassWrapper.wrap("org.vrpassthroughplayer.plugin.LayerThumbnail")
+	if sampler == null: return
+	_auto_selecting = true
+	var frames: Array = []
+	for index in AUTO_FRAMES:
+		var image: Image = await _auto_capture(sampler)
+		if image == null or not selecting or not is_inside_tree(): break
+		frames.append(image)
+		if index < AUTO_FRAMES - 1: await get_tree().create_timer(AUTO_FRAME_GAP_MS / 1000.0).timeout
+	_auto_selecting = false
+	if frames.is_empty() or not selecting: return
+	var found := Focus.smart_rect(frames)
+	# Nothing to pick (no picture found, or it already fills the page): keep the manual selection.
+	if not Focus.valid(found) or (found.size.x > 0.985 and found.size.y > 0.985): return
+	selection = found
+	finish_selection()
+
+func _auto_capture(sampler: Object) -> Image:
+	var input: Object = surface.layer.input_surface() if surface and surface.layer else null
+	if input == null: return null
+	var request := int(sampler.requestSurface(input, int(surface.pixels.x), int(surface.pixels.y), 0.0, 0.0, 1.0, 1.0, AUTO_SIZE.x, AUTO_SIZE.y))
+	JavaClassWrapper.get_exception()
+	if request <= 0: return null
+	var deadline := Time.get_ticks_msec() + 800
+	while Time.get_ticks_msec() < deadline:
+		await get_tree().process_frame
+		var state := str(sampler.surfaceState(request))
+		if state == "pending": continue
+		if state != "ready": return null
+		var pixels: PackedByteArray = sampler.takeSurface(request)
+		if pixels.size() != AUTO_SIZE.x * AUTO_SIZE.y * 4: return null
+		return Image.create_from_data(AUTO_SIZE.x, AUTO_SIZE.y, false, Image.FORMAT_RGBA8, pixels)
+	return null
 func _create_feedback() -> void:
 	if is_instance_valid(_feedback): return
 	_feedback = Node3D.new(); _feedback.set_meta("menu_eye_buffer", true); _feedback.set_meta("browser_world_pointer", true); add_child(_feedback)

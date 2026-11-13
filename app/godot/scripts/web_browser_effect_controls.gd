@@ -8,6 +8,7 @@ const BOOST := 986023
 const OFF := 986024
 const CHROME := 986025
 const KEYBOARD := 986026
+const AUTO := 986028
 const SLIDER_X := 0.15
 const ENTER_MS := 120
 const LEAVE_MS := 650
@@ -129,7 +130,7 @@ func observe_ray(hand: String, origin: Vector3, direction: Vector3, tracked: boo
 	_update_highlights()
 
 func reveal_bounds() -> Rect2:
-	var bounds := Rect2(-0.38,-0.065,0.76,0.13)
+	var bounds := Rect2(-0.53,-0.065,0.91,0.13)
 	if not global_footer: return bounds
 	# Derive the width from shared controls, including disabled scene actions.
 	for button in _buttons: bounds = bounds.merge(button.rect)
@@ -158,8 +159,9 @@ func _draw() -> void:
 	if not host: return
 	var focus_icon := "close" if host.selecting else "expand" if host.is_focused() else "region_focus"
 	var focus_tip := "Cancel selection" if host.selecting else "Exit focus" if host.is_focused() else "Focus region"
-	for item in [[CHROME,"browser_frame",-0.30,not host.toolbar_shown,"Hide browser frame" if host.toolbar_shown else "Show browser frame"],[FOCUS,focus_icon,-0.15,host.selecting or host.is_focused(),focus_tip],[MATTE,"alpha",0.0,host.depth.matte,"Person passthrough"],[DEPTH,"depth",0.15,host.depth.enabled,"2D to 3D effect"]]:
+	for item in [[CHROME,"browser_frame",-0.30,not host.toolbar_shown,"Hide browser frame" if host.toolbar_shown else "Show browser frame"],[FOCUS,focus_icon,-0.15,host.selecting or host.is_focused(),focus_tip],[MATTE,"alpha",0.0,host.depth.matte,"Person passthrough"],[DEPTH,"depth",0.15,host.depth.enabled,"2D to 3D effect"],[AUTO,"aspect",-0.45,false,"Auto select picture"]]:
 		if host.on_screen() and item[0] == CHROME: continue
+		if item[0] == AUTO and not host.selecting: continue
 		if host.on_screen(): item[2] -= 0.075
 		_button(item[0],"",Vector2(item[2],0),Vector2.ONE*0.12,not host.page_input_blocked() if item[0]==FOCUS else true,item[1],item[3])
 		_tips[item[0]] = I18n.t(item[4])
@@ -254,6 +256,8 @@ func _activate(target: int) -> void:
 	elif target == DEPTH:
 		if host.depth.enabled: set_strength_open(not strength_open)
 		else: host._activate(DEPTH)
+	elif target == AUTO:
+		host.auto_select()
 	elif target == OFF:
 		if host.depth.enabled: host._activate(DEPTH)
 	elif target == BOOST:
