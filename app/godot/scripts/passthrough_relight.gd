@@ -380,6 +380,8 @@ func _layer_image(video: Node, pair: Dictionary) -> Image:
 		var pixels: PackedByteArray = platform.take_mpv_layer_thumbnail(request)
 		if pixels.size() != size.x * size.y * 4: return null
 		return Image.create_from_data(size.x, size.y, false, Image.FORMAT_RGBA8, pixels)
+	# Still pending: free the slot, the result store is shared with library thumbnails.
+	platform.cancel_mpv_layer_snapshot(request)
 	return null
 
 
@@ -425,15 +427,17 @@ func _sample_browser(window: Node) -> void:
 	var generation := _generation
 	var image: Image = null
 	var deadline := Time.get_ticks_msec() + 500
-	while Time.get_ticks_msec() < deadline:
+	var pending := true
+	while pending and Time.get_ticks_msec() < deadline:
 		await get_tree().process_frame
 		var state := str(_page_sampler.surfaceState(request))
 		if state == "pending": continue
+		pending = false
 		if state == "ready":
 			var pixels: PackedByteArray = _page_sampler.takeSurface(request)
 			if pixels.size() == size.x * size.y * 4:
 				image = Image.create_from_data(size.x, size.y, false, Image.FORMAT_RGBA8, pixels)
-		break
+	if pending: _page_sampler.cancelSurface(request)
 	_busy = false
 	if generation != _generation or not enabled: return
 	if image == null:

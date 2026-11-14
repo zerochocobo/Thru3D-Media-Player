@@ -22,6 +22,8 @@ internal object LayerThumbnail {
     private val handler by lazy { Handler(HandlerThread("LayerThumbnail").apply { start() }.looper) }
     /** Finished requests: RGBA8 rows of the requested size, or "failed:<reason>". */
     private val results = FrameCopyResults()
+    /** Relight samples of a browser page, kept apart so their steady stream never evicts a video picture. */
+    private val surfaceResults = FrameCopyResults()
 
     /** A full coded frame for a mode transition, never a library crop or a single-eye view. */
     fun snapshot(surface: Surface?, outWidth: Int, outHeight: Int): Int =
@@ -30,7 +32,7 @@ internal object LayerThumbnail {
     /** [width] x [height] is the displayed frame (after [rotation], clockwise); [crop] is (x, y, w, h)
      * of it in UV, row 0 on top. Returns a request id for [take], or 0 when nothing was requested. */
     fun request(surface: Surface?, width: Int, height: Int, rotation: Int, crop: FloatArray, outWidth: Int, outHeight: Int,
-                maxOutput: Int = 1024): Int {
+                maxOutput: Int = 1024, results: FrameCopyResults = this.results): Int {
         if (surface == null || !surface.isValid || width <= 0 || height <= 0 || crop.size != 4 ||
             outWidth !in 1..maxOutput || outHeight !in 1..maxOutput || rotation % 90 != 0) return 0
         val turned = rotation % 180 != 0
@@ -81,7 +83,10 @@ internal object LayerThumbnail {
     // producer surface): passthrough relighting samples the focused page region like a video.
     @JvmStatic fun requestSurface(surface: Surface?, width: Int, height: Int, x: Float, y: Float, w: Float, h: Float,
                                   outWidth: Int, outHeight: Int): Int =
-        runCatching { request(surface, width, height, 0, floatArrayOf(x, y, w, h), outWidth, outHeight) }.getOrDefault(0)
-    @JvmStatic fun surfaceState(id: Int): String = state(id)
-    @JvmStatic fun takeSurface(id: Int): ByteArray = pixels(id)
+        runCatching {
+            request(surface, width, height, 0, floatArrayOf(x, y, w, h), outWidth, outHeight, results = surfaceResults)
+        }.getOrDefault(0)
+    @JvmStatic fun surfaceState(id: Int): String = surfaceResults.state(id)
+    @JvmStatic fun takeSurface(id: Int): ByteArray = surfaceResults.take(id)
+    @JvmStatic fun cancelSurface(id: Int) = surfaceResults.cancel(id)
 }
