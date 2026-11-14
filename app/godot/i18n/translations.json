@@ -1,5 +1,7 @@
 {
   "zh": {
+    "Passthrough relighting": "透视环境补光",
+    "The picture's colour lights the room, glows around the screen and casts a floor shadow while passthrough is shown.": "显示透视背景时，画面颜色会照亮房间、在屏幕四周泛光，并在地面投下阴影。",
     "Lock hand gestures": "锁定手势",
     "Unlock hand gestures": "解锁手势",
     "Screen locked\nUnlock at the top-left or in Screen settings": "屏幕已锁定\n左上角或屏幕设置中解锁",
@@ -44,6 +46,7 @@
     "Stop image autoplay": "停止自动播放图片",
     "3D when menus hide": "隐藏菜单时开启3D",
     "Automatically enable 2D to 3D when browser menus are hidden.": "隐藏网页菜单时，自动开启2D转3D。",
+    "The page lights the room, glows around the window and shades the floor.": "网页颜色照亮房间，在窗口周围发光并在地面投下阴影。",
     "Show keyboard": "显示键盘",
     "Vertical to ground": "垂直于地面",
     "Image plane perpendicular to view": "图片平面垂直于视线",
@@ -2128,6 +2131,8 @@
     "Screen light: high": "屏幕反射光：高"
   },
   "zh_Hant": {
+    "Passthrough relighting": "透視環境補光",
+    "The picture's colour lights the room, glows around the screen and casts a floor shadow while passthrough is shown.": "顯示透視背景時，畫面顏色會照亮房間、在螢幕四周泛光，並在地面投下陰影。",
     "Lock hand gestures": "鎖定手勢",
     "Unlock hand gestures": "解鎖手勢",
     "Saved viewing position unavailable": "已儲存的觀看位置無法使用",
@@ -2173,6 +2178,7 @@
     "Stop image autoplay": "停止自動播放圖片",
     "3D when menus hide": "隱藏選單時開啟3D",
     "Automatically enable 2D to 3D when browser menus are hidden.": "隱藏網頁選單時，自動開啟2D轉3D。",
+    "The page lights the room, glows around the window and shades the floor.": "網頁顏色照亮房間，在視窗周圍發光並在地面投下陰影。",
     "Show keyboard": "顯示鍵盤",
     "Vertical to ground": "垂直於地面",
     "Image plane perpendicular to view": "圖片平面垂直於視線",
@@ -4240,6 +4246,8 @@
     "Screen light: high": "螢幕反射光：高"
   },
   "ja": {
+    "Passthrough relighting": "パススルー照明連動",
+    "The picture's colour lights the room, glows around the screen and casts a floor shadow while passthrough is shown.": "パススルー表示中、映像の色で部屋を照らし、画面の周囲を光らせ、床に影を落とします。",
     "Lock hand gestures": "ハンド操作をロック",
     "Unlock hand gestures": "ハンド操作のロックを解除",
     "Saved viewing position unavailable": "保存した鑑賞位置は使用できません",
@@ -4285,6 +4293,7 @@
     "Stop image autoplay": "画像の自動再生を停止",
     "3D when menus hide": "メニュー非表示で3D",
     "Automatically enable 2D to 3D when browser menus are hidden.": "ブラウザのメニューを隠すと、2Dから3Dへの変換を自動的に有効にします。",
+    "The page lights the room, glows around the window and shades the floor.": "ページの色で部屋を照らし、ウィンドウの周りを光らせ、床に影を落とします。",
     "Show keyboard": "キーボードを表示",
     "Vertical to ground": "地面に垂直",
     "Image plane perpendicular to view": "画像の平面は視線に垂直",
