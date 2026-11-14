@@ -31,3 +31,7 @@ AirPlay 从画中画进入普通实时播放器，可使用兼容的 2D 转 3D �
 ## 0.17.7 discovery diagnostics
 
 Exported diagnostics include native receiver startup and Android service registration outcomes. Discovery reliability remains under investigation.
+
+## 0.17.9 multicast reception
+
+AirPlay holds its own Android multicast lock while reception is enabled, so discovery does not depend on DLNA being active.

@@ -9,10 +9,12 @@ internal class AirplayDiscoveryDiagnostics {
     private val events = ArrayDeque<String>()
 
     @Synchronized fun record(stage: String, generation: Long, state: String, port: Int,
-        listening: Boolean, registrations: Int, code: Int? = null, failure: Throwable? = null): String {
+        listening: Boolean, registrations: Int, code: Int? = null, failure: Throwable? = null,
+        foreground: Boolean = true, multicastHeld: Boolean = false): String {
         val event = JSONObject().put("stage", stage).put("generation", generation).put("state", state)
             .put("at_ms", System.nanoTime() / 1_000_000).put("port", port)
             .put("native_running", listening).put("registered_services", registrations)
+            .put("foreground", foreground).put("multicast_held", multicastHeld)
         if (code != null) event.put("code", code)
         if (failure != null) {
             // A loader exception can include private paths; keep a category, never its message/stack.

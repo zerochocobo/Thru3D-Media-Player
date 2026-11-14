@@ -49,6 +49,8 @@ const StereoView := preload("res://scripts/stereo_view.gd")
 var viewing_eye := 0 # 0 binocular; 1/2 duplicate the logical left/right view after eye swap.
 var stereo_horizontal := 0.0
 var stereo_vertical := 0.0
+var stereo_focus := 0.0 # Test: metres to the depth whose two eye images meet; 0 keeps the shared sphere.
+const FOCUS_LIMITS := Vector2(0.3, 50.0)
 var _stereo_view_dirty := false
 var _immersive_view_dirty := false
 var _mode_user_changed := false # Late USB identity must not replace this open's manual choices.
@@ -398,6 +400,13 @@ var _eye_buffer_only := false # the next open stays on the eye-buffer path (one-
 var _layer_return_uri := ""
 ## This file cannot use the layer (Dolby Vision Profile 5, software decode): no automatic return.
 var _layer_blocked_uri := ""
+## HDR to SDR (global setting). The layer shows the decoder's HDR10/HLG picture as it is: PICO's
+## compositor shows it washed out (user report, 2026-11-13), so On has MPV map it to SDR.
+## Empty: the headset's default (HdrToSdr.default_mode), known once the layer binds.
+const HdrToSdr := preload("res://scripts/hdr_to_sdr.gd")
+var hdr_to_sdr := ""
+## _layer_blocked_uri set only for the HDR conversion: turning it off returns the file to the layer.
+var _hdr_blocked_uri := ""
 var _layer_generation := 0 # video_layer.generation the layer session's surface belongs to
 ## A seek on the layer: its surface keeps the last frame, so it stays shown until the target arrives.
 var _layer_seek_hold := false
@@ -2723,6 +2732,10 @@ func _apply_stereo_view() -> void:
 	material.set_shader_parameter("swap_eyes", swap_eyes if stereo_sbs else false)
 	material.set_shader_parameter("viewing_eye", viewing_eye if stereo_sbs else 0)
 	material.set_shader_parameter("stereo_offset", stereo_offset_uv() if stereo_sbs else Vector2.ZERO)
+	var focus := stereo_focus_shape()
+	var units := XRServer.world_scale / maxf((panel.global_basis if panel.is_inside_tree() else panel.basis).get_scale().x, 0.0001)
+	material.set_shader_parameter("focus_scale", focus.x * units / SPHERE_RADIUS if focus.x > 0.0 else 1.0)
+	material.set_shader_parameter("focus_offset", focus.y * units)
 	if _hole_material:
 		# No extra full-surface pass during ordinary playback or mono viewing.
 		_hole_material.next_pass = _alignment_border if stereo_sbs and viewing_eye == 0 and stereo_offset_uv() != Vector2.ZERO else null
@@ -3365,6 +3378,8 @@ func _on_debug_command(id: int, payload: String) -> void:
 	elif command.operation == "stereo":
 		if stereo_sbs != bool(command.enabled):
 			toggle_stereo()
+	elif command.operation == "focus":
+		set_stereo_focus(float(command.get("value", 0.0))) # metres; 0 off
 	elif command.operation == "profile":
 		profile = str(command.profile)
 		_warm_rvm() # as set_profile: a cold profile starts its background compile
@@ -3698,6 +3713,7 @@ func _sync_scene_overlay() -> void:
 	_sync_surface_facing()
 
 func _sync_portrait() -> void:
+	if alpha_wanted(): set_corner_hover(-1)
 	_send_portrait_depth()
 	if not panel or not material: return
 	if _scene_overlay: _scene_overlay.restore(panel)
@@ -3729,8 +3745,12 @@ func screen_frame_height() -> float:
 	return float(preset.size.y) if not preset.is_empty() else _flat.size.y
 
 func corner_at(origin: Vector3, direction: Vector3) -> int:
+	if alpha_wanted(): return -1
 	var corner := super.corner_at(origin, direction)
 	return -1 if cinema.active(self) and corner >= 2 else corner
+
+func _show_handles(index: int) -> void:
+	super._show_handles(-1 if alpha_wanted() else index)
 
 func _apply_geometry() -> void:
 	super._apply_geometry()
@@ -3932,6 +3952,18 @@ func stereo_offset_uv() -> Vector2:
 		offset.x -= float(_spatial_metadata.get("horizontal_disparity", 0.0)) * (-1.0 if swap_eyes else 1.0)
 	return offset
 
+## Stereo focus (test): each eye's sphere is centred on that eye (half the runtime IPD from the shared
+## centre) with its radius at stereo_focus. Both images of that depth then land on one world point, which
+## stays put as the head moves or tilts and whatever the camera spacing. Native stereo spheres only.
+## (radius, half eye separation) in metres; zero when off.
+func stereo_focus_shape() -> Vector2:
+	if stereo_focus <= 0.0 or not stereo_sbs or viewing_eye != 0 or geometry == Geometry.Geometry.FLAT: return Vector2.ZERO
+	return Vector2(stereo_focus, ProjectedSubtitles.runtime_ipd() * 0.5)
+
+func set_stereo_focus(distance: float) -> void:
+	stereo_focus = clampf(distance, FOCUS_LIMITS.x, FOCUS_LIMITS.y) if is_finite(distance) and distance > 0.0 else 0.0
+	_apply_stereo_view()
+
 ## Presentation the compositor layer can show exactly: plain decoder colour on a supported shape.
 ## The configuration shows on the compositor layer (independent of a reopen in progress).
 func layer_capable() -> bool:
@@ -4047,7 +4079,7 @@ var _layer_return_attempt := ""
 var _layer_return_refused := ""
 func _layer_return_key() -> String:
 	return str([local_uri, color_grade.snapshot(), alpha_requested, depth_requested, stereo_sbs, top_bottom,
-		geometry, screen_curve, screen_rotation, packed_file, layer_enabled, pip.video_windows().size()])
+		geometry, screen_curve, screen_rotation, packed_file, layer_enabled, pip.video_windows().size(), hdr_to_sdr_mode()])
 
 ## Alpha may stay on the layer: allowed by the platform, and the runtime blends layers by the mask
 ## (XR_FB_composition_layer_alpha_blend). Without that blend the video layer would show uncut, so
@@ -4067,7 +4099,8 @@ func layer_block_reason() -> String:
 	if alpha_requested and not video_layer.alpha_blend: return "blend" # runtime without XR_FB_composition_layer_alpha_blend
 	if depth_requested: return "3d"
 	if packed_file: return "packed"
-	if not local_uri.is_empty() and local_uri == _layer_blocked_uri: return "decoder"
+	if not local_uri.is_empty() and local_uri == _layer_blocked_uri:
+		return "hdr" if local_uri == _hdr_blocked_uri else "decoder"
 	if not video_layer.grades(color_grade): return "color"
 	if not video_layer.supports_surface(self): return "shape"
 	return "wait"
@@ -4096,13 +4129,43 @@ func _origin() -> XROrigin3D:
 	return view_camera.get_parent() as XROrigin3D if view_camera else null
 
 func _recover_layer_output() -> bool:
-	if not (_layer_session or _layer_requested) or not media.accepts(media.session_id) \
-		or media.playback.get("layer_compatible", true) != false or local_uri.is_empty():
+	var hdr := _hdr_converts()
+	if hdr and not (_layer_session or _layer_requested):
+		# The eye buffers already show MPV's SDR: keep the file there instead of returning to the layer.
+		if local_uri != _layer_blocked_uri: _block_layer_for_hdr()
 		return false
-	if _await_web_decoder(): return true
-	_layer_blocked_uri = local_uri
-	_reopen_on_eye_buffer(-1, "layer_incompatible") # Profile 5, software decode or rotation: MPV must normalize.
+	if not (_layer_session or _layer_requested) or not media.accepts(media.session_id) \
+		or (media.playback.get("layer_compatible", true) != false and not hdr) or local_uri.is_empty():
+		return false
+	if not hdr and _await_web_decoder(): return true
+	if hdr: _block_layer_for_hdr()
+	else: _layer_blocked_uri = local_uri
+	# Profile 5, software decode, rotation or HDR: MPV must normalize.
+	_reopen_on_eye_buffer(-1, "hdr_to_sdr" if hdr else "layer_incompatible")
 	return true
+
+func hdr_to_sdr_mode() -> String:
+	return hdr_to_sdr if not hdr_to_sdr.is_empty() else HdrToSdr.default_mode(video_layer != null and video_layer.hdr_surface)
+
+## This session's source is HDR (PQ/HLG, as decoded) and the setting converts it.
+func _hdr_converts() -> bool:
+	return hdr_to_sdr_mode() == HdrToSdr.ON \
+		and not local_uri.is_empty() and media.accepts(media.session_id) \
+		and bool(media.playback.get("details", {}).get("hdr_source", false))
+
+func _block_layer_for_hdr() -> void:
+	_layer_blocked_uri = local_uri
+	_hdr_blocked_uri = local_uri
+	_layer_return_uri = ""
+
+## Off returns a file held off the layer only for HDR; On moves a layer session on the next update.
+func set_hdr_to_sdr(mode: String) -> void:
+	hdr_to_sdr = HdrToSdr.normalize(mode)
+	if hdr_to_sdr_mode() != HdrToSdr.OFF or local_uri.is_empty() or _hdr_blocked_uri != local_uri: return
+	_hdr_blocked_uri = ""
+	if _layer_blocked_uri == local_uri:
+		_layer_blocked_uri = ""
+		_layer_return_uri = local_uri
 
 ## The retained page's player keeps its MediaCodec for a few seconds after the pause, so an
 ## 8K source finds the hardware decoder busy (OMX -12) right after a handoff although the

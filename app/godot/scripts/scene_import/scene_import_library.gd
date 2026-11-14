@@ -2,6 +2,8 @@ extends Node
 ## The viewer's own scene files: a private copy of each picked file plus a small catalog.
 ## Import results live in the cache beside it and are rebuilt from the copy when needed.
 signal changed
+## A picked file is now in the library; `fresh` is false when it was there already.
+signal added(id: String, fresh: bool)
 const Cache := preload("res://scripts/scene_import/scene_import_cache.gd")
 const Budget := preload("res://scripts/scene_import/scene_import_budget.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
@@ -43,7 +45,7 @@ func load_catalog() -> void:
 		# Only names this library could have written, and only files that are still there.
 		if not entry is Dictionary or not str(id).is_valid_hex_number() or str(entry.get("file", "")) != "%s.%s" % [id, str(entry.get("file", "")).get_extension()]: continue
 		if not supported(str(entry.file)) or not FileAccess.file_exists(_sources().path_join(str(entry.file))): continue
-		entries[str(id)] = {"title": str(entry.get("title", "")).left(160), "file": str(entry.file), "bytes": int(entry.get("bytes", 0)),
+		entries[str(id)] = {"title": str(entry.get("title", "")).left(160), "name": str(entry.get("name", "")).left(255), "file": str(entry.file), "bytes": int(entry.get("bytes", 0)),
 			"added": int(entry.get("added", 0)), "summary": entry.get("summary", {}) if entry.get("summary") is Dictionary else {}}
 
 func save_catalog() -> bool:
@@ -70,9 +72,15 @@ func progress() -> float:
 	return -1.0 if busy else 0.0
 
 ## Starts copying one picked file (media-library URI or a local path) into the library.
-func add(uri: String, title: String) -> bool:
+## `bytes` is the size the source reports, when it does: with the name it spots a file that is
+## already here before anything is copied. The copy's content is compared afterwards either way.
+func add(uri: String, title: String, bytes: int = -1) -> bool:
 	if busy: return false
 	error = ""
+	for id in entries:
+		if bytes > 0 and int(entries[id].bytes) == bytes and str(entries[id].get("name", "")) == title:
+			added.emit(id, false)
+			return false
 	if not supported(title): error = "Unsupported scene format"
 	elif entries.size() >= MAX_ENTRIES: error = "Scene library is full"
 	if not error.is_empty():
@@ -139,6 +147,8 @@ func _on_imported(id: int, payload: String) -> void:
 
 func _finish(result: Dictionary) -> void:
 	busy = false
+	var landed := ""
+	var fresh := false
 	if result.get("state", "") != "ready":
 		if not result.get("cancelled", false): error = str(result.get("error", "Could not download scene")).left(120)
 		changed.emit()
@@ -151,18 +161,23 @@ func _finish(result: Dictionary) -> void:
 	elif entries.has(id):
 		# The same file again: keep the first copy.
 		DirAccess.remove_absolute(saved)
+		landed = id
 	else:
 		var file := "%s.%s" % [id, saved.get_extension().to_lower()]
 		if DirAccess.rename_absolute(saved, ProjectSettings.globalize_path(_sources().path_join(file))) != OK:
 			DirAccess.remove_absolute(saved)
 			error = "Could not save scene"
 		else:
-			entries[id] = {"title": adding.get_basename().left(160), "file": file, "bytes": int(result.get("bytes", 0)), "added": int(Time.get_unix_time_from_system()), "summary": {}}
+			entries[id] = {"title": adding.get_basename().left(160), "name": adding.left(255), "file": file, "bytes": int(result.get("bytes", 0)), "added": int(Time.get_unix_time_from_system()), "summary": {}}
 			if not save_catalog():
 				DirAccess.remove_absolute(ProjectSettings.globalize_path(_sources().path_join(file)))
 				entries.erase(id)
 				error = "Could not save scene"
+			else:
+				landed = id
+				fresh = true
 	changed.emit()
+	if not landed.is_empty(): added.emit(landed, fresh)
 
 ## What the last import of this scene produced, kept for the card (triangles, what was cut).
 func note_summary(id: String, tier: String, info: Dictionary) -> void:

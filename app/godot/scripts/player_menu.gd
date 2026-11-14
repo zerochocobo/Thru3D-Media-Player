@@ -113,6 +113,7 @@ const BOOST_BUTTON_SIZE := Vector2(0.078, 0.052)
 const DepthPosition := preload("res://scripts/depth_position.gd")
 const DepthStrength := preload("res://scripts/depth_strength.gd")
 const VideoAuto3D := preload("res://scripts/video_auto_3d.gd")
+const HdrToSdr := preload("res://scripts/hdr_to_sdr.gd")
 const DEPTH := 161
 const DEPTH_OFF := 162
 const DEPTH_BOOST := 164
@@ -170,6 +171,8 @@ const VR_GAUGES_ON := 614
 const VR_GAUGES_OFF := 615
 const SPATIAL_DISPARITY := 487
 const SPATIAL_FOV := 488
+const STEREO_FOCUS := 489
+const FOCUS_MAX := 5.0 # metres at the slider's right end; its left end is off
 ## Settings is a popup above the bar like subtitles: its own tab, tile and close targets keep the
 ## bar's controls (100+) usable while it is open.
 const SCREEN_SETTINGS := 473
@@ -216,10 +219,10 @@ const TABS := ["Playback", "Settings", "Info"]
 const OPERATIONS := [
 	["recent", "previous_video", "play", "next_video", "alpha", "projection", "stereo", "stop", "recenter", "mute", "subtitles",
 		"audio", "depth"],
-	["color_grade", "loop", "seek_mode", "stereo_view", "video_auto_3d", "depth_render"],
+	["color_grade", "loop", "seek_mode", "hdr_to_sdr", "stereo_view", "video_auto_3d", "depth_render"],
 	["capabilities"]]
-const HEADINGS := ["Color grading", "Playback mode", "Video time positioning", "Stereo viewing", VideoAuto3D.TITLE, "2D to 3D effect"]
-const SETTING_ICONS := ["light", "loop", "history", "eyes", "depth", "depth"]
+const HEADINGS := ["Color grading", "Playback mode", "Video time positioning", HdrToSdr.TITLE, "Stereo viewing", VideoAuto3D.TITLE, "2D to 3D effect"]
+const SETTING_ICONS := ["light", "loop", "history", "quality", "eyes", "depth", "depth"]
 const PLAYBACK_MODE_ICONS := {"single": "play", "repeat_one": "repeat_one", "sequence": "sequence", "repeat_all": "repeat_all", "shuffle": "shuffle"}
 const PLAYBACK_MODE_TIPS := {
 	"single": "Single video: stop after the current video.",
@@ -2325,7 +2328,7 @@ func _choice_tile(target: int) -> bool:
 func _settings_key() -> String:
 	return str([_state.get("cast", {})]) + str([_state.get("source_uri", ""), _state.get("has_video", false),
 		_state.get("portrait_requested", false), _state.get("flat_passthrough_requested", false), _state.get("portrait_auto", true), _state.get("portrait_enhanced", false),
-		_state.get("playback_mode", "single"), _state.get("seek_mode", "speed"), _state.get("depth_render", "stretch"), _state.get("depth_text_protection", true), _state.get("stereo", false), _state.get("geometry", 0),
+		_state.get("playback_mode", "single"), _state.get("seek_mode", "speed"), _state.get("hdr_to_sdr", HdrToSdr.ON), _state.get("depth_render", "stretch"), _state.get("depth_text_protection", true), _state.get("stereo", false), _state.get("geometry", 0),
 		_state.get("show_status_info", true), _state.get("show_fps", false), _state.get("alpha_keep_background", false), _state.get("passthrough_relight", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
 		_state.get("immersive_adjustment_gauges", true), _state.get("video_auto_3d", false),
@@ -2339,6 +2342,9 @@ func _setting_choices(operation: String) -> Dictionary:
 	match operation:
 		"video_auto_3d":
 			return VideoAuto3D.choice(bool(_state.get("video_auto_3d", false)))
+		# The same global choice as Settings > Video.
+		"hdr_to_sdr":
+			return HdrToSdr.choice(str(_state.get("hdr_to_sdr", HdrToSdr.ON)))
 		"seek_mode":
 			return {"key": "seek_mode", "value": _state.get("seek_mode", "speed"), "choices": [
 				{"value": "speed", "label": "Speed", "hint": "Faster jumps, less precise"},
@@ -2858,6 +2864,7 @@ func _caption_text(operation: String) -> String:
 		"seek_mode": return "Precise" if _state.get("seek_mode", "speed") == "exact" else "Speed"
 		"depth_text_protection": return "On" if _state.get("depth_text_protection", true) else "Off"
 		"video_auto_3d": return "On" if _state.get("video_auto_3d", false) else "Off"
+		"hdr_to_sdr": return "Off" if _state.get("hdr_to_sdr", HdrToSdr.ON) == HdrToSdr.OFF else "On"
 		"depth_render": return "Fill gaps" if _state.get("depth_render", "stretch") == "fill" else "Stretch edges"
 		"stop": return "Close video"
 		"stereo": return ("TB" if _state.get("top_bottom", false) else "SBS") if _state.get("stereo", false) else "2D"
@@ -3171,7 +3178,8 @@ func _draw_stereo_view() -> void:
 	_settings_drawn = _settings_key()
 	var mode := int(_state.get("viewing_eye", 0))
 	var spatial: bool = _state.get("spatial_video", false) and _state.get("spatial_metadata", {}).has("horizontal_disparity")
-	var top := _settings_frame((0.70 if spatial else 0.62) if mode == 0 else 0.40)
+	var focus := 0.09 if int(_state.get("geometry", 0)) != 0 else 0.0 # immersive spheres only
+	var top := _settings_frame((0.70 if spatial else 0.62) + focus if mode == 0 else 0.40)
 	_settings_heading("Stereo viewing", top)
 	for i in StereoView.MODES.size():
 		_button(VIEWING_EYE + i, I18n.t(StereoView.MODES[i]), Vector2(-0.335 + i * 0.335, top - 0.13), Vector2(0.32, 0.065), _enabled("stereo_view"))
@@ -3186,11 +3194,14 @@ func _draw_stereo_view() -> void:
 		_horizontal_alignment_ticks(top - 0.36)
 		_adjustment_row(ALIGNMENT_VERTICAL, "stereo_vertical", "Vertical alignment", StereoView.VERTICAL, top - 0.45)
 		_slider_tick(ALIGNMENT_VERTICAL, 0.0, "0", top - 0.45)
-		_button(ALIGNMENT_RESET, I18n.t("Reset alignment"), Vector2(0, top - 0.545), Vector2(0.36, 0.055), _enabled("stereo_view"))
+		if focus > 0.0:
+			_adjustment_row(STEREO_FOCUS, "stereo_focus", "Focus distance", Vector3(0.0, FOCUS_MAX, 0.05), top - 0.54)
+			_tips[STEREO_FOCUS] = I18n.t("Things at this distance stay steady as your head moves. Off keeps the original view.")
+		_button(ALIGNMENT_RESET, I18n.t("Reset alignment"), Vector2(0, top - 0.545 - focus), Vector2(0.36, 0.055), _enabled("stereo_view"))
 		set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
 		if spatial:
 			var enabled: bool = _state.get("spatial_auto_disparity", true)
-			_button(SPATIAL_DISPARITY, I18n.t("Source disparity") + "  " + I18n.t("On" if enabled else "Off"), Vector2(0, top - 0.625), Vector2(0.56, 0.055))
+			_button(SPATIAL_DISPARITY, I18n.t("Source disparity") + "  " + I18n.t("On" if enabled else "Off"), Vector2(0, top - 0.625 - focus), Vector2(0.56, 0.055))
 			set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
 			if enabled: _buttons.back().base_color = SELECTED
 	else:
@@ -3250,7 +3261,7 @@ func _adjustment_default(key: String) -> Variant:
 		"screen_curve": 0.0,
 		"view_horizontal": 0.0, "view_vertical": 0.0, "view_zoom": 0.0,
 		"screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0,
-		"stereo_horizontal": 0.0, "stereo_vertical": 0.0}.get(key)
+		"stereo_horizontal": 0.0, "stereo_vertical": 0.0, "stereo_focus": 0.0}.get(key)
 
 func _activate_slider_reset(target: int) -> bool:
 	for button in _buttons:
@@ -3318,6 +3329,7 @@ func _refresh_adjustments() -> void:
 		var position: bool = row.key == "subtitle_position"
 		var defaults := {"screen_curve": 0.0, "screen_scale": 100.0, "cinema_picture_size": 100.0, "screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0, "stereo_horizontal": 0.0, "stereo_vertical": 0.0}
 		defaults["bar_transparency"] = 14.0
+		defaults["stereo_focus"] = 0.0
 		defaults[DepthPosition.KEY] = 0.0
 		for key in Surface.ImmersiveAdjustments.KEYS: defaults[key] = 0.0
 		defaults["portrait_scale"] = 100.0
@@ -3349,6 +3361,7 @@ func _refresh_adjustments() -> void:
 		elif row.key == "alpha_fps": row.label.text = "%d FPS" % roundi(value)
 		elif row.key in ["alpha_feather", "alpha_shrink", "bar_transparency"]: row.label.text = "%d%%" % roundi(value)
 		elif row.key in ["stereo_horizontal", "stereo_vertical"]: row.label.text = "%+.2f%%" % value if value != 0 else "0.00%"
+		elif row.key == "stereo_focus": row.label.text = "%.2f m" % value if value > 0 else I18n.t("Off")
 		elif row.key in Surface.ImmersiveAdjustments.KEYS: row.label.text = "%+.1f%%" % value if value != 0 else "0.0%"
 		row.fill.visible = fraction > 0
 		row.fill.mesh.size.x = maxf(0.001, fraction * row.width)
@@ -3381,6 +3394,7 @@ func _set_adjustment_at(x: float) -> void:
 	if row.key in ["portrait_distance", "portrait_scale"]: value = ScreenPresets.slider_value((x - row.left) / row.width, row.span)
 	if row.key == "screen_rotation" and absf(value) <= 1: value = 0.0
 	if row.key == "playback_speed" and absf(value - 1.0) < 0.03: value = 1.0
+	if row.key == "stereo_focus" and value < 0.3: value = 0.0 # the nearest focus; below it is off
 	adjustment_requested.emit(row.key, value)
 	refresh_values()
 

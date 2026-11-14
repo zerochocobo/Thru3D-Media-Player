@@ -218,9 +218,10 @@ func navigate_back() -> bool:
 
 func refresh_values() -> void:
 	if _adjustment == "bar_transparency": super.refresh_values(); return
-	composition_changed.emit()
 	if not visible: return
+	_refresh_ms = Time.get_ticks_msec() + VALUES_REFRESH_MS
 	if online.opened: return
+	composition_values_changed.emit()
 	var latest: Dictionary = state_provider.call() if state_provider.is_valid() else {}
 	latest["bar_transparency"] = bar_transparency
 	if section == 1 and choices.capture.get("item", {}).get("key", "") == "autoplay_interval":

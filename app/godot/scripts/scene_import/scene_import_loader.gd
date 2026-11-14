@@ -18,6 +18,23 @@ static var texture_encoder: Callable
 signal finished(result: Dictionary)
 var _task := -1
 static var _active := {}
+var _progress_lock := Mutex.new()
+var _stage := ""
+var _fraction := -1.0
+
+## Where the load has got to, for whoever is waiting: a stage name and how far through it
+## (0..1, or -1 when the stage cannot say). Safe to call while the worker runs.
+func progress() -> Dictionary:
+	_progress_lock.lock()
+	var state := {"stage": _stage, "fraction": _fraction}
+	_progress_lock.unlock()
+	return state
+
+func _report(stage: String, fraction: float = -1.0) -> void:
+	_progress_lock.lock()
+	_stage = stage
+	_fraction = fraction
+	_progress_lock.unlock()
 
 ## Background load; `finished` fires on the main thread. One load at a time; call from the main thread.
 ## A cached scene is read by the engine's loader threads, anything else is imported on a worker.
@@ -28,6 +45,7 @@ func start(path: String, tier: String, options: Dictionary = {}) -> void:
 	var cache_dir: String = options.get("cache_dir", Cache.ROOT)
 	var entry_key := Cache.key(path, tier) if options.get("use_cache", true) else ""
 	if Cache.has(entry_key, cache_dir):
+		_report("Loading scene")
 		var cached: Node3D = await Cache.restore_async(entry_key, cache_dir)
 		if cached:
 			finished.emit({"root": cached, "info": cached.get_meta(Cache.META), "cached": true})
@@ -61,8 +79,10 @@ func load_scene(path: String, tier: String, options: Dictionary = {}) -> Diction
 		var cached := Cache.restore(entry_key, cache_dir)
 		if cached: return {"root": cached, "info": cached.get_meta(Cache.META), "cached": true}
 	# Each source ends as the same thing: a detached tree plus what was done to fit the tier.
+	_report("Unpacking scene" if unity else "Reading model")
 	var source := Unity.new().read(path, limits, cache_dir.path_join("work")) if unity else _read_gltf(path, limits)
 	if source.has("error"): return {"error": source.error}
+	_report("Preparing scene")
 	var root: Node3D = source.root
 	var actions: Dictionary = source.actions
 	var stats := Audit.audit(root)
@@ -86,6 +106,7 @@ func load_scene(path: String, tier: String, options: Dictionary = {}) -> Diction
 		"sky": source.get("sky"), "warnings": source.get("warnings", [])}
 	root.set_meta(Cache.META, info)
 	if use_cache:
+		_report("Saving scene")
 		Cache.store(entry_key, root, {"name": info.name, "tier": tier, "triangles": stats.triangles,
 			"batches": stats.batches, "texture_bytes": stats.texture_bytes, "over_budget": over}, cache_dir)
 	return {"root": root, "info": info, "cached": false}
@@ -102,6 +123,7 @@ func _read_gltf(path: String, limits: Dictionary) -> Dictionary:
 	var items := Audit.drawables(root)
 	# With no light kept, surface detail maps (normal, roughness, metal...) cannot show: drop them.
 	actions.detail_maps_dropped = _drop_detail_maps(items) if int(limits.lights) == 0 else 0
+	_report("Processing textures")
 	actions.merge(_shrink_textures(items, int(limits.texture_size)))
 	actions.textures_compressed = _compress_textures(items)
 	return {"root": root, "actions": actions}
@@ -139,17 +161,24 @@ func _drop_detail_maps(items: Array[Dictionary]) -> int:
 ## Decoded textures to ETC2 through the platform encoder, when there is one.
 func _compress_textures(items: Array[Dictionary]) -> int:
 	if not texture_encoder.is_valid(): return 0
-	var replaced := {}
-	var count := 0
+	# Each distinct texture once, with alpha looked for only where it can show.
+	var alpha := {}
 	for material in Audit.materials(items):
 		if not material is BaseMaterial3D: continue
 		for slot in BaseMaterial3D.TEXTURE_MAX:
 			var texture: Texture2D = material.get_texture(slot)
-			if texture == null: continue
-			if not replaced.has(texture):
-				replaced[texture] = _compressed(texture, slot == BaseMaterial3D.TEXTURE_ALBEDO)
-				if replaced[texture] != texture: count += 1
-			if replaced[texture] != texture: material.set_texture(slot, replaced[texture])
+			if texture != null: alpha[texture] = alpha.get(texture, false) or slot == BaseMaterial3D.TEXTURE_ALBEDO
+	var replaced := {}
+	var count := 0
+	for texture in alpha:
+		_report("Compressing textures", float(replaced.size()) / alpha.size())
+		replaced[texture] = _compressed(texture, alpha[texture])
+		if replaced[texture] != texture: count += 1
+	for material in Audit.materials(items):
+		if not material is BaseMaterial3D: continue
+		for slot in BaseMaterial3D.TEXTURE_MAX:
+			var texture: Texture2D = material.get_texture(slot)
+			if texture != null and replaced[texture] != texture: material.set_texture(slot, replaced[texture])
 	return count
 
 static func _compressed(texture: Texture2D, may_have_alpha: bool) -> Texture2D:

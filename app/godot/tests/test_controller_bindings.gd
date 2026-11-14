@@ -39,6 +39,7 @@ func run() -> void:
 	check("drag_video" not in ordinary and "drag_photo" in ordinary, "Video trigger dragging is removed while photo dragging remains configurable")
 	check(page.items().filter(func(item): return item.get("fixed", "") == "Trigger + stick ↑ / ↓").all(func(item): return item.scope == "Flat photos"), "Trigger movement help applies only to photos")
 	check(page.items().any(func(item): return item.title == "Close video and return" and item.get("fixed", "") == "B / Y" and item.scope == "Video"), "Controls explain the fixed video Back shortcut")
+	check(page.items().any(func(item): return item.title == "Shrink / enlarge" and item.get("fixed", "") == "Grip + stick ← / →" and item.scope == "Flat video" and not item.has("id")), "Flat grip resizing is fixed, outside editable bindings")
 	page.mode = 2
 	var combinations := page.items().map(func(item): return item.id)
 	check(combinations.filter(func(id): return id in ordinary).size() == 3 and ["volume_up", "volume_down", "library_video"].all(func(id): return id in combinations), "Video volume and library expose optional combinations alongside their ordinary bindings")
@@ -92,7 +93,7 @@ func run() -> void:
 		for item in bindings.definitions(): check(catalog.has(item.title), "Translated action: " + language + "/" + item.title)
 		for item in preload("res://scripts/controls_page.gd").GESTURES:
 			for field in ["title", "scope", "hint"]: check(catalog.has(item[field]), "Translated gesture: " + language + "/" + item[field])
-		for text in ["Restore defaults", "Grip + trigger", "Target button", "Stick direction", "Controllers", "Gestures", "Combinations", "Movement range", "Unassigned", "Cancel"]:
+		for text in ["Restore defaults", "Grip + trigger", "Target button", "Stick direction", "Controllers", "Gestures", "Combinations", "Movement range", "Unassigned", "Cancel", "Shrink / enlarge", "Grip + stick ← / →", "Grip + same-hand stick"]:
 			check(catalog.has(text), "Translated editor: " + language + "/" + text)
 	check(not bindings.assign("play", Bindings.bind("right_hand", "menu_button")).ok, "System/menu recovery key cannot be rebound")
 	check(not bindings.assign("play", Bindings.bind("right_hand", "ax_button", ["trigger_click"]), true).ok, "Chords require both grip and trigger")
@@ -933,9 +934,11 @@ func runtime() -> void:
 	main.rays.right_hand = [Vector3(0, 1.6, 0), (video.panel.global_position - Vector3(0, 1.6, 0)).normalized()]
 	main._on_controller_button("grip_click", "right_hand")
 	before = host.calls.size()
+	var grip_scale: float = video.screen_scale
+	var grip_pose: Transform3D = video.flat_pose
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 	main._process_sticks(Vector2(0, 0.99), Vector2(0.99, 0), 0.1)
-	check(main.interface_move.pending() and host.calls.size() == before, "Default grip movement also blocks playback sticks before displacement")
+	check(main.interface_move.capture.get("moved", false) and video.screen_scale > grip_scale and video.flat_pose.is_equal_approx(grip_pose) and host.calls.size() == before, "Grip horizontal resizing preserves placement and blocks playback shortcuts")
 	main._on_controller_release("grip_click", "right_hand")
 	main._process_sticks(Vector2(0, 0.99), Vector2(0.99, 0), 0.1)
 	check(host.calls.size() == before, "Releasing default grip still requires stick recentering")

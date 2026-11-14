@@ -30,7 +30,7 @@ const context = vm.createContext({URL, Date: {now: () => 10000}, performance: {n
       postMessage(value) { this.messages.push(JSON.parse(JSON.stringify(value))); }, disconnect() {}}; ports.push(port); return port; }
   }}
 });
-for (const name of ['douyin.js', 'douyin-current.js', 'media.js']) vm.runInContext(fs.readFileSync(path.join(source, name), 'utf8'), context);
+for (const name of ['douyin.js', 'douyin-current.js', 'direct-return.js', 'media.js']) vm.runInContext(fs.readFileSync(path.join(source, name), 'utf8'), context);
 function flush() { let count = 0; while (timers.length) { assert.ok(++count < 100); timers.shift()(); } }
 flush();
 for (const fn of main.events.loadstart) fn(); // The site's MSE source is assigned after its file fetch.

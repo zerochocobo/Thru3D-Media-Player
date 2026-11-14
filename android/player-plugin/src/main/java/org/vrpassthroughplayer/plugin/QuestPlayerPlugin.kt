@@ -226,6 +226,14 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
     @UsedByGodot fun web_browser_input(command: String, text: String) { if (!closed.get()) webBrowser.input(command, text) }
     fun captureWebBrowserForDiagnostics(done: (android.graphics.Bitmap?) -> Unit) = webBrowser.captureFrame(done)
+    fun refreshWebBrowserForDiagnostics(): JSONObject {
+        check(BuildConfig.DEBUG)
+        val readback = webBrowser.refreshMediaForDiagnostics()
+        val snapshot = JSONObject(web_browser_status())
+        check(snapshot.optInt("tab_id") == readback.optInt("tab_id") && snapshot.optLong("navigation") == readback.optLong("navigation"))
+        for (key in listOf("snapshot_request", "snapshot_ports", "snapshot_confirmed")) snapshot.put(key, readback.get(key))
+        return snapshot
+    }
     fun configureBilibiliProbe(tab: Int, mode: String) {
         check(BuildConfig.DEBUG)
         webBrowser.configureBilibiliProbe(tab, mode)

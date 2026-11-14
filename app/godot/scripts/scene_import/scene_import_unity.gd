@@ -75,6 +75,38 @@ void sky() {
 }
 """
 
+## The same sky on the camera-centred sphere the display draws while menus or video sit on
+## compositor layers (the eye buffer is transparent then and the engine draws no sky).
+const SKY_BACKDROP := """shader_type spatial;
+render_mode unshaded, cull_front, shadows_disabled, fog_disabled;
+uniform sampler2D panorama : source_color, filter_linear, repeat_enable;
+uniform vec3 tint = vec3(1.0);
+uniform float rotation = 0.0;
+uniform mat3 orientation = mat3(1.0);
+varying vec3 world_direction;
+void vertex() {
+	world_direction = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz - CAMERA_POSITION_WORLD;
+}
+void fragment() {
+	vec3 e = normalize(orientation * world_direction);
+	vec3 d = vec3(e.x, e.y, -e.z);
+	vec2 turned = vec2(cos(rotation) * d.x + sin(rotation) * d.z, -sin(rotation) * d.x + cos(rotation) * d.z);
+	vec2 uv = vec2(0.5 - atan(turned.y, turned.x) / TAU, 1.0 - acos(clamp(d.y, -1.0, 1.0)) / PI);
+	ALBEDO = textureLod(panorama, uv, 0.0).rgb * tint;
+}
+"""
+
+## A backdrop material showing what `sky` shows; null for skies the display already handles.
+static func sky_backdrop(sky: Sky) -> ShaderMaterial:
+	var source := sky.sky_material as ShaderMaterial if sky else null
+	if source == null: return null
+	var shader := Shader.new()
+	shader.code = SKY_BACKDROP
+	var material := ShaderMaterial.new()
+	material.shader = shader
+	for name in ["panorama", "tint", "rotation"]: material.set_shader_parameter(name, source.get_shader_parameter(name))
+	return material
+
 ## Set on Android to the plugin bridge: (bundle_path, output_path, max_texture, max_sky_texture) -> error text, empty on success.
 static var unpacker: Callable
 ## Desktop tool used when no bridge is set.

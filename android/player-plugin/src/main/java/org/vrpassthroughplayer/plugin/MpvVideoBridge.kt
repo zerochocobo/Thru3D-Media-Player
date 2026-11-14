@@ -405,7 +405,7 @@ internal class MpvVideoBridge(
                            depth: Boolean = false, topBottom: Boolean = false, exactSeek: Boolean = false, layer: Boolean = false,
                            networkInterleaveCompat: Boolean = false, discPlaylist: Int = -1): Int {
         if (!supported() || sessions.size >= 2 || startMs < 0 || profile !in RvmProfiles.keys || (depth && (alpha || stereo)) ||
-            Uri.parse(uri).scheme !in setOf("content", "file", "usb", "smb", "cloud", "medialib", "dlna", "http", "https", "externalvideo", "airplayvideo") ||
+            !MpvInputUri.accepts(uri) ||
             discPlaylist !in -2..99999) return -1
         val id = gate.begin(); if (id <= 0) return -1
         val pendingView = synchronized(playbackViewLock) { pendingPlaybackView.also { pendingPlaybackView = null } }

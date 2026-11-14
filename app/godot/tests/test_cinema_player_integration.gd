@@ -820,6 +820,17 @@ func _movement_routes() -> void:
 	for frame in 20: main._process_sticks(Vector2.ZERO, Vector2(0, -.99), 1.0 / 60)
 	main._process_sticks(Vector2.ZERO, Vector2(.99, 0), .016)
 	check(is_equal_approx(yaw, main.cinema_environment._head_yaw()), "Holding or rolling back gesture cannot repeat a turn before neutral")
+	_neutral()
+	main._process_sticks(Vector2(0.99, 0), Vector2.ZERO, 1.0 / 60)
+	check(not is_equal_approx(yaw, main.cinema_environment._head_yaw()), "Left stick turns the same as the right")
+	_neutral()
+	var left_ray: Variant = main.rays.get("left_hand")
+	main.rays.left_hand = [main.xr_camera.global_position, Vector3.DOWN]
+	main._process_sticks(Vector2(0, .99), Vector2.ZERO, .016)
+	check(main.cinema_environment.snapshot().capture_hand == "left_hand", "Left stick forward aims a landing with the left hand")
+	main._suspend_cinema_move_stick(); main.cinema_environment.suspend(); _neutral()
+	if left_ray == null: main.rays.erase("left_hand")
+	else: main.rays.left_hand = left_ray
 	check(main.xr_camera.global_position.is_equal_approx(before), "180 degree turn pivots around the tracked eye")
 	_neutral()
 	main._on_controller_button("ax_button", "right_hand"); main._on_controller_release("ax_button", "right_hand")

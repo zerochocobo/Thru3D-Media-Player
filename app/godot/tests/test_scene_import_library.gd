@@ -183,6 +183,89 @@ func _run() -> void:
 	_check(app.video.placed == 0, "Without a screen marker the ordinary screen is left where it is")
 	app.video.playing = false
 
+	# Moving through the scene uses the built-in scenes' gestures; the scene slides around the viewer.
+	var home_at := shown.global_position
+	var floor_top := home_at.y + 0.5
+	_check(controller.movable() and controller.interaction == "watch" and not controller.poll_sticks(Vector2(0, 1), Vector2.ZERO, 0.2)
+		and shown.global_position.is_equal_approx(home_at), "A scene starts with the viewer in place")
+	controller.cycle_movement()
+	_check(controller.interaction == "move" and controller.motion.mode == "walk" and not controller.snapshot().floor_ready, "The switch goes to walking first, and the floor is looked for")
+	while not controller.motion.prepared: await process_frame
+	var hand_at := Vector3(0.2, 1.2, 0)
+	var aim := Vector3(0, -0.2, -1).normalized()
+	var landing: Dictionary = controller.motion.ray_hit(hand_at, aim)
+	_check(landing.get("kind") == "floor" and landing.valid and landing.position.z < -2.0 and absf(landing.position.y - floor_top) < 0.01, "An arc from the hand finds the floor ahead")
+	_check(not controller.motion.ray_hit(Vector3(30, 1.2, 0), aim).get("valid", true), "Where there is no floor there is nowhere to land")
+	_check(controller.pointer_press("right_hand", hand_at, aim) and not controller.pointer_press("left_hand", hand_at, aim), "One hand aims at a time")
+	controller.update_pointer("right_hand", hand_at, aim)
+	_check(controller.motion._visuals.right_hand.root.visible and controller.motion._visuals.right_hand.ring.visible, "The arc and its landing ring show while aiming")
+	controller.pointer_release("right_hand", hand_at, aim, true)
+	_check(shown.global_position.is_equal_approx(home_at - landing.position)
+		and not controller.motion._visuals.right_hand.root.visible, "Letting go lands there: the chosen spot comes under the viewer's feet")
+	var landed_at := shown.global_position
+	controller.pointer_press("right_hand", Vector3(30, 1.2, 0), aim)
+	controller.pointer_release("right_hand", Vector3(30, 1.2, 0), aim, true)
+	_check(shown.global_position.is_equal_approx(landed_at), "A landing that is not valid goes nowhere")
+	controller.poll_sticks(Vector2(0, 1), Vector2(1, 0), 0.1)
+	_check(absf(absf(shown.global_rotation.y) - PI / 6.0) < 0.01 and absf(shown.global_position.y - landed_at.y) < 0.001, "A flick turns the viewer one step, and walking never drifts on the stick")
+	controller.poll_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
+	controller.poll_sticks(Vector2.ZERO, Vector2(0, -1), 0.1)
+	_check(absf(absf(wrapf(shown.global_rotation.y, -PI, PI)) - 5.0 * PI / 6.0) < 0.01, "Pulling back turns the viewer round")
+	controller.home()
+	_check(shown.global_position.is_equal_approx(home_at) and is_zero_approx(shown.global_rotation.y), "Return to start puts the viewer back where the scene placed them")
+	controller.cycle_movement()
+	controller.poll_sticks(Vector2(0, 1), Vector2.ZERO, 0.25)
+	_check(controller.motion.mode == "fly" and shown.global_position.z > home_at.z + 0.4 and is_equal_approx(shown.global_position.y, home_at.y), "Flying, a stick carries the viewer along the line of sight")
+	var flown_to := shown.global_position
+	controller.poll_sticks(Vector2(1, 0.9), Vector2.ZERO, 0.25)
+	_check(shown.global_position.z > flown_to.z + 0.3 and is_zero_approx(shown.global_rotation.y), "A thumb rolling sideways mid-flight does not turn")
+	controller.poll_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
+	flown_to = shown.global_position
+	controller.poll_sticks(Vector2(1, 0), Vector2.ZERO, 0.1)
+	flown_to = shown.global_position
+	controller.poll_sticks(Vector2(1, 0.9), Vector2.ZERO, 0.25)
+	_check(absf(absf(shown.global_rotation.y) - PI / 6.0) < 0.01 and shown.global_position.is_equal_approx(flown_to), "Flying, a sideways flick turns one step and goes nowhere")
+	controller.poll_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
+	controller.poll_sticks(Vector2(0, -1), Vector2.ZERO, 0.25)
+	_check(shown.global_position.distance_to(flown_to) > 0.3 and absf(absf(shown.global_rotation.y) - PI / 6.0) < 0.01, "Pulling back flies backwards rather than turning round")
+	_check(not controller.pointer_press("right_hand", hand_at, aim), "Flying has no landing arc")
+	controller.cycle_movement()
+	_check(controller.interaction == "watch" and controller.motion.mode == "fixed", "A third press stays in place again")
+	_check(controller.set_interaction("move") and controller.motion.mode == "fly" and controller.set_interaction("watch") and controller.interaction == "watch", "Free movement resumes the way of moving last used")
+	controller.home()
+	_check(controller.backdrop() == null and Controller.Unity.sky_backdrop(null) == null, "A scene without its own sky needs no backdrop")
+	var sky := Sky.new()
+	sky.sky_material = ShaderMaterial.new()
+	(sky.sky_material as ShaderMaterial).set_shader_parameter("rotation", 0.5)
+	var twin: ShaderMaterial = Controller.Unity.sky_backdrop(sky)
+	_check(twin != null and twin.shader.get_mode() == Shader.MODE_SPATIAL and is_equal_approx(twin.get_shader_parameter("rotation"), 0.5), "A scene's own sky has a twin for when menus sit on layers")
+
+	# Picking a file that is already here goes to that scene instead of copying it again.
+	controller.add(second, "Hall.glb", FileAccess.get_size(second))
+	_check(not controller.library.busy and controller.pending_id == hall and controller.error == "Already in My scenes" and DirAccess.get_files_at(home.path_join("sources")).size() == 2,
+		"A file already in the library is recognised before anything is copied")
+	while not controller.pending_id.is_empty(): await process_frame
+	await process_frame
+	# A new file shows as a card at once, and is used as soon as it is in.
+	var third := output.path_join("Yard.glb")
+	_glb(third, 12.0)
+	controller.add(third, "Yard.glb", FileAccess.get_size(third))
+	var arriving: Dictionary = controller.snapshot()
+	_check(arriving.busy and arriving.pending == Controller.ADDING and arriving.stage == "Copying file" and arriving.rows.any(func(row): return row.id == Controller.ADDING and row.title == "Yard"),
+		"A picked file has a card while it is still being copied")
+	await _settle(controller.library)
+	var yard := ""
+	for row in controller.library.rows():
+		if row.title == "Yard": yard = str(row.id)
+	_check(not yard.is_empty() and controller.pending_id == yard and not controller.snapshot().stage.is_empty(), "Once copied it goes straight on to loading, stage by stage")
+	while not controller.pending_id.is_empty(): await process_frame
+	_check(controller.active_id == yard, "and is on show when that finishes")
+	controller.remove([yard])
+	await process_frame
+	controller.activate(plaza)
+	while not controller.pending_id.is_empty(): await process_frame
+	shown = app.find_child("Floor", true, false) as MeshInstance3D
+
 	controller.activate(hall)
 	while not controller.pending_id.is_empty(): await process_frame
 	await process_frame

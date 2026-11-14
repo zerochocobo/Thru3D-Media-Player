@@ -14,8 +14,11 @@ class FakeVideo extends "res://scripts/media_surface.gd":
 	var offset := Vector2.ZERO
 	var color_grade: RefCounted = null
 	var layer_rotation := 0
+	var focus := Vector2.ZERO
 	func stereo_offset_uv() -> Vector2:
 		return offset
+	func stereo_focus_shape() -> Vector2:
+		return focus
 
 func _check(condition: bool, message: String) -> void:
 	checks += 1
@@ -90,6 +93,19 @@ func _run() -> void:
 	_check(_rect(_layer(values, 0)) == Rect2(0, 0, S, S / 2) and _rect(_layer(values, 1)) == Rect2(0, S / 2, S, S / 2),
 		"Top-bottom: the top half is the left eye")
 	video.top_bottom = false
+	var unfocused := layer.layer_values(video, origin)
+	video.focus = Vector2(1.5, 0.032)
+	values = layer.layer_values(video, origin)
+	var left_shift := Vector3(_layer(values, 0)[2], _layer(values, 0)[3], _layer(values, 0)[4]) - Vector3(unfocused[2], unfocused[3], unfocused[4])
+	var right_shift := Vector3(_layer(values, 1)[2], _layer(values, 1)[3], _layer(values, 1)[4]) \
+		- Vector3(_layer(unfocused, 1)[2], _layer(unfocused, 1)[3], _layer(unfocused, 1)[4])
+	_check(_near(_layer(values, 0)[13], 1.5) and _near(_layer(values, 1)[13], 1.5), "Focus: both spheres take the focused radius")
+	_check(left_shift.is_equal_approx(Vector3(-0.032, 0, 0)) and right_shift.is_equal_approx(Vector3(0.032, 0, 0)),
+		"Focus: each eye's sphere is centred on that eye")
+	_check(_rect(_layer(values, 0)) == _rect(_layer(unfocused, 0)) and _near(_layer(values, 0)[14], PI), "Focus keeps the eye picture")
+	values = layer.layer_values(video, origin, VideoLayer.PICTURE, Vector2(S, S), 1, Vector2.ZERO, Vector4(0, 0, 1, 1), VideoLayer.OPAQUE, true)
+	_check(_near(_layer(values, 0)[13], video.SPHERE_RADIUS), "Focus never applies to a processed picture")
+	video.focus = Vector2.ZERO
 
 	video.geometry = Geometry.Geometry.EQUIRECT_360
 	video._apply_geometry()

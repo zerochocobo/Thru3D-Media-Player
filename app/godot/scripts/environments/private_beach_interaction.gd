@@ -37,6 +37,7 @@ var _seat_arc_end := 0
 ## Stick push speed as a share of the current distance per second, with a floor.
 const SCREEN_PUSH_RATE := .6
 const SCREEN_PUSH_MIN := 1.5
+const SCREEN_RESIZE_RATE := .6
 const STICK_DEADZONE := .2
 ## Hand travel is magnified by the screen's distance over a comfortable reach.
 const HAND_REACH := .45
@@ -354,11 +355,19 @@ func _slide_screen(travel: float) -> void:
 	var center: Vector3=beach.screen_layout.center-axis*travel
 	beach.preview_screen({"center_x":center.x,"center_z":center.z})
 
-## Held grip: stick forward pushes the screen away, back pulls it in.
+## Held grip: horizontal changes size; forward/back moves the whole stand.
 func scene_stick(left: Vector2,right: Vector2,delta: float) -> bool:
 	if _scene_kind!="screen_move": return false
 	var held: Vector2=left if _scene_hand=="left_hand" else right
-	if not held.is_finite(): return true
+	if not held.is_finite() or not is_finite(delta) or delta<=0.0: return true
+	if absf(held.x)>absf(held.y) and absf(held.x)>STICK_DEADZONE:
+		var amount := signf(held.x)*(absf(held.x)-STICK_DEADZONE)/(1.0-STICK_DEADZONE)*SCREEN_RESIZE_RATE*minf(delta,.1)
+		if is_zero_approx(amount): return true
+		var width := float(beach.screen_layout.parameters.width)*exp(amount)
+		# Reuse corner-resize validation: the feet stay on sand and props/viewer stay clear.
+		beach.preview_screen({"width":clampf(width,1.0,20.0)})
+		return true
+	if absf(held.y)<=absf(held.x): return true
 	var pushed := signf(held.y)*maxf(absf(held.y)-STICK_DEADZONE,0.0)/(1.0-STICK_DEADZONE)
 	if pushed!=0.0: _slide_screen(pushed*maxf(SCREEN_PUSH_MIN,_screen_range()*SCREEN_PUSH_RATE)*delta)
 	return true

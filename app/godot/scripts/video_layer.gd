@@ -116,12 +116,18 @@ const META_LATCH_LEAD_NS := 16_000_000
 var latch_lead_ns := META_LATCH_LEAD_NS
 ## Measured on the Meta compositor only; other runtimes release as before until calibrated.
 var cadence_supported := false
+## The compositor shows an HDR10/HLG decoder surface as SDR itself: Quest 3, 2026-11-13, close to the
+## SDR reference and better than MPV's conversion. PICO shows it washed out (user report).
+var hdr_surface := false
 var cadence_enabled := true
 var _cadence_ms := -CADENCE_INTERVAL_MS
 
 static func cadence_runtime(runtime_name: String, pico_build: bool) -> bool:
 	var runtime := runtime_name.strip_edges().to_lower()
 	return not pico_build and (runtime.begins_with("oculus") or runtime.begins_with("meta"))
+
+static func hdr_surface_runtime(runtime_name: String, pico_build: bool) -> bool:
+	return cadence_runtime(runtime_name, pico_build)
 
 ## Debug A/B: off sends no-cadence data, so MPV releases at its own targets again.
 func set_cadence_enabled(enabled: bool) -> void:
@@ -224,10 +230,11 @@ func update_session() -> void:
 	var driver := RenderingServer.get_current_rendering_driver_name()
 	_surface_flip = _surface_vertical_flip(runtime_name, driver, pico_build, system_name)
 	cadence_supported = cadence_runtime(runtime_name, pico_build)
+	hdr_surface = hdr_surface_runtime(runtime_name, pico_build)
 	_sent_count = -1
 	DiagnosticLog.record("video_layer_bound", {"bound": bound, "types": _types, "vertical_flip": _flip,
 		"surface_vertical_flip": _surface_flip, "runtime": runtime_name, "system": system_name,
-		"pico_build": pico_build, "driver": driver, "settings": _settings, "color_scale_bias": color_scale_bias, "alpha_blend": alpha_blend})
+		"pico_build": pico_build, "hdr_surface": hdr_surface, "driver": driver, "settings": _settings, "color_scale_bias": color_scale_bias, "alpha_blend": alpha_blend})
 	if PlatformMethods.supports(platform, "video_layer_runtime_extensions"):
 		# Layer features the runtime offers (colour scale, blending, swapchain state...): one short line.
 		var layer_extensions := Array(str(platform.video_layer_runtime_extensions()).split(" ", false)).filter(func(name: String):
@@ -375,6 +382,9 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 			lower = (0.5 - (pano.y + pano.w)) * PI
 			pose.basis = pose.basis * Basis(Vector3.UP, -(pano.x + pano.z * 0.5 - 0.5) * TAU)
 		shape = PackedFloat32Array([surface.SPHERE_RADIUS * scale.x, span, upper, lower])
+	# Stereo focus (test): (radius, half eye separation) in metres for native stereo spheres; zero when off.
+	var focus: Vector2 = surface.stereo_focus_shape() * XRServer.world_scale \
+		if type == 2 and sbs and not processed and surface.has_method("stereo_focus_shape") else Vector2.ZERO
 	for eye in ([0] if not sbs else [1, 2]):
 		var source := 0
 		if sbs:
@@ -400,10 +410,15 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 		var aligned := _aligned_layer(rect, shift, type, shape, pose, surface.geometry == Geometry.Geometry.EQUIRECT_360)
 		rect = aligned.rect
 		var eye_pose: Transform3D = aligned.pose
+		var eye_shape: PackedFloat32Array = aligned.shape
+		if focus.x > 0.0:
+			# Each eye's sphere centred on that eye with its radius at the focused depth.
+			eye_pose.origin += pose.basis.x * (focus.y if eye == 2 else -focus.y)
+			eye_shape[0] = focus.x
 		var quat := eye_pose.basis.get_rotation_quaternion()
 		var values := PackedFloat32Array([float(type), float(eye), eye_pose.origin.x, eye_pose.origin.y, eye_pose.origin.z, quat.x, quat.y, quat.z, quat.w])
 		values.append_array(PackedFloat32Array([rect.position.x, rect.position.y, rect.size.x, rect.size.y]))
-		values.append_array(aligned.shape)
+		values.append_array(eye_shape)
 		values.resize(STRIDE)
 		# Our GL picture textures are top-first. An Android Surface has a producer/runtime
 		# convention of its own; never apply the uploaded-picture rule to it unconditionally.

@@ -24,7 +24,7 @@ var image_picker_mode := false
 var selected_pdf := {}
 var voice_picker_mode := false
 ## Single scene file pick; rides on the voice picker's single-file browsing.
-signal scene_file_selected(uri: String, title: String)
+signal scene_file_selected(uri: String, title: String, bytes: int)
 signal scene_picker_cancelled
 var scene_picker_mode := false
 var _image_picker_dlna_retry := {}
@@ -108,6 +108,7 @@ const PlaybackMenuDepth := preload("res://scripts/playback_menu_depth.gd")
 const SeekPolicy := preload("res://scripts/seek_policy.gd")
 const SeekStep := preload("res://scripts/seek_step.gd")
 const VideoAuto3D := preload("res://scripts/video_auto_3d.gd")
+const HdrToSdr := preload("res://scripts/hdr_to_sdr.gd")
 const ChoiceFields := preload("res://scripts/choice_fields.gd")
 var choices := ChoiceFields.new(self)
 var theme_editor := preload("res://scripts/theme_editor.gd").new(self)
@@ -573,11 +574,11 @@ func begin_voice_picker() -> void:
 	voice_picker_mode = true; voice_manager.opened = false
 	_start_file_picker()
 
-func finish_voice_picker(uri: String = "", title: String = "") -> void:
+func finish_voice_picker(uri: String = "", title: String = "", bytes: int = -1) -> void:
 	if scene_picker_mode:
 		_restore_audio_import_context()
 		if uri.is_empty(): scene_picker_cancelled.emit()
-		else: scene_file_selected.emit(uri, title)
+		else: scene_file_selected.emit(uri, title, bytes)
 		refresh(); return
 	_restore_audio_import_context()
 	voice_manager.opened = true
@@ -2125,6 +2126,9 @@ func _rebuild_rows() -> void:
 				rows.append({"title": I18n.t("Seek step"), "key": SeekStep.KEY,
 					"value": SeekStep.normalize(settings.get(SeekStep.KEY, SeekStep.DEFAULT)),
 					"slider": true, "span": Vector3(SeekStep.MIN, SeekStep.MAX, 1), "unit": " s", "decimals": 0, "reset_value": float(SeekStep.DEFAULT)})
+				var hdr := HdrToSdr.choice(str(settings.get("hdr_to_sdr", HdrToSdr.ON)))
+				hdr.title = I18n.t(HdrToSdr.TITLE)
+				rows.append(hdr)
 				var auto_3d := VideoAuto3D.choice(bool(settings.get("video_auto_3d", false)))
 				auto_3d.title = I18n.t(VideoAuto3D.TITLE); auto_3d.info = VideoAuto3D.HINT
 				rows.append(auto_3d)
@@ -2732,7 +2736,7 @@ func _choose(row: Dictionary) -> void:
 	if not bool(row.get("enabled", true)): return
 	if voice_picker_mode and row.has("uri") and not str(row.uri).is_empty() and not row.get("folder", false) and row.get("kind", "") != "folder":
 		if not _voice_sample_source(row): return
-		finish_voice_picker(str(row.uri), str(row.get("title", ""))); return
+		finish_voice_picker(str(row.uri), str(row.get("title", "")), int(row.get("size", -1))); return
 	if image_picker_mode and row.has("uri") and not str(row.uri).is_empty() and not row.get("folder", false) and row.get("kind", "") != "folder":
 		if row.get("kind", "") != "image" and not ImageInfo.is_image(str(row.uri), str(row.get("title", ""))): return
 		var uri := str(row.uri); var title := str(row.get("title", ""))

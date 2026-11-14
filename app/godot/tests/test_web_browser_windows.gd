@@ -195,6 +195,7 @@ func run() -> void:
 		for pointer in owner._pointers.values(): pointer.line.visible = true; pointer.dot.visible = true
 	primary.update_pointer("left", start, -layout.pose.basis.z, false)
 	check([menu, secondary].all(func(owner): return owner._pointers.values().all(func(pointer): return not pointer.line.visible and not pointer.dot.visible)), "Switching pointer owner clears stale rays on library and peer")
+	verify_view_placement(primary)
 	browser.close(); menu.refresh()
 	check(platform.actions.back() == "hibernate", "Leaving requests session unloading, not just media pause")
 	check(not primary.visible and not secondary.visible, "Closing browser hides both windows")
@@ -205,6 +206,22 @@ func run() -> void:
 	print("Browser windows: %d checks, %d failures" % [checks, failures.size()])
 	for failure in failures: push_error(failure)
 	quit(0 if failures.is_empty() else 1)
+
+func verify_view_placement(window: Node3D) -> void:
+	for offset in [Vector3(0, -0.05, -1.8), Vector3(1.55, -0.05, -2.2), Vector3(0, -1.25, -2.2), Vector3(-1.21, -0.12, -1.26)]:
+		check(window.offset_in_view(offset), "Default and side-by-side placements remain valid: " + str(offset))
+	for offset in [Vector3(1.13, -0.03, 0.21), Vector3(0, 0, 2), Vector3(2.5, 0, -0.5), Vector3(0, 3, -1), Vector3(0, 0, -0.3), Vector3(INF, 0, -2)]:
+		check(not window.offset_in_view(offset), "Behind, beside or degenerate placements are rejected: " + str(offset))
+	var pose: Transform3D = window.global_transform
+	window.dismiss()
+	# A page hidden during playback keeps its world pose while the viewer turns away.
+	window.global_transform = Transform3D(Basis(Vector3.UP, PI), Vector3(0, 1.6, 0)) * window.global_transform.translated(Vector3(0, -1.6, 0))
+	check(not window.offset_in_view(window.view_offset()), "Fixture moves the hidden page behind the viewer")
+	window.show_window()
+	check(window.visible and window.offset_in_view(window.view_offset()), "Reopening brings an unseen page back in front of the viewer")
+	window.global_transform = pose
+	window.dismiss(); window.show_window()
+	check(window.global_transform.is_equal_approx(pose), "A visible placement is kept when reopening")
 
 func verify_resize_limits(window: Node3D) -> void:
 	for low in [false, true]:

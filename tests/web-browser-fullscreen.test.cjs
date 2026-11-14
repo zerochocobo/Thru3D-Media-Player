@@ -26,6 +26,7 @@ test('fullscreen capture and source-bound return preserve the actual video', asy
       ports.push(port); return port;
     } } }
   };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../android/web-browser/src/main/assets/web-browser/direct-return.js'), 'utf8'), context);
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../android/web-browser/src/main/assets/web-browser/media.js'), 'utf8'), context);
   const flush = () => { while (timers.length) timers.shift()(); };
   const port = ports[0], message = v => port.onMessage.emit(v);

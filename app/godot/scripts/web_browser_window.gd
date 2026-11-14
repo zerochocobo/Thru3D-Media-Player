@@ -143,9 +143,19 @@ func head() -> Transform3D:
 	return value if value is Transform3D else Transform3D(Basis.IDENTITY, Vector3(0, 1.6, 0))
 func show_window() -> void:
 	visible = true
-	if not placed:
+	# A hidden page keeps its world pose while the viewer turns, recenters or watches
+	# a VR video. Reopen it where it can be seen instead of behind the viewer.
+	if not placed or (not on_screen() and not offset_in_view(view_offset())):
 		placed = true; recenter(true)
 	refresh()
+## Saved offsets are head-relative. Distance alone accepted pages behind the viewer,
+## which then reopened out of sight on every launch.
+static func offset_in_view(offset: Vector3) -> bool:
+	if not offset.is_finite() or offset.length() < 0.6 or offset.length() > 8: return false
+	return offset.z < -0.3 and absf(offset.x) <= -offset.z * 1.2 and absf(offset.y) <= -offset.z
+func view_offset() -> Vector3:
+	var pose := _floating_pose if _screen_attached else global_transform
+	return Move.menu_head(head()).affine_inverse() * (pose * CENTRE)
 func recenter(load_saved: bool = false) -> void:
 	_screen_attached = false; _near_pose = null; _near_applied = null
 	var frame := Move.menu_head(head())
@@ -159,7 +169,7 @@ func recenter(load_saved: bool = false) -> void:
 			if not config.has_section(section): section = ("pair_" if browser.paired_layout else "single_") + str(window_id)
 			if not config.has_section(section): section = str(window_id)
 			var saved: Variant = config.get_value(section, "offset", offset)
-			if saved is Vector3 and saved.is_finite() and saved.length() >= 0.6 and saved.length() <= 8: offset = saved
+			if saved is Vector3 and offset_in_view(saved): offset = saved
 			var dimensions: Variant = config.get_value(section, "page_size", RECT.size)
 			page_size = clamp_page_size(dimensions) if dimensions is Vector2 and dimensions.is_finite() else RECT.size
 			var saved_scale := float(config.get_value(section, "scale", factor))
@@ -175,9 +185,12 @@ func layout_section() -> String:
 	return "window_" + str(window_id)
 func save_layout() -> void:
 	if not placed or OS.get_name() != "Android": return
+	# Keep the last usable placement rather than one the next launch would discard.
+	var offset := view_offset()
+	if not offset_in_view(offset): return
 	var config := ConfigFile.new(); config.load("user://browser_windows.cfg")
 	var pose := _floating_pose if _screen_attached else global_transform
-	config.set_value(layout_section(), "offset", Move.menu_head(head()).affine_inverse() * (pose * CENTRE))
+	config.set_value(layout_section(), "offset", offset)
 	config.set_value(layout_section(), "scale", pose.basis.get_scale().x)
 	config.set_value(layout_section(), "page_size", page_size)
 	config.set_value(layout_section(), "mode", mode)

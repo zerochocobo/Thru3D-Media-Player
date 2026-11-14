@@ -3,6 +3,7 @@ package org.vrpassthroughplayer.plugin
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
@@ -38,11 +39,14 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
     @Volatile private var accepting = false
     @Volatile private var generation = 0L
     private var registeredServices = 0
+    // Keep multicast reception enabled when onMainPause releases DLNA's foreground multicast lock.
+    // Own this lease for the complete receiver lifetime, including idle/background discovery.
+    private var multicast: WifiManager.MulticastLock? = null
     private val discovery = AirplayDiscoveryDiagnostics()
     fun discoveryDiagnostics(): String = discovery.snapshot()
     private fun discoveryEvent(stage: String, code: Int? = null, failure: Throwable? = null) {
         Log.i("Thru3D-Airplay", "Discovery " + discovery.record(stage, generation, state, port,
-            handle != 0L, registeredServices, code, failure))
+            handle != 0L, registeredServices, code, failure, foreground, multicast?.isHeld == true))
     }
     @Synchronized private fun beginMirror(): Long {
         val ticket = leases.claim("AirPlay") ?: return 0
@@ -84,6 +88,7 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
         foreground = value
         if (!value) { captions.configure(""); mirror.detachAndWait(active, keepSession = true) }
         Log.i("Thru3D-Airplay", "Receiver foreground=$value (transport retained)")
+        worker.post { discoveryEvent("foreground_changed") }
     }
     private fun restart() {
         stop()
@@ -102,6 +107,16 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
         val key = File(app.filesDir, "airplay/pairing.key").apply { parentFile!!.mkdirs() }
         val session = ++generation
         state = "starting"; error = ""; airplayTxt.clear(); raopTxt.clear(); port = 0
+        try {
+            val wifi = app.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val lock = multicast ?: wifi.createMulticastLock("Thru3D:AirplayDiscovery")
+                .apply { setReferenceCounted(false) }.also { multicast = it }
+            if (!lock.isHeld) lock.acquire()
+            discoveryEvent("multicast_lock_acquired")
+        } catch (failure: Exception) {
+            state = "failed"; error = "AirPlay receiver unavailable"
+            discoveryEvent("multicast_lock_failed", failure = failure); stop(); return
+        }
         accepting = true
         val listener = object : AirplayNative.Listener {
             override fun event(kind: String, value: String) {
@@ -207,6 +222,8 @@ internal class AirplayReceiver(private val context: () -> Context?, render: (Run
         registrations.clear()
         context()?.let { AirplayReceiverService.active(it, leases.current != null) }
         if (handle != 0L) { AirplayNative.stop(handle); handle = 0 }
+        runCatching { if (multicast?.isHeld == true) multicast?.release(); multicast = null }
+            .onFailure { discoveryEvent("multicast_release_failed", failure = it) }
         port = 0; registeredServices = 0
         if (state !in listOf("unavailable", "failed")) state = "off"
         discoveryEvent("stopped")

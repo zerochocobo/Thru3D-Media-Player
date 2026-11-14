@@ -64,6 +64,7 @@ function fixture(count = 1, blob = true, options = {}) {
       declaration:()=>({id}),read:()=>({id}),binding:(v,requests,doc,live,bodies)=>v===video&&v.currentSrc===source&&requests.some(r=>r.url===root)&&bodies.length===1?{id,page,revision:'a1'}:null};
   }
   if(options.redbull)context.Thru3DRedBull={documentPage:value=>value.startsWith('https://www.redbull.tv/'),read:()=>null,binding:()=>null};
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../../main/assets/web-browser/direct-return.js'),'utf8'),context);
   vm.runInContext(script, context);
   const flush = () => { for (let n = 0; timers.length && n < 10; n++) timers.splice(0).forEach(f => f()); };
   const report = () => native.messages.filter(m => m.type === 'media').at(-1)?.videos;
@@ -84,13 +85,35 @@ test('direct file return seeks only its original live element and media epoch',(
   f.native.onMessage.fire(command);
   assert.equal(video.currentTime,42);assert.equal(video.paused,true);
   video.play();assert.equal(video.paused,true,'Seek-completion autoplay stays paused on return');
-  f.emit('pointerdown',{isTrusted:true});video.play();assert.equal(video.paused,false,'A real page gesture can resume playback');
+  f.emit('pointerdown',{isTrusted:true,composedPath:()=>[video]});video.play();assert.equal(video.paused,false,'A real video gesture can resume playback');
   video.currentTime=5;
   for(const change of [{epoch:command.epoch+1},{source:'https://cdn.test/other.mp4'},{id:'another'},{time:-1}]){
     f.native.onMessage.fire({...command,...change});assert.equal(video.currentTime,5);
   }
   video.mediaKeys={};f.native.onMessage.fire(command);assert.equal(video.currentTime,5);
   video.mediaKeys=null;video.isConnected=false;f.native.onMessage.fire(command);assert.equal(video.currentTime,5);
+});
+
+test('direct return survives tab suspension, holds delayed autoplay and rejects unrelated gestures',()=>{
+  const f=fixture(1,false),video=f.videos[0],current=f.report()[0];
+  const restore={action:'restore_direct',id:String(current.id),epoch:current.network_epoch,source:video.currentSrc,time:42,play:false};
+  f.native.onMessage.fire(restore);f.native.onMessage.fire({action:'suspend'});f.native.onMessage.fire({action:'resume'});
+  f.clock.now+=60000;video.play();assert(video.paused,'Returning later still requires user playback intent');
+  f.emit('pointerdown',{isTrusted:true,composedPath:()=>[{}]});video.play();assert(video.paused);
+  f.emit('keydown',{isTrusted:true,composedPath:()=>[video]});video.play();assert.equal(video.paused,false);
+  f.native.onMessage.fire(restore);f.native.onMessage.fire({action:'pause_media',token:9,playing_ids:['1']});
+  f.emit('pointerdown',{isTrusted:true,composedPath:()=>[video]});video.play();assert(video.paused,'A fresh native hold cannot be released by a page gesture');
+});
+
+test('a correlated snapshot reads the suspended pause lease without activating or releasing it',()=>{
+  const f=fixture(1,false);
+  f.native.onMessage.fire({action:'pause_media',token:9,playing_ids:['1']});
+  f.native.onMessage.fire({action:'suspend',keep_pause:true,pause_token:9});
+  f.native.onMessage.fire({action:'snapshot',snapshot_request:'probe_123'});
+  const report=f.native.messages.at(-1);
+  assert.equal(report.snapshot_request,'probe_123');assert.equal(report.suspended,true);
+  assert.equal(report.pause_token,9);assert.equal(report.pause_held,true);assert(f.videos[0].paused);
+  f.native.onMessage.fire({action:'snapshot',snapshot_request:'invalid request'});assert.equal(f.native.messages.at(-1).snapshot_request,undefined);
 });
 
 test('Red Bull discovers a root attached after all initial scans from an existing snapshot',()=>{

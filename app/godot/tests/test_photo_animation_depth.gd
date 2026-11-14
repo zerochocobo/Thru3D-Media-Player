@@ -1,6 +1,8 @@
 extends SceneTree
 const Photo := preload("res://scripts/photo_display.gd")
 const Fakes := preload("res://tests/test_photo_animation.gd")
+const Main := preload("res://scripts/main.gd")
+const Menu := preload("res://scripts/photo_menu.gd")
 var failures: Array[String] = []
 var checks := 0
 
@@ -26,6 +28,51 @@ func check(value: bool, message: String) -> void:
 	if not value: failures.append(message)
 
 func _initialize() -> void: call_deferred("run")
+
+func check_menu_hover(photo: Node3D, platform: Platform) -> void:
+	var main := Main.new()
+	main.photo = photo
+	var menu := Menu.new()
+	root.add_child(menu)
+	menu.set_process(false)
+	menu.state_provider = main._photo_menu_state
+	menu.visible = true
+	menu.refresh()
+	var button: Dictionary = menu._buttons.filter(func(item): return item.target == Menu.PHOTO_ANIMATION)[0]
+	var origin: Vector3 = button.node.to_global(Vector3(0, 0, 0.4))
+	var direction: Vector3 = -button.node.global_basis.z
+	menu.update_pointer("right_hand", origin, direction, true)
+	check(menu._hover.get("right_hand") == Menu.PHOTO_ANIMATION and menu._tooltip.visible, "The stationary ray initially highlights the animation button")
+	var generation := menu._buttons_generation
+	var hover_color: Color = button.node.material_override.get_shader_parameter("surface_color")
+	var repaints := []
+	menu.composition_changed.connect(func(): repaints.append(true))
+	var uploads := platform.uploads
+	for frame in range(10, 15):
+		platform.report.token = frame
+		platform.depth_report.token = frame
+		platform.depth_report.frame_id = frame
+		platform.depth_report.process_ms = float(frame)
+		photo.animation.tick()
+		menu.update_pointer("right_hand", origin, direction, true)
+		menu._refresh_ms = 0
+		menu._process(0.0)
+	check(platform.uploads == uploads + 5 and photo.snapshot().animation_depth.frame_id == 14, "Animation and depth continue updating while the pointer is on the button")
+	check(menu._buttons_generation == generation, "New depth frames preserve the photo button nodes")
+	check(menu._hover.get("right_hand") == Menu.PHOTO_ANIMATION and menu._tooltip.visible and menu._pointers.right_hand.dot.visible,
+		"Depth refresh preserves hover, tooltip and pointer dot")
+	check(is_instance_valid(button.node) and button.node.material_override.get_shader_parameter("surface_color") == hover_color,
+		"The hovered button keeps its colour")
+	check(repaints.is_empty(), "Identical photo controls do not force compositor repaints")
+	check(menu._refresh_ms > Time.get_ticks_msec(), "Photo values use the periodic refresh interval")
+	photo.animation.toggle()
+	menu.refresh_values()
+	check(menu._tips.get(Menu.PHOTO_ANIMATION) == Menu.I18n.t("Play"), "Pausing still updates the animation button")
+	photo.animation.toggle()
+	menu.refresh_values()
+	check(menu._tips.get(Menu.PHOTO_ANIMATION) == Menu.I18n.t("Pause"), "Resuming still updates the animation button")
+	menu.free()
+	main.free()
 
 func run() -> void:
 	var photo := Subject.new(); root.add_child(photo); photo.set_process(false); photo.gallery.set_process(false)
@@ -77,6 +124,7 @@ func run() -> void:
 	platform.report.ended = true; photo.animation.tick(); photo.animation.toggle()
 	platform.report.ended = false; photo.animation.tick()
 	check(platform.restarts == 1 and photo.depth_requested and photo.depth_enabled, "Finite replay preserves 3D and rebuilds its dynamic session")
+	check_menu_hover(photo, platform)
 	platform.depth_report.state = "failed"; photo.animation.tick()
 	check(not photo.depth_enabled and photo.depth_error == "3D unavailable" and not platform.pauses.back(), "Depth failure preserves animated playback")
 	photo.set_depth(false)

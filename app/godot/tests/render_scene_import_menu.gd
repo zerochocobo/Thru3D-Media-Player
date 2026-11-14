@@ -5,6 +5,7 @@ const Menu := preload("res://scripts/scenery_menu.gd")
 const Library := preload("res://scripts/background_library.gd")
 const I18n := preload("res://scripts/i18n.gd")
 var commands: Array = []
+var sent := 0
 var failures: Array[String] = []
 
 class Pictures extends Node:
@@ -44,7 +45,7 @@ func _run() -> void:
 	var library := Library.new()
 	library.directory = output.path_join("library-" + str(Time.get_ticks_usec()))
 	viewport.add_child(library)
-	var scenes := {"rows": [], "active": "", "pending": "", "busy": false, "adding": "", "progress": 0.0, "error": "", "bake": 1.0, "tier": "high", "baked": false, "screen_light": 0.7}
+	var scenes := {"rows": [], "active": "", "pending": "", "busy": false, "adding": "", "progress": 0.0, "error": "", "bake": 1.0, "tier": "high", "baked": false, "screen_light": 0.7, "movement": "fixed", "floor_ready": true, "stage": "", "stage_progress": -1.0}
 	var menu := Menu.new()
 	menu.library = library
 	menu.scene_import = Pictures.new()
@@ -75,9 +76,10 @@ func _run() -> void:
 	menu.refresh()
 	await save_frame(viewport, camera, menu, output.path_join("scene-list.png"))
 	_check(menu._cards.filter(func(card): return card.get("scene", false)).size() == 3 and menu._chosen() == "b2", "The viewer's 3D scenes sit in their own section, the one in use chosen")
-	var first: int = menu._cards.find_custom(func(card): return card.get("id") == "a1")
+	_check(menu._cards.filter(func(card): return not card.get("builtin", false)).map(func(card): return card.id) == ["d4", "c3", "b2"], "The newest scene comes first")
+	var first: int = menu._cards.find_custom(func(card): return card.get("id") == "d4")
 	menu._activate(menu.CARD + first)
-	_check(commands.back() == ["scene_select", "a1"], "Pressing a 3D scene asks to use it")
+	_check(commands.back() == ["scene_select", "d4"], "Pressing a 3D scene asks to use it")
 	menu._activate(menu.NEXT)
 	_check(menu.page == 1, "A fourth entry goes to a second page")
 	menu._activate(menu.PREVIOUS)
@@ -92,16 +94,37 @@ func _run() -> void:
 	await save_frame(viewport, camera, menu, output.path_join("adjust.png"))
 	menu._choice_changed("scene_screen_light", 1.0)
 	_check(commands.back() == ["adjust", {"mode": "global", "key": "scene_screen_light", "value": 1.0}], "Its screen light is a setting")
+	menu._activate(menu.CURRENT)
+	_check(commands.back() == ["scene_home", "global"], "Return to start goes back to where the scene put the viewer")
 	menu.navigate_back()
 
-	scenes.pending = "a1"
+	# A file was just picked while the viewer was on the second page: its card leads the first.
+	menu._activate(menu.NEXT)
+	var settled: Array = scenes.rows.duplicate()
+	scenes.rows = settled + [{"id": "adding", "title": "heiligenkreuzerhof", "added": 9, "summary": {}, "thumb": false}]
+	scenes.pending = "adding"
 	scenes.busy = true
-	scenes.adding = "heiligenkreuzerhof.glb"
-	scenes.progress = 0.42
-	menu.refresh()
-	await save_frame(viewport, camera, menu, output.path_join("scene-busy.png"))
-	scenes.pending = ""
+	scenes.stage = "Copying file"
+	scenes.stage_progress = 0.42
+	menu.show_added_scene()
+	await save_frame(viewport, camera, menu, output.path_join("scene-copying.png"))
+	var custom: Array = menu._cards.filter(func(card): return not card.get("builtin", false))
+	_check(menu.page == 0 and custom[0].id == "adding" and menu._stage_text() == I18n.t("Copying file") + " 42%", "A picked file shows at once as the first card, with what is being done to it")
+	sent = commands.size()
+	menu._activate(menu.CARD + menu._cards.find(custom[0]))
+	_check(commands.size() == sent, "Its card does nothing until the copy is in")
+	scenes.rows = settled + [{"id": "e5", "title": "heiligenkreuzerhof", "added": 9, "summary": {}, "thumb": false}]
+	scenes.pending = "e5"
 	scenes.busy = false
+	scenes.stage = "Compressing textures"
+	scenes.stage_progress = 0.6
+	menu.refresh()
+	await save_frame(viewport, camera, menu, output.path_join("scene-importing.png"))
+	_check(menu._chosen() == "e5" and menu._scene_status().contains(I18n.t("Compressing textures")), "The import stages follow on the same card")
+	scenes.rows = settled
+	scenes.pending = ""
+	scenes.stage = ""
+	scenes.stage_progress = -1.0
 	scenes.error = "Scene file is larger than 768 MB"
 	menu.refresh()
 	await save_frame(viewport, camera, menu, output.path_join("scene-error.png"))
@@ -113,22 +136,22 @@ func _run() -> void:
 	library.bindings["image"] = {"id": "p1"}
 	menu.refresh()
 	await save_frame(viewport, camera, menu, output.path_join("scene-mixed.png"))
-	_check(menu._tips[menu.CARD + menu._cards.find_custom(func(card): return card.get("id") == "p1")].contains(I18n.t("Panorama image"))
-		and menu._tips[menu.CARD + menu._cards.find_custom(func(card): return card.get("id") == "a1")].contains(I18n.t("3D scene")), "Each card says whether it is a panorama or a 3D scene")
+	_check(menu._tips[menu.CARD + menu._cards.find_custom(func(card): return card.get("id") == "p2")].contains(I18n.t("Panorama image"))
+		and menu._tips[menu.CARD + menu._cards.find_custom(func(card): return card.get("id") == "d4")].contains(I18n.t("3D scene")), "Each card says whether it is a panorama or a 3D scene")
 	menu._activate(menu.MANAGE)
 	await save_frame(viewport, camera, menu, output.path_join("manage.png"))
 	_check(menu._cards.size() == 6, "Management lists everything the viewer added")
-	menu._activate(menu.RENAMES + 3)
+	menu._activate(menu.RENAMES + 2)
 	_check(menu.modal == "rename" and menu.rename_id == "c3", "A 3D scene can be renamed")
 	menu.editor.cancel()
 	menu.draft = "Atrium"
 	menu._save_name()
 	_check(commands.back() == ["scene_rename", {"id": "c3", "title": "Atrium"}] and menu.modal.is_empty(), "The new name goes to the scene library")
-	menu._activate(menu.REMOVES + 2)
+	menu._activate(menu.REMOVES + 3)
 	_check(menu.modal == "delete" and menu.selected == ["b2"], "The trash button asks before removing")
 	await save_frame(viewport, camera, menu, output.path_join("remove.png"))
 	_check(menu.navigate_back() and menu.modal.is_empty() and menu.view == "manage", "Back leaves the confirmation, not the page")
-	menu._activate(menu.REMOVES + 2)
+	menu._activate(menu.REMOVES + 3)
 	menu._activate(menu.CONFIRM)
 	_check(commands.back() == ["scene_remove", ["b2"]], "Confirming removes that scene")
 	_check(menu.navigate_back() and menu.view == "scene", "Back returns to the scene page")
@@ -145,10 +168,10 @@ func _run() -> void:
 	menu.state_provider = func(_mode): return {"selected": "dark", "choice": "dark", "status": "", "busy": false}
 	menu.open("global")
 	menu._activate(menu.ADD)
-	await save_frame(viewport, camera, menu, output.path_join("add-coming-soon.png"))
-	var sent := commands.size()
+	await save_frame(viewport, camera, menu, output.path_join("add-no-scenes.png"))
+	sent = commands.size()
 	menu._activate(menu.ADD_SCENE)
-	_check(menu.modal == "add" and commands.size() == sent and menu._buttons.any(func(button): return button.target == menu.ADD_SCENE and not button.enabled), "Where 3D scenes are not offered the button is shown but does nothing")
+	_check(menu.modal == "add" and commands.size() == sent and menu._buttons.any(func(button): return button.target == menu.ADD_SCENE and not button.enabled), "Without the scene importer its button does nothing")
 	menu._activate(menu.ADD_IMAGE)
 	_check(commands.back() == ["add", null], "Panoramas are still added from there")
 	for failure in failures: push_error(failure)

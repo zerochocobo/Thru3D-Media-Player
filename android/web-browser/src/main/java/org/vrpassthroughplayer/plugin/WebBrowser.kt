@@ -133,6 +133,9 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     private class PendingRetention(val owner: WebBrowserPlaybackHold.Owner, val ports: Set<WebExtension.Port>,
         val ticket: WebBrowserMediaRelease.Ticket) { val suspended = mutableSetOf<WebExtension.Port>() }
     private var pendingRetention: PendingRetention? = null
+    private class MediaReadback(val tab: Tab, val navigation: Long, val ports: Set<WebExtension.Port>,
+        val result: java.util.concurrent.CompletableFuture<JSONObject>) { val received = mutableSetOf<WebExtension.Port>() }
+    private val mediaReadbacks = mutableMapOf<String, MediaReadback>()
     private fun invalidatePlaybackHold(tab: Tab) {
         playbackHold.invalidate(tab.id)
         pendingRetention?.takeIf { it.owner.tab == tab.id }?.let { it.ticket.complete(false); pendingRetention = null }
@@ -222,6 +225,25 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         return memoryTight
     }
     fun snapshot(): String = state.dropLast(1) + (if (state.length > 2) "," else "") + "\"session_ready\":" + cookies.isReady() + ",\"memory_tight\":" + memoryTight() + "}"
+    /** Debug worker-only readback. Never activates, reloads, resumes or releases a held page. */
+    fun refreshMediaForDiagnostics(): JSONObject {
+        check(Looper.myLooper() != Looper.getMainLooper())
+        val result = java.util.concurrent.CompletableFuture<JSONObject>()
+        ui.post {
+            try {
+                check(mediaDiagnosticsEnabled() && !closed.get())
+                check(mediaReadbacks.isEmpty())
+                val tab = current() ?: error("No current tab")
+                val ports = tab.ports.filterValues { it == tab.navigation }.keys.toSet()
+                check(tab.awake && ports.isNotEmpty())
+                val request = java.util.UUID.randomUUID().toString()
+                mediaReadbacks[request] = MediaReadback(tab, tab.navigation, ports, result)
+                ui.postDelayed({ mediaReadbacks.remove(request)?.result?.completeExceptionally(IllegalStateException("Media readback timed out")) }, 4000)
+                ports.forEach { it.postMessage(JSONObject().put("action", "snapshot").put("snapshot_request", request)) }
+            } catch (error: Exception) { result.completeExceptionally(error) }
+        }
+        return result.get(5, TimeUnit.SECONDS)
+    }
     /** Worker-only snapshot. Signed media locations never enter publish()/Godot/history. */
     fun mediaForExtraction(url: String): JSONObject? {
         return mediaForSelectedExtraction(url, "")
@@ -948,6 +970,19 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                         updateFullscreen(tab)
                         tab.sources[port] = privateSources
                         publish()
+                        val request = data.optString("snapshot_request")
+                        mediaReadbacks[request]?.let { pending ->
+                            if (pending.tab === tab && pending.navigation == tab.navigation && port in pending.ports) {
+                                pending.received.add(port)
+                                if (pending.received.containsAll(pending.ports)) {
+                                    mediaReadbacks.remove(request)
+                                    if (current() === tab && tab.ports.filterValues { it == tab.navigation }.keys == pending.ports)
+                                        pending.result.complete(JSONObject().put("tab_id", tab.id).put("navigation", tab.navigation)
+                                            .put("snapshot_request", request).put("snapshot_ports", pending.ports.size).put("snapshot_confirmed", true))
+                                    else pending.result.completeExceptionally(IllegalStateException("Media readback owner changed"))
+                                }
+                            }
+                        }
                     }
                     override fun onDisconnect(port: WebExtension.Port) {
                         tab.ports.remove(port); tab.media.remove(port); tab.sources.remove(port); tab.pauseReports.remove(port); tab.weiboClicks.remove(port)

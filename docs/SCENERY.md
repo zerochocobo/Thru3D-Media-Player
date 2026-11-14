@@ -16,8 +16,8 @@ Distributed builds include beach cinema, loungers/free movement, sun/moon and da
 
 0.17.5 retains beach teleport/tabletop/foley/meteor runtime updates without exporting model/scene/texture/audio payloads or modeling fixtures. External resources remain mandatory for complete builds; no personal audio samples are included.
 
-## User scene import in 0.17.7
+## User scene import since 0.17.9
 
-Debug builds expose glTF and supported Unity scene bundles under My scenes on supported platforms. The importer budgets geometry and textures, can compress eligible textures to ETC2, and can use the playing screen as a light source. Release builds expose the panorama collection. The repository includes importer source. Users supply scene bundles and scenery assets separately.
+My scenes lists panoramas and compatible imported GLB and Unity scene bundles in Debug and Release. Supported scenes can be explored with free movement and flying. The importer budgets geometry and textures, can compress eligible textures to ETC2 and can use the playing screen as a light source. Supply scene bundles and scenery assets separately.
 
-0.17.7 的 Debug 构建可在支持平台的「我的场景」导入 glTF 和受支持的 Unity 场景包。Release 构建提供全景图库。场景包与场景资源由用户另行准备。
+从 0.17.9 起，Debug 与 Release 均可在「我的场景」管理全景、导入兼容的 GLB 或 Unity 场景包，并在支持的 3D 场景中移动和飞行。场景包和场景资源需另行准备。

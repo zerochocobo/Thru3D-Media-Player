@@ -12,7 +12,7 @@ func check(ok: bool, message: String) -> void:
 func _initialize() -> void: call_deferred("_run")
 
 func _run() -> void:
-	var output := ProjectSettings.globalize_path("res://../previews")
+	var output := ProjectSettings.globalize_path("res://../../build/output/cloud-error-previews")
 	DirAccess.make_dir_recursive_absolute(output)
 	var viewport := SubViewport.new(); viewport.size = Vector2i(1500, 1000); viewport.own_world_3d = true
 	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS; root.add_child(viewport)

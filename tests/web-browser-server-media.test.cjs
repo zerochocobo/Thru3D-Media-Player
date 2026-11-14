@@ -27,6 +27,7 @@ function fixture(base = 'http://192.168.1.20:8096') {
       postMessage(value) { messages.push(JSON.parse(JSON.stringify(value))); }
     }; } } }
   };
+  vm.runInNewContext(fs.readFileSync('android/web-browser/src/main/assets/web-browser/direct-return.js', 'utf8'), ctx);
   vm.runInNewContext(source, ctx);
   const flush = () => { let count = 0; while (timers.length) { assert.ok(++count < 100); timers.shift()(); } };
   const command = value => { commands.forEach(fn => fn(value)); flush(); };

@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Thru3D video handoff",
-  "version": "1.94",
+  "version": "1.97",
   "browser_specific_settings": {
     "gecko": {
       "id": "web-video@thru3d.local"
@@ -119,6 +119,7 @@
         "tencent.js",
         "plex.js",
         "danmaku.js",
+        "direct-return.js",
         "media.js"
       ],
       "run_at": "document_start",

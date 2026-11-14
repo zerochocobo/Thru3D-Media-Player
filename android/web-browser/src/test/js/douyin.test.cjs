@@ -147,6 +147,7 @@ test('content bridge exports readiness only for the bound video and invalidates 
    connectNative(){const p={onMessage:signal(),onDisconnect:signal(),messages:[],postMessage(m){this.messages.push(m)},disconnect(){}};ports.push(p);return p}}}};
  vm.createContext(context);vm.runInContext(fs.readFileSync(path.join(root,'douyin.js'),'utf8'),context);
  vm.runInContext(fs.readFileSync(path.join(root,'douyin-current.js'),'utf8'),context);
+ vm.runInContext(fs.readFileSync(path.join(root,'direct-return.js'),'utf8'),context);
  vm.runInContext(fs.readFileSync(path.join(root,'media.js'),'utf8'),context);
  const flush=()=>{let n=0;while(timers.length){assert.ok(++n<100);timers.shift()()}};flush();
  const native=ports.find(p=>p.messages),network=ports.find(p=>!p.messages);
