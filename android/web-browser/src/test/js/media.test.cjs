@@ -651,3 +651,33 @@ test('sidebar replacement uses observed detail identity instead of stale inline 
   send({...response,avid:'1'}); assert.equal(f.report()[0].bilibili,null);
   send({...response,id:'av2'}); assert.equal(f.report()[0].bilibili.cid,'456');
 });
+const pageBili = 'https://www.bilibili.com/video/BV1234567890/';
+function returnBiliFixture() {
+  const state={cid:123,videoData:{bvid:'BV1234567890',aid:1,pages:[{page:1,cid:123,duration:100}]}};
+  const f=fixture(1,true,{page:pageBili,scripts:[{textContent:'window.__INITIAL_STATE__='+JSON.stringify(state)+';'}]});
+  f.native.onMessage.fire({action:'network_policy',bilibili:true});f.flush();
+  const data={id:'BV1234567890',page:pageBili,part:1,cid:'123',duration:100,
+    video:[{width:3840,height:2160,urls:['https://cdn.test/video.m4s']}],audio:[{urls:['https://cdn.test/audio.m4s']}]};
+  f.network.onMessage.fire({type:'network',page:pageBili,bilibili:[data],candidates:['video','audio'].map(x=>({url:'https://cdn.test/'+x+'.m4s',kind:'file',at:Date.now()}))});f.flush();
+  const item=f.report()[0];assert(item.bilibili_ready);assert.equal(item.source,'');assert.equal(item.bilibili_source,f.videos[0].currentSrc);
+  return {f,video:f.videos[0],command:{action:'restore_bilibili',id:String(item.id),epoch:item.network_epoch,
+    source:item.bilibili_source,page:pageBili,content:data.id,cid:'123',part:1,ep:'',time:55,play:false}};
+}
+test('Bilibili return writes only the exact original media and keeps a delayed autoplay paused',()=>{
+  const {f,video,command}=returnBiliFixture();
+  f.native.onMessage.fire({action:'pause_media',token:7});
+  f.native.onMessage.fire({action:'suspend',keep_pause:true,pause_token:7});
+  f.native.onMessage.fire({action:'resume'});
+  f.native.onMessage.fire({action:'release_pause_media',token:7,play:false});
+  f.native.onMessage.fire(command);assert.equal(video.currentTime,55);assert(video.paused);
+  video.play();assert(video.paused);
+  f.emit('pointerdown',{isTrusted:true});video.play();assert(!video.paused);
+});
+test('Bilibili return rejects changed part, episode, document, source, element, epoch and protection',()=>{
+  for(const [field,value] of [['id','99'],['epoch',99],['source','blob:other'],['page',pageBili+'?p=2'],['content','BV0987654321'],['cid','124'],['part',2],['ep','9'],['time',NaN]]) {
+    const {f,video,command}=returnBiliFixture();f.native.onMessage.fire({...command,[field]:value});assert.equal(video.currentTime,3,field);
+  }
+  for(const change of [v=>v.currentSrc='blob:new',v=>v.emit('loadstart'),v=>v.emit('encrypted'),v=>v.mediaKeys={},v=>v.isConnected=false]){
+    const {f,video,command}=returnBiliFixture();change(video);f.native.onMessage.fire(command);assert.equal(video.currentTime,3);
+  }
+});

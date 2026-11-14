@@ -62,6 +62,11 @@ func run() -> void:
 		menu.scroll = menu.rows.find(menu.rows.filter(func(row): return row.title == "Shrink / enlarge")[0]); menu.refresh()
 		visible_text = "\n".join(menu.find_children("*", "Label3D", true, false).filter(func(label): return label.is_visible_in_tree()).map(func(label): return label.text))
 		check(visible_text.contains(I18n.t("Shrink / enlarge")) and visible_text.contains(I18n.t("Grip + stick ← / →")) and visible_text.contains(I18n.t("Grip + stick ↑ / ↓")), "Fixed flat grip size and distance are visible together: " + language)
+		check(visible_text.contains(I18n.t("Flat video")) and visible_text.contains(I18n.t("Flat photos")), "Fixed grip resize guide names both video and photos: " + language)
+		var photo_row: Dictionary = menu._buttons.filter(func(button): return button.target == menu.ROW_BASE + 1)[0]
+		check(not photo_row.enabled and not photo_row.has("choice_key"), "Photo grip resizing has no reassignment control: " + language)
+		menu.controls_page.action(menu.ROW_BASE + 1)
+		check(menu.controls_page.selection.is_empty() and menu.choices.opened.is_empty(), "Photo resize guide cannot open a binding editor: " + language)
 		var fixed_row: Dictionary = menu._buttons.filter(func(button): return button.target == menu.ROW_BASE)[0]
 		check(not fixed_row.enabled and not fixed_row.has("choice_key"), "Grip resizing has no binding editor: " + language)
 		menu.controls_page.action(menu.ROW_BASE)

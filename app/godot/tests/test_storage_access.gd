@@ -72,9 +72,9 @@ func _run() -> void:
 	platform.storage_settings.clear(); menu.catalog = null
 	menu._activate(Menu.NAV_BASE+Menu.Section.LOCAL); await settle()
 	check(menu.rows.size() == 4, "Both system partitions and the direct USB entry remain explicit")
-	check(menu.rows[1].detail == "System mounted · Read-only" and menu.rows[2].detail == menu.rows[1].detail, "System partition rows identify access and read-only state")
+	check(menu.rows[1].detail == "USB drive · Read-only" and menu.rows[2].detail == menu.rows[1].detail, "System partition rows identify access and read-only state")
 	check(menu.rows[3].detail == "App managed · Read-only", "Hardware entry identifies app management")
-	check(menu.Presentation.info(menu.rows[1]).card_detail == "System mounted · Read-only" and menu.Presentation.info(menu.rows[3]).subtitle == "App managed · Read-only", "Grid and compact presentation keep the source distinction")
+	check(menu.Presentation.info(menu.rows[1]).card_detail == "USB drive · Read-only" and menu.Presentation.info(menu.rows[3]).subtitle == "App managed · Read-only", "Grid and compact presentation keep the source distinction")
 	check(not menu._buttons.any(func(b): return b.target == Menu.ALL_FILES), "Discovery does not show an irrelevant global grant")
 	menu._activate(Menu.ROW_BASE+1); await settle()
 	check(menu.status == "Folder access needed" and menu._local_access_mode() == "directory", "A mounted-volume denial requests folder access")

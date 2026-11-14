@@ -68,6 +68,8 @@ func items() -> Array[Dictionary]:
 		result.append({"title": "Stereo horizontal alignment", "fixed": "Right grip + stick ← / →", "scope": "Stereo VR video"})
 		result.append({"title": "Reset VR adjustments", "fixed": "Either grip + same stick press", "scope": "Immersive video"})
 		result.append({"title": "Shrink / enlarge", "fixed": "Grip + stick ← / →", "scope": "Flat video"})
+		result.append({"title": "Shrink / enlarge", "fixed": "Grip + stick ← / →", "scope": "Flat photos"})
+		result.append({"title": "Shrink / enlarge", "fixed": "Grip + stick ← / →", "scope": "Browser"})
 		result.append({"title": "Push away / pull closer", "fixed": "Grip + stick ↑ / ↓", "scope": "Interfaces / flat media"})
 		result.append({"title": "Push away / pull closer", "fixed": "Trigger + stick ↑ / ↓", "scope": "Flat photos"})
 		var ranks := {"play": 0, "Show / hide controls": 1, "Menu selection": 2, "Back": 3, "Close video and return": 4,

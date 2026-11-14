@@ -8,7 +8,8 @@ const BOOST := 986023
 const OFF := 986024
 const CHROME := 986025
 const KEYBOARD := 986026
-const SLIDER_X := 0.15
+const VIDEO_FOCUS := 986034
+const SLIDER_X := 0.225
 const ENTER_MS := 120
 const LEAVE_MS := 650
 const GLOBAL_CENTRE := Vector2(0, -0.14)
@@ -67,6 +68,8 @@ func sync(now: int = -1) -> void:
 		_error_until = now + 6000 if not _last_effect_error.is_empty() else 0
 	var layout: Dictionary = host.full_page_layout()
 	var factor: float = float(layout.size.x) / host.page_size.x
+	# Stay under the page actually shown, including a reshaped focused window.
+	layout = host.page_layout()
 	var pose: Transform3D = layout.pose * Transform3D(Basis.IDENTITY.scaled(Vector3.ONE * factor), Vector3(0, -layout.size.y / 2 - 0.24 * factor, 0.03 * factor))
 	if host.on_screen():
 		var bounds := near_menu_bounds()
@@ -83,7 +86,7 @@ func sync(now: int = -1) -> void:
 	_tips[DEPTH]=_depth_tip()
 	_update_tooltip()
 	if now < 0: now = Time.get_ticks_msec()
-	var near := not capture_hand.is_empty() or near_hands.values().has(true) or now < _error_until
+	var near: bool = not capture_hand.is_empty() or near_hands.values().has(true) or now < _error_until or host.video_missing()
 	if near:
 		last_near = now
 		if entered < 0: entered = now
@@ -94,7 +97,7 @@ func sync(now: int = -1) -> void:
 		if last_near < 0 or now - last_near >= LEAVE_MS: _hide_controls()
 
 func _state() -> Array:
-	return [host.on_screen(),host.toolbar_shown,host.depth.enabled,host.depth.matte,host.depth.error,host.selecting,host.is_focused(),host.browser.keyboard_visible(host.window_id),boosted,strength_open,I18n.language] if host else []
+	return [host.on_screen(),host.toolbar_shown,host.depth.enabled,host.depth.matte,host.depth.error,host.selecting,host.is_focused(),host.is_video_focused(),host.locating_video(),host.video_missing(),host.browser.keyboard_visible(host.window_id),boosted,strength_open,I18n.language] if host else []
 
 func set_strength_open(value: bool) -> void:
 	if strength_open == value: return
@@ -129,7 +132,7 @@ func observe_ray(hand: String, origin: Vector3, direction: Vector3, tracked: boo
 	_update_highlights()
 
 func reveal_bounds() -> Rect2:
-	var bounds := Rect2(-0.38,-0.065,0.76,0.13)
+	var bounds := Rect2(-0.455,-0.065,0.91,0.13)
 	if not global_footer: return bounds
 	# Derive the width from shared controls, including disabled scene actions.
 	for button in _buttons: bounds = bounds.merge(button.rect)
@@ -156,12 +159,15 @@ func _draw() -> void:
 	_backdrop.visible = false
 	if device_status: device_status.visible = global_footer
 	if not host: return
-	var focus_icon := "close" if host.selecting else "expand" if host.is_focused() else "region_focus"
-	var focus_tip := "Cancel selection" if host.selecting else "Exit focus" if host.is_focused() else "Focus region"
-	for item in [[CHROME,"browser_frame",-0.30,not host.toolbar_shown,"Hide browser frame" if host.toolbar_shown else "Show browser frame"],[FOCUS,focus_icon,-0.15,host.selecting or host.is_focused(),focus_tip],[MATTE,"alpha",0.0,host.depth.matte,"Person passthrough"],[DEPTH,"depth",0.15,host.depth.enabled,"2D to 3D effect"]]:
+	var free_focused: bool = host.is_focused() and not host.is_video_focused()
+	var focus_icon := "close" if host.selecting else "expand" if free_focused else "region_focus"
+	var focus_tip := "Cancel selection" if host.selecting else "Exit focus" if free_focused else "Focus free region"
+	var video_icon := "close" if host.locating_video() else "expand" if host.is_video_focused() else "video_focus"
+	var video_tip := "No video found" if host.video_missing() else "Cancel" if host.locating_video() else "Exit focus" if host.is_video_focused() else "Focus video"
+	for item in [[CHROME,"browser_frame",-0.375,not host.toolbar_shown,"Hide browser frame" if host.toolbar_shown else "Show browser frame"],[VIDEO_FOCUS,video_icon,-0.225,host.locating_video() or host.is_video_focused(),video_tip],[FOCUS,focus_icon,-0.075,host.selecting or free_focused,focus_tip],[MATTE,"alpha",0.075,host.depth.matte,"Person passthrough"],[DEPTH,"depth",0.225,host.depth.enabled,"2D to 3D effect"]]:
 		if host.on_screen() and item[0] == CHROME: continue
 		if host.on_screen(): item[2] -= 0.075
-		_button(item[0],"",Vector2(item[2],0),Vector2.ONE*0.12,not host.page_input_blocked() if item[0]==FOCUS else true,item[1],item[3])
+		_button(item[0],"",Vector2(item[2],0),Vector2.ONE*0.12,not host.page_input_blocked() if item[0] in [FOCUS,VIDEO_FOCUS] else true,item[1],item[3])
 		_tips[item[0]] = I18n.t(item[4])
 		if item[0]==DEPTH:
 			busy_ring=preload("res://scripts/ui_busy_ring.gd").create(_buttons.back().node,0.12,ACCENT)
@@ -172,8 +178,10 @@ func _draw() -> void:
 		var issue := _label(I18n.t(host.depth.error), Vector3(0,0.095,0.006), 14)
 		issue.modulate = UiTheme.color("browser_error")
 		_tips[MATTE] = I18n.t(host.depth.error)
+	elif host.video_missing():
+		_label(I18n.t("No video found"), Vector3(0,0.095,0.006), 14).modulate = UiTheme.color("browser_error")
 	var keyboard_shown: bool = host.browser.keyboard_visible(host.window_id)
-	_button(KEYBOARD,"",Vector2(0.225 if host.on_screen() else 0.30,0),Vector2.ONE*0.12,true,"keyboard_hide" if keyboard_shown else "keyboard",keyboard_shown)
+	_button(KEYBOARD,"",Vector2(0.30 if host.on_screen() else 0.375,0),Vector2.ONE*0.12,true,"keyboard_hide" if keyboard_shown else "keyboard",keyboard_shown)
 	_tips[KEYBOARD] = I18n.t("Close keyboard" if keyboard_shown else "Show keyboard")
 	if global_footer: place_session_controls(GLOBAL_CENTRE)
 	if not host.depth.enabled or not strength_open: return
@@ -250,7 +258,7 @@ func _refresh_strength() -> void:
 		boost_fill.material_override.set_shader_parameter("surface_size",boost_fill.mesh.size)
 
 func _activate(target: int) -> void:
-	if target in [CHROME,FOCUS,MATTE,KEYBOARD]: host._activate(target)
+	if target in [CHROME,FOCUS,VIDEO_FOCUS,MATTE,KEYBOARD]: host._activate(target)
 	elif target == DEPTH:
 		if host.depth.enabled: set_strength_open(not strength_open)
 		else: host._activate(DEPTH)

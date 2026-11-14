@@ -53,7 +53,7 @@ class WebVideoDiagnosticsReceiver : BroadcastReceiver() {
                 }
                 "browser_ui" -> {
                     val step = intent.getStringExtra("step").orEmpty()
-                    require(step in setOf("open", "handoff", "close", "click", "scroll", "key", "window_state"))
+                    require(step in setOf("open", "handoff", "close", "click", "scroll", "key", "window_state", "focus", "effect"))
                     val url = intent.getStringExtra("url").orEmpty()
                     require(url.length <= 4096)
                     if (step == "open") result.put("page", runCatching { WebVideoPage.parse(url).url }.getOrNull()

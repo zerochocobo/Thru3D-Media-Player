@@ -348,6 +348,9 @@ func draw_detail() -> void:
 		var caption: Label3D = menu._label(I18n.t("Favorited"), Vector3(0, -0.05, 0.004), 16, favorite_button.node)
 		caption.modulate = UiTheme.color("text")
 	menu._button(browser.ACTION + 38, "", Vector2(0.64, 0.135), Vector2(0.09, 0.075), true, "info")
+	if browser.has_detail_actions():
+		menu._button(browser.DETAIL_MORE, "", Vector2(0.77, 0.135), Vector2(0.09, 0.075), not browser.busy, "more")
+		menu._tips[browser.DETAIL_MORE] = I18n.t("More options")
 	for strip in visible_sections():
 		var y := section_y(strip)
 		_label(I18n.t({"parts": "Parts", "actors": "Performers", "images": "Images"}[strip]), Vector2(-0.46, y + 0.145), 18)

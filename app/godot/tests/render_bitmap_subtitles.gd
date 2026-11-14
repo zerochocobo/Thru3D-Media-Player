@@ -29,6 +29,12 @@ class Host extends RefCounted:
 	func set_mpv_subtitle(_id: int, value: int) -> bool:
 		track = value
 		return true
+	func get_mpv_subtitle_bitmap_styled(_id: int, _version: int, _rgb: int, opacity: float) -> PackedByteArray:
+		reads += 1
+		# Native premultiplied fade math is covered by pgs_bitmap_checks.
+		var patch := Image.create_empty(1280, 160, false, Image.FORMAT_RGBA8)
+		patch.fill_rect(Rect2i(20, 20, 1240, 120), Color(opacity, opacity, opacity, opacity))
+		return patch.get_data()
 	func close_mpv_video(_id: int) -> void:
 		pass
 
@@ -206,6 +212,19 @@ func _run() -> void:
 		tinted.save_png(output.path_join("pgs_tint_" + preset.value + ".png"))
 	video.subtitle_pgs_tint = "original"
 	if video.bitmap_subtitles.image.get_data() != host.pixels: failures.append("Original must restore exact source pixels after multiple color changes")
+	for transparency in [50.0, 80.0, 0.0]:
+		var before := host.reads
+		video.subtitle_transparency = transparency
+		var texture := video.bitmap_subtitles.texture
+		if texture == null or host.reads != before + 1: failures.append("Paused transparency change must upload once")
+		video._poll_subtitles()
+		if video.bitmap_subtitles.texture != texture or host.reads != before + 1: failures.append("Same transparency must reuse its texture")
+		var expected: float = 1.0 - transparency / 100.0
+		if absf(video.bitmap_subtitles.image.get_pixel(30,30).a - expected) > 0.005: failures.append("PGS cached alpha differs from transparency")
+		await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
+		viewport.get_texture().get_image().save_png(output.path_join("pgs_transparency_%d.png" % transparency))
+	if video.bitmap_subtitles.image.get_data() != host.pixels: failures.append("Zero transparency restores exact source pixels")
+	video.subtitle_transparency = 80.0
 	video.disc_menu.bitmap = video.subtitles.bitmap.duplicate()
 	video.disc_menu.pixels = host.pixels
 	video.disc.menu_session = true

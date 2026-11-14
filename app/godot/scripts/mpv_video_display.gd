@@ -238,6 +238,10 @@ var subtitle_size := 1.0:
 	set(value): subtitle_size = SubtitleStyle.size_ratio(value)
 var subtitle_style := SubtitleStyle.DEFAULT:
 	set(value): subtitle_style = SubtitleStyle.normalize(value)
+var subtitle_transparency := 0.0:
+	set(value):
+		subtitle_transparency = SubtitleStyle.transparency(value)
+		if is_inside_tree(): _poll_subtitles()
 var subtitle_pgs_tint := SubtitleStyle.PGS_DEFAULT:
 	set(value):
 		subtitle_pgs_tint = SubtitleStyle.normalize_pgs(value)
@@ -424,7 +428,9 @@ var _subtitle_layer_failed := false
 var _subtitle_copy_after := -1 # frames_drawn after which a redrawn canvas has rendered
 var _subtitle_texture: ImageTexture
 const FlatSubtitleCanvas := preload("res://scripts/flat_subtitle_canvas.gd")
+const FadedCaption := preload("res://scripts/faded_caption.gd")
 var _flat_subtitle_canvas: Node
+var _faded_caption: MeshInstance3D
 var _flat_subtitle_layer_version := -1
 var _flat_subtitle_on_layer := false
 ## Debug prototype of Alpha plan B (compositor alpha blending): 0 off, 1 a test mask over what lies
@@ -2386,11 +2392,13 @@ func _poll_subtitles() -> void:
 	if not listening.active() and geometry == Geometry.Geometry.FLAT and not subtitles.bitmap.is_empty():
 		var handle := int(subtitles.cue.get("mpv_source_handle", 0))
 		var rgb := SubtitleStyle.pgs_rgb(subtitle_pgs_tint)
+		var opacity := 1.0 - subtitle_transparency / 100.0
 		var pixels := PackedByteArray()
-		if bitmap_subtitles.needs_pixels(subtitles.bitmap, handle, rgb):
-			if rgb == 0xffffff: pixels = platform.get_mpv_subtitle_bitmap(media.session_id, int(subtitles.bitmap.version))
+		if bitmap_subtitles.needs_pixels(subtitles.bitmap, handle, rgb, opacity):
+			if opacity < 1.0: pixels = platform.get_mpv_subtitle_bitmap_styled(media.session_id, int(subtitles.bitmap.version), rgb, opacity)
+			elif rgb == 0xffffff: pixels = platform.get_mpv_subtitle_bitmap(media.session_id, int(subtitles.bitmap.version))
 			else: pixels = platform.get_mpv_subtitle_bitmap_tinted(media.session_id, int(subtitles.bitmap.version), rgb)
-		bitmap_subtitles.apply(material, subtitles.bitmap, handle, pixels, subtitle_size, subtitle_flat_position, rgb)
+		bitmap_subtitles.apply(material, subtitles.bitmap, handle, pixels, subtitle_size, subtitle_flat_position, rgb, opacity)
 	else:
 		bitmap_subtitles.clear(material)
 		if _subtitle_surface: _subtitle_surface.visible = false
@@ -2407,6 +2415,8 @@ func _place_caption() -> void:
 	var appearance := SubtitleStyle.colors(subtitle_style)
 	caption.modulate = appearance.text_color
 	caption.outline_modulate = appearance.outline_color
+	caption.modulate.a = 1.0 - subtitle_transparency / 100.0
+	caption.outline_modulate.a = caption.modulate.a
 	if geometry == Geometry.Geometry.FLAT:
 		# Ordinary video captions stay on the screen, independent of immersive preferences.
 		var pose := subtitle_transform()
@@ -3516,9 +3526,24 @@ func _sync_depth_subtitles() -> void:
 		add_child(_depth_subtitles)
 	_depth_subtitles.sync()
 
+## A semi-transparent eye-buffer caption is drawn from its canvas, faded as one layer.
+func _fade_flat_caption(wanted: bool) -> bool:
+	if not wanted or not caption or caption.modulate.a >= 1.0:
+		if _faded_caption: _faded_caption.visible = false
+		return false
+	if not _flat_subtitle_canvas:
+		_flat_subtitle_canvas = FlatSubtitleCanvas.new()
+		add_child(_flat_subtitle_canvas)
+	if not _faded_caption:
+		_faded_caption = FadedCaption.new()
+		caption.add_child(_faded_caption)
+	# The layer path's image limit: alternating limits would recapture the canvas every frame.
+	return _faded_caption.show_caption(caption, _flat_subtitle_canvas, video_layer.runtime_image_size if video_layer else Vector2i.ZERO)
+
 func _sync_subtitle_surface() -> void:
 	if depth_subtitles_below():
 		_sync_depth_subtitles()
+		_fade_flat_caption(false)
 		if caption: caption.layers = 0
 		material.set_shader_parameter("separate_subtitles", true)
 		if _subtitle_surface: _subtitle_surface.visible = false
@@ -3526,8 +3551,11 @@ func _sync_subtitle_surface() -> void:
 		return
 	if _depth_subtitles: _depth_subtitles.suspend()
 	# Hide the eye-buffer glyphs only after their exact current cue was submitted.
-	if caption and geometry == Geometry.Geometry.FLAT:
-		caption.layers = 0 if _flat_subtitle_on_layer and _flat_subtitle_canvas and _flat_subtitle_canvas.matches(caption) else 1
+	if caption:
+		var flat := geometry == Geometry.Geometry.FLAT
+		var on_layer: bool = _flat_subtitle_on_layer and _flat_subtitle_canvas and _flat_subtitle_canvas.matches(caption)
+		var faded := _fade_flat_caption(flat and not on_layer)
+		if flat: caption.layers = 0 if on_layer or faded else 1
 	if not _subtitle_surface or not material: return
 	# The layer shows no shader overlays: subtitles go on their own surface above the hole.
 	var separate := portrait.active or not is_zero_approx(screen_rotation) or _layer_session or video_layer_shown
@@ -3864,6 +3892,7 @@ func playback_end_ready() -> bool:
 		and (not alpha_requested or final_pair.get("inference_ran", false) or final_pair.get("color_target") == "layer")
 
 func _process(_delta: float) -> void:
+	if video_layer: video_layer.sync_qiyu_passthrough()
 	server_playback.poll(self)
 	if vr_passthrough.active():
 		if vr_passthrough.source_session != media.session_id: _present_pending()

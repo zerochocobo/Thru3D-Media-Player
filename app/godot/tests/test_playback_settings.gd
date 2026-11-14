@@ -94,7 +94,7 @@ func _run() -> void:
 	menu.toggle()
 	check(click(menu, 11) and menu.section == 1 and menu._adjustment.is_empty() and click(menu, Menu.SCREEN_SETTINGS) and menu._adjustment == "screen", "Settings opens Playback; Screen is the second tab")
 	check(menu._buttons.any(func(b): return b.target == 102), "The bar stays under the settings popup")
-	check(menu._adjust_rows.size() == 4 and menu.text_snapshot().contains("Screen size") and menu._adjust_rows[Menu.VIDEO_ASPECT_FACTOR].key == "video_aspect_factor", "Flat panel includes distance, size, ratio and rotation")
+	check(menu._adjust_rows.size() == 5 and menu.text_snapshot().contains("Screen size") and menu._adjust_rows[Menu.VIDEO_ASPECT_FACTOR].key == "video_aspect_factor" and menu._adjust_rows[Menu.SCREEN_CURVE_SLIDER].key == "screen_curve", "Flat panel includes distance, size, ratio, curve and rotation")
 	check(not menu.text_snapshot().contains("Audio track") and not menu.text_snapshot().contains("Subtitles") and not menu.text_snapshot().contains("3D depth"), "Screen panel contains no duplicate controls")
 	check(not reset_shown(menu, Menu.ROTATION_RESET) and not click(menu, Menu.ROTATION_RESET), "Zero rotation hides and disables reset")
 	# Screen size spans 5-3000% on the presets' slider scale.
@@ -142,7 +142,8 @@ func _run() -> void:
 		video.geometry = geometry
 		video._apply_geometry()
 		menu.refresh()
-		check(menu._adjust_rows.size() == 1 and menu._adjust_rows[452].key == "screen_rotation", "Immersive mode offers rotation and hides flat controls")
+		var immersive_keys: Array = menu._adjust_rows.values().map(func(row): return row.key)
+		check(immersive_keys.has("screen_rotation") and not immersive_keys.any(func(key): return key in ["screen_distance", "screen_scale", "video_aspect_factor", "screen_curve"]), "Immersive mode offers rotation and hides flat controls")
 		video.turn_view(0.2, 0.1)
 		video.zoom_view(0.1)
 		var yaw: float = video.view_yaw
@@ -199,19 +200,19 @@ func _run() -> void:
 	check(click(menu, 400) and menu._adjustment.is_empty(), "Eye-order panel returns to video settings")
 	video.stereo_sbs = false
 	click(menu, Menu.SETTINGS_CLOSE)
-	click(menu, 110)
-	check(menu.choices.sliders.is_empty() and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "Flat CC initially hides all appearance controls")
-	check(click(menu, Menu.SUBTITLE_APPEARANCE) and menu._subtitle_open, "Ray opens appearance without closing subtitle selection")
-	check(menu.choices.sliders.size() == 3 and menu.text_snapshot().contains("Auto-load subtitles"), "Flat CC provides sync, size, vertical position and automatic loading switch")
+	# A selected track opens subtitles on its appearance group (preconfiguration).
+	check(click(menu, 110) and menu._subtitle_open and menu._subtitle_appearance_open, "Selected subtitles open on their appearance")
+	check(menu.choices.sliders.size() == 4 and menu.text_snapshot().contains("Auto-load subtitles"), "Flat CC provides sync, size, transparency, vertical position and automatic loading switch")
 	video.subtitles.select(2)
 	menu.refresh()
-	check(menu.choices.sliders.size() == 3 and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "PGS offers sync, size and vertical position while preserving bitmap colors")
+	check(menu.choices.sliders.size() == 4 and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "PGS offers sync, size, transparency and vertical position while preserving bitmap colors")
 	video.subtitles.select(1)
 	menu.refresh()
-	check(menu.choices.sliders.size() == 3, "Text controls return despite PGS also being listed")
+	check(menu.choices.sliders.size() == 4, "Text controls return despite PGS also being listed")
 	var saved_size: float = video.subtitle_size
 	check(click(menu, Menu.SUBTITLE_APPEARANCE) and menu.choices.sliders.is_empty() and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style") and video.subtitle_size == saved_size, "Collapsing hides all appearance controls without resetting settings")
-	check(click(menu, 110) and click(menu, 110) and not menu._subtitle_appearance_open and menu.choices.sliders.is_empty(), "Reopening subtitles starts with appearance collapsed")
+	check(click(menu, Menu.SUBTITLE_APPEARANCE) and menu._subtitle_appearance_open and menu.choices.sliders.size() == 4, "Ray reopens appearance without closing subtitle selection")
+	check(click(menu, 110) and click(menu, 110) and menu._subtitle_appearance_open and menu.choices.sliders.size() == 4, "Reopening subtitles restores the last detail group")
 	check(click(menu, Menu.SUBTITLE_AUTO) and not video.subtitle_auto_load and menu._subtitle_open, "Automatic-loading switch is wired to the player")
 	stored.load(main.settings_path)
 	check(stored.get_value("subtitles", "auto_load") == false and main._menu_state().subtitle_auto_load == false, "Automatic-loading preference persists and refreshes menu state")
@@ -237,6 +238,7 @@ func _run() -> void:
 		for id in library.choices.targets:
 			if library.choices.targets[id].get("key") == "subtitle_style" and library.choices.targets[id].get("value") == preset.value: target = id
 		check(click(library, target) and video.subtitle_style == preset.value, "Ray selects visual style " + preset.value)
+		video.caption.visible = true # A shown cue; polling hides it while no playback is ready.
 		video._place_caption()
 		check(video.caption.modulate == preset.text_color and video.caption.outline_modulate == preset.outline_color, "Flat subtitle receives fill and outline " + preset.value)
 		for direction in [0, 1]:
@@ -256,7 +258,8 @@ func _run() -> void:
 		if library.choices.targets[id].get("key") == "subtitle_line" and library.choices.targets[id].get("value") == 2: line_target = id
 	check(click(library, line_target) and video.subtitle_line == 2 and main._menu_state().subtitle_line == 2, "Global ray chooses second display line")
 	check(video.narration.line == 1, "Display line selection leaves narration independent")
-	menu.refresh(); click(menu, Menu.SUBTITLE_APPEARANCE)
+	menu.refresh()
+	if not menu._subtitle_appearance_open: click(menu, Menu.SUBTITLE_APPEARANCE)
 	line_target = -1
 	for id in menu.choices.targets:
 		if menu.choices.targets[id].get("key") == "subtitle_line" and menu.choices.targets[id].get("value") == 1: line_target = id

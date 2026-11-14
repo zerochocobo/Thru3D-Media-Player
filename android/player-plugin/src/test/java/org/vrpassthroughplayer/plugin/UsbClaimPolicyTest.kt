@@ -22,4 +22,11 @@ class UsbClaimPolicyTest {
         assertEquals(UsbClaimPolicy.BUSY, UsbClaimPolicy.busyMessage(false, "Pico", "Pico"))
         assertEquals(UsbClaimPolicy.BUSY, UsbClaimPolicy.busyMessage(false, "Oculus", "oculus"))
     }
+    @Test fun systemMountedDiskHidesTheManagedEntryOutsidePico() {
+        assertFalse(UsbClaimPolicy.listManaged(true, false, "Oculus", "oculus"))
+        assertFalse(UsbClaimPolicy.listManaged(true, false, null, null))
+        assertTrue(UsbClaimPolicy.listManaged(false, false, "Oculus", "oculus"))
+        assertTrue(UsbClaimPolicy.listManaged(true, true, "Oculus", "oculus"))
+        assertTrue(UsbClaimPolicy.listManaged(true, false, "Pico", "Pico"))
+    }
 }

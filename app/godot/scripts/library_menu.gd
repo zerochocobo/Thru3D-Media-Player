@@ -144,7 +144,7 @@ const VISIBLE_ROWS := 7
 ## A settings page up to this many rows draws every row once; scrolling then only moves them.
 ## Redrawing the page at each line cost Quest 3 60-75 ms frames (2026-11-12).
 const FULL_LIST_ROWS := 48
-const DRAG_START := 0.015          # metres of ray travel on the panel before a press becomes a drag
+const DRAG_START := 0.025          # metres of ray travel on the panel before a press becomes a drag
 const STICK_DEADZONE := 0.2
 const STICK_SPEED := 1.5           # visible pages per second at full deflection
 const LIST_TOP := 0.33
@@ -189,6 +189,7 @@ const SCROLLBAR := 48
 const CRUMB_BASE := 50
 const FILTER_BASE := 70
 const MEDIA_FILTERS := ["All", "Video", "Images"]
+const FOLDER_FILTER := 3 # Keep existing video/image filter IDs and saved positions stable.
 const ImageInfo := preload("res://scripts/image_info.gd")
 const Presentation := preload("res://scripts/library_presentation.gd")
 const VIEW_LIST := 88
@@ -248,7 +249,7 @@ var _media_filter_location := ""
 var media_browse_intent := 0
 var media_filter := 0:
 	set(value):
-		media_filter=clampi(value,0,2)
+		media_filter=clampi(value,0,3)
 		_media_filter_location=_filter_location()
 var status := ""                   # English; shown through I18n
 var _pending := {}                 # request id -> kind
@@ -343,7 +344,9 @@ func set_compact(value: bool, restore_playback: bool = false) -> void:
 	if account_panel.view == "web" and value == compact and not restore_playback: return
 	if archives.browsing: restore_playback = false
 	if restore_playback and browse_memory.locked(): _playback_context = {}
-	if value: server_browser.sort_query.clear()
+	if value:
+		server_browser.sort_query.clear()
+		server_browser.detail_actions = ""
 	var keep_current_visible := _current_file_visible()
 	var anchor := _position_to_restore.duplicate(true) if not _position_to_restore.is_empty() else capture_position()
 	if restore_playback:
@@ -762,14 +765,7 @@ func _reset_navigation() -> void:
 
 ## Point on the panel plane (local), even outside any button; null when the ray misses the plane.
 func _plane_point(origin: Vector3, direction: Vector3) -> Variant:
-	if not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.000001:
-		return null
-	var inverse := global_transform.affine_inverse()
-	var start := inverse * origin
-	var delta := inverse.basis * direction.normalized()
-	if delta.z >= -0.00001 or start.z <= 0.0:
-		return null
-	return start + delta * (-start.z / delta.z)
+	return project_pointer(origin, direction, Transform3D.IDENTITY)
 
 func _row_target(target: int) -> bool:
 	return target >= ROW_BASE and target < ROW_BASE + _drawn_slots()
@@ -824,18 +820,16 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	update_pointer(hand, origin, direction, tracked)
 	var hit := ray_hit(origin, direction) if tracked else {}
 	var target := int(hit.get("target", NONE))
-	var start_y := 0.0
 	if not hit.is_empty() and target not in [SCROLLBAR, NONE] and not _row_target(target) and not collections.row_target(target) and not file_actions.selection_target(target):
 		hit["hand"] = hand
 		_activate_hit(hit)
 		return true
-	if hit.is_empty() or target == NONE:
-		var point: Variant = _plane_point(origin, direction) if tracked else null
-		if point == null or not _in_list(point):
-			return not hit.is_empty()
-		start_y = float(point.y)
-	else:
-		start_y = float(hit.point.y)
+	# Use the same projected ray and panel plane on press and move. Button hits
+	# lie on raised surfaces; mono menus also project the ray from the centre eye.
+	var point: Variant = _plane_point(origin, direction) if tracked else null
+	if point == null or ((hit.is_empty() or target == NONE) and not _in_list(point)):
+		return not hit.is_empty()
+	var start_y := float(point.y)
 	# Rows, gaps and the scrollbar wait for release: a press that moves becomes a scroll.
 	_fling = 0.0
 	_drag = {"hand": hand, "target": target, "start_y": start_y, "start_scroll": scroll, "moved": false,
@@ -1289,6 +1283,7 @@ func _cols() -> int:
 
 ## Visible lines (tile rows or list rows); [scroll] counts lines.
 func _lines() -> int:
+	if subtitle_filter.active() and subtitle_filter.directory_mode: return (1 if _grid() else 3) if compact else (2 if _grid() else 6)
 	if compact: return 2 if _grid() else (4 if file_actions.needs_footer() or collections.has_selection() else 5)
 	if archives.browsing: return GRID_LINES if _grid() else VISIBLE_ROWS
 	if subtitle_filter.active(): return 6
@@ -1311,6 +1306,7 @@ func _line_count() -> int:
 
 ## Scrollbar track: top and height.
 func _bar_span() -> Vector2:
+	if subtitle_filter.active() and subtitle_filter.directory_mode: return Vector2(0.105 if compact else 0.22, _lines() * _pitch() - 0.012)
 	if compact: return Vector2(0.265, _lines() * _pitch() - 0.012)
 	if archives.browsing: return Vector2(GRID_TOP if _grid() else LIST_TOP + 0.05, _lines() * _pitch() - 0.012)
 	if subtitle_filter.active(): return Vector2(0.27, _lines() * _pitch() - 0.012)
@@ -1342,6 +1338,10 @@ func _sync_media_filter() -> void:
 	if media_browse_intent>0:
 		if media_filter!=media_browse_intent: media_filter=media_browse_intent
 	elif not _media_filter_location.is_empty() and _media_filter_location!=_filter_location(): media_filter=0
+	if media_filter == FOLDER_FILTER and not _favorite_folder_filter(): media_filter = 0
+
+func _favorite_folder_filter() -> bool:
+	return not archives.browsing and section == Section.RECENT and collections.home_tab == 1
 
 func _folder_key() -> String:
 	if archives.browsing: return archives.position_scope()
@@ -1381,6 +1381,9 @@ func _restore_parent_filter() -> void:
 
 func _change_media_filter(value: int) -> void:
 	if media_filter == value: return
+	if subtitle_filter.active() and subtitle_filter.directory_mode:
+		media_browse_intent = 0; media_filter = value
+		_reset_navigation(); _position_to_restore = {}; refresh(); return
 	if archives.browsing:
 		archives.save_position(); media_filter = value; archives.remembered_filter = value; scroll = 0.0
 		_browse_activity()
@@ -2311,8 +2314,11 @@ func _rebuild_rows() -> void:
 		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("folder", false) or row.get("kind", "") == "folder" or _voice_sample_source(row)))
 	else:
 		rows.assign(rows.filter(func(row): return row.get("kind", "") not in ["audio", "scene"]))
-	if not audio_import_mode and not subtitle_picker_mode and not voice_picker_mode and media_filter > 0 and section not in [Section.SETTINGS, Section.MEDIA_SERVER]:
+	if media_filter == FOLDER_FILTER and _favorite_folder_filter():
+		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "") == "folder"))
+	elif not audio_import_mode and not subtitle_picker_mode and not voice_picker_mode and media_filter > 0 and section not in [Section.SETTINGS, Section.MEDIA_SERVER]:
 		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "") == "folder" or row.get("kind", "video") in (["image", "archive", "pdf"] if media_filter == 2 and not image_picker_mode else ["image", "pdf"] if media_filter == 2 else ["video"])))
+	if not subtitle_picker_mode: subtitle_filter.filter_rows()
 	file_actions.sort_rows()
 	file_actions.reconcile()
 	if section == Section.RECENT:
@@ -2713,8 +2719,9 @@ func _activate(target: int) -> void:
 		collections._remove_rows(catalog.list_recent(), true)
 	elif target >= CRUMB_BASE and target < CRUMB_BASE + 10:
 		_go_to(target - CRUMB_BASE)
-	elif target >= FILTER_BASE and target < FILTER_BASE + MEDIA_FILTERS.size():
+	elif target >= FILTER_BASE and target <= FILTER_BASE + FOLDER_FILTER:
 		if image_picker_mode or voice_picker_mode: return
+		if target == FILTER_BASE + FOLDER_FILTER and not _favorite_folder_filter(): return
 		_change_media_filter(target - FILTER_BASE)
 	elif _row_target(target):
 		var index := _row_index(target - ROW_BASE)
@@ -3306,6 +3313,9 @@ func _draw_compact() -> void:
 	if not archives.browsing: _draw_storage_stop(Vector2(-0.40, 0.36))
 	_button(CLOSE, "", Vector2(0.51, 0.36), Vector2(0.075, 0.065), true, "close")
 	_tips[CLOSE] = I18n.t("Close")
+	if subtitle_filter.available():
+		_button(SubtitleFilter.OPEN, "", Vector2(-0.49, -0.365), Vector2(0.075, 0.065), true, "search", subtitle_filter.enabled)
+		_tips[SubtitleFilter.OPEN] = I18n.t(subtitle_filter.title())
 	if archives.browsing or section != Section.RECENT:
 		_button(REFRESH, "", Vector2(0.27, 0.36), Vector2(0.075, 0.065), platform != null and not _cloud_busy, "refresh")
 		_tips[REFRESH] = I18n.t("Refresh")
@@ -3328,6 +3338,7 @@ func _draw_compact() -> void:
 	_decoration(Vector2(1.04, 0.002), Vector2(0, 0.305), UiTheme.color("divider"))
 	if not image_picker_mode and (archives.browsing or section != Section.RECENT): collections.draw_folder_header(true)
 	file_actions.draw_entry(Vector2(0.0, -0.365))
+	subtitle_filter.draw()
 	_draw_rows()
 	file_actions.draw_footer()
 	collections.draw_footer()
@@ -3350,8 +3361,8 @@ func _draw_compact() -> void:
 		_button(next, "", Vector2(-0.15, -0.365), Vector2(0.075, 0.065), not busy and can_next, "next")
 	if _cloud_loading_in_header():
 		_label(I18n.t("Loading…"), Vector3(0, 0.278, 0.004), 16).modulate = ACCENT
-	elif not status.is_empty() and not cloud_error.shows_notice():
-		var message := _label(_fit_title(cloud_error.summary_text() if section == Section.CLOUD else I18n.t(status), "", 0.94, 14), Vector3(0, 0.278, 0.004), 14)
+	elif not subtitle_filter.status_text().is_empty() and not cloud_error.shows_notice():
+		var message := _label(_fit_title(cloud_error.summary_text() if section == Section.CLOUD else I18n.t(subtitle_filter.status_text()), "", 0.94, 14), Vector3(0, 0.278, 0.004), 14)
 		message.modulate = UiTheme.color("danger") if section == Section.CLOUD and not cloud_error.detail.is_empty() else MUTED
 		if section == Section.CLOUD and not cloud_error.detail.is_empty():
 			_button(CloudBrowseError.OPEN, "", Vector2(0.39, 0.36), Vector2(0.065, 0.065), true, "info")
@@ -3364,11 +3375,11 @@ func _draw_compact_rows() -> void:
 		var row: Dictionary = rows[i]
 		var k := i - first
 		if _grid():
-			var center := Vector2(-0.34 + (k % 3) * 0.34, 0.13 - (k / 3) * _pitch())
+			var center := Vector2(-0.34 + (k % 3) * 0.34, (-0.03 if subtitle_filter.active() else 0.13) - (k / 3) * _pitch())
 			_tile(ROW_BASE + k, row, center)
 			if not archives.browsing: collections.decorate_row(k, row, center, true, _list)
 		else:
-			var centre := Vector2(0, 0.215 - k * _pitch())
+			var centre := Vector2(0, (0.055 if subtitle_filter.active() else 0.215) - k * _pitch())
 			if not archives.browsing and collections.managed(row):
 				collections.draw_list_row(k, row, centre, _list)
 				if not archives.browsing: collections.decorate_row(k, row, centre, false, _list)
@@ -3573,8 +3584,8 @@ func _draw() -> void:
 	file_actions.draw_header()
 	web_browser.library.draw_header()
 	if subtitle_filter.available():
-		_button(SubtitleFilter.OPEN, "", _action_position(0.47), Vector2(0.09, 0.065), true, "search", subtitle_filter.enabled)
-		_tips[SubtitleFilter.OPEN] = I18n.t("Filter subtitles")
+		_button(SubtitleFilter.OPEN, "", _action_position(0.58 if subtitle_filter.directory_mode or not subtitle_picker_mode else 0.47), Vector2(0.09, 0.065), true, "search", subtitle_filter.enabled)
+		_tips[SubtitleFilter.OPEN] = I18n.t(subtitle_filter.title())
 	if browser_content() and not subtitle_picker_mode: draw_view_modes(_action_position(0.80).y)
 	_align_folder_tools()
 	if not archives.browsing and preload("res://scripts/online_panorama_panel.gd").AVAILABLE and media_filter==2 and section!=Section.SETTINGS and not audio_import_mode and not image_picker_mode:
@@ -3629,8 +3640,10 @@ func _draw() -> void:
 		_audio_storage_labels = AudioStorageView.draw(self, background_audio_provider.call() if background_audio_provider.is_valid() else {}, Vector2(0.13, -0.61), 1.26, true)
 		_place_device_status(Vector2(0.13, -0.79))
 	elif section not in [Section.SETTINGS, Section.WEB] and not cloud_managing and not subtitle_picker_mode and not image_picker_mode and not voice_picker_mode:
-		for i in MEDIA_FILTERS.size():
-			_button(FILTER_BASE + i, I18n.t(MEDIA_FILTERS[i]), Vector2(0.36 + i * 0.18, -0.515), Vector2(0.17, 0.06), true, "", media_filter == i)
+		var filters := [0, FOLDER_FILTER, 1, 2] if _favorite_folder_filter() else [0, 1, 2]
+		for position in filters.size():
+			var i: int = filters[position]
+			_button(FILTER_BASE + i, I18n.t("Folders" if i == FOLDER_FILTER else MEDIA_FILTERS[i]), Vector2(0.72 - (filters.size() - 1 - position) * 0.18, -0.515), Vector2(0.17, 0.06), true, "", media_filter == i)
 			set_label_size(_buttons.back().node.get_child(0), 17)
 	var cloud_paging := not archives.browsing and section == Section.CLOUD and not _cloud_stack.is_empty()
 	var cloud_page_y := -0.59 if file_actions.has_selection() else -0.515
@@ -3775,7 +3788,7 @@ func _draw_row(i: int) -> void:
 	var row: Dictionary = rows[i]
 	var k := _row_slot(i)
 	var place := i - _list_origin() * _cols()
-	var row_top: float = 0.22 if subtitle_filter.active() else 0.045 if (cloud_search.active and not archives.browsing) else (server_browser.list_top() if (section == Section.MEDIA_SERVER and not archives.browsing) and not account_panel.active() else LIST_TOP)
+	var row_top: float = (0.17 if subtitle_filter.directory_mode else 0.22) if subtitle_filter.active() else 0.045 if (cloud_search.active and not archives.browsing) else (server_browser.list_top() if (section == Section.MEDIA_SERVER and not archives.browsing) and not account_panel.active() else LIST_TOP)
 	if _grid():
 		if (section == Section.MEDIA_SERVER and not archives.browsing):
 			var cols := _cols()
@@ -3784,7 +3797,7 @@ func _draw_row(i: int) -> void:
 			var left: float = -0.53 + size.x / 2 if server_browser.media_content() else -0.36
 			server_browser.tile(ROW_BASE + k, row, Vector2(left + (k % cols) * step, server_browser.list_top() - size.y / 2 - (k / cols) * _pitch()))
 		else:
-			var center := Vector2(-0.36 + (place % COLS) * GRID_PITCH.x, (0.095 if (cloud_search.active and not archives.browsing) else GRID_TOP) - TILE_SIZE.y * 0.5 - (place / COLS) * GRID_PITCH.y)
+			var center := Vector2(-0.36 + (place % COLS) * GRID_PITCH.x, (0.22 if subtitle_filter.active() else 0.095 if (cloud_search.active and not archives.browsing) else GRID_TOP) - TILE_SIZE.y * 0.5 - (place / COLS) * GRID_PITCH.y)
 			_tile(ROW_BASE + k, row, center)
 			if background_picker_mode: _decorate_audio_selection(row)
 			if not archives.browsing: collections.decorate_row(k, row, center, true, _list)
@@ -4049,6 +4062,8 @@ func _subtitle_group_rows(settings: Dictionary, group: String) -> Array[Dictiona
 
 	var size_row := SubtitleStyle.size_row(float(settings.get("subtitle_size", 100.0)))
 	size_row.title = I18n.t("Subtitle size"); result.append(size_row)
+	var transparency_row := SubtitleStyle.transparency_row(float(settings.get("subtitle_transparency", 0.0)))
+	transparency_row.title = I18n.t("Subtitle transparency"); result.append(transparency_row)
 	var style_row := SubtitleStyle.style_row(settings.get("subtitle_style", SubtitleStyle.DEFAULT))
 	style_row.title = I18n.t("Subtitle color style"); result.append(style_row)
 	var line_row := SubtitleStyle.line_row(settings.get("subtitle_line", 0))

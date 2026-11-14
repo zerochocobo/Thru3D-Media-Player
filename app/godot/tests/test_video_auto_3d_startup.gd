@@ -128,4 +128,49 @@ func check_external_entry(output: String) -> void:
 		if enabled:
 			first_pair(video, host, false, {"depth_requested": true, "depth_ran": true})
 			check(video.depth_ready(), "External entry reaches converted output after first-frame initialization")
+	# Exercise saved projection preferences through the production external poll and real first pairs.
+	main._on_setting_changed("video_auto_3d", false)
+	for layer in [false, true]:
+		for preference in [
+			{"enabled": false, "mode": {"geometry": 3, "layout": 2, "fisheye_fov": 180, "swap_eyes": false}},
+			{"enabled": true, "mode": {}},
+			{"enabled": true, "mode": {"geometry": 1, "layout": 1, "fisheye_fov": 180, "swap_eyes": false}},
+			{"enabled": true, "mode": {"geometry": 3, "layout": 2, "fisheye_fov": 180, "swap_eyes": true}},
+			{"enabled": true, "mode": {"geometry": 0, "layout": 0, "fisheye_fov": 180, "swap_eyes": false}},
+		]:
+			main._on_last_video_mode_changed(preference.mode)
+			main._on_reuse_last_video_mode_changed(preference.enabled)
+			video.free()
+			video = Video.new(); main.add_child(video); video.set_process(false); main.video = video
+			host = Host.new(); host.reject_capture = true
+			video.platform = host; video._binding = TransitionTest.ProbeBinding.new()
+			video.mode_memory = Memory.new(output.path_join("external-mode-%d" % checks))
+			if layer: video.video_layer = LayerTest.Layers.new(null)
+			var stored := ConfigFile.new()
+			check(stored.load(main.settings_path) == OK, "Fresh external player loads the saved projection preferences")
+			video.load_last_mode_preferences(stored)
+			video.last_mode_changed.connect(main._on_last_video_mode_changed)
+			video.reuse_last_mode_changed.connect(main._on_reuse_last_video_mode_changed)
+			var expected: Dictionary = preference.mode if preference.enabled and not preference.mode.is_empty() else \
+				{"geometry": 1, "layout": 1, "fisheye_fov": 180, "swap_eyes": false}
+			for size in [Vector2i(8192, 4096), Vector2i(1920, 1080)]:
+				if not preference.enabled and size.y == 1080:
+					expected = {"geometry": 0, "layout": 0, "fisheye_fov": 180, "swap_eyes": false}
+				var uri := "externalvideo://projection-%d/video" % checks
+				host.external_request = {"uri": uri, "title": "Video", "temporary": true, "start_ms": 1234}
+				main._external_video_poll_ms = 0; main._poll_external_video()
+				check(video.local_uri == uri, "Cold/warm external mode request reaches the actual player")
+				var revisions := host.revisions.size()
+				first_pair(video, host, layer, {"width": size.x, "height": size.y, "stereo_sbs": host.opens.back().stereo})
+				if host.revisions.size() > revisions:
+					first_pair(video, host, layer, {"width": size.x, "height": size.y, "stereo_sbs": int(expected.layout) != 0})
+				var chosen: Dictionary = video.current_lock(); chosen.swap_eyes = video.swap_eyes
+				check(video.LastMode.clean(chosen) == expected, "External first pair honors saved mode before 2:1 inference: %s/%s/%s" % [layer, preference, size])
+				check(video.media.frame_counter > 0 and not video.depth_requested and video.picker_error.is_empty(), "External projection reaches a frame without AI conversion or startup rollback")
+				check(host.snapshots.is_empty() and host.freezes.is_empty(), "Automatic/inherited external VR needs no manual transition capture")
+				if preference.enabled:
+					var reloaded := ConfigFile.new(); reloaded.load(main.settings_path)
+					var fresh := Video.new(); fresh.load_last_mode_preferences(reloaded)
+					check(fresh.reuse_last_mode and fresh.last_mode == expected, "Resolved external mode remains available after restart")
+					fresh.free()
 	main.queue_free(); await process_frame; await process_frame

@@ -4,6 +4,15 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.17.10 — 2026-11-14
+
+- Select a free rectangle in browser focus mode or use Focus video to frame the video detected on the page. The free-region implementation includes a contribution from @ghanshyamv1. The Focus video feature was inspired by their proposal and implemented using page structure. See [PR #10](https://github.com/zerochocobo/Thru3D-Media-Player/pull/10).
+- Choose browser page clarity, resize the floating window with Grip and the stick, and reveal resize handles by pointing at a frameless window's edges. Improve webpage fullscreen sizing.
+- Improve Bilibili Play Beta for compatible 8K and 4K streams and restore the paused position on the original page. Both Beta entry points were verified on selected videos on Quest 3.
+- Adjust subtitle transparency. Fix external SRT and ASS subtitles for supported Blu-ray ISO and MVC stereoscopic MKV playback.
+- Filter the current folder, shuffle Emby library results, and confirm the exact target before deleting a supported single-file entry. Hide the redundant managed USB entry when the system already mounts the drive on applicable devices.
+- Resize photos with Grip and the stick, improve repeated beach-screen grabs, detect supported external VR180 files, and make the scene importer available through its Android plugin in Release.
+
 ## 0.17.9 — 2026-11-13
 
 - Import compatible GLB and Unity scenes in Release builds. My scenes groups imported 3D scenes and panoramas, with movement and flying controls for compatible 3D scenes.

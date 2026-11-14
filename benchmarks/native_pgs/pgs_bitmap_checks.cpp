@@ -59,6 +59,22 @@ int main() {
     quest::tint_pgs_rgba(gate, 0x80eaff);
     check(gate[0] < gate[4] && gate[4] < gate[8] && gate[8] == 255);
     std::vector<uint8_t> crop(1280 * 160 * 4, 255);
+    for (float opacity : {0.0f, 0.2f, 0.5f, 1.0f, -1.0f, 2.0f, NAN}) {
+        auto faded = original;
+        quest::fade_pgs_rgba(faded, opacity);
+        const float expected = std::isfinite(opacity) ? std::clamp(opacity, 0.0f, 1.0f) : 1.0f;
+        for (size_t i = 0; i < faded.size(); ++i)
+            check(faded[i] == static_cast<uint8_t>(std::lround(original[i] * expected)));
+    }
+    const auto fade_start = std::chrono::steady_clock::now();
+    for (int n = 0; n < 100; ++n) {
+        auto faded = crop;
+        quest::fade_pgs_rgba(faded, 0.5f);
+        check(faded[0] == 128 && faded[3] == 128);
+    }
+    std::cout << "PGS fade 1280x160 crop including copy: "
+              << std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-fade_start).count()/100
+              << " ms/cue (host)\n";
     const auto start = std::chrono::steady_clock::now();
     for (int n = 0; n < 100; ++n) {
         auto colored = crop;

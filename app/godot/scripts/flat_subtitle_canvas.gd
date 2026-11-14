@@ -12,6 +12,7 @@ const FIELDS := [&"text", &"font_size", &"outline_size", &"width", &"line_spacin
 var viewport: SubViewport
 var label: Label3D
 var camera: Camera3D
+var fade: ColorRect
 var rect := Rect2() # Logical glyph pixels, in the original Label3D's local XY coordinates.
 var version := 0
 var _signature: Array = []
@@ -39,6 +40,8 @@ func _ready() -> void:
 	camera.environment.background_mode = Environment.BG_COLOR
 	camera.environment.background_color = Color(0, 0, 0, 0)
 	viewport.add_child(camera)
+	fade = preload("res://scripts/subtitle_canvas_fade.gd").new()
+	viewport.add_child(fade)
 
 func signature(caption: Label3D) -> Array:
 	var result: Array = [caption.font if caption.font else ThemeDB.fallback_font]
@@ -63,6 +66,9 @@ func request(caption: Label3D, image_limit := Vector2i.ZERO) -> bool:
 			label.font = font.duplicate(true)
 			_oversample(label.font)
 		for field in FIELDS: label.set(field, caption.get(field))
+		# Glyphs are captured opaque and the finished canvas fades as one layer.
+		label.modulate.a = 1.0; label.outline_modulate.a = 1.0
+		fade.set_opacity(caption.modulate.a)
 		# Label3D shapes its mesh deferred; fit only after those queued updates.
 		call_deferred("_fit", version)
 	return _draw_after >= 0 and Engine.get_frames_drawn() > _draw_after and rect.has_area()

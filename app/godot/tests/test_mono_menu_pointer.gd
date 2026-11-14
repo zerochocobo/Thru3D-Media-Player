@@ -91,6 +91,9 @@ func run() -> void:
 	main.rays.right_hand = [start,direction]
 	main._on_controller_button("trigger_click","right_hand"); main._on_controller_release("trigger_click","right_hand")
 	check(not browser.visible and menu.visible,"Closing the attached browser through its visible button keeps the transport open")
+	check_library_gestures(main)
+	check_popup_gestures(main.xr_camera)
+	check_library_auxiliary(main.xr_camera)
 	main._on_setting_changed(Depth.KEY,Depth.DEFAULT)
 	check(not menu.has_meta("menu_mono_pointer"),"Changing depth restores ordinary picking immediately")
 	for mode in [Depth.DEFAULT,Depth.MEDIUM]:
@@ -136,3 +139,230 @@ func run() -> void:
 	for failure in failures: push_error(failure)
 	print("Mono menu pointer: %d checks, %d failures" % [checks,failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func check_library_gestures(main: Node3D) -> void:
+	var library: Node3D = main.recent_menu
+	var menu: Node3D = main.video_menu
+	var selected: Array[String] = []
+	var record := func(uri: String, _title: String): selected.append(uri)
+	library.chosen.disconnect(main._on_library_chosen)
+	library.chosen.connect(record)
+	library.platform = null
+	library.section = library.Section.LOCAL
+	library._local_stack = [{"id": "/pointer", "title": "Pointer"}]
+	library._local_entries.clear()
+	for i in 90:
+		library._local_entries.append({"uri": "file:///pointer/%03d.mp4" % i, "title": "%03d.mp4" % i})
+	library.refresh()
+	library.remember_playback_context()
+	for mode in [Depth.MONO, Depth.DEFAULT, Depth.MEDIUM]:
+		main._on_setting_changed(Depth.KEY, mode)
+		main._show_recent_menu()
+		for compact in [true, false]:
+			if library.compact != compact: main._toggle_library_layout()
+			for view in ["list", "grid"]:
+				library.set_view_mode(view)
+				for side in [-1, 1]:
+					var hand := "left_hand" if side < 0 else "right_hand"
+					var other := "right_hand" if side < 0 else "left_hand"
+					var label := "%s/%s/%s/%s" % [mode, compact, view, hand]
+					library.visible = true
+					library._set_scroll(6.25)
+					main.mono_menu_capture.update()
+					var visible_rows: Array = library._buttons.filter(func(button): return library._row_target(button.target) and button.node.is_visible_in_tree())
+					check(not visible_rows.is_empty(), "Playback folder has visible files: " + label)
+					if visible_rows.is_empty(): continue
+					var row: Dictionary = visible_rows[0]
+					var uri: String = library.rows[library._row_index(row.target - library.ROW_BASE)].uri
+					var centre: Vector3 = row.node.global_position
+					var origin: Vector3 = main.head_pose * Vector3(side * 0.25, -0.2, -0.3)
+					var direction := aim(menu, main.head_pose.origin, origin, centre) if mode == Depth.MONO else (centre - origin).normalized()
+					main.rays[hand] = [origin, direction]
+					var before := selected.size()
+					main._on_controller_button("trigger_click", hand)
+					check(library.has_pointer_capture() and selected.size() == before, "Row waits for release: " + label)
+					for frame in 3: main._update_menu_pointer(hand)
+					check(is_equal_approx(library.scroll, 6.25) and not library._drag.get("moved", true), "Stationary held trigger keeps a scrolled row: " + label)
+					var jitter: Vector3 = centre + library.global_basis.y * 0.018
+					main.rays[hand] = [origin, aim(menu, main.head_pose.origin, origin, jitter) if mode == Depth.MONO else (jitter - origin).normalized()]
+					main._update_menu_pointer(hand)
+					check(is_equal_approx(library.scroll, 6.25), "Small pointer motion remains a tap: " + label)
+					main._on_controller_release("trigger_click", hand)
+					check(selected.size() == before + 1 and selected.back() == uri, "Tap selects the originally visible file once: " + label)
+					library.visible = true
+					main.rays[hand] = [origin, direction]
+					main._on_controller_button("trigger_click", hand)
+					var end: Vector3 = centre + library.global_basis.y * library._pitch() * 2.0
+					var drag_direction := aim(menu, main.head_pose.origin, origin, end) if mode == Depth.MONO else (end - origin).normalized()
+					menu.update_pointer(other, origin, drag_direction, true)
+					menu.release_pointer(other, origin, drag_direction, true)
+					check(library.has_pointer_capture() and is_equal_approx(library.scroll, 6.25), "Other hand cannot move or release the row: " + label)
+					main.rays[hand] = [origin, drag_direction]
+					main._update_menu_pointer(hand)
+					check(absf(library.scroll - 8.25) < 0.01, "Deliberate two-row drag follows the visible ray: " + label)
+					main._on_controller_release("trigger_click", hand)
+					check(selected.size() == before + 1, "Drag does not select a file: " + label)
+					library._fling = 0.0
+					var bar: Dictionary = library._buttons.filter(func(button): return button.target == library.SCROLLBAR)[0]
+					var bar_point: Vector3 = bar.node.global_position
+					var bar_direction := aim(menu, main.head_pose.origin, origin, bar_point) if mode == Depth.MONO else (bar_point - origin).normalized()
+					menu.press_pointer(hand, origin, bar_direction, true)
+					var bar_scroll: float = library.scroll
+					menu.update_pointer(hand, origin, bar_direction, true)
+					check(is_equal_approx(library.scroll, bar_scroll), "Held scrollbar stays at its press position: " + label)
+					menu.update_pointer(hand, Vector3.ZERO, Vector3.ZERO, false)
+					check(not library.has_pointer_capture(), "Tracking loss cancels the scrollbar: " + label)
+					menu.release_pointer(hand, origin, bar_direction, true)
+					if compact and view == "grid":
+						library._set_scroll(6.0)
+						var gap: Vector3 = library.to_global(Vector3(0.17, 0.13, 0))
+						var gap_ray := aim(menu, main.head_pose.origin, origin, gap) if mode == Depth.MONO else (gap - origin).normalized()
+						menu.press_pointer(hand, origin, gap_ray, true)
+						menu.update_pointer(hand, origin, gap_ray, true)
+						check(library.has_pointer_capture() and is_equal_approx(library.scroll, 6.0), "Grid gap captures without moving: " + label)
+						gap += library.global_basis.y * library._pitch()
+						gap_ray = aim(menu, main.head_pose.origin, origin, gap) if mode == Depth.MONO else (gap - origin).normalized()
+						menu.update_pointer(hand, origin, gap_ray, true)
+						menu.release_pointer(hand, origin, gap_ray, true)
+						check(absf(library.scroll - 7.0) < 0.01 and selected.size() == before + 1, "Grid gap drag scrolls one row without selecting: " + label)
+						library._fling = 0.0
+			library.dismiss()
+	library.chosen.disconnect(record)
+	library.chosen.connect(main._on_library_chosen)
+
+func check_popup_gestures(eye: Camera3D) -> void:
+	var menu := preload("res://scripts/player_menu.gd").new()
+	var state := {"has_video": true, "geometry": 1, "source_uri": "file:///popup.mp4", "duration_ms": 600000,
+		"audio_options": [], "subtitle_options": [], "bookmarks": [], "bookmark_scope": "popup", "bookmark_ready": true, "bookmark_seekable": true}
+	for i in 12:
+		state.audio_options.append({"value": i + 1, "label": "Audio %d" % i})
+		state.subtitle_options.append({"id": i + 1, "title": "Subtitle %d" % i, "codec": "subrip"})
+		state.bookmarks.append({"id": str(i), "position_ms": i * 10000})
+	menu.state_provider = func(): return state
+	root.add_child(menu)
+	menu.set_process(false)
+	menu.global_transform = Transform3D(Basis.from_euler(Vector3(-0.15, 0.2, 0.05)), eye.global_position + Vector3(0, -0.4, -1.4))
+	menu.set_layout_viewer(eye.global_transform, false)
+	menu.set_meta("menu_mono_pointer", {"eye": eye, "distance": menu.ray_max_distance})
+	var selected: Array = []
+	menu.setting_requested.connect(func(key, value): selected.append([key, value]))
+	menu.subtitle_requested.connect(func(id): selected.append(id))
+	menu.bookmark_requested.connect(func(operation, id, _scope): selected.append([operation, id]))
+	for kind in ["audio", "subtitle", "bookmark"]:
+		for side in [-1, 1]:
+			menu._reset_navigation()
+			menu.visible = true
+			menu._audio_open = kind == "audio"
+			menu._audio_source = state.source_uri
+			menu._subtitle_open = kind == "subtitle"
+			menu.bookmarks.opened = kind == "bookmark"
+			menu._audio_offset = 3
+			menu._subtitle_offset = 3
+			menu.bookmarks.offset = 3
+			menu.refresh()
+			var offsets := Vector3i(menu._audio_offset, menu._subtitle_offset, menu.bookmarks.offset)
+			var target: int = menu._audio_ids.keys()[0] if kind == "audio" else (menu._subtitle_ids.keys()[0] if kind == "subtitle" else menu.BookmarkMenu.ROW)
+			var row: Dictionary = menu._buttons.filter(func(button): return button.target == target)[0]
+			var origin: Vector3 = eye.global_transform * Vector3(side * 0.25, -0.2, -0.3)
+			var direction := aim(menu, eye.global_position, origin, row.node.global_position)
+			var hand := "left_hand" if side < 0 else "right_hand"
+			var before := selected.size()
+			menu.press_pointer(hand, origin, direction, true)
+			menu.update_pointer(hand, origin, direction, true)
+			check(menu.has_pointer_capture() and not menu._track_drag.get("moved", false) and not menu.bookmarks.capture.get("moved", false), "Static mono popup row remains a click: " + kind)
+			check(Vector3i(menu._audio_offset, menu._subtitle_offset, menu.bookmarks.offset) == offsets, "Static mono popup preserves list offsets: " + kind)
+			menu.release_pointer(hand, origin, direction, true)
+			check(selected.size() == before + 1, "Mono popup row selects once: " + kind)
+			row = menu._buttons.filter(func(button): return button.target == target)[0]
+			direction = aim(menu, eye.global_position, origin, row.node.global_position)
+			menu.press_pointer(hand, origin, direction, true)
+			var end: Vector3 = row.node.global_position + row.node.global_basis.y * 0.15
+			direction = aim(menu, eye.global_position, origin, end)
+			menu.update_pointer(hand, origin, direction, true)
+			menu.release_pointer(hand, origin, direction, true)
+			var offset: int = menu._audio_offset if kind == "audio" else (menu._subtitle_offset if kind == "subtitle" else menu.bookmarks.offset)
+			check(offset > 3 and selected.size() == before + 1, "Mono popup drag scrolls without selecting: " + kind)
+	menu._reset_navigation()
+	menu._subtitle_open = true
+	menu._subtitle_appearance_open = true
+	menu.refresh()
+	check(not menu.choices.sliders.is_empty(), "Mono subtitle appearance exposes its sliders")
+	for target in menu.choices.sliders.keys():
+		var slider: Dictionary = menu.choices.sliders[target]
+		var origin: Vector3 = eye.global_transform * Vector3(0.25, -0.2, -0.3)
+		var point: Vector3 = slider.node.to_global(Vector3(slider.left + slider.width * 0.5, 0, 0))
+		var direction := aim(menu, eye.global_position, origin, point)
+		menu.press_pointer("right_hand", origin, direction, true)
+		var value: Variant = menu.choices.capture.get("value")
+		menu.update_pointer("right_hand", origin, direction, true)
+		check(value != null and menu.choices.same(value, menu.choices.capture.get("value")), "Static mono subtitle slider keeps its value: " + str(target))
+		point = slider.node.to_global(Vector3(slider.left + slider.width, 0, 0))
+		direction = aim(menu, eye.global_position, origin, point)
+		menu.update_pointer("right_hand", origin, direction, true)
+		check(is_equal_approx(float(menu.choices.capture.get("value", NAN)), slider.span.y), "Mono subtitle slider reaches the visible end: " + str(target))
+		menu.release_pointer("right_hand", origin, direction, true)
+	menu._reset_navigation()
+	state.audio_available = true
+	menu._volume_open = true
+	menu.refresh()
+	var volume: Dictionary = menu._buttons.filter(func(button): return button.target == menu.VOLUME)[0]
+	var origin: Vector3 = eye.global_transform * Vector3(-0.25, -0.2, -0.3)
+	var direction := aim(menu, eye.global_position, origin, volume.node.global_position)
+	menu.press_pointer("left_hand", origin, direction, true)
+	var level: float = menu._volume_sent
+	menu.update_pointer("left_hand", origin, direction, true)
+	check(menu.has_pointer_capture() and is_equal_approx(menu._volume_sent, level), "Static mono volume rail keeps the pressed value")
+	direction = aim(menu, eye.global_position, origin, volume.node.global_position + volume.node.global_basis.y * 0.05)
+	menu.update_pointer("left_hand", origin, direction, true)
+	check(menu._volume_sent > level, "Mono volume drag follows the visible rail")
+	menu.release_pointer("left_hand", origin, direction, true)
+	menu.free()
+
+func check_library_auxiliary(eye: Camera3D) -> void:
+	var library := preload("res://scripts/library_menu.gd").new()
+	root.add_child(library)
+	library.set_process(false)
+	library.global_position = eye.global_position + Vector3(0, 0.15, -1.5)
+	library.visible = true
+	library.set_meta("menu_mono_pointer", {"eye": eye, "distance": library.ray_max_distance})
+	library.section = library.Section.MEDIA_SERVER
+	var browser: RefCounted = library.server_browser
+	browser.server = {"id": "pointer", "name": "Pointer", "provider": "plex"}
+	browser.view = "home"
+	browser.capabilities = {"home_layout": "libraries"}
+	browser.home_data = {"libraries": []}
+	for i in 8: browser.home_data.libraries.append({"id": str(i), "title": "Library %d" % i, "has_cover": false})
+	library.refresh()
+	var origin: Vector3 = eye.global_transform * Vector3(0.25, -0.2, -0.3)
+	var row: Dictionary = library._buttons.filter(func(button): return button.target == browser.gallery.LIBRARY)[0]
+	var centre: Vector3 = row.node.global_position
+	var direction := aim(library, eye.global_position, origin, centre)
+	library.press_pointer("right_hand", origin, direction, true)
+	check(browser.gallery.capture.get("strip") == "libraries", "Mono server card captures its visible carousel")
+	library.update_pointer("right_hand", origin, direction, true)
+	check(not browser.gallery.capture.get("moved", true) and browser.gallery.library_start == 0, "Static mono server card keeps its carousel position")
+	direction = aim(library, eye.global_position, origin, centre - library.global_basis.x * 0.31)
+	library.update_pointer("right_hand", origin, direction, true)
+	library.release_pointer("right_hand", origin, direction, true)
+	check(browser.gallery.library_start == 1 and browser.view == "home", "Mono server carousel drag advances without opening a library")
+	library.section = library.Section.SETTINGS
+	library.tab = library.GENERAL_TAB
+	library.refresh()
+	var target: int = library.choices.targets.keys().filter(func(id): return library.choices.targets[id].get("key") == "language" and library.choices.targets[id].get("kind") == "open")[0]
+	row = library._buttons.filter(func(button): return button.target == target)[0]
+	direction = aim(library, eye.global_position, origin, row.node.global_position)
+	library.press_pointer("right_hand", origin, direction, true)
+	library.update_pointer("right_hand", origin, direction, true)
+	check(not library.choices.capture.get("moved", true), "Static mono dropdown remains a click")
+	library.release_pointer("right_hand", origin, direction, true)
+	check(library.choices.opened == "language", "Mono dropdown opens on release")
+	var selected: Array = []
+	library.setting_changed.connect(func(key, value): selected.append([key, value]))
+	target = library.choices.targets.keys().filter(func(id): return library.choices.targets[id].get("key") == "language" and library.choices.targets[id].get("kind") == "choose")[0]
+	row = library._buttons.filter(func(button): return button.target == target)[0]
+	direction = aim(library, eye.global_position, origin, row.node.global_position)
+	library.press_pointer("right_hand", origin, direction, true)
+	library.update_pointer("right_hand", origin, direction, true)
+	library.release_pointer("right_hand", origin, direction, true)
+	check(selected.size() == 1 and library.choices.opened.is_empty(), "Mono dropdown chooses once and closes")
+	library.free()

@@ -26,7 +26,7 @@ SOURCE = ROOT / 'android/web-browser/src/main/assets/web-browser'
 def extension(target, endpoint):
     target.mkdir(parents=True, exist_ok=True)
     hashes = {}
-    for name in ['bilibili.js', 'bilibili-response.js', 'play-button.js', 'network.js', 'media.js']:
+    for name in ['bilibili.js', 'bilibili-response.js', 'play-button.js', 'direct-return.js', 'network.js', 'media.js']:
         data = (SOURCE / name).read_bytes()
         hashes[name] = hashlib.sha256(data).hexdigest()
         if name == 'media.js':
@@ -42,7 +42,7 @@ def extension(target, endpoint):
                 'permissions': ['webRequest', 'webRequestBlocking', 'cookies', 'https://*/*', 'http://127.0.0.1/*'],
                 'background': {'scripts': ['bridge.js', 'bilibili.js', 'bilibili-response.js', 'network.js', 'shape.js']},
                 'content_scripts': [{'matches': ['https://www.bilibili.com/video/*', 'https://www.bilibili.com/bangumi/play/*'],
-                                     'js': ['bilibili.js', 'play-button.js', 'media.js'], 'run_at': 'document_start'}]}
+                                     'js': ['bilibili.js', 'play-button.js', 'direct-return.js', 'media.js'], 'run_at': 'document_start'}]}
     (target / 'manifest.json').write_text(json.dumps(manifest), encoding='utf8')
     return hashes
 
@@ -50,6 +50,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--firefox', type=pathlib.Path, required=True)
     parser.add_argument('--geckodriver', type=pathlib.Path, required=True)
+    parser.add_argument('--profile', type=pathlib.Path, help='Existing persistent test profile under backups/web-beta-browser; disables screenshots and page text')
     parser.add_argument('--url', default='https://www.bilibili.com/video/BV1bK411W797/')
     parser.add_argument('--seconds', type=int, default=12)
     parser.add_argument('--inspect-pgc', action='store_true', help='Collect public DOM/endpoint shapes; this is not a playback pass')
@@ -61,6 +62,12 @@ def main():
     if parsed.scheme != 'https' or parsed.netloc != 'www.bilibili.com' or not re.fullmatch(r'/(?:video/(BV[A-Za-z0-9]+|av[0-9]+)|bangumi/play/(?:ss|ep)[1-9][0-9]*)/?', parsed.path):
         parser.error('Use an HTTPS www.bilibili.com video or episode URL')
     if not 1 <= args.seconds <= 60: parser.error('--seconds must be 1..60')
+    if args.profile:
+        args.profile = args.profile.resolve()
+        if not args.profile.is_dir() or not args.profile.is_relative_to((ROOT / 'backups/web-beta-browser').resolve()):
+            parser.error('--profile requires an existing persistent test profile under backups/web-beta-browser')
+        if args.inspect_pgc or args.recommendations:
+            parser.error('Private profile capture is scoped to the supplied video and its parts')
     run = ROOT / 'build/output/bilibili-desktop' / time.strftime('%Y%m%d-%H%M%S')
     run.mkdir(parents=True)
     reports = []; token = secrets.token_hex(24)
@@ -82,7 +89,12 @@ def main():
     profile_root = ROOT / 'tmp/bilibili-desktop'
     profile_root.mkdir(parents=True, exist_ok=True)
     profiles = tempfile.mkdtemp(prefix='profiles-',dir=profile_root)
-    driver = subprocess.Popen([str(args.geckodriver.resolve()), '--allow-system-access', '--profile-root', profiles, '--host', '127.0.0.1', '--port', str(port), '--log', 'fatal'],
+    driver_args = [str(args.geckodriver.resolve()), '--allow-system-access', '--profile-root', profiles, '--host', '127.0.0.1', '--port', str(port), '--log', 'fatal']
+    if args.profile:
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', 0)); marionette_port = probe.getsockname()[1]
+        driver_args += ['--marionette-port', str(marionette_port)]
+    driver = subprocess.Popen(driver_args,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                               creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0)
     session = None
@@ -90,10 +102,12 @@ def main():
         req = urllib.request.Request(f'http://127.0.0.1:{port}' + path,
                                      data=json.dumps(data).encode() if data is not None else None,
                                      headers={'Content-Type': 'application/json'}, method=method)
-        with urllib.request.urlopen(req, timeout=70) as response: return json.load(response)['value']
+        with urllib.request.urlopen(req, timeout=120) as response: return json.load(response)['value']
     def command(path, data=None): return call('POST', '/session/' + session + path, data)
     def script(source): return command('/execute/sync', {'script': source, 'args': []})
     evidence = {'source_sha256': hashes, 'scope': 'anonymous desktop Firefox; no Android acceptance', 'stages': [], 'button_stages': []}
+    if args.profile:
+        evidence['scope'] = 'private desktop Firefox profile in place; no saved screenshots or page text; no Android acceptance'
     def checkpoint(name, part, expected_path=None):
         started = time.monotonic()
         while time.monotonic() - started < max(20, args.seconds):
@@ -107,7 +121,8 @@ def main():
             target = script("""const h=document.querySelector('[data-thru3d-bilibili=beta]');if(!h||h.hidden)return null;
                 const r=h.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2),width:r.width,height:r.height};""")
             if not target: raise RuntimeError('Bound Bilibili player button missing')
-            (run / ('button-'+name+'.png')).write_bytes(base64.b64decode(call('GET','/session/'+session+'/screenshot')))
+            if not args.profile:
+                (run / ('button-'+name+'.png')).write_bytes(base64.b64decode(call('GET','/session/'+session+'/screenshot')))
             command('/actions', {'actions':[{'type':'pointer','id':'beta','parameters':{'pointerType':'mouse'},'actions':[
                 {'type':'pointerMove','duration':100,'x':target['x'],'y':target['y']},{'type':'pointerDown','button':0},{'type':'pointerUp','button':0}]}]})
             deadline = time.monotonic() + 8
@@ -125,9 +140,14 @@ def main():
             try: call('GET', '/status'); break
             except Exception: time.sleep(.1)
         value = call('POST', '/session', {'capabilities': {'alwaysMatch': {'browserName': 'firefox',
-            'moz:firefoxOptions': {'binary': str(args.firefox.resolve()), 'args': ['-headless'],
+            'moz:firefoxOptions': {'binary': str(args.firefox.resolve()), 'args': ['-headless'] + (['--profile', str(args.profile)] if args.profile else []),
                 'prefs': {'media.autoplay.default': 0, 'media.autoplay.blocking_policy': 0}}}}})
         session = value['sessionId']; evidence['browser_version'] = value['capabilities']['browserVersion']
+        evidence['browser_build_id'] = value['capabilities'].get('moz:buildID')
+        if args.profile:
+            evidence['profile_in_place'] = pathlib.Path(value['capabilities']['moz:profile']).resolve() == args.profile
+            expected = json.loads((ROOT / 'third_party/geckoview/runtime.json').read_text(encoding='utf8'))['version']
+            assert evidence['profile_in_place'] and evidence['browser_build_id'] == expected.split('.')[-1]
         command('/moz/addon/install', {'path': str((run / 'extension').resolve()), 'temporary': True})
         command('/window/rect', {'width': 1500, 'height': 1100})
         command('/url', {'url': args.url})
@@ -136,8 +156,9 @@ def main():
         time.sleep(3)
         checkpoint('initial', int(urllib.parse.parse_qs(parsed.query).get('p', ['1'])[0]))
         # Public DOM inventory lets subsequent probes use observed elements, not guessed controls.
-        evidence['parts'] = script("return [...document.querySelectorAll('a[href*=\"?p=\"]')].slice(0,25).map(a=>({text:a.textContent.trim().slice(0,60),part:new URL(a.href).searchParams.get('p')}));")
-        evidence['part_controls'] = script("return [...document.querySelectorAll('[class*=pod], [class*=episode]')].filter(e=>e.textContent.trim().length<100).slice(0,40).map(e=>({tag:e.tagName,cls:e.className,text:e.textContent.trim().slice(0,80)}));")
+        if not args.profile:
+            evidence['parts'] = script("return [...document.querySelectorAll('a[href*=\"?p=\"]')].slice(0,25).map(a=>({text:a.textContent.trim().slice(0,60),part:new URL(a.href).searchParams.get('p')}));")
+            evidence['part_controls'] = script("return [...document.querySelectorAll('[class*=pod], [class*=episode]')].filter(e=>e.textContent.trim().length<100).slice(0,40).map(e=>({tag:e.tagName,cls:e.className,text:e.textContent.trim().slice(0,80)}));")
         if args.inspect_pgc:
             evidence['pgc_dom'] = script("return [...document.querySelectorAll('a[href*=\"/bangumi/play/ep\"], [class*=numberList], [class*=epList], [class*=Episode]')].filter(e=>e.textContent.trim().length<90).slice(0,80).map(e=>({tag:e.tagName,cls:e.className,text:e.textContent.trim().slice(0,60),ep:/\\/ep(\\d+)/.exec(e.getAttribute('href')||'')?.[1],attrs:[...e.attributes].map(a=>a.name)}));")
             evidence['pgc_scripts'] = script("return [...document.scripts].filter(s=>!s.src&&/playurlSSRData/.test(s.textContent)).map(s=>({length:s.textContent.length,assignment:/(?:window\\.|(?:const|let|var)\\s+)playurlSSRData\\s*=/.test(s.textContent),raw:/\"raw\":/.test(s.textContent)}));")

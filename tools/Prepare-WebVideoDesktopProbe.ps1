@@ -38,6 +38,8 @@ $godotApi = Join-Path $ToolRoot 'godot-android-api/4.7.2/godot-lib.template_debu
 $mutex = [Threading.Mutex]::new($false, 'Local\VRPassthroughPlayer-Build')
 $held = $false
 $inputs = @(
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoBilibiliCapture.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoCapabilities.kt',
     'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserDirectFile.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoDirectFile.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/MpvInputUri.kt',

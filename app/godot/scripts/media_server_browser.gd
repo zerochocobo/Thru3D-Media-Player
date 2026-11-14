@@ -6,8 +6,14 @@ const Methods := preload("res://scripts/platform_methods.gd")
 const Reports := preload("res://scripts/media_server_playback.gd")
 const ACTION := 1000
 const KEY := 1400
-const SORTS := ["created_at", "title", "date", "duration", "rating100"]
-const SORT_NAMES := ["Date added", "Title", "Release date", "Duration", "Rating"]
+const DEFAULT_SORTS := ["created_at", "title", "date", "duration", "rating100"]
+const SORTS := DEFAULT_SORTS + ["random"]
+const SORT_NAMES := ["Date added", "Title", "Release date", "Duration", "Rating", "Random"]
+const SORT_ACTIONS := [ACTION + 170, ACTION + 171, ACTION + 172, ACTION + 173, ACTION + 174, ACTION + 178]
+const DETAIL_MORE := ACTION + 188
+const DELETE_FILE := ACTION + 189
+const CONFIRM_DELETE := ACTION + 190
+const CANCEL_DELETE := ACTION + 191
 const FILTER_NAMES := {"genres": "Genres", "tags": "Tags", "performers": "Performers", "studios": "Studios"}
 const Gallery := preload("res://scripts/media_server_gallery.gd")
 var gallery: RefCounted = Gallery.new(self)
@@ -53,6 +59,7 @@ var candidate_end := false
 var display_preferences := {}
 var folder_artwork := {}
 var sort_query := {}
+var detail_actions := ""
 var sources_open := false
 var settings_open := false
 var display_preferences_path := "user://settings/server_views.cfg"
@@ -120,14 +127,17 @@ func _init(owner: Node) -> void:
 
 func cancel() -> void:
 	settings_open = false
+	detail_actions = ""
 	menu.system_text_input.cancel("media_server_search")
 	_location_pending.clear()
 	sort_query.clear()
 	gallery.capture.clear()
 	generation += 1
-	if menu.platform:
-		for id in pending: menu.platform.media_server_cancel(int(id))
-	pending.clear()
+	for id in pending.keys():
+		# A sent DELETE may finish after navigation. Keep its result for local cleanup.
+		if pending[id].action == "delete_file": continue
+		if menu.platform: menu.platform.media_server_cancel(int(id))
+		pending.erase(id)
 	busy = false
 
 func load_servers() -> void:
@@ -160,6 +170,9 @@ func browse(reset: bool = true) -> void:
 	if not query.has("direction"): query.direction = str(_display_settings().get("direction", "ASC" if query.sort == "title" else "DESC"))
 	if query.direction not in ["ASC", "DESC"]: query.direction = "DESC"
 	if reset: query.page = 1
+	if query.sort == "random":
+		if reset or not query.has("random_seed"): query.random_seed = randi_range(1, 2147483647)
+	else: query.erase("random_seed")
 	query.library_id = "" if query.get("all_libraries", false) else library_id
 	if not query.has("mode") and not library_id.is_empty() and not query.get("all_libraries", false) and capabilities.get("home_layout", "") == "libraries":
 		query.mode = "library"
@@ -185,6 +198,9 @@ func receive(id: int, payload: String) -> bool:
 	if not pending.has(id): return false
 	var expected: Dictionary = pending[id]; pending.erase(id)
 	var data: Variant = JSON.parse_string(payload)
+	if expected.action == "delete_file":
+		_receive_delete(expected, data)
+		return true
 	if not data is Dictionary or int(data.get("generation", -1)) != generation or data.get("server_id", "") != expected.server_id: return true
 	if expected.action not in ["cover", "folder_artwork"]: busy = false
 	if data.get("state") != "ready":
@@ -211,7 +227,17 @@ func receive(id: int, payload: String) -> bool:
 		"browse":
 			var incoming: Array = data.get("entries", [])
 			var page := int(expected.get("page", 1))
+			if expected.get("sort") == "random":
+				var ids := {}
+				if page > 1:
+					for node in entries: ids[str(node.id)] = true
+				for node in incoming:
+					var item_id := str(node.id)
+					if ids.has(item_id):
+						end_reached = true; menu.status = "Server query unsupported"; menu.refresh(); return true
+					ids[item_id] = true
 			if page == 1: entries = []; total = int(data.get("total", 0))
+			elif server.get("provider") == "emby": total = int(data.get("total", total))
 			else: total = maxi(total, int(data.get("total", 0)))
 			var added := _append_unique(entries, incoming)
 			loaded_page = page; query.page = page
@@ -334,6 +360,9 @@ func _remember() -> void:
 func back() -> void:
 	if settings_open: settings_open = false; menu.refresh(); return
 	if sorting(): sort_query.clear(); menu.refresh(); return
+	if not detail_actions.is_empty():
+		if not busy: detail_actions = ""; menu.refresh()
+		return
 	cancel(); keyboard = ""
 	if not history.is_empty():
 		var previous: Dictionary = history.pop_back()
@@ -438,19 +467,61 @@ func _save_display_preferences() -> void:
 	if config.save(display_preferences_path) != OK: menu.status = "Unable to save display preferences"
 
 func available_sorts() -> Array:
-	var result: Array = capabilities.get("sorts", SORTS).filter(func(value): return value in SORTS)
+	var result: Array = capabilities.get("sorts", DEFAULT_SORTS).filter(func(value): return value in SORTS)
 	if query.get("favorites", false) and capabilities.get("favorite_scope", "local") != "server": result.erase("date")
 	return result
 
 func sort_caption(short: bool = false) -> String:
-	var name := I18n.t(SORT_NAMES[maxi(0, SORTS.find(str(query.get("sort", "created_at"))))])
-	return (menu._fit_title(name, "", 0.28, 17) if short else name) + (" ↑" if query.get("direction", "DESC") == "ASC" else " ↓")
+	var sort := str(query.get("sort", "created_at"))
+	var name := I18n.t(SORT_NAMES[maxi(0, SORTS.find(sort))])
+	if short: name = menu._fit_title(name, "", 0.28, 17)
+	return name if sort == "random" else name + (" ↑" if query.get("direction", "DESC") == "ASC" else " ↓")
 
 func sorting() -> bool:
 	return not sort_query.is_empty() and view == "scenes" and not menu.compact and keyboard.is_empty()
 
 func modal_open() -> bool:
-	return settings_open or sorting()
+	return settings_open or sorting() or (not menu.compact and not detail_actions.is_empty())
+
+func can_delete_detail() -> bool:
+	return has_detail_actions() and not detail.get("delete_plan", {}).is_empty() \
+		and not pending.values().any(func(req): return req.action == "delete_file")
+
+func has_detail_actions() -> bool:
+	return view == "detail" and not menu.compact and server.get("provider") == "emby" \
+		and (not detail.get("delete_plan", {}).is_empty() or detail.get("delete_scope_unverified", false))
+
+func _confirm_delete() -> void:
+	if busy or not can_delete_detail(): return
+	var target := {"scene_id": str(detail.id), "token": str(detail.delete_plan.token), "uri": str(detail.uri)}
+	menu.file_delete_preparing.emit(target.uri)
+	request("delete_file", target)
+	if not busy: detail_actions = ""
+	menu.refresh()
+
+func _receive_delete(expected: Dictionary, data: Variant) -> void:
+	var current: bool = int(expected.generation) == generation and str(server.get("id", "")) == str(expected.server_id)
+	var valid: bool = data is Dictionary and data.get("server_id") == expected.server_id and int(data.get("generation", -1)) == int(expected.generation)
+	var deleted: bool = valid and data.get("state") == "ready" and data.get("deleted", false) and data.get("scene_id") == expected.scene_id
+	if current:
+		busy = false; detail_actions = ""; detail.erase("delete_plan")
+	if deleted:
+		menu.file_deleted.emit(expected.uri)
+		if str(server.get("id", "")) == expected.server_id:
+			var matches := func(item): return str(item.get("id", "")) != expected.scene_id
+			var remaining := entries.filter(matches)
+			total -= entries.size() - remaining.size(); entries = remaining
+			for context in history + [_section_return.get("context", {})]:
+				if not context.has("entries"): continue
+				remaining = context.entries.filter(matches)
+				context.total -= context.entries.size() - remaining.size(); context.entries = remaining
+			for key in ["recent", "resume", "recent_opened"]:
+				if home_data.has(key): home_data[key] = home_data[key].filter(matches)
+			if current and view == "detail" and detail.get("id") == expected.scene_id: back()
+	if current:
+		menu.status = "File deleted" if deleted else "Delete result needs checking"
+		if valid and not deleted: menu.status = str(data.get("error", menu.status))
+		menu.refresh()
 
 func _apply_sort() -> void:
 	var sort := str(sort_query.get("sort", "created_at")); var direction := str(sort_query.get("direction", "DESC"))
@@ -729,7 +800,9 @@ func get_candidates(append: bool = false) -> void:
 func more() -> void:
 	if busy: return
 	if view == "scenes" and not end_reached and entries.size() < total:
-		var next := query.duplicate(true); next.page = loaded_page + 1; request("browse", next)
+		var next := query.duplicate(true); next.page = loaded_page + 1
+		if server.get("provider") == "emby": next.start_index = entries.size()
+		request("browse", next)
 	elif view in ["facets", "candidates"] and not candidate_end and candidates.size() < candidate_total: get_candidates(true)
 
 func scroll_changed() -> void:
@@ -751,6 +824,14 @@ func _navigate(section: String) -> void:
 		browse()
 
 func action(target: int) -> bool:
+	if not menu.compact and not detail_actions.is_empty():
+		if busy: return true
+		if target == DELETE_FILE and detail_actions == "more" and can_delete_detail(): detail_actions = "confirm"
+		elif target == CONFIRM_DELETE and detail_actions == "confirm": _confirm_delete(); return true
+		elif target in [ACTION, DETAIL_MORE, CANCEL_DELETE]: detail_actions = ""
+		menu.refresh(); return true
+	if target == DETAIL_MORE and not busy and has_detail_actions():
+		detail_actions = "more"; menu._drag.clear(); menu._fling = 0.0; menu.refresh(); return true
 	if target < ACTION: return false
 	if settings_open:
 		if target in [ACTION, ACTION + 180, ACTION + 181]: settings_open = false
@@ -765,10 +846,10 @@ func action(target: int) -> bool:
 		settings_open = true; gallery.capture.clear(); menu._drag.clear(); menu._fling = 0.0
 		menu.refresh(); return true
 	if sorting():
-		if target >= ACTION + 170 and target < ACTION + 170 + SORTS.size():
-			var sort: String = SORTS[target - ACTION - 170]
+		if target in SORT_ACTIONS:
+			var sort: String = SORTS[SORT_ACTIONS.find(target)]
 			if sort in available_sorts(): sort_query.sort = sort
-		elif target in [ACTION + 175, ACTION + 176]: sort_query.direction = "ASC" if target == ACTION + 175 else "DESC"
+		elif sort_query.sort != "random" and target in [ACTION + 175, ACTION + 176]: sort_query.direction = "ASC" if target == ACTION + 175 else "DESC"
 		elif target == ACTION + 11: _apply_sort(); return true
 		elif target in [ACTION, ACTION + 4, ACTION + 177]: sort_query.clear()
 		menu.refresh(); return true
@@ -808,6 +889,7 @@ func action(target: int) -> bool:
 			if busy: return true
 			if view == "servers": load_servers()
 			elif view == "home": open_home()
+			elif view == "detail" and not detail.is_empty(): request("detail", {"scene_id": str(detail.id)})
 			elif view in ["facets", "candidates"]: get_candidates()
 			elif loaded_page > 0 and entries.size() < total and not end_reached: more()
 			else: browse()
@@ -851,6 +933,7 @@ func _keyboard_action(target: int) -> bool:
 				if not text.strip_edges().is_empty():
 					saved = saved.filter(func(item): return not (item is Dictionary and item.get("server_id") == server.get("id") and item.get("name") == text.strip_edges()))
 					saved.append({"server_id": server.id, "name": text.strip_edges(), "query": query.duplicate(true), "labels": labels.duplicate(true)})
+					saved.back().query.erase("random_seed")
 					if saved.size() > 100: saved.pop_front()
 					_save_filters()
 			elif view in ["candidates", "facets"]: candidate_q = text; get_candidates()
@@ -1052,7 +1135,7 @@ func draw() -> void:
 	elif view == "filters": menu._button(ACTION + 11, I18n.t("Apply"), Vector2(0.55, -0.345), Vector2(0.30, 0.065))
 	if not menu.status.is_empty() and menu.status != "Server authentication required":
 		menu._label(I18n.t(menu.status), Vector3(0.15, -0.57, 0.004), 15)
-		if not busy: menu._button(ACTION + 12, "", Vector2(0.79, -0.565), Vector2(0.08, 0.06), true, "refresh")
+		if not busy and menu.status != "File deleted": menu._button(ACTION + 12, "", Vector2(0.79, -0.565), Vector2(0.08, 0.06), true, "refresh")
 	if menu.status == "Server authentication required" and not management:
 		_draw_sign_in_required()
 	elif gallery.home(): gallery.draw_home()
@@ -1065,6 +1148,27 @@ func draw() -> void:
 	else: menu._draw_rows()
 	if sorting(): _draw_sort()
 	elif settings_open: _draw_settings()
+	elif not detail_actions.is_empty() and not menu.compact: _draw_detail_actions()
+
+func _draw_detail_actions() -> void:
+	if detail_actions == "more":
+		if can_delete_detail():
+			_dialog_panel(Vector2(0.50, 0.13), Vector2(0.62, 0.005), CANCEL_DELETE)
+			_dialog_button(DELETE_FILE, I18n.t("Delete file"), Vector2(0.62, 0.005), Vector2(0.44, 0.075), false, "trash")
+		else:
+			_dialog_panel(Vector2(0.87, 0.20), Vector2(0.26, 0.015), CANCEL_DELETE)
+			var label: Label3D = menu._label(I18n.t("Emby did not confirm single-file deletion."), Vector3(0.23, 0.015, 0.043), 18)
+			label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			label.width = 0.70 / label.pixel_size
+			label.render_priority = 32
+			_dialog_button(CANCEL_DELETE, "", Vector2(0.65, 0.065), Vector2(0.055, 0.055), false, "close")
+		return
+	_dialog_panel(Vector2(1.02, 0.39), Vector2(0.12, 0.04), CANCEL_DELETE)
+	for line in [[I18n.t("Delete file"), 0.17, 22], [str(detail.get("title", "")), 0.10, 19],
+		[str(detail.get("delete_plan", {}).get("filename", "")), 0.045, 16], [I18n.t("Permanently deletes the original file"), -0.01, 16]]:
+		var label: Label3D = menu._label(menu._fit_title(line[0], "", 0.91, line[2]), Vector3(0.12, line[1], 0.043), line[2]); label.render_priority = 32
+	_dialog_button(CANCEL_DELETE, I18n.t("Cancel"), Vector2(-0.11, -0.095), Vector2(0.38, 0.065), false, "", not busy)
+	_dialog_button(CONFIRM_DELETE, I18n.t("Delete"), Vector2(0.35, -0.095), Vector2(0.38, 0.065), false, "trash", not busy)
 
 func report_interval_ms() -> int:
 	var preferences: Dictionary = menu.settings_provider.call() if menu.settings_provider.is_valid() else {}
@@ -1107,16 +1211,18 @@ func _dialog_panel(size: Vector2, center: Vector2, dismiss: int) -> void:
 
 func _draw_sort() -> void:
 	var sorts := available_sorts(); var rows := ceili(sorts.size() / 2.0)
-	var direction_y := 0.16 - rows * 0.09 - 0.035; var apply_y := direction_y - 0.13
+	var direction_y := 0.16 - rows * 0.09 - 0.035
+	var apply_y := direction_y if sort_query.sort == "random" else direction_y - 0.13
 	var size := Vector2(1.02, 0.31 - apply_y + 0.065)
 	_dialog_panel(size, Vector2(0.12, 0.31 - size.y / 2), ACTION + 177)
 	var label: Label3D = menu._label(I18n.t("Sort"), Vector3(-0.325, 0.25, 0.043), 21); label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.render_priority = 32
 	_dialog_button(ACTION + 177, "", Vector2(0.56, 0.25), Vector2(0.06, 0.06), false, "close")
 	for index in sorts.size():
 		var i: int = SORTS.find(sorts[index])
-		_dialog_button(ACTION + 170 + i, I18n.t(SORT_NAMES[i]), Vector2(-0.115 + (index % 2) * 0.46, 0.16 - (index / 2) * 0.09), Vector2(0.42, 0.065), sort_query.sort == SORTS[i])
-	for i in 2:
-		_dialog_button(ACTION + 175 + i, I18n.t("Ascending" if i == 0 else "Descending") + (" ↑" if i == 0 else " ↓"), Vector2(-0.115 + i * 0.46, direction_y), Vector2(0.42, 0.065), sort_query.direction == ("ASC" if i == 0 else "DESC"))
+		_dialog_button(SORT_ACTIONS[i], I18n.t(SORT_NAMES[i]), Vector2(-0.115 + (index % 2) * 0.46, 0.16 - (index / 2) * 0.09), Vector2(0.42, 0.065), sort_query.sort == SORTS[i])
+	if sort_query.sort != "random":
+		for i in 2:
+			_dialog_button(ACTION + 175 + i, I18n.t("Ascending" if i == 0 else "Descending") + (" ↑" if i == 0 else " ↓"), Vector2(-0.115 + i * 0.46, direction_y), Vector2(0.42, 0.065), sort_query.direction == ("ASC" if i == 0 else "DESC"))
 	_dialog_button(ACTION + 11, I18n.t("Apply"), Vector2(0.12, apply_y), Vector2(0.30, 0.065))
 
 func _dialog_button(target: int, text_value: String, center: Vector2, size: Vector2, selected: bool = false, icon: String = "", enabled: bool = true) -> void:

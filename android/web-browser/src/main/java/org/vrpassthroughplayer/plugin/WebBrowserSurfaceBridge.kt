@@ -10,7 +10,7 @@ object WebBrowserSurfaceBridge {
     @Volatile private var browser: WebBrowser? = null
     internal fun install(value: WebBrowser) { browser = value }
     internal fun remove(value: WebBrowser) { if (browser === value) { browser = null;releases.clear() } }
-    @JvmStatic fun configureViewport(lowEnd: Boolean): Boolean = browser?.configureViewport(lowEnd) ?: lowEnd
+    @JvmStatic fun configureViewport(lowEnd: Boolean, units: Int): Int = WebBrowser.configureViewport(lowEnd, units)
     @JvmStatic fun attach(surface: Surface, width: Int, height: Int, generation: Long): Boolean =
         browser?.attach(surface, width, height, generation) ?: false
     @JvmStatic fun detach(generation: Long) { browser?.detach(generation) }

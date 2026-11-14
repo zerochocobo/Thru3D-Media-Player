@@ -24,7 +24,7 @@ func sync(host: Node3D,video: Node3D,fraction := 1.0) -> bool:
 	var base: Vector2 = video._screen_base
 	# The whole panel is the picture: it takes the video's shape instead of framing it in black.
 	var aspect := base.x/maxf(base.y,.001)
-	if absf(aspect-float(layout.parameters.aspect))>.01 and not is_equal_approx(aspect,_aspect_tried) and not host.screen_loading:
+	if absf(aspect-float(layout.parameters.aspect))>.01 and not is_equal_approx(aspect,_aspect_tried) and not host.screen_loading and not host.screen_previewing():
 		_aspect_tried=aspect
 		host.request_screen({"aspect":aspect})
 	var size: Vector2 = layout.half_size*2

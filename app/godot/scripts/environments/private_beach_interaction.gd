@@ -29,7 +29,7 @@ var _view_floor_y := INF
 var _scene_hand := ""
 var _scene_kind := ""
 var _scene_hover := {}
-## Screen drag state: width anchor for a corner, last ray angles for a grip.
+## Screen drag state: width anchor for a corner, last hand position for a grip.
 var _screen_drag := {}
 var seat_id := ""
 var _scene_marks := {}
@@ -297,23 +297,21 @@ func celestial_easter_egg(direction: Vector3, activate: bool = true) -> bool:
 
 func _begin_screen_resize(origin: Vector3,direction: Vector3) -> bool:
 	var hit: Dictionary=beach.screen_hit(origin,direction)
-	if hit.is_empty() or not hit.corner or beach.screen_loading: return false
+	if hit.is_empty() or not hit.corner: return false
 	var layout: Dictionary=beach.screen_layout
 	# The stand stays planted: the panel grows from the middle of its lower edge.
 	var anchor: Vector3=layout.center-layout.up*float(layout.half_size.y)
 	var reach: float=hit.point.distance_to(anchor)
-	if reach<.01: return false
-	beach.begin_screen_preview()
-	_screen_drag={"anchor":anchor,"normal":layout.normal,"reach":reach,"width":float(layout.parameters.width),"before":ScreenEdit.parameters(layout.parameters)}
+	if reach<.01 or not beach.begin_screen_preview(): return false
+	_screen_drag={"anchor":anchor,"normal":layout.normal,"reach":reach,"width":float(layout.parameters.width)}
 	return true
 
 func screen_grab(hand: String,origin: Vector3,direction: Vector3) -> bool:
-	if not active or not _position_applied or not _tracking_ready() or not _scene_hand.is_empty() or not _capture_hand.is_empty() or beach.screen_loading: return false
-	if beach.screen_hit(origin,direction).is_empty(): return false
-	beach.begin_screen_preview()
+	if not active or not _position_applied or not _tracking_ready() or not _scene_hand.is_empty() or not _capture_hand.is_empty(): return false
+	if beach.screen_hit(origin,direction).is_empty() or not beach.begin_screen_preview(): return false
 	var layout: Dictionary=beach.screen_layout
 	var axis := Vector3(layout.normal.x,0,layout.normal.z).normalized()
-	_screen_drag={"origin":origin,"axis":axis,"center":layout.center,"before":ScreenEdit.parameters(layout.parameters)}
+	_screen_drag={"origin":origin,"axis":axis}
 	_scene_hand=hand; _scene_kind="screen_move"
 	return true
 
@@ -373,13 +371,14 @@ func scene_stick(left: Vector2,right: Vector2,delta: float) -> bool:
 	return true
 
 func _finish_screen_drag() -> void:
-	var before: Dictionary=_screen_drag.get("before",{})
 	_screen_drag={}
 	beach.show_screen_marks({})
-	# Commit rebuilds navigation and shadows; a rejected spot returns to where the drag began.
-	var edited: Dictionary=ScreenEdit.parameters(beach.screen_layout.parameters)
-	if edited==before: beach.request_screen(before)
-	elif not request_screen(edited): beach.request_screen(before)
+	_sync_tracking()
+	var pending := _screen_requested
+	_screen_requested=true
+	if not beach.end_screen_preview(true):
+		_screen_requested=pending
+		changed.emit()
 
 func scene_held(hand: String) -> bool:
 	return _scene_hand==hand
@@ -438,9 +437,9 @@ func cancel_for_hand_lock(hand: String) -> void:
 		_scene_hand = ""; _scene_kind = ""
 		if kind == "firework": beach.release_firework(hand)
 		elif kind in ["screen_resize", "screen_move"]:
-			var before: Dictionary = _screen_drag.get("before", {})
 			_screen_drag = {}
-			if not before.is_empty(): beach.request_screen(before)
+			beach.end_screen_preview(false)
+			changed.emit()
 		else: beach.end_drag()
 	_scene_hover.erase(hand); _scene_marks.erase(hand)
 	if beach:

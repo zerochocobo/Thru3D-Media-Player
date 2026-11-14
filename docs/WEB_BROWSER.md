@@ -73,3 +73,9 @@ Twitch public clips, TikTok detail, TED and Dailymotion have bounded reported he
 On supported pages, the existing Open in built-in player button becomes available when the browser detects a compatible ordinary video file. Clicking it pauses playback in the original document and starts the native player. Returning leaves the original page paused until the user explicitly resumes it. The return action is tied to the original document, media element and source. A Quest test covered playing a compatible video, seeking, returning, resuming the page and opening it again. Compatibility varies with the site and media.
 
 Short trigger taps tolerate more ray travel. Browser windows reopen in front of the viewer when saved positions fall outside the visible placement range. Featured Beta coverage is listed above.
+
+## Browser focus in 0.17.10
+
+Free rectangle selection reshapes the focused floating window around the selected page region. Focus video uses the active page's video geometry. In frameless mode, pointing at the window edge reveals its resize handles. Quest 3 checks covered both Bilibili Beta entries for selected 8K and 4K streams, including native seeking and paused return to the original document. Coverage is limited to the tested paths.
+
+The free-region change includes a contribution by [@ghanshyamv1](https://github.com/ghanshyamv1). The page-structure video focus implementation was inspired by [PR #10](https://github.com/zerochocobo/Thru3D-Media-Player/pull/10).

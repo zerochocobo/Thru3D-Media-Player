@@ -8,7 +8,10 @@ var failures: Array[String] = []
 var checks := 0
 
 class Probe extends "res://scripts/mpv_video_display.gd":
-	func _ready() -> void: pass # This fixture initializes only the source-format state below.
+	func _ready() -> void:
+		# Stereo focus reset reads the panel scale even in this source-format-only fixture.
+		panel = MeshInstance3D.new()
+		add_child(panel)
 	var revisions := 0
 	var advance_session := false
 	var requests: Array[Dictionary] = []

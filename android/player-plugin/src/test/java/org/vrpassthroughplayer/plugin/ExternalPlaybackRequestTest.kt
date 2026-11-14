@@ -179,6 +179,19 @@ class ExternalPlaybackRequestTest {
         assertNull(inbox.claim(waiting)); assertNull(inbox.claim(rejected))
     }
 
+    @Test fun untitledContentUsesTheProviderDisplayNameOnly() {
+        assertEquals("trip_180_LR.mp4", ExternalPlaybackContract.title(null, "content") { "trip_180_LR.mp4" })
+        assertEquals("trip_TB.mkv", ExternalPlaybackContract.title(" ", "content") { "trip_TB.mkv" })
+        assertEquals("Given", ExternalPlaybackContract.title("Given", "content") { error("not queried") })
+        assertNull(ExternalPlaybackContract.title(null, "https") { error("not queried") })
+        assertNull(ExternalPlaybackContract.title(null, "content") { throw SecurityException("revoked") })
+        assertNull(ExternalPlaybackContract.title(null, "content") { "" })
+        // The provider name passes through the same control-character and length cleanup.
+        val parsed = ExternalPlaybackRequest.parse(view, "content://provider/video/1",
+            ExternalPlaybackContract.title(null, "content") { "a\nb_360_TB.mp4" })
+        assertEquals("ab_360_TB.mp4", parsed.title)
+    }
+
     @Test fun anExpiredDeliveryRequiresReselection() {
         var now = 0L; val inbox = ExternalPlaybackInbox({ now }, 100)
         val id = inbox.offer(request()); now = 101

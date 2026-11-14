@@ -67,6 +67,11 @@ internal object ExternalPlaybackContract {
         when (value) { is Int -> value.toLong(); is Long -> value; else -> null }
     }?.coerceIn(0, Int.MAX_VALUE.toLong())?.toInt() ?: 0
 
+    /** File managers rarely send a title; the provider's display name keeps VR format markers in the name. */
+    fun title(given: String?, scheme: String, displayName: () -> String?): String? =
+        given?.takeIf { it.isNotBlank() } ?: if (scheme != "content") given
+            else runCatching(displayName).getOrNull()?.takeIf { it.isNotBlank() } ?: given
+
     const val REDACTED = "<redacted>"
     private val namePattern = Regex("[A-Za-z0-9._-]{1,48}")
 

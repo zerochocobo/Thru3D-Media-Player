@@ -92,6 +92,10 @@ var _hover_sent_ms := -HOVER_INTERVAL_MS
 var _scroll_hover_until := 0
 var windows := {}
 var low_end := false
+# Page raster per CSS pixel, in thirds: 1440x900, 1920x1200 or 2400x1500 at the default size.
+const CLARITY_UNITS := {"low": 3, "medium": 4, "high": 5}
+var clarity := "high"
+var pixel_units := 5
 var window_created: Callable
 var paired_layout := false
 var focused_window := 1
@@ -128,6 +132,8 @@ var library := preload("res://scripts/web_browser_library_panel.gd").new(self)
 var start_page := preload("res://scripts/web_browser_start_page.gd").new(self)
 var history := preload("res://scripts/web_browser_history_panel.gd").new(self)
 var focus_regions := {} # Session-local, follows a tab when moved to another window.
+var video_regions := {} # The focus region a tab got from "focus video", while it is still the one shown.
+var video_locate_request := 0
 
 func _init(owner: Node) -> void:
 	menu = owner
@@ -143,16 +149,23 @@ func _release_orphan_windows() -> void:
 	for item in windows.values():
 		if is_instance_valid(item): item.queue_free()
 	windows.clear()
-func configure_quality(value: bool) -> void:
+static func default_clarity(low: bool) -> String: return "low" if low else "high"
+
+## low_end is the GPU tier (window count, 3D budget); clarity picks the page raster.
+func configure_quality(value: bool, choice: String = "") -> void:
 	low_end = value
+	clarity = choice if CLARITY_UNITS.has(choice) else default_clarity(value)
+	pixel_units = CLARITY_UNITS[clarity]
 	if OS.get_name() != "Android": return
 	preload("res://scripts/web_browser_layer.gd").initialize()
 	# Gecko's process-wide density must be selected before navigation or extraction
 	# starts it. Reuse the selected tier after an Activity/runtime recreation.
 	var bridge := JavaClassWrapper.wrap("org.vrpassthroughplayer.plugin.WebBrowserSurfaceBridge")
 	if bridge and not JavaClassWrapper.get_exception():
-		var selected: bool = bridge.configureViewport(value)
-		if not JavaClassWrapper.get_exception(): low_end = selected
+		var applied: int = bridge.configureViewport(value, pixel_units)
+		if not JavaClassWrapper.get_exception() and applied in CLARITY_UNITS.values(): pixel_units = applied
+## A changed choice waits for the next app start; Gecko keeps its first density.
+func clarity_pending() -> bool: return CLARITY_UNITS[clarity] != pixel_units
 func supported() -> bool: return Distribution.web_browser_enabled() and Methods.supports(menu.platform, "web_browser_navigate")
 func active() -> bool: return opened and not scene_suspended and menu.visible and menu.section == menu.Section.WEB
 func cinema_video_active() -> bool:
@@ -251,7 +264,7 @@ func tick() -> void:
 	var tabs: Array = data.get("tab_list", [])
 	if not tabs.is_empty():
 		for id in focus_regions.keys():
-			if not tabs.any(func(item): return int(item.id) == id): focus_regions.erase(id)
+			if not tabs.any(func(item): return int(item.id) == id): focus_regions.erase(id); video_regions.erase(id)
 	if opening and data.get("active", false) and not ids.is_empty(): opening = false
 	if not opening and ids.is_empty():
 		close(); list_mode = ""; menu.refresh(); return
@@ -416,6 +429,10 @@ func douyin_target(current: Dictionary, selection: String = "") -> Dictionary:
 	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("douyin_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
 	return candidates[0] if candidates.size() == 1 else {}
 
+func bilibili_target(current: Dictionary, selection: String = "") -> Dictionary:
+	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("bilibili_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
+	return candidates[0] if candidates.size() == 1 else {}
+
 func direct_target(current: Dictionary, selection: String) -> Dictionary:
 	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("direct_ready", false) and not item.get("protected", false) and str(item.get("selection", "")) == selection)
 	return candidates[0] if not selection.is_empty() and candidates.size() == 1 else {}
@@ -439,6 +456,10 @@ func _begin_handoff(beta: bool = false, selection: String = "") -> void:
 		for key in ["url", "tab_id", "navigation"]:
 			if fresh.get(key) != data.get(key): return
 		if not selection.is_empty() and selected_beta_target(fresh, selection).is_empty(): return
+		if fresh.get("bilibili_beta_available", false):
+			var target := bilibili_target(fresh, selection)
+			if target.is_empty(): return
+			selection = str(target.selection)
 		if fresh.get("weibo_beta_available", false):
 			var target := weibo_target(fresh, selection)
 			if target.is_empty(): return
@@ -519,7 +540,7 @@ func _begin_handoff(beta: bool = false, selection: String = "") -> void:
 	handoff_started_ms = Time.get_ticks_msec(); pause_started = 0
 	handoff_uri = str(data.get("url", ""))
 	handoff_tab = int(data.get("tab_id", 0)); handoff_navigation = int(data.get("navigation", 0))
-	handoff_context = {"direct": direct, "tab": handoff_tab, "window": focused_window, "navigation": handoff_navigation,
+	handoff_context = {"direct": direct, "bilibili": beta and data.get("bilibili_beta_available", false), "tab": handoff_tab, "window": focused_window, "navigation": handoff_navigation,
 		"douyin": data.get("douyin_beta_available", false), "iqiyi": data.get("iqiyi_beta_available", false), "youku": data.get("youku_beta_available", false), "niconico": data.get("niconico_beta_available", false), "twitch": data.get("twitch_beta_available", false), "tiktok": data.get("tiktok_beta_available", false), "instagram": data.get("instagram_beta_available", false), "ted": data.get("ted_beta_available", false), "redbull": data.get("redbull_beta_available", false), "naver": data.get("naver_beta_available", false), "reddit": data.get("reddit_beta_available", false), "streamable": data.get("streamable_beta_available", false), "archive": data.get("archive_beta_available", false), "odysee": data.get("odysee_beta_available", false), "dailymotion": data.get("dailymotion_beta_available", false), "mango": data.get("mango_beta_available", false), "origin": handoff_uri, "request": int(data.get("fullscreen_request", 0)), "selection": selection,
 		"was_playing": data.get("videos", []).any(func(item): return (selection.is_empty() or str(item.get("selection", "")) == selection) and item.get("playing", false))}
 	handoff_context.position_ms = _playhead()
@@ -536,7 +557,7 @@ func _begin_handoff(beta: bool = false, selection: String = "") -> void:
 
 func beta_media_ready(current: Dictionary, selection: String = "") -> bool:
 	if not selection.is_empty(): return not selected_beta_target(current, selection).is_empty()
-	return not douyin_target(current).is_empty() or not weibo_target(current).is_empty() or not tencent_target(current).is_empty() or not mango_target(current).is_empty() or not youku_target(current).is_empty() or not iqiyi_target(current).is_empty() or not niconico_target(current).is_empty() or not twitch_target(current).is_empty() or not tiktok_target(current).is_empty() or not instagram_target(current).is_empty() or not odysee_target(current).is_empty() or not archive_target(current).is_empty() or not naver_target(current).is_empty() or not reddit_target(current).is_empty() or not streamable_target(current).is_empty() or not redbull_target(current).is_empty() or not ted_target(current).is_empty() or not dailymotion_target(current).is_empty() or current.get("videos", []).any(func(item): return item.get("bilibili_ready", false) and not item.get("protected", false))
+	return not douyin_target(current).is_empty() or not weibo_target(current).is_empty() or not tencent_target(current).is_empty() or not mango_target(current).is_empty() or not youku_target(current).is_empty() or not iqiyi_target(current).is_empty() or not niconico_target(current).is_empty() or not twitch_target(current).is_empty() or not tiktok_target(current).is_empty() or not instagram_target(current).is_empty() or not odysee_target(current).is_empty() or not archive_target(current).is_empty() or not naver_target(current).is_empty() or not reddit_target(current).is_empty() or not streamable_target(current).is_empty() or not redbull_target(current).is_empty() or not ted_target(current).is_empty() or not dailymotion_target(current).is_empty() or not bilibili_target(current).is_empty()
 
 func beta_site_available(current: Dictionary) -> bool:
 	return current.get("bilibili_beta_available", false) or current.get("douyin_beta_available", false) or current.get("weibo_beta_available", false) or current.get("tencent_beta_available", false) or current.get("mango_beta_available", false) or current.get("youku_beta_available", false) or current.get("iqiyi_beta_available", false) or current.get("niconico_beta_available", false) or current.get("twitch_beta_available", false) or current.get("tiktok_beta_available", false) or current.get("instagram_beta_available", false) or current.get("odysee_beta_available", false) or current.get("archive_beta_available", false) or current.get("naver_beta_available", false) or current.get("reddit_beta_available", false) or current.get("streamable_beta_available", false) or current.get("redbull_beta_available", false) or current.get("ted_beta_available", false) or current.get("dailymotion_beta_available", false)
@@ -613,7 +634,7 @@ func restore_playback(failed: bool, position_ms: int = -1) -> void:
 		# original tab/window without navigating again or addressing stale media.
 		if not context.get("retained", false): _video_command("select", context)
 		if context.get("direct", false): _video_command("restore_direct", context)
-		elif not str(context.get("selection", "")).is_empty(): _video_command("restore_douyin" if context.get("douyin", false) else "restore_iqiyi" if context.get("iqiyi", false) else "restore_dailymotion" if context.get("dailymotion", false) else "restore_odysee" if context.get("odysee", false) else "restore_archive" if context.get("archive", false) else "restore_naver" if context.get("naver", false) else "restore_reddit" if context.get("reddit", false) else "restore_streamable" if context.get("streamable", false) else "restore_redbull" if context.get("redbull", false) else "restore_ted" if context.get("ted", false) else "restore_instagram" if context.get("instagram", false) else "restore_tiktok" if context.get("tiktok", false) else "restore_twitch" if context.get("twitch", false) else "restore_niconico" if context.get("niconico", false) else "restore_youku" if context.get("youku", false) else "restore_mango" if context.get("mango", false) else "restore_weibo", context)
+		elif not str(context.get("selection", "")).is_empty(): _video_command("restore_bilibili" if context.get("bilibili", false) else "restore_douyin" if context.get("douyin", false) else "restore_iqiyi" if context.get("iqiyi", false) else "restore_dailymotion" if context.get("dailymotion", false) else "restore_odysee" if context.get("odysee", false) else "restore_archive" if context.get("archive", false) else "restore_naver" if context.get("naver", false) else "restore_reddit" if context.get("reddit", false) else "restore_streamable" if context.get("streamable", false) else "restore_redbull" if context.get("redbull", false) else "restore_ted" if context.get("ted", false) else "restore_instagram" if context.get("instagram", false) else "restore_tiktok" if context.get("tiktok", false) else "restore_twitch" if context.get("twitch", false) else "restore_niconico" if context.get("niconico", false) else "restore_youku" if context.get("youku", false) else "restore_mango" if context.get("mango", false) else "restore_weibo", context)
 	menu.web_video.result = {}; next_poll = 0
 
 func live_window_ids() -> Array:
@@ -693,6 +714,8 @@ func draw_window(host: Node) -> void:
 	if host.chrome_hidden():
 		host._backdrop.visible = false
 		draw_page_content(host,bounds)
+		# A frameless page keeps its resize targets; the grips appear on ray hover.
+		if not on_screen and not host.page_input_blocked(): host.draw_resize_handles(true)
 		return
 	host._set_backdrop(host.HEADER.size if on_screen else bounds.size + Vector2(0.02, host.HEADER.size.y + 0.02), host.HEADER.get_center() if on_screen else Vector2(bounds.get_center().x, bounds.get_center().y + (host.HEADER.size.y - 0.02) / 2))
 	if history.active(host.window_id):
@@ -740,7 +763,8 @@ func draw_window(host: Node) -> void:
 				host.set_label_size(label, 22)
 				if not button.enabled: label.modulate = host.MUTED
 	if not on_screen:
-		var offset := (bounds.size.x - RECT.size.x) / 2
+		# Centre the fixed-width controls over the toolbar, which follows a focused page.
+		var offset: float = host.toolbar_bounds().get_center().x - RECT.get_center().x
 		for button in host._buttons:
 			button.node.position.x += offset; button.rect.position.x += offset
 		for label in host._labels: label.position.x += offset
@@ -785,7 +809,7 @@ func draw_toolbar_tools(host: Node, current: Dictionary) -> void:
 		BASE + 16: "depth", BASE + 17: "settings",
 		KEY_CONTROL + 7: "keyboard_hide", BASE + 15: "media_detect", host.MOVE: ""}
 	var tips := {BASE + 8: "Floating window" if host.on_screen() else "Cinema screen",
-		BASE + 19: "Cancel selection" if host.selecting else "Exit focus" if host.is_focused() else "Focus region",
+		BASE + 19: "Cancel selection" if host.selecting else "Exit focus" if host.is_focused() else "Focus free region",
 		BASE + 16: "2D to 3D effect", BASE + 17: "Settings",
 		KEY_CONTROL + 7: "Close keyboard", BASE + 15: "Media detection on this site", host.MOVE: "Move window"}
 	for i in entries.size():

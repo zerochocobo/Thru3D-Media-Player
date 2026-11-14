@@ -40,6 +40,8 @@ func run() -> void:
 	check(page.items().filter(func(item): return item.get("fixed", "") == "Trigger + stick ↑ / ↓").all(func(item): return item.scope == "Flat photos"), "Trigger movement help applies only to photos")
 	check(page.items().any(func(item): return item.title == "Close video and return" and item.get("fixed", "") == "B / Y" and item.scope == "Video"), "Controls explain the fixed video Back shortcut")
 	check(page.items().any(func(item): return item.title == "Shrink / enlarge" and item.get("fixed", "") == "Grip + stick ← / →" and item.scope == "Flat video" and not item.has("id")), "Flat grip resizing is fixed, outside editable bindings")
+	check(page.items().any(func(item): return item.title == "Shrink / enlarge" and item.get("fixed", "") == "Grip + stick ← / →" and item.scope == "Flat photos" and not item.has("id")), "Photo grip resizing is fixed, outside editable bindings")
+	check(page.items().any(func(item): return item.title == "Shrink / enlarge" and item.get("fixed", "") == "Grip + stick ← / →" and item.scope == "Browser" and not item.has("id")), "Browser grip resizing is fixed, outside editable bindings")
 	page.mode = 2
 	var combinations := page.items().map(func(item): return item.id)
 	check(combinations.filter(func(id): return id in ordinary).size() == 3 and ["volume_up", "volume_down", "library_video"].all(func(id): return id in combinations), "Video volume and library expose optional combinations alongside their ordinary bindings")

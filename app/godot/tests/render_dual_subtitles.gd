@@ -56,6 +56,8 @@ func run() -> void:
 			menu._set_subtitle_detail("appearance" if mode == "sync" else ("narration" if mode == "narration" else "")); menu.refresh()
 			for entry in menu._buttons:
 				if not entry.node.is_visible_in_tree(): continue
+				# Textless hit areas, such as the footer status, have no label to fit.
+				if entry.node.get_child_count() == 0 or not entry.node.get_child(0) is Label3D: continue
 				var text: Label3D = entry.node.get_child(0)
 				check(menu.text_width(text.text, text.font_size / menu.TEXT_RASTER_SCALE) <= entry.rect.size.x + 0.01, "Button label fits " + locale + "/" + text.text)
 			check(is_equal_approx(menu._subtitle_panel_bounds.size.x, 1.10), "Original panel width " + locale)

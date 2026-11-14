@@ -1123,6 +1123,23 @@ struct Source final {
                     next_snapshot = std::chrono::steady_clock::now();
                 } else if (event->event_id == MPV_EVENT_FILE_LOADED) {
                     source_failure = {}; // Opening recovered; ignore later sidecar warnings.
+                    if (!loaded && (iso_input || (software_layer && !live_mirror))) {
+                        // The main demuxer has copied these options. Later lavf
+                        // opens (including audio-add and sub-add) use the current
+                        // options and must probe their own file format.
+                        // This relies on the main file being opened only once (the
+                        // single loadfile above): an edition switch or reload would
+                        // reopen it without bd_mvc/matroska and lose MVC decoding.
+                        // A failed reset only costs sidecar tracks, never the film.
+                        auto reset = [&](const char* key, const char* value) {
+                            const int result = mpv_set_property_string(core, key, value);
+                            if (result < 0) __android_log_print(ANDROID_LOG_WARN, "QuestMpvSource",
+                                "Sidecar option reset %s: %s", key, mpv_error_string(result));
+                        };
+                        reset("demuxer-lavf-format", "");
+                        if (iso_input && (iso_playlist >= 0 || iso_playlist == -2)) reset("demuxer-lavf-o", "");
+                        if (iso_input && iso_playlist == -2) reset("demuxer-lavf-probe-info", "auto");
+                    }
                     if (!loaded && audio) for (const auto& [location, title] : audio_files) {
                         bool select_primary = false;
                         {
@@ -2111,7 +2128,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_seek(JNIEnv* env, jclass, jl
         source->wake.notify_one(); return JNI_TRUE;
     } catch (const std::exception& failure) { error(env, failure); return JNI_FALSE; }
 }
-static jbyteArray subtitle_bitmap(JNIEnv* env, jlong handle, jlong version, uint32_t rgb) {
+static jbyteArray subtitle_bitmap(JNIEnv* env, jlong handle, jlong version, uint32_t rgb, float opacity = 1.0f) {
     try {
         auto source = find(handle); std::unique_lock<std::mutex> lock(source->status_mutex);
         const auto& pixels = source->published_pgs_pixels;
@@ -2120,10 +2137,11 @@ static jbyteArray subtitle_bitmap(JNIEnv* env, jlong handle, jlong version, uint
             static_cast<uint64_t>(version) != source->published_pgs_version) return env->NewByteArray(0);
         std::vector<uint8_t> tinted;
         const auto* output = &pixels;
-        if (rgb != 0xffffff) {
+        if (rgb != 0xffffff || opacity != 1.0f) {
             tinted = pixels; // Published source pixels remain pristine when changing colors.
             lock.unlock();
             quest::tint_pgs_rgba(tinted, rgb);
+            quest::fade_pgs_rgba(tinted, opacity);
             output = &tinted;
         }
         auto result = env->NewByteArray(static_cast<jsize>(output->size()));
@@ -2139,6 +2157,10 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_subtitleBitmap(JNIEnv* env, 
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_subtitleBitmapTinted(JNIEnv* env, jclass, jlong handle, jlong version, jint rgb) {
     return subtitle_bitmap(env, handle, version, static_cast<uint32_t>(rgb) & 0xffffff);
+}
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_subtitleBitmapStyled(JNIEnv* env, jclass, jlong handle, jlong version, jint rgb, jfloat opacity) {
+    return subtitle_bitmap(env, handle, version, static_cast<uint32_t>(rgb) & 0xffffff, opacity);
 }
 extern "C" JNIEXPORT jstring JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_status(JNIEnv* env, jclass, jlong handle) {

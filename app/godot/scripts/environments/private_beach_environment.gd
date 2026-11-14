@@ -103,6 +103,9 @@ var _screen_revision := 0
 var _screen_work_revision := 0
 var _screen_candidate: Dictionary = {}
 var _screen_pending: Dictionary = {}
+var _screen_committed_layout: Dictionary = {}
+var _screen_preview_base: Dictionary = {}
+var _screen_drag_commit := false
 var _clouds := Clouds.new()
 var _cloud_image: Image
 var _cloud_elapsed := 0.0
@@ -348,6 +351,7 @@ func release() -> void:
 func _clear_content() -> void:
 	_scene_generation+=1
 	_screen_revision+=1; _screen_pending.clear(); screen_layout.clear()
+	_screen_committed_layout={}; _screen_preview_base={}; _screen_solids.clear(); _screen_drag_commit=false
 	screen_loading=false; screen_error=""; _screen_node=null
 	_movement_wanted=false; movement=null
 	if is_instance_valid(_content):
@@ -475,13 +479,17 @@ static func _append_boxes(colliders: Array,boxes: Array[AABB]) -> void:
 		colliders.append({"id":"screen_dynamic","min":[box.position.x,box.position.y,box.position.z],"max":[box.end.x,box.end.y,box.end.z]})
 
 func request_screen(changes: Dictionary,restore_view: Dictionary = {}) -> bool:
+	return _request_screen(changes,restore_view,false)
+
+func _request_screen(changes: Dictionary,restore_view: Dictionary,drag_commit: bool) -> bool:
 	# Discrete edit/drag-release API. Keep the old complete layout while preparing
 	# connectivity, then swap geometry, uniforms and movement in one main-loop step.
 	if not is_ready: screen_error="Beach is not ready"; return false
+	if screen_previewing() or (screen_loading and _screen_drag_commit and not drag_commit): return false
 	if not restore_view.is_empty() and (presented or not Movement.valid_view_record(restore_view)):
 		screen_error="Saved viewing position is unavailable"; return false
 	var settings: Dictionary = bundle.config.duplicate(true)
-	settings.screen=desired_screen_parameters()
+	settings.screen=screen_layout.parameters if drag_commit else desired_screen_parameters()
 	var candidate := Screen.solve(settings,navigation.ground,changes)
 	if candidate.has("error"): screen_error=candidate.error; return false
 	var node := Screen.geometry(candidate,navigation.ground)
@@ -496,21 +504,40 @@ func request_screen(changes: Dictionary,restore_view: Dictionary = {}) -> bool:
 	if not conflict.is_empty(): screen_error=conflict; return false
 	_append_boxes(colliders,boxes)
 	_screen_revision+=1; screen_error=""; screen_loading=true
+	_screen_drag_commit=drag_commit
 	_screen_pending={"layout":candidate,"colliders":colliders,"boxes":boxes,"restore_view":restore_view.duplicate(true)}
 	_start_screen_worker(); changed.emit()
 	return true
 
-## Live drag: the candidate replaces the visible screen immediately. Navigation and
-## shadow proxies stay on the last committed layout until request_screen on release.
-func begin_screen_preview() -> void:
+## A second drag may extend a pending drag commit. Discrete edits keep their
+## existing atomic swap and take priority until their navigation is ready.
+func begin_screen_preview() -> bool:
+	if not is_ready or not _screen_preview_base.is_empty() or (screen_loading and not _screen_drag_commit): return false
+	_screen_preview_base=screen_layout
 	_screen_solids=_collider_snapshot(true)
+	return true
+
+func end_screen_preview(commit: bool) -> bool:
+	var before := _screen_preview_base
+	_screen_preview_base={}; _screen_solids.clear()
+	if before.is_empty() or screen_layout.parameters==before.parameters: return false
+	var previous_error := screen_error
+	if commit and _request_screen({}, {}, true): return true
+	# A rejected re-grip must leave the earlier queued edit eligible to commit.
+	if screen_loading: screen_error=previous_error
+	_commit_screen(before,false)
+	return false
+
+func screen_previewing() -> bool:
+	return not _screen_preview_base.is_empty()
 
 func preview_screen(changes: Dictionary) -> bool:
-	if not is_ready or screen_loading: return false
+	if not screen_previewing(): return false
 	var settings: Dictionary=bundle.config.duplicate(true)
 	settings.screen=screen_layout.parameters.duplicate(true)
 	var candidate := Screen.solve(settings,navigation.ground,changes)
 	if candidate.has("error"): return false
+	if candidate.parameters==screen_layout.parameters: return true
 	var node := Screen.geometry(candidate,navigation.ground)
 	var boxes := Screen.collider_boxes(candidate,node); node.free()
 	for box in boxes:
@@ -604,9 +631,12 @@ func _start_screen_worker() -> void:
 	var result := _screen_thread.start(_prepare_movement.bind(bundle.navigation.duplicate(true),bundle.config.duplicate(true),_screen_candidate.colliders))
 	if result!=OK:
 		_screen_thread=null; _screen_candidate.clear(); screen_loading=false; screen_error="Screen navigation worker unavailable"
+		_finish_screen_job()
 	_update_processing()
 
 func _poll_screen() -> void:
+	# Keep the worker result off the visible screen while a new grip is editing it.
+	if screen_previewing(): return
 	var notify := false
 	if _screen_thread!=null and not _screen_thread.is_alive():
 		var prepared: RefCounted = _screen_thread.wait_to_finish(); _screen_thread=null
@@ -622,6 +652,7 @@ func _poll_screen() -> void:
 			else:
 				_commit_screen(_screen_candidate.layout)
 				if movement!=null or _movement_wanted: movement=prepared; movement_loading=false
+			_finish_screen_job()
 			notify=true
 		_screen_candidate={}
 		if not is_ready: movement_loading=false
@@ -630,6 +661,11 @@ func _poll_screen() -> void:
 	_update_processing()
 	# Observers may queue another edit. Clear the finished candidate before emit.
 	if notify: changed.emit()
+
+func _finish_screen_job() -> void:
+	if _screen_drag_commit and not screen_error.is_empty() and screen_layout!=_screen_committed_layout:
+		_commit_screen(_screen_committed_layout,false)
+	_screen_drag_commit=false
 
 func _commit_screen(layout: Dictionary,final := true) -> void:
 	var node := Screen.geometry(layout,navigation.ground)
@@ -641,7 +677,9 @@ func _commit_screen(layout: Dictionary,final := true) -> void:
 			if name_.begins_with("Screen_") or name_.begins_with("Support_") or name_.begins_with("Foot_"): mesh.free()
 	_screen_node=node; _content.add_child(node); screen_layout=layout
 	if celestial_eggs: celestial_eggs.set_view_context(screen_layout,bundle.config.shore.points)
-	if final: _sync_screen_casters()
+	if final:
+		_screen_committed_layout=layout
+		_sync_screen_casters()
 	for material in _surfaces:
 		material.set_shader_parameter("screen_origin",layout.center)
 		material.set_shader_parameter("screen_right",layout.right)
@@ -713,6 +751,7 @@ func _install(loaded: Resource) -> void:
 	bundle=loaded
 	navigation=Navigation.new(bundle.navigation,bundle.config)
 	screen_layout=Screen.solve(bundle.config,navigation.ground,{})
+	_screen_committed_layout=screen_layout
 	_content=Node3D.new(); _content.name="BeachContent"; add_child(_content)
 	_content.add_child(model); _content.add_child(props); _content.add_child(plants); _content.add_child(grill)
 	var near_rock := props.find_child("Study_NearRock",true,false) as Node3D

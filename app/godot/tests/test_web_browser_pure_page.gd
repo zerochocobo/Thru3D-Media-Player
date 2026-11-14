@@ -15,6 +15,22 @@ func click_chrome(host: Node3D) -> void:
 	var direction: Vector3 = -footer.global_basis.z.normalized()
 	check(host.ray_hit(ray,direction).get("target",-1)==footer.CHROME,"Leftmost pure-page icon receives the actual ray")
 	host.press_pointer("right",ray,direction,true); host.release_pointer("right",ray,direction,true)
+func verify_frameless_resize(host: Node3D) -> void:
+	for edge in [host.RESIZE_RIGHT,host.RESIZE_BOTTOM,host.RESIZE]:
+		var button: Dictionary = host._buttons.filter(func(b): return b.target==edge)[0]
+		var pose: Transform3D = host.global_transform
+		var start := Vector3(button.rect.get_center().x,button.rect.get_center().y,.3)
+		var moved := start+Vector3(.1,-.08,0)
+		var before: Vector2 = host.page_layout().size
+		check(host.local_hit(pose*start,-pose.basis.z).get("target")==edge,"Frameless resize target accepts the ray")
+		host.update_pointer("left",pose*start,-pose.basis.z,true)
+		var shown: Array = host._buttons.filter(func(b): return b.has("hover_marks") and b.hover_marks[0].visible).map(func(b): return b.target)
+		check(shown==[edge],"Ray hover shows only the aimed frameless grip")
+		check(host.press_pointer("left",pose*start,-pose.basis.z,true) and host.drag.get("kind")==edge,"Frameless resize target starts capture")
+		host.update_pointer("left",pose*moved,-pose.basis.z,true); host.release_pointer("left",pose*moved,-pose.basis.z,true)
+		var after: Vector2 = host.page_layout().size
+		check(host.drag.is_empty() and (after.x>before.x if edge!=host.RESIZE_BOTTOM else is_equal_approx(after.x,before.x)) and (after.y>before.y if edge!=host.RESIZE_RIGHT else is_equal_approx(after.y,before.y)),"Frameless drag resizes the matching page edge")
+		check(not host.toolbar_shown and host.chrome_hidden(),"Resizing keeps the frame hidden")
 func run() -> void:
 	var menu := Menu.new(); root.add_child(menu)
 	var platform := Fixture.Platform.new(); menu.attach_platform(platform); menu.toggle()
@@ -31,7 +47,12 @@ func run() -> void:
 		var layout: Dictionary = host.page_layout(); var size: Vector2 = host.page_size
 		click_chrome(host); host._update_feedback()
 		check(not host.toolbar_shown and host.chrome_hidden() and not host.page_input_blocked(),"Pure page hides chrome while allowing webpage input")
-		check(host._buttons.size()==1 and host._buttons[0].target==host.WEB,"Pure page keeps only the webpage hit tile, without toolbar or resize grips")
+		var resize_targets := [host.RESIZE,host.RESIZE_RIGHT,host.RESIZE_BOTTOM]
+		check(host._buttons[0].target==host.WEB and host._buttons.all(func(b): return b.target==host.WEB or b.target in resize_targets),"Pure page keeps the webpage tile and resize targets, without toolbar controls")
+		check(resize_targets.all(func(t): return host._buttons.any(func(b): return b.target==t)),"Right, bottom and corner resize stay available without the frame")
+		check(resize_targets.all(func(t): return host._buttons.any(func(b): return b.target==t and not b.get("hover_marks", []).is_empty() and b.hover_marks.all(func(m): return not m.visible))),"Frameless grip marks stay hidden until the ray reaches them")
+		verify_frameless_resize(host)
+		layout = host.page_layout(); size = host.page_size
 		check(not host._backdrop.visible and host._decorations.is_empty(),"Top bar, side and bottom borders are all absent")
 		check(host._ray_blockers.is_empty(),"Invisible chrome cannot capture a page ray or drag")
 		check(not host._progress.visible and not host._feedback.get_node("background").visible,"Pure page adds no loading strip or crop backing")
@@ -62,7 +83,7 @@ func run() -> void:
 	host._activate(footer.CHROME); host._activate(footer.MATTE)
 	check(host.page_input_blocked() and host._buttons.is_empty(),"Person passthrough keeps its existing interaction isolation")
 	host._activate(footer.MATTE)
-	check(not host.toolbar_shown and host._buttons.size()==1,"Leaving person passthrough preserves the user's pure-page choice")
+	check(not host.toolbar_shown and host.chrome_hidden() and host._buttons.size()>1,"Leaving person passthrough preserves the user's pure-page choice")
 	# A page becoming the start page must not strand the user without an exit icon.
 	platform.browser.url="about:blank"; browser.next_poll=0; browser.tick()
 	footer.observe_ray("right",footer.to_global(Vector3(-.3,0,.3)),-footer.global_basis.z.normalized(),true,3000)

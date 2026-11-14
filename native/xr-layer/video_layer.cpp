@@ -84,6 +84,23 @@ struct State {
 };
 std::mutex mutex;
 State state;
+// XR_QIYU_passthrough (iQIYI QIYU factory runtime, "Monado: QIYIVR"): XR_FB_passthrough's API under
+// QIYU names, structure types 200000 above FB's (recovered from the runtime, no public header). The
+// runtime opens the camera at xrEndFrame only while a started passthrough's layer is in the frame;
+// ALPHA_BLEND alone composites over black (docs/QIYU_PASSTHROUGH_20261110_CN.md).
+constexpr XrStructureType kQiyuPassthroughCreateInfo = static_cast<XrStructureType>(1000318001);
+constexpr XrStructureType kQiyuPassthroughLayerCreateInfo = static_cast<XrStructureType>(1000318002);
+constexpr XrStructureType kQiyuCompositionLayerPassthrough = static_cast<XrStructureType>(1000318003);
+struct Qiyu {
+    XrPassthroughFB passthrough = XR_NULL_HANDLE;
+    XrPassthroughLayerFB layer = XR_NULL_HANDLE;
+    XrCompositionLayerPassthroughFB composition{};
+    PFN_xrPassthroughStartFB start = nullptr;
+    PFN_xrPassthroughPauseFB pause = nullptr;
+    PFN_xrPassthroughLayerResumeFB resume = nullptr;
+    PFN_xrPassthroughLayerPauseFB layer_pause = nullptr;
+};
+Qiyu qiyu; // belongs to state.session: its handles die with it
 
 void log(int priority, const std::string& text) { __android_log_write(priority, "QuestVideoLayer", text.c_str()); }
 void fail(JNIEnv* env, const char* text) {
@@ -277,6 +294,7 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_bind(JNIEnv* env, jclass, j
         const auto new_session = reinterpret_cast<XrSession>(static_cast<uintptr_t>(session));
         // A different session invalidates its swapchain; the caller recreates the surface.
         if (state.session != XR_NULL_HANDLE && state.session != new_session) { destroy(env); for (auto& p : state.pictures) destroy_image(p); }
+        if (state.session != new_session) qiyu = Qiyu{};
         state.instance = reinterpret_cast<XrInstance>(static_cast<uintptr_t>(instance));
         state.session = new_session;
         state.space = reinterpret_cast<XrSpace>(static_cast<uintptr_t>(space));
@@ -473,6 +491,57 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_colorScaleBias(JNIEnv*, jcl
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_VideoLayerNative_qiyuPassthrough(JNIEnv*, jclass) {
     return thru3d_qiyu_passthrough_enabled() ? JNI_TRUE : JNI_FALSE;
+}
+
+/** Starts (or pauses) QIYU passthrough. Returns the passthrough composition layer's address for
+ * Godot's frame end beneath every other layer, 0 when paused or the extension is absent, or a
+ * negative XrResult when the runtime refused. */
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_qiyuPassthroughLayer(JNIEnv*, jclass, jboolean enabled) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!thru3d_qiyu_passthrough_enabled() || state.session == XR_NULL_HANDLE) return 0;
+    if (!enabled) {
+        if (qiyu.layer != XR_NULL_HANDLE) qiyu.layer_pause(qiyu.layer);
+        if (qiyu.passthrough != XR_NULL_HANDLE) qiyu.pause(qiyu.passthrough);
+        return 0;
+    }
+    XrResult result = XR_SUCCESS;
+    try {
+        if (qiyu.passthrough == XR_NULL_HANDLE) {
+            qiyu.start = proc<PFN_xrPassthroughStartFB>("xrPassthroughStartQIYU");
+            qiyu.pause = proc<PFN_xrPassthroughPauseFB>("xrPassthroughPauseQIYU");
+            qiyu.resume = proc<PFN_xrPassthroughLayerResumeFB>("xrPassthroughLayerResumeQIYU");
+            qiyu.layer_pause = proc<PFN_xrPassthroughLayerPauseFB>("xrPassthroughLayerPauseQIYU");
+            XrPassthroughCreateInfoFB info{};
+            info.type = kQiyuPassthroughCreateInfo;
+            info.flags = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB;
+            result = proc<PFN_xrCreatePassthroughFB>("xrCreatePassthroughQIYU")(state.session, &info, &qiyu.passthrough);
+            if (XR_FAILED(result)) { qiyu.passthrough = XR_NULL_HANDLE; throw std::runtime_error("xrCreatePassthroughQIYU"); }
+        }
+        // Creation's running flag is stored but not acted on: start explicitly, then also on resume.
+        result = qiyu.start(qiyu.passthrough);
+        if (XR_FAILED(result)) throw std::runtime_error("xrPassthroughStartQIYU");
+        if (qiyu.layer == XR_NULL_HANDLE) {
+            XrPassthroughLayerCreateInfoFB info{};
+            info.type = kQiyuPassthroughLayerCreateInfo;
+            info.passthrough = qiyu.passthrough;
+            info.flags = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB;
+            info.purpose = XR_PASSTHROUGH_LAYER_PURPOSE_RECONSTRUCTION_FB;
+            result = proc<PFN_xrCreatePassthroughLayerFB>("xrCreatePassthroughLayerQIYU")(state.session, &info, &qiyu.layer);
+            if (XR_FAILED(result)) { qiyu.layer = XR_NULL_HANDLE; throw std::runtime_error("xrCreatePassthroughLayerQIYU"); }
+        }
+        result = qiyu.resume(qiyu.layer);
+        if (XR_FAILED(result)) throw std::runtime_error("xrPassthroughLayerResumeQIYU");
+    } catch (const std::exception& failure) {
+        log(ANDROID_LOG_WARN, std::string(failure.what()) + " failed: " + std::to_string(result));
+        return XR_FAILED(result) ? static_cast<jlong>(result) : static_cast<jlong>(XR_ERROR_FUNCTION_UNSUPPORTED);
+    }
+    qiyu.composition = {};
+    qiyu.composition.type = kQiyuCompositionLayerPassthrough;
+    qiyu.composition.flags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    qiyu.composition.space = state.space;
+    qiyu.composition.layerHandle = qiyu.layer;
+    return static_cast<jlong>(reinterpret_cast<uintptr_t>(&qiyu.composition));
 }
 
 /** The runtime's instance extensions, space separated (diagnostics: which layer features exist). */

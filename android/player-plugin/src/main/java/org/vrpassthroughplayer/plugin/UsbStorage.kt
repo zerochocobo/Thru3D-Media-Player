@@ -34,6 +34,9 @@ internal object UsbClaimPolicy {
         manufacturer.orEmpty().contains("pico", true) || brand.orEmpty().contains("pico", true)
     /** A forced claim on a system-held disk needs both the user's request and a PICO device. */
     fun userTakeover(requested: Boolean, manufacturer: String?, brand: String?) = requested && pico(manufacturer, brand)
+    /** Outside PICO a system-mounted disk always refuses a normal claim; its system entries already read it. */
+    fun listManaged(systemMounted: Boolean, active: Boolean, manufacturer: String?, brand: String?) =
+        active || !systemMounted || pico(manufacturer, brand)
     fun busyMessage(systemMounted: Boolean, manufacturer: String?, brand: String?) = when {
         !systemMounted -> BUSY
         pico(manufacturer, brand) -> BUSY_EJECT
@@ -122,7 +125,9 @@ internal class UsbStorage(private val host: () -> Activity?, private val emit: (
         // during that wait: detach/stop callbacks on Android's UI thread must stay responsive.
         removed.forEach { stop(it) }
         cancelled.forEach { (id,path)->replyError(id,path,"USB storage unavailable") }
+        val systemMounted=busySystemStorage()
         for(s in present) {
+            if(!UsbClaimPolicy.listManaged(systemMounted, s.active, Build.MANUFACTURER, Build.BRAND)) continue
             result.put(JSONObject().put("id",s.root).put("title",runCatching { s.device.productName }.getOrNull()?.takeIf { it.isNotBlank() } ?: "USB storage")
                 .put("volume",true).put("container",true).put("removable",true).put("managed_usb",true).put("read_only",true)
                 .put("storage_access","usb")

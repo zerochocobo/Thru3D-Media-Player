@@ -1,6 +1,15 @@
 #include "pgs_bitmap.h"
 
 namespace quest {
+void fade_pgs_rgba(std::vector<uint8_t>& rgba, float opacity) {
+    opacity = std::isfinite(opacity) ? std::clamp(opacity, 0.0f, 1.0f) : 1.0f;
+    if (opacity == 1.0f) return;
+    uint8_t channels[256];
+    for (int v = 0; v < 256; ++v) channels[v] = static_cast<uint8_t>(std::lround(v * opacity));
+    // These pixels are premultiplied: scale RGB and alpha together.
+    for (auto& channel : rgba) channel = channels[channel];
+}
+
 void tint_pgs_rgba(std::vector<uint8_t>& rgba, uint32_t rgb) {
     if (rgb == 0xffffff) return;
     const int tint[] = {static_cast<int>((rgb >> 16) & 255),

@@ -20,11 +20,31 @@ func run() -> void:
 	var primary: Node3D = browser.windows[1]
 	for low in [false, true]:
 		browser.configure_quality(low)
+		check(browser.clarity == ("low" if low else "high") and not browser.clarity_pending(), "Low-end GPUs default to low browser clarity")
 		var surface := preload("res://scripts/web_browser_surface.gd").new()
 		surface.configure(primary, platform, 1)
-		check(surface.pixels == (surface.LOW_END_PIXELS if low else surface.PIXELS), "Window starts with the runtime-selected raster quality")
-		check(surface.pixels * (45 if low else 36) == Vector2i(1440, 900) * 60, "Both window qualities start with the same 1440x900 CSS layout")
+		check(surface.pixels == (Vector2i(1440, 900) if low else surface.PIXELS), "Window starts with the runtime-selected raster quality")
 		surface.free()
+	# Gecko app units per device pixel: 60 / density, exact at every clarity.
+	var app_units := {"low": 60, "medium": 45, "high": 36}
+	for clarity in app_units:
+		browser.configure_quality(true, clarity)
+		var surface := preload("res://scripts/web_browser_surface.gd").new()
+		surface.configure(primary, platform, 1)
+		check(browser.pixel_units == browser.CLARITY_UNITS[clarity] and browser.low_end, "A saved clarity overrides the GPU default only for the raster")
+		check(surface.pixels * app_units[clarity] == Vector2i(1440, 900) * 60, "Every clarity starts with the same 1440x900 CSS layout")
+		surface.free()
+	browser.configure_quality(false, "bogus")
+	check(browser.clarity == "high", "An unknown saved clarity falls back to the GPU default")
+	# Gecko keeps its first density; a new choice waits for the next start.
+	browser.clarity = "low"
+	check(browser.clarity_pending(), "A changed clarity is pending until restart")
+	var saved_settings: Array = []
+	var record_setting := func(key: String, value: Variant) -> void: saved_settings.append([key, value])
+	menu.setting_changed.connect(record_setting)
+	primary.depth_settings = true; primary._depth_changed("web_clarity", "medium")
+	check(saved_settings == [["web_clarity", "medium"]], "The browser settings choice is saved as an app setting")
+	menu.setting_changed.disconnect(record_setting); primary.depth_settings = false
 	browser.configure_quality(false)
 	check(primary.get_parent() == root, "Window is outside the library transform tree")
 	var pose: Transform3D = primary.global_transform
@@ -38,9 +58,12 @@ func run() -> void:
 	primary.adjust_distance(0.5)
 	check(primary.page_layout().pose.origin.distance_to(old_point) > 0.49, "Distance changes independent window pose")
 	primary.adjust_size(100)
-	check(is_equal_approx(primary.global_basis.get_scale().x, primary.maximum_scale()), "Size stops at the cinema screen envelope")
+	check(is_equal_approx(primary.global_basis.get_scale().x, primary.maximum_scale()), "Size stops at the floating window envelope")
+	var largest_window: Vector2 = primary.page_size * primary.global_basis.get_scale().x
+	check(is_equal_approx(largest_window.x, 4.5) or is_equal_approx(largest_window.y, 4.5), "The floating window maximum is 4.5 m")
 	primary.adjust_size(-100)
 	check(is_equal_approx(primary.global_basis.get_scale().x, primary.minimum_scale()), "Size has a usable lower bound")
+	verify_grip_zoom(primary)
 	primary.recenter(); primary._process(0)
 	for corner in [primary.RESIZE_RIGHT, primary.RESIZE_BOTTOM, primary.RESIZE]:
 		var button: Dictionary = primary._buttons.filter(func(item): return item.target == corner)[0]
@@ -223,6 +246,20 @@ func verify_view_placement(window: Node3D) -> void:
 	window.dismiss(); window.show_window()
 	check(window.global_transform.is_equal_approx(pose), "A visible placement is kept when reopening")
 
+func verify_grip_zoom(window: Node3D) -> void:
+	window.recenter()
+	var target: Dictionary = window.move_target("browser")
+	var centre: Vector3 = window.to_global(window.CENTRE)
+	var layout: Vector2 = window.page_size
+	check(not window.grip_zoom(0.15, 0.1, target), "A resting stick does not zoom the gripped browser")
+	check(window.grip_zoom(1.0, 0.1, target) and is_equal_approx(window.global_basis.get_scale().x, exp(0.05)), "Grip + stick right enlarges proportionally")
+	check(window.to_global(window.CENTRE).distance_to(centre) < 0.0001 and window.page_size == layout, "Grip zoom keeps the centre and webpage layout")
+	check(is_equal_approx(target.pose.basis.get_scale().x, window.global_basis.get_scale().x) and (target.pose * window.CENTRE).distance_to(centre) < 0.0001, "The captured move pose follows the zoom")
+	for step in 200: window.grip_zoom(1.0, 0.1, target)
+	check(is_equal_approx(window.global_basis.get_scale().x, window.maximum_scale()) and not window.grip_zoom(1.0, 0.1, target), "Grip zoom stops at the floating maximum")
+	for step in 200: window.grip_zoom(-1.0, 0.1, target)
+	check(is_equal_approx(window.global_basis.get_scale().x, window.minimum_scale()), "Grip zoom stops at the usable minimum")
+	window.recenter()
 func verify_resize_limits(window: Node3D) -> void:
 	for low in [false, true]:
 		window.browser.configure_quality(low)
@@ -248,7 +285,7 @@ func verify_resize_limits(window: Node3D) -> void:
 				check(window.press_pointer("left", origin, -pose.basis.z, true) and window.drag.get("kind") == edge, "Outer resize target starts capture")
 				window.release_pointer("left", origin, -pose.basis.z, true)
 			var start := Vector3(button.rect.get_center().x, button.rect.get_center().y, 0.3)
-			var movement := Vector3(4 if edge != window.RESIZE_BOTTOM else 0, -3 if edge != window.RESIZE_RIGHT else 0, 0)
+			var movement := Vector3(2 if edge != window.RESIZE_BOTTOM else 0, -1.5 if edge != window.RESIZE_RIGHT else 0, 0)
 			window.press_pointer("left", pose * start, -pose.basis.z, true)
 			window.update_pointer("left", pose * (start + movement), -pose.basis.z, true)
 			var bounded: Vector2 = window.page_size
@@ -272,10 +309,10 @@ func verify_resize_limits(window: Node3D) -> void:
 			check(window.page_size.is_equal_approx(bounded) and window.page_layout().size.x < previous_size.x, "Regrabbing and shrinking keeps the frozen viewport")
 			window.update_pointer("left", pose * (start + movement * 100), -pose.basis.z, true)
 			var largest: Vector2 = window.page_layout().size
-			check(largest.x <= window.MAX_DISPLAY.x + 0.0001 and largest.y <= window.MAX_DISPLAY.y + 0.0001, "Maximum page fits the real cinema screen")
-			check(is_equal_approx(largest.x, window.MAX_DISPLAY.x) or is_equal_approx(largest.y, window.MAX_DISPLAY.y), "Maximum is the largest proportional fit in the cinema screen")
+			check(largest.x <= window.MAX_DISPLAY.x + 0.0001 and largest.y <= window.MAX_DISPLAY.y + 0.0001, "Maximum page fits the floating window limit")
+			check(is_equal_approx(largest.x, window.MAX_DISPLAY.x) or is_equal_approx(largest.y, window.MAX_DISPLAY.y), "Maximum is the largest proportional fit in the floating window limit")
 			window.update_pointer("left", pose * (start + movement * 200), -pose.basis.z, true)
-			check(window.page_layout().size.is_equal_approx(largest), "Further dragging stops at the cinema size limit")
+			check(window.page_layout().size.is_equal_approx(largest), "Further dragging stops at the floating size limit")
 			window.release_pointer("left", pose * start, -pose.basis.z, true)
 			window.page_size = window.RECT.size; window.recenter(); window.refresh(); window._process(0)
 			button = window._buttons.filter(func(item): return item.target == edge)[0]
@@ -308,7 +345,7 @@ func verify_resize_limits(window: Node3D) -> void:
 func verify_resize_continuity(window: Node3D) -> void:
 	for edge in [window.RESIZE]:
 		for outward in [true, false]:
-			var change := Vector2(4, 3) if outward else Vector2(-0.2, -0.34)
+			var change := Vector2(2, 1.5) if outward else Vector2(-0.2, -0.34)
 			if edge == window.RESIZE_RIGHT: change.y = 0
 			elif edge == window.RESIZE_BOTTOM: change.x = 0
 			window.page_size = window.RECT.size; window.recenter()
@@ -326,7 +363,7 @@ func verify_resize_continuity(window: Node3D) -> void:
 func verify_edge_reshape(window: Node3D) -> void:
 	for low in [false, true]:
 		window.browser.configure_quality(low)
-		for scale_factor in [0.6, 1.0, 2.5, 8.0]:
+		for scale_factor in [0.6, 1.0, 1.4]:
 			for edge in [window.RESIZE_RIGHT, window.RESIZE_BOTTOM]:
 				window.page_size = Vector2(2.88, 1.8) if scale_factor > 1.0 else window.RECT.size
 				window.recenter(); window._scale_about_centre(scale_factor, window.global_transform)
@@ -376,7 +413,7 @@ func verify_edge_reshape(window: Node3D) -> void:
 func verify_portrait_reshape(window: Node3D) -> void:
 	for low in [false, true]:
 		window.browser.configure_quality(low)
-		for scale_factor in [1.0, 2.5]:
+		for scale_factor in [1.0, 1.25]:
 			for edge in [window.RESIZE_BOTTOM, window.RESIZE]:
 				if edge == window.RESIZE and scale_factor != 1.0: continue
 				window.page_size = window.RECT.size; window.recenter()

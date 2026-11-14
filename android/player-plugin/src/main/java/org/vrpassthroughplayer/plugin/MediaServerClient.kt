@@ -167,6 +167,7 @@ internal interface MediaLibraryClient {
     fun capabilities(): JSONObject = MediaLibraryPresentation.capabilities()
     fun home(request: JSONObject): JSONObject = MediaLibraryPresentation.home(this, request)
     fun favorite(request: JSONObject): JSONObject = throw MediaServerFailure("Server query unsupported")
+    fun deleteFile(request: JSONObject): JSONObject = throw MediaServerFailure("File deletion unavailable for this source")
     fun probe(): String
     fun browse(request: JSONObject): JSONObject
     fun candidates(request: JSONObject): JSONObject

@@ -49,6 +49,13 @@ static func size_row(percent: float) -> Dictionary:
 	return {"key": "subtitle_size", "value": size_ratio(percent / 100.0) * 100.0,
 		"slider": true, "span": Vector3(50, 200, 5), "unit": "%", "reset_value": 100.0}
 
+static func transparency(percent: float) -> float:
+	return clampf(percent, 0.0, 80.0) if is_finite(percent) else 0.0
+
+static func transparency_row(percent: float) -> Dictionary:
+	return {"key": "subtitle_transparency", "value": transparency(percent),
+		"slider": true, "span": Vector3(0, 80, 5), "unit": "%", "reset_value": 0.0}
+
 static func style_row(value: Variant) -> Dictionary:
 	return {"key": "subtitle_style", "value": normalize(value), "choices": PRESETS, "compact": true}
 

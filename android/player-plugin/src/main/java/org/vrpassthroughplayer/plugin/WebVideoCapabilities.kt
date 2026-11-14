@@ -20,9 +20,9 @@ internal class WebVideoCapabilities(private val maxHeight: Int = 1080) {
             track.videoCodec.startsWith("hev1") || track.videoCodec.startsWith("hvc1") || track.videoCodec == "hevc" -> "video/hevc"
             else -> return false
         }
-        // Reject high bit-depth/HDR until that representation has an explicit output policy.
+        // VP9 profile policy remains conservative. AV1 Main10 can also carry SDR.
         if (mime == "video/x-vnd.on2.vp9" && track.videoCodec.startsWith("vp09.") && track.videoCodec.split('.').getOrNull(1) != "00") return false
-        if (mime == "video/av01" && track.videoCodec.split('.').getOrNull(3) != "08") return false
+        val av1Profile = if (mime == "video/av01") av1SdrProfile(track.videoCodec) ?: return false else null
         return codecs.any { codec -> runCatching {
             val caps = codec.getCapabilitiesForType(mime)
             val video = caps.videoCapabilities ?: return@runCatching false
@@ -30,6 +30,7 @@ internal class WebVideoCapabilities(private val maxHeight: Int = 1080) {
             video.areSizeAndRateSupported(track.width, track.height, rate) && caps.isFormatSupported(
                 MediaFormat.createVideoFormat(mime, track.width, track.height).apply {
                     setFloat(MediaFormat.KEY_FRAME_RATE, rate.toFloat())
+                    if (av1Profile != null) setInteger(MediaFormat.KEY_PROFILE, av1Profile)
                     // Decoder profile/level support for AVC is checked against the RFC 6381 value.
                     if (mime == "video/avc" && track.videoCodec.startsWith("avc1.")) {
                         val value = track.videoCodec.substringAfter('.')
@@ -64,5 +65,18 @@ internal class WebVideoCapabilities(private val maxHeight: Int = 1080) {
                     }
                 })
         }.getOrDefault(false) }
+    }
+
+    companion object {
+        // AV1 ISOBMFF section 5 defines the omitted suffix as BT.709 4:2:0 SDR.
+        // An explicit suffix must prove that same color space. PQ/HLG, unspecified
+        // colors, other profiles and 12-bit stay outside this output policy.
+        internal fun av1SdrProfile(codec: String): Int? {
+            val match = Regex("av01\\.0\\.([0-1][0-9]|2[0-3])([mh])\\.(08|10)(?:\\.0\\.11[0-2]\\.01\\.01\\.01\\.[01])?",
+                RegexOption.IGNORE_CASE).matchEntire(codec) ?: return null
+            if (match.groupValues[2].equals("h", true) && match.groupValues[1].toInt() < 8) return null
+            return if (match.groupValues[3] == "10") MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10
+                else MediaCodecInfo.CodecProfileLevel.AV1ProfileMain8
+        }
     }
 }

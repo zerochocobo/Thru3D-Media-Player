@@ -77,6 +77,7 @@ internal object MpvSourceNative {
     /** Cropped premultiplied RGBA for this exact bitmap version, empty if superseded. */
     @JvmStatic external fun subtitleBitmap(handle: Long, version: Long): ByteArray
     @JvmStatic external fun subtitleBitmapTinted(handle: Long, version: Long, rgb: Int): ByteArray
+    @JvmStatic external fun subtitleBitmapStyled(handle: Long, version: Long, rgb: Int, opacity: Float): ByteArray
     @JvmStatic external fun seek(handle: Long, positionMs: Long, exact: Boolean = true): Boolean
     /** Present at most fps source frames per second (0 = all), chosen by scheduled display time before rendering. */
     @JvmStatic external fun setFrameCap(handle: Long, fps: Int)

@@ -13,6 +13,15 @@ var toolbar_shown := true
 var _fullscreen_context := Vector2i(-1, -1)
 var _fullscreen_active := false
 var _fullscreen_restore: Variant = null
+## Gecko lays out DOM fullscreen at its fixed screen size (1440x900 CSS), whatever
+## the window's shape; the viewport follows it meanwhile, or the page shows a blank
+## side and loses an edge.
+var web_fullscreen := false
+## Focus video: the pending request to the page's frames ({request, context, at}).
+var _video_locate := {}
+var _video_missing_until := 0
+const VIDEO_LOCATE_MS := 800
+const VIDEO_MISSING_MS := 2500
 const MOVE := 986030
 const WEB := 986020
 const RESIZE := 986031
@@ -21,9 +30,10 @@ const RESIZE_BOTTOM := 986033
 const SELECT := 986019
 const MIN_PAGE := Vector2(1.44, 1.44 / Surface.MAX_RATIO)
 const MAX_PAGE := Vector2(2.88, MIN_PAGE.x / Surface.MIN_RATIO)
-const CinemaBlueprint := preload("res://scripts/environments/cinema_blueprint.gd")
 const MIN_DISPLAY := RECT.size * 0.6
-const MAX_DISPLAY := Vector2(CinemaBlueprint.SCREEN_WIDTH, CinemaBlueprint.SCREEN_HEIGHT)
+# A floating window: about 31° wide at the 8 m distance limit. Push it away for a larger view.
+const MAX_DISPLAY := Vector2(4.5, 4.5)
+const GRIP_ZOOM_RATE := 0.5 # natural-log scale per second at full deflection (≈1.6×)
 const RESIZE_OFFSET := Vector2(0.09, 0.09)
 const RESIZE_EDGE_SIZE := Vector2(0.14, 0.26)
 const RESIZE_CORNER_SIZE := Vector2(0.18, 0.18)
@@ -125,6 +135,9 @@ func set_toolbar_shown(shown: bool) -> void:
 	refresh(); effect_controls.sync()
 
 func sync_fullscreen(current: Dictionary) -> void:
+	var fullscreen_page: bool = current.get("fullscreen", false)
+	if fullscreen_page != web_fullscreen:
+		web_fullscreen = fullscreen_page; refresh()
 	if on_screen():
 		_fullscreen_restore = null; _fullscreen_active = false
 		set_toolbar_shown(true); return
@@ -308,46 +321,106 @@ func _sync_presentation() -> void:
 		_near_applied = global_transform
 	elif _screen_attached:
 		global_transform = _floating_pose; _screen_attached = false; _near_pose = null; _near_applied = null
+## Size the webpage is laid out at: the window's page, or the screen during fullscreen.
+func render_size() -> Vector2:
+	return RECT.size if web_fullscreen else page_size
 func full_page_layout() -> Dictionary:
 	if on_screen():
 		var screen := cinema()
-		var size := page_size * minf(float(screen.width) / page_size.x, float(screen.height) / page_size.y)
+		var render := render_size()
+		var size := render * minf(float(screen.width) / render.x, float(screen.height) / render.y)
 		var basis := Basis(Vector3.UP, float(screen.get("yaw", 0.0)))
 		basis *= Basis(Vector3.RIGHT, float(screen.get("pitch", 0.0)))
 		var pose := Transform3D(basis, Vector3(float(screen.position[0]), float(screen.position[1]), float(screen.position[2])) + basis.z * 0.06)
 		return {"pose": pose, "size": size}
-	var bounds := page_rect()
+	return _floating_layout(page_rect())
+func _floating_layout(bounds: Rect2) -> Dictionary:
 	var pose := global_transform * Transform3D(Basis.IDENTITY, Vector3(bounds.get_center().x, bounds.get_center().y, 0.012))
-	var size := page_size * Vector2(pose.basis.get_scale().x, pose.basis.get_scale().y)
+	var size := bounds.size * Vector2(pose.basis.get_scale().x, pose.basis.get_scale().y)
 	pose.basis = pose.basis.orthonormalized()
 	return {"pose": pose, "size": size}
 func focus_tab() -> int:
 	return int(browser.window_state(window_id).get("tab_id", window_id))
+## The region the viewer drew; focus_crop() is what is actually shown of it.
+func focus_region() -> Rect2:
+	# Fullscreen relays the page out, so a region drawn on the normal layout no longer applies.
+	return Focus.FULL if web_fullscreen else browser.focus_regions.get(focus_tab(), Focus.FULL)
 func focus_crop() -> Rect2:
-	return browser.focus_regions.get(focus_tab(), Focus.FULL)
-func is_focused() -> bool: return focus_crop() != Focus.FULL
+	var region := focus_region()
+	if on_screen():
+		# The distant screen keeps the page's shape: fill it with surrounding page.
+		var aspect := page_size.x / page_size.y
+		return Focus.framed(region, page_size, aspect, aspect)
+	return Focus.framed(region, page_size, Focus.MIN_ASPECT, Focus.MAX_ASPECT)
+func is_focused() -> bool: return focus_region() != Focus.FULL
+func is_video_focused() -> bool: return is_focused() and browser.video_regions.get(focus_tab()) == focus_region()
+func locating_video() -> bool: return not _video_locate.is_empty()
+func video_missing() -> bool: return Time.get_ticks_msec() < _video_missing_until
+## Local rectangle of the visible page. A focused floating window takes the crop's
+## shape at the page's area, hanging centred under the toolbar, so the frame wraps
+## the picture instead of leaving margins. The viewport never reflows.
+func display_rect() -> Rect2:
+	var page := page_rect()
+	if on_screen(): return page
+	var size := Focus.area_size(page_size, render_size().aspect()) if web_fullscreen else Focus.focused_size(page_size, focus_crop())
+	if size.is_equal_approx(page.size): return page
+	return Rect2(Vector2(page.get_center().x - size.x / 2, page.end.y - size.y), size)
 func source_point(uv: Vector2) -> Vector2:
 	return Focus.map_point(uv, focus_crop())
 # CSS pixels covered by one unit of page_point() UV, including focus zoom.
 func page_css_scale() -> Vector2:
-	return Vector2(Surface.logical_for(page_size)) * focus_crop().size
+	return Vector2(Surface.logical_for(render_size())) * focus_crop().size
 func page_layout() -> Dictionary:
+	if not on_screen(): return _floating_layout(display_rect())
 	var layout := full_page_layout()
-	layout.size = Focus.fitted(layout.size, Vector2(Surface.pixels_for(page_size, browser.low_end)), focus_crop())
+	layout.size = Focus.fitted(layout.size, Vector2(Surface.pixels_at(render_size(), browser.pixel_units)), focus_crop())
 	return layout
 func toggle_focus() -> void:
-	end_drag()
+	end_drag(); _video_locate = {}; _video_missing_until = 0
 	if selecting: selecting = false
-	elif is_focused(): browser.focus_regions.erase(focus_tab())
+	elif is_focused() and not is_video_focused(): browser.focus_regions.erase(focus_tab())
 	else:
+		# From a focused video the free box is drawn on the whole page again.
+		browser.focus_regions.erase(focus_tab())
 		selecting = true; selection = Rect2()
 		_selection_context = Vector2i(focus_tab(), int(browser.window_state(window_id).get("navigation", 0)))
 	refresh()
 	browser.effects_changed.emit()
+## Focus video: every frame reports where its videos are; the reply is applied in sync_page_state().
+func toggle_video_focus() -> void:
+	end_drag(); selecting = false; _video_missing_until = 0
+	if locating_video() or is_video_focused():
+		if is_video_focused(): browser.focus_regions.erase(focus_tab())
+		_video_locate = {}
+	else:
+		browser.video_locate_request += 1
+		var navigation := int(browser.window_state(window_id).get("navigation", 0))
+		_video_locate = {"request": browser.video_locate_request, "context": Vector2i(focus_tab(), navigation), "at": Time.get_ticks_msec()}
+		browser._video_command("locate_video", {"window": window_id, "tab": focus_tab(), "navigation": navigation, "request": _video_locate.request})
+	refresh()
+	browser.effects_changed.emit()
 func sync_page_state() -> void:
-	var context := Vector2i(focus_tab(), int(browser.window_state(window_id).get("navigation", 0)))
+	var current: Dictionary = browser.window_state(window_id)
+	var context := Vector2i(focus_tab(), int(current.get("navigation", 0)))
 	if selecting and context != _selection_context:
 		selecting = false; end_drag(); refresh()
+	if _video_missing_until > 0 and not video_missing():
+		_video_missing_until = 0; refresh(); browser.effects_changed.emit()
+	if locating_video(): _sync_video_locate(current, context)
+func _sync_video_locate(current: Dictionary, context: Vector2i) -> void:
+	if context != _video_locate.context:
+		_video_locate = {}; refresh(); browser.effects_changed.emit(); return
+	var reply: Dictionary = current.get("video_locate", {})
+	var frames: Array = reply.get("frames", []) if int(reply.get("request", 0)) == int(_video_locate.request) else []
+	var waited := Time.get_ticks_msec() - int(_video_locate.at)
+	if waited < VIDEO_LOCATE_MS and (frames.is_empty() or frames.size() < int(reply.get("ports", 0))): return
+	_video_locate = {}
+	var region := Focus.video_region(frames)
+	if region.has_area():
+		browser.focus_regions[context.x] = region; browser.video_regions[context.x] = region
+	else: _video_missing_until = Time.get_ticks_msec() + VIDEO_MISSING_MS
+	refresh()
+	browser.effects_changed.emit()
 func show_press(uv: Vector2) -> void:
 	_press_uv = uv; _press_until = Time.get_ticks_msec() + 280
 func finish_selection() -> void:
@@ -382,13 +455,14 @@ func _update_feedback() -> void:
 	_create_feedback()
 	_feedback.visible = visible and not page_input_blocked() and not browser.start_page.active(window_id) and not browser.overlay_open(window_id)
 	if not _feedback.visible: return
-	var frame := full_page_layout()
+	# A reshaped floating page is its own frame: loading and press feedback follow it.
+	var frame := full_page_layout() if on_screen() or not is_focused() else page_layout()
 	_feedback.global_transform = frame.pose
 	var size: Vector2 = frame.size
 	var page: Vector2 = page_layout().size
 	var backing: MeshInstance3D = _feedback.get_node("background")
 	_feedback_rect(backing, Rect2(-size / 2, size), -0.001)
-	backing.visible = is_focused() and toolbar_shown
+	backing.visible = is_focused() and toolbar_shown and on_screen()
 	var state: Dictionary = browser.window_state(window_id)
 	var now := Time.get_ticks_msec()
 	if _feedback_page != focus_tab():
@@ -499,7 +573,11 @@ func _draw() -> void:
 		for decoration in _decorations: _raise_chrome(decoration)
 
 func toolbar_bounds() -> Rect2:
-	return HEADER if on_screen() else Rect2(HEADER.position, Vector2(page_size.x + 0.02, HEADER.size.y))
+	if on_screen(): return HEADER
+	# Never narrower than its own controls, centred over a narrower focused page.
+	var shown := display_rect()
+	var width := maxf(shown.size.x, RECT.size.x) + 0.02
+	return Rect2(Vector2(shown.get_center().x - width / 2, HEADER.position.y), Vector2(width, HEADER.size.y))
 
 func _raise_chrome(node: Node) -> void:
 	if node is Label3D:
@@ -517,6 +595,9 @@ func _activate(target: int) -> void:
 	if target == effect_controls.CHROME:
 		_fullscreen_restore = null
 		set_toolbar_shown(not toolbar_shown); return
+	if target == effect_controls.VIDEO_FOCUS:
+		if not browser.start_page.active(window_id): browser.cancel(); toggle_video_focus()
+		return
 	if target == effect_controls.KEYBOARD:
 		browser.toggle_keyboard(window_id); effect_controls.sync(); return
 	if target == browser.BASE + 21:
@@ -537,6 +618,8 @@ func _depth_preview(key: String, value: Variant) -> void:
 	elif key == "position": depth.position = depth.Position.normalize(value)
 
 func _depth_changed(key: String, value: Variant) -> void:
+	if key == "web_clarity":
+		browser.menu.setting_changed.emit(key, value); refresh(); return
 	depth.change(key, float(value) / 100.0 if key == "strength" else value)
 	if key == "auto_3d_hidden":
 		for peer in browser.windows.values():
@@ -548,9 +631,9 @@ func _depth_changed(key: String, value: Variant) -> void:
 	browser.effects_changed.emit()
 
 func _draw_depth_settings() -> void:
-	var panel := _quad(Vector2(0.98, 0.56), Vector3(0.13, 0.095, 0.028), PANEL, 30)
+	var panel := _quad(Vector2(0.98, 0.70), Vector3(0.13, 0.025, 0.028), PANEL, 30)
 	add_child(panel); _decorations.append(panel); _pointer_panels.append(panel)
-	var title := _label(I18n.t("Browser effects"), Vector3(-0.30, 0.325, 0.04), 24)
+	var title := _label(I18n.t("Settings"), Vector3(-0.30, 0.325, 0.04), 24)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; title.render_priority = 32
 	_button(browser.BASE + 17, "", Vector2(0.54, 0.325), Vector2(0.08, 0.08), true, "close")
 	_buttons.back().node.position.z = 0.04
@@ -573,6 +656,17 @@ func _draw_depth_settings() -> void:
 		"hint":"Automatically enable 2D to 3D when browser menus are hidden."}, Vector2(0.50, -0.05), 0.09, 0.055)
 	for button in _buttons.slice(auto_first):
 		button.node.position.z += 0.038; _depth_overlay_priority(button.node)
+	var clarity_title := _label(I18n.t("Page clarity"), Vector3(-0.30, -0.18, 0.04), 20)
+	clarity_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; clarity_title.render_priority = 32
+	var clarity_first := _buttons.size()
+	depth_choices.field(null, {"key": "web_clarity", "value": browser.clarity, "choices": [
+		{"value": "low", "label": "Low", "hint": "Smoother pages"}, {"value": "medium", "label": "Medium"},
+		{"value": "high", "label": "High", "hint": "Sharper text"}]}, Vector2(0.30, -0.18), 0.48, 0.055)
+	for button in _buttons.slice(clarity_first):
+		button.node.position.z += 0.038; _depth_overlay_priority(button.node)
+	if browser.clarity_pending():
+		var pending := _label(I18n.t("Restart to apply"), Vector3(0.30, -0.26, 0.04), 16)
+		pending.modulate = MUTED; pending.render_priority = 32
 	var popup_buttons := _buttons.size()
 	var popup_panels := _decorations.size()
 	var popup_labels := _labels.size()
@@ -638,10 +732,11 @@ func _local_grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 func draw_frame_panels() -> void:
 	# The separate web layer sits below the menu layers. Capture a transparent
 	# centre rather than an opaque backdrop that would paint over the page.
-	var page := page_rect()
-	var header := Rect2(HEADER.position, Vector2(page.size.x + 0.02, HEADER.size.y))
-	for bounds in [header, Rect2(-0.60, page.position.y - 0.02, page.size.x + 0.02, 0.02),
-		Rect2(-0.60, page.position.y, 0.01, page.size.y), Rect2(page.end.x, page.position.y, 0.01, page.size.y)]:
+	var header := toolbar_bounds()
+	# The side and bottom strips wrap the shown page under the toolbar.
+	var page := display_rect()
+	for bounds in [header, Rect2(page.position.x - 0.01, page.position.y - 0.02, page.size.x + 0.02, 0.02),
+		Rect2(page.position.x - 0.01, page.position.y, 0.01, page.size.y), Rect2(page.end.x, page.position.y, 0.01, page.size.y)]:
 		var centre: Vector2 = bounds.get_center()
 		var panel := _quad(bounds.size, Vector3(centre.x, centre.y, 0), PANEL, 10)
 		panel.material_override.set_shader_parameter("corner_radius", 0.004)
@@ -654,9 +749,10 @@ func draw_frame_panels() -> void:
 			# Long, plain frame strips must not stretch the fixed-pixel chrome capture.
 			panel.set_meta("menu_eye_buffer", true)
 			panel.set_meta("browser_world_pointer", true)
-func draw_resize_handles() -> void:
+## A frameless page shows each grip only while the ray highlights its target.
+func draw_resize_handles(hover_only: bool = false) -> void:
 	# All three hit regions stay outside the webpage, including its fullscreen button.
-	var page := page_rect()
+	var page := display_rect()
 	for spec in [[RESIZE_RIGHT, Vector2(page.end.x + RESIZE_OFFSET.x, page.get_center().y), RESIZE_EDGE_SIZE],
 		[RESIZE_BOTTOM, Vector2(page.get_center().x, page.position.y - RESIZE_OFFSET.y), Vector2(RESIZE_EDGE_SIZE.y, RESIZE_EDGE_SIZE.x)],
 		[RESIZE, Vector2(page.end.x + RESIZE_OFFSET.x + 0.01, page.position.y - RESIZE_OFFSET.y - 0.01), RESIZE_CORNER_SIZE]]:
@@ -675,6 +771,8 @@ func draw_resize_handles() -> void:
 		for edge in marks:
 			var mark := _quad(Vector2(edge.z, edge.w), Vector3(edge.x + mark_offset.x, edge.y + mark_offset.y, 0.005), UiTheme.color("browser_mark"), 12)
 			tile.node.add_child(mark)
+			if hover_only:
+				mark.visible = false; tile.get_or_add("hover_marks", []).append(mark)
 	# The corner glyph hugs both edges. Extend the same target along those edges
 	# without putting a rectangular hit area over the website's fullscreen button.
 	for bounds in [Rect2(page.end.x + 0.01, page.position.y - 0.02, 0.08, 0.10),
@@ -740,7 +838,7 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 			return
 		if peer.drag.kind == SELECT:
 			var uv: Variant = peer.page_point(origin, direction)
-			if uv != null: peer.selection = Focus.selection(peer.drag.start, uv)
+			if uv != null: peer.selection = Focus.selection(peer.drag.start, uv, peer.page_size)
 			return
 		var capture: Dictionary = peer.drag
 		var point: Variant = peer.project_pointer(origin, direction, peer.global_transform.affine_inverse() * capture.pose)
@@ -767,7 +865,7 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 			if peer.drag.kind == SELECT:
 				var uv: Variant = peer.page_point(origin, direction) if tracked else null
 				if uv != null:
-					peer.selection = Focus.selection(peer.drag.start, uv); peer.finish_selection()
+					peer.selection = Focus.selection(peer.drag.start, uv, peer.page_size); peer.finish_selection()
 				else: peer.end_drag(); peer.selection = Rect2()
 			else: peer.end_drag(); peer.save_layout()
 			return
@@ -792,6 +890,19 @@ func adjust_size(amount: float) -> void:
 	if on_screen(): return
 	var factor := clampf(global_basis.get_scale().x + amount, minimum_scale(), maximum_scale())
 	_scale_about_centre(factor, global_transform); save_layout()
+## Grip + stick left/right. Scaling the captured pose keeps the ongoing grip move in step.
+func grip_zoom(stick_x: float, delta: float, target: Dictionary) -> bool:
+	if on_screen() or absf(stick_x) <= 0.2: return false
+	var amount := signf(stick_x) * (absf(stick_x) - 0.2) / 0.8 * GRIP_ZOOM_RATE * minf(delta, 0.1)
+	var current := global_basis.get_scale().x
+	var factor := clampf(current * exp(amount), minimum_scale(), maximum_scale())
+	if is_equal_approx(factor, current): return false
+	var ratio := factor / current
+	var pose: Transform3D = target.pose
+	var basis := pose.basis.scaled(Vector3.ONE * ratio)
+	target.pose = Transform3D(basis, pose * CENTRE - basis * CENTRE)
+	_scale_about_centre(factor, global_transform)
+	refresh(); return true
 func adjust_distance(amount: float) -> void:
 	var centre := to_global(CENTRE); var offset := centre - head().origin
 	var distance := clampf(offset.length() + amount, 0.6, 8.0)

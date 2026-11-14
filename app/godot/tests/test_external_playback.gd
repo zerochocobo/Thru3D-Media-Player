@@ -48,7 +48,13 @@ func _initialize() -> void:
 func run() -> void:
 	var local := Naming.complete({}, 3840, 1920)
 	var external := Naming.complete({"external_unknown": true}, 3840, 1920)
-	check(local.geometry != 0 and external.geometry == 0 and not external.stereo, "Unknown streams stay flat while stable local inference is preserved")
+	check(local.geometry == 1 and external == local and external.stereo, "Unknown external 2:1 videos infer VR180 SBS just like local videos")
+	for size in [Vector2i(8192, 4096), Vector2i(7680, 3840), Vector2i(3840, 1920)]:
+		var inferred := Naming.complete({"external_unknown": true}, size.x, size.y)
+		check(inferred.geometry == 1 and inferred.stereo and not inferred.top_bottom, "External 2:1 sizes infer VR180 SBS: %s" % size)
+	for size in [Vector2i(1920, 1080), Vector2i(4096, 4096), Vector2i(8191, 4096)]:
+		var inferred := Naming.complete({"external_unknown": true}, size.x, size.y)
+		check(inferred.geometry == 0 and not inferred.stereo, "Other unmarked external shapes retain their fallback: %s" % size)
 	var named := Naming.from_name("sample_180_SBS.mp4")
 	named.external_unknown = true
 	check(Naming.complete(named, 3840, 1920).geometry == local.geometry, "Explicit VR180 names survive external handoff")
@@ -62,9 +68,9 @@ func run() -> void:
 	video.set_process(false)
 	video.platform = bridge
 	check(video.open_local("externalvideo://fixture/video", "Movie", 1234, true, false, "", {"external_temporary": true}), "External request reaches the real playback dispatch")
-	check(int(bridge.calls.back()[1]) == 1234 and video._layout_pending.get("external_unknown", false), "Start position and conservative inference reach the player")
+	check(int(bridge.calls.back()[1]) == 1234 and video._layout_pending.get("external_unknown", false), "Start position and external source identity reach the player")
 	complete(video, 3840, 1920)
-	check(video.geometry == 0 and not video.stereo_sbs, "No transient 2:1 to VR180 switch after the first frame")
+	check(video.geometry == 1 and video.stereo_sbs, "External 2:1 source resolves to VR180 SBS after the first frame")
 	check_preferences(video, bridge)
 	video.free()
 	for failure in failures: push_error(failure)
@@ -127,7 +133,7 @@ func check_preferences(video: Node3D, bridge: Host) -> void:
 	video.preferred_playback_speed = 1.65
 	main._save_playback_adjustments()
 	var revision_count := bridge.revisions.size()
-	open_external(video)
+	open_external(video, "Video", 1920, 1080)
 	check(not bridge.depths.back(), "Unknown external video waits for actual format before requesting conversion")
 	check(video.depth_requested and video.auto_depth and bridge.revisions.size() > revision_count and bridge.revisions.back(), "Saved default 2D to 3D reaches native revision after flat format is confirmed")
 	check(video.playback_speed == 1.65 and bridge.rates.back() == [video.media.session_id, 1.65], "External playback applies the global playback speed")
@@ -136,10 +142,10 @@ func check_preferences(video: Node3D, bridge: Host) -> void:
 	open_external(video, "Video", 4096, 4096, {"stereo_mode": "ab2l"})
 	check(video.stereo_sbs and video.top_bottom and not video.depth_requested and not bridge.depths.back(), "Native external stereo never starts default flat conversion")
 	main._on_setting_changed("video_auto_3d", false)
-	open_external(video)
+	open_external(video, "Video", 1920, 1080)
 	check(not video.depth_requested and not bridge.depths.back(), "Disabled global conversion remains off for the next external video")
 	check(video.set_depth(true), "Manual conversion can be enabled for an external video")
-	open_external(video)
+	open_external(video, "Video", 1920, 1080)
 	check(not video.depth_requested and video.mode_memory.entries.is_empty(), "Manual per-file conversion does not persist under a fresh temporary locator")
 	main._on_setting_changed("video_auto_3d", true)
 	video.set_projection(1); video.set_stereo_layout(1)

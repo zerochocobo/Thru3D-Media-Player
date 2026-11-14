@@ -149,7 +149,7 @@ func run() -> void:
 		window.set_mode("cinema"); window.refresh(); reveal(footer)
 		check(footer.global_position.distance_to(main.eye.origin) < 2.2 and footer.global_position.distance_to(window.page_layout().pose.origin) > 4.0, "Cinema/beach effects and global row stay near the viewer, away from the projected screen")
 		check(footer.global_footer and not button(footer,Actions.STATUS).is_empty() and button(footer,footer.CHROME).is_empty(), "Projected mode retains shared footer and omits frame-hide button")
-		check(footer._buttons.filter(func(b):return b.target>0).size() == 4, "Projected effects row has only focus, person passthrough, 3D and keyboard")
+		check(footer._buttons.filter(func(b):return b.target>0).size() == 5, "Projected effects row has only the two focus modes, person passthrough, 3D and keyboard")
 		window._activate(footer.CHROME); window.set_toolbar_shown(false)
 		window.sync_fullscreen({"tab_id":2,"navigation":1,"fullscreen":true})
 		check(window.toolbar_shown and not window.chrome_hidden(), "Stale hide commands and webpage fullscreen cannot hide projected near menu")

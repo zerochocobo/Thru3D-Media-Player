@@ -52,6 +52,12 @@ class Provider extends OpenXRExtensionWrapper:
 var platform: Object
 var _api: OpenXRAPIExtension
 var _provider: Provider
+## iQIYI QIYU factory runtime (XR_QIYU_passthrough): ALPHA_BLEND alone composites over black; the
+## runtime opens the camera only while its passthrough layer is in the frame, beneath every other layer.
+const QIYU_PASSTHROUGH_ORDER := -64
+var _qiyu_provider: Provider
+var _qiyu_on := false
+var _qiyu_session := 0
 var _session := 0
 var _space := 0
 var _types := {} # Geometry -> natively supported
@@ -98,6 +104,11 @@ func _init(target_platform: Object) -> void:
 		return
 	_provider = Provider.new()
 	_api.register_composition_layer_provider(_provider)
+	if PlatformMethods.supports(platform, "video_layer_qiyu_passthrough_layer") and bool(platform.video_layer_qiyu_passthrough()):
+		_qiyu_provider = Provider.new()
+		_qiyu_provider.addresses = PackedInt64Array([0])
+		_qiyu_provider.orders = PackedInt32Array([QIYU_PASSTHROUGH_ORDER])
+		_api.register_composition_layer_provider(_qiyu_provider)
 	# Godot's own layer nodes report whether the runtime enabled each layer extension.
 	for probe in [["quad", OpenXRCompositionLayerQuad.new()], ["cylinder", OpenXRCompositionLayerCylinder.new()],
 			["equirect", OpenXRCompositionLayerEquirect.new()]]:
@@ -241,6 +252,22 @@ func update_session() -> void:
 			return name.contains("composition_layer") or name.contains("swapchain") or name.contains("passthrough") or name.contains("color") or name.contains("space_warp"))
 		var qiyu_passthrough := PlatformMethods.supports(platform, "video_layer_qiyu_passthrough") and bool(platform.video_layer_qiyu_passthrough())
 		DiagnosticLog.record("xr_layer_extensions", {"names": " ".join(PackedStringArray(layer_extensions)), "qiyu_passthrough_enabled": qiyu_passthrough})
+
+## Call every frame: follows the environment blend mode, which is ALPHA_BLEND exactly while Thru3D
+## shows passthrough (xr_display.gd).
+func sync_qiyu_passthrough() -> void:
+	if not _qiyu_provider or not _api or not _api.is_running(): return
+	update_session()
+	if not bound: return
+	var xr := XRServer.find_interface("OpenXR") as OpenXRInterface
+	var wanted := xr != null and xr.environment_blend_mode == XRInterface.XR_ENV_BLEND_MODE_ALPHA_BLEND
+	if wanted == _qiyu_on and _session == _qiyu_session: return
+	_qiyu_on = wanted
+	_qiyu_session = _session
+	var result := int(platform.video_layer_qiyu_passthrough_layer(wanted))
+	_qiyu_provider.addresses[0] = maxi(result, 0)
+	_qiyu_provider.count = 1 if result > 0 else 0
+	DiagnosticLog.record("qiyu_passthrough", {"enabled": wanted, "layer": result > 0, "result": mini(result, 0)})
 
 ## A picture swapchain was replaced: the native layers were dropped, send them again.
 func invalidate() -> void:

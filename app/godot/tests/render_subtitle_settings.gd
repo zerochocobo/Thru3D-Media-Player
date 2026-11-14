@@ -42,7 +42,7 @@ func _run() -> void:
 		menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group", "") == "alpha")[0])
 		menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group", "") == "subtitles")[0])
 		menu._choose(menu.rows.filter(func(row): return row.get("subtitle_settings_group", "") == "appearance")[0])
-		check(["subtitle_size", "subtitle_style", "subtitle_line", "subtitle_distance", "subtitle_direction", "subtitle_horizontal_position", "subtitle_vertical_position"].all(func(key): return menu.rows.any(func(row): return row.get("key", "") == key)), "All seven subtitle controls expand in their category: " + language)
+		check(["subtitle_size", "subtitle_transparency", "subtitle_style", "subtitle_line", "subtitle_distance", "subtitle_direction", "subtitle_horizontal_position", "subtitle_vertical_position"].all(func(key): return menu.rows.any(func(row): return row.get("key", "") == key)), "All eight subtitle controls expand in their category: " + language)
 		await shot(viewport, output.path_join("subtitles_top_" + language + ".png"))
 		menu._set_scroll(menu._max_scroll())
 		await shot(viewport, output.path_join("subtitles_" + language + ".png"))
@@ -104,7 +104,7 @@ func _run() -> void:
 			player.dismiss(); player.toggle(); player._activate(110)
 			check(player._subtitle_open and player._subtitle_appearance_open and not player.choices.sliders.is_empty(), "Player appearance starts expanded")
 			await shot(viewport, output.path_join("player_%s_%s_collapsed.png" % [language, "flat" if geometry == 0 else "immersive"]))
-			check(player._subtitle_appearance_open and player.choices.sliders.size() == (3 if geometry == 0 else 5), "Player disclosure opens all appropriate controls")
+			check(player._subtitle_appearance_open and player.choices.sliders.size() == (4 if geometry == 0 else 6), "Player disclosure opens all appropriate controls")
 			var visual_styles := player.choices.targets.values().filter(func(item): return item.get("key") == "subtitle_style")
 			check(visual_styles.size() == 5, "Player appearance contains the five visual samples")
 			check_line_choices(player, language)
@@ -114,7 +114,7 @@ func _run() -> void:
 		player_state.geometry = 0
 		player_state.subtitle_options[0].codec = "hdmv_pgs_subtitle"
 		player.dismiss(); player.toggle(); player._activate(110)
-		check(player.choices.sliders.size() == 3 and not player.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "PGS exposes sync/size/position in every language")
+		check(player.choices.sliders.size() == 4 and not player.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "PGS exposes sync/size/transparency/position in every language")
 		check(not player.choices.targets.values().any(func(item): return item.get("key") == "subtitle_line"), "PGS does not offer text line filtering")
 		await shot(viewport, output.path_join("player_%s_pgs.png" % language))
 		for seconds in [-1.5, 2.0]:

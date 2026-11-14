@@ -880,6 +880,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         runCatching { VideoLayerNative.releaseImage(slot, mipmaps) }.getOrDefault(false)
     @UsedByGodot fun video_layer_color_scale_bias(): Boolean = runCatching { VideoLayerNative.colorScaleBias() }.getOrDefault(false)
     @UsedByGodot fun video_layer_qiyu_passthrough(): Boolean = runCatching { VideoLayerNative.qiyuPassthrough() }.getOrDefault(false)
+    @UsedByGodot fun video_layer_qiyu_passthrough_layer(enabled: Boolean): Long =
+        runCatching { VideoLayerNative.qiyuPassthroughLayer(enabled) }.getOrDefault(0L)
     @UsedByGodot fun video_layer_runtime_extensions(): String = runCatching { VideoLayerNative.runtimeExtensions() }.getOrDefault("")
     @UsedByGodot fun video_layer_count(): Int = runCatching { VideoLayerNative.layerCount() }.getOrDefault(0)
     @UsedByGodot fun video_layer_address(index: Int): Long = runCatching { VideoLayerNative.layerAddress(index) }.getOrDefault(0L)
@@ -960,7 +962,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun get_mpv_subtitles(id: Int, afterSequence: Long): String = if (closed.get()) "" else mpv.subtitles(id, afterSequence)
     @UsedByGodot fun get_mpv_loading_status(id: Int): String = if (closed.get()) "" else mpv.loadingStatus(id)
     @UsedByGodot fun get_mpv_subtitle_bitmap(id: Int, version: Long): ByteArray = if (closed.get()) ByteArray(0) else mpv.subtitleBitmap(id, version)
-    @UsedByGodot fun get_mpv_subtitle_bitmap_tinted(id: Int, version: Long, rgb: Int): ByteArray = if (closed.get()) ByteArray(0) else mpv.subtitleBitmap(id, version, rgb)
+    @UsedByGodot fun get_mpv_subtitle_bitmap_tinted(id: Int, version: Long, rgb: Int): ByteArray = if (closed.get()) ByteArray(0) else mpv.subtitleBitmap(id, version, rgb, 1f)
+    @UsedByGodot fun get_mpv_subtitle_bitmap_styled(id: Int, version: Long, rgb: Int, opacity: Float): ByteArray = if (closed.get()) ByteArray(0) else mpv.subtitleBitmap(id, version, rgb, opacity)
     @UsedByGodot fun set_mpv_depth_view(id: Int, shift: Double, convergence: Double): Boolean =
         !closed.get() && mpv.setDepthView(id, shift, convergence)
     @UsedByGodot fun set_mpv_portrait_depth(id: Int, enabled: Boolean): Boolean =
@@ -985,15 +988,15 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         !closed.get() && mpv.requestPixelMask(request, id, token)
     @UsedByGodot fun release_mpv_pixel_pin(id: Int, token: Long): Boolean = mpv.unpinPixelPair(id, token)
     @UsedByGodot fun debug_monotonic_us(): Long = if (BuildConfig.DEBUG) System.nanoTime()/1000 else 0
-    // Experimental scene import (Debug builds only for now).
+    // Scene import.
     @UsedByGodot fun unity_scene_unpack(bundle: String, output: String, maxTexture: Int, maxSkyTexture: Int): String =
-        if (BuildConfig.DEBUG) UnityScene.run(bundle, output, maxTexture, maxSkyTexture) else "Unity scenes are not supported on this build"
+        UnityScene.run(bundle, output, maxTexture, maxSkyTexture)
     @UsedByGodot fun scene_texture_etc2(rgba: ByteArray, width: Int, height: Int, alpha: Boolean): ByteArray =
-        if (BuildConfig.DEBUG) UnityScene.etc2(rgba, width, height, alpha) else ByteArray(0)
+        UnityScene.etc2(rgba, width, height, alpha)
     private val sceneFiles = SceneFileImport({ activity?.applicationContext }, sources::audioDownload, sources::releasePhotoStream) { id, json ->
         if (!closed.get()) emitSignal("scene_file_imported", id, json)
     }
-    @UsedByGodot fun import_scene_file(uri: String, title: String): Int = if (closed.get() || !BuildConfig.DEBUG) -1 else sceneFiles.start(uri, title)
+    @UsedByGodot fun import_scene_file(uri: String, title: String): Int = if (closed.get()) -1 else sceneFiles.start(uri, title)
     @UsedByGodot fun cancel_scene_file_import(id: Int) = sceneFiles.cancel(id)
     @UsedByGodot fun scene_file_import_progress(id: Int): Double = sceneFiles.progress(id)
     internal fun requestMpvPlayerCommand(json: String): Int {

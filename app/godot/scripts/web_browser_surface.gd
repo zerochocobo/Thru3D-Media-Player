@@ -63,13 +63,16 @@ static func logical_for(size: Vector2) -> Vector2i:
 	return Vector2i(columns, rows) * CSS_UNITS
 
 static func pixels_for(size: Vector2, low_end: bool) -> Vector2i:
-	var logical := logical_for(size)
-	return logical / CSS_UNITS * (LOW_END_PIXEL_UNITS if low_end else PIXEL_UNITS)
+	return pixels_at(size, LOW_END_PIXEL_UNITS if low_end else PIXEL_UNITS)
+
+## Surface pixels for Gecko's process-wide raster tier (browser clarity: 3, 4 or 5 units).
+static func pixels_at(size: Vector2, units: int) -> Vector2i:
+	return logical_for(size) / CSS_UNITS * units
 
 func configure(menu: Node3D, backend: Object, id: int = 1) -> void:
 	window_id = id
 	target = weakref(menu); platform = backend
-	pixels = LOW_END_PIXELS if menu.browser.low_end else PIXELS
+	pixels = LOGICAL / CSS_UNITS * menu.browser.pixel_units
 	requested_pixels = pixels
 	set_meta("menu_eye_buffer", true)
 
@@ -162,7 +165,7 @@ func _process(_delta: float) -> void:
 		layer = null; attached = false; state = {}; _state_raw = ""; retry_at = 0
 	# Recreate only after a completed drag, with Gecko's release acknowledgement.
 	# Keep the pixel budget bounded even for an extremely wide or tall window.
-	var desired := pixels_for(menu.page_size, menu.browser.low_end)
+	var desired := pixels_at(menu.render_size(), menu.browser.pixel_units)
 	if desired != requested_pixels:
 		requested_pixels = desired; resize_at = Time.get_ticks_msec() + 250
 	if pixels != requested_pixels and menu.drag.is_empty() and Time.get_ticks_msec() >= resize_at:

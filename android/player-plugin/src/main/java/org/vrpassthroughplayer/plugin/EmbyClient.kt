@@ -4,6 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URI
 import java.net.URLEncoder
+import java.security.MessageDigest
 import java.util.UUID
 
 internal fun mediaId(id: String): String {
@@ -26,6 +27,8 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
     }
     override fun capabilities(): JSONObject = MediaLibraryPresentation.capabilities(
         facets = listOf("genres", "tags", "performers", "studios"), navigation = listOf("genres", "tags", "folders"),
+        sorts = listOf("created_at", "title", "date", "duration", "rating100") +
+            (if (account.provider == "emby") listOf("random") else emptyList()),
         filters = listOf("watched", "min_rating"), favoriteScope = "server", tree = true,
         excludes = if (account.provider == "emby") listOf("tags") else emptyList(), unclassified = listOf("genres", "tags"))
         .put("home_layout", "libraries").put("artwork", true).put("photos", true)
@@ -83,6 +86,16 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
             "Fields" to "MediaSources,MediaStreams,Overview,People,Genres,Studios,Chapters,Tags,Path,ParentId,ChildCount,PrimaryImageAspectRatio,Width,Height",
             "SortBy" to (mapOf("title" to "SortName", "date" to "PremiereDate", "duration" to "Runtime", "rating100" to "CommunityRating")[request.optString("sort")] ?: "DateCreated"),
             "SortOrder" to if (request.optString("direction") == "ASC") "Ascending" else "Descending")
+        if (account.provider == "emby" && page > 1 && request.has("start_index")) {
+            args["StartIndex"] = request.optInt("start_index").coerceIn(0, (page - 1) * 48)
+        }
+        if (account.provider == "emby" && request.optString("sort") == "random") {
+            val seed = request.optInt("random_seed")
+            mediaRequire(seed > 0, "Server query unsupported")
+            args["SortBy"] = "Random"
+            args["RandomSeed"] = seed
+            args.remove("SortOrder")
+        }
         if (folders) {
             // A container's Type need not be Folder (e.g. UserView or a plugin type).
             // Keep generic directory navigation and server counts intact; only exclude
@@ -148,7 +161,7 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
     private fun unclassified(args: LinkedHashMap<String, Any>, kind: String, page: Int): JSONObject {
         args["Limit"] = 128; args["Fields"] = "MediaSources,MediaStreams,Genres,Tags,ParentId,PrimaryImageAspectRatio"
         val out = JSONArray(); var matched = 0; var offset = 0
-        val start = (page - 1) * 48
+        val start = args.getValue("StartIndex") as Int
         while (true) {
             args["StartIndex"] = offset
             val result = get("Users/${user()}/Items", args)
@@ -275,10 +288,10 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         val artwork = images(data)
         val result = playableDetail(data).put("description", data.optString("Overview"))
             .put("images", artwork).put("backdrops", backdrops(data, artwork))
+        var hasAdditionalParts = false
         if (result.optInt("part_count") > 1 || partMarker.containsMatchIn(result.optString("basename"))) {
-            val additional = get("Videos/${mediaId(id)}/AdditionalParts", mapOf("UserId" to user(), "Fields" to "MediaSources,MediaStreams,Path,Chapters", "EnableImages" to true))
-                .getJSONArray("Items").objects()
-            mediaRequire(additional.size <= 128, "Server response too large")
+            val additional = additionalParts(id)
+            hasAdditionalParts = additional.any { it.getString("Id") != id }
             val parts = (listOf(data) + additional).distinctBy { it.getString("Id") }.map { raw ->
                 playableDetail(raw).apply {
                     val thumb = raw.optJSONObject("ImageTags")?.optString("Thumb").orEmpty()
@@ -299,7 +312,71 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
             val ordered = parts.sortedBy { it.optLong("part_number", Long.MAX_VALUE) }
             result.put("parts", JSONArray(ordered)).put("part_count", ordered.size)
         }
+        if (account.provider == "emby" && data.opt("CanDelete") == true && result.optString("kind") == "video") {
+            try {
+                val plan = deletePlan(id, data, hasAdditionalParts)
+                if (plan != null) result.put("delete_plan", JSONObject().put("token", plan.first).put("filename", plan.second))
+            } catch (error: MediaServerFailure) {
+                if (error.code == "Request cancelled") throw error
+            } catch (_: org.json.JSONException) {
+                // An unknown DeleteInfo response cannot authorize deletion.
+            }
+            if (!result.has("delete_plan")) result.put("delete_scope_unverified", true)
+        }
         return result.put("actors", JSONArray(result.getJSONArray("performers").objects().filter { it.optString("type") in setOf("", "Actor", "GuestStar") }))
+    }
+    private fun additionalParts(id: String): List<JSONObject> {
+        val parts = get("Videos/${mediaId(id)}/AdditionalParts", mapOf("UserId" to user(),
+            "Fields" to "MediaSources,MediaStreams,Path,Chapters", "EnableImages" to true)).getJSONArray("Items").objects()
+        mediaRequire(parts.size <= 128, "Server response too large")
+        return parts
+    }
+
+    private fun deletePlan(id: String, data: JSONObject, hasAdditionalParts: Boolean? = null): Pair<String, String>? {
+        if (account.provider != "emby" || data.optString("Id") != id || data.opt("CanDelete") != true ||
+            data.optBoolean("IsFolder") || data.optString("Type") !in setOf("Movie", "Episode", "Video") ||
+            data.optString("MediaType") != "Video" || data.optString("VideoType") !in setOf("", "VideoFile") ||
+            data.optInt("PartCount", 1) > 1) return null
+        val sources = data.optJSONArray("MediaSources") ?: return null
+        if (sources.length() != 1) return null
+        val source = sources.getJSONObject(0)
+        val path = data.optString("Path")
+        val filename = basename(path)
+        if (source.optString("Protocol") != "File" || source.optBoolean("IsRemote") ||
+            source.optString("Path") != path || filename.substringAfterLast('.', "").lowercase() !in fileVideoExtensions ||
+            !(path.startsWith('/') || path.startsWith("\\\\") || Regex("^[A-Za-z]:[/\\\\]").containsMatchIn(path))) return null
+        val paths = get("Items/${mediaId(id)}/DeleteInfo", mapOf("UserId" to user())).optJSONArray("Paths") ?: return null
+        if (paths.length() != 1 || paths.optString(0) != path) return null
+        if (hasAdditionalParts ?: (partMarker.containsMatchIn(filename) && additionalParts(id).any { it.getString("Id") != id })) return null
+        val identity = JSONArray(listOf(account.id, account.base, user(), id, path, source.optString("Id"),
+            data.optString("Etag"), data.optString("DateModified"))).toString()
+        val token = MessageDigest.getInstance("SHA-256").digest(identity.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return token to filename.take(256)
+    }
+
+    override fun deleteFile(request: JSONObject): JSONObject {
+        mediaRequire(account.provider == "emby", "File deletion unavailable for this source")
+        val id = mediaId(request.getString("scene_id"))
+        val token = request.optString("token")
+        mediaRequire(token.matches(Regex("[a-f0-9]{64}")), "File deletion failed")
+        val plan = try { deletePlan(id, item(id)) } catch (error: MediaServerFailure) {
+            if (error.httpStatus == 403) throw MediaServerFailure("File deletion permission denied")
+            if (error.httpStatus != 404) throw error
+            null
+        }
+        mediaRequire(plan?.first == token, "File changed; refresh the folder")
+        try {
+            http.release(http.open(account.endpoint("Items/$id"), method = "DELETE"))
+        } catch (error: MediaServerFailure) {
+            throw MediaServerFailure(when (error.httpStatus) {
+                401 -> "Server authentication required"
+                403 -> "File deletion permission denied"
+                in 400..499 -> "File deletion failed"
+                else -> "Delete result needs checking"
+            })
+        }
+        return JSONObject().put("deleted", true).put("scene_id", id)
     }
     private fun playableDetail(data: JSONObject): JSONObject {
         val result = summary(data).put("markers", chapterMarkers(data))
@@ -328,6 +405,7 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         JSONObject().put("title", it.optString("Name").take(150)).put("position_ms", it.optLong("StartPositionTicks").coerceAtLeast(0) / 10000)
     })
     private val partMarker = Regex("(?:^|[ ._-])((?:cd|part|pt|disc|disk)[ ._-]?([0-9]{1,9}))(?=[ ._-]|$)", RegexOption.IGNORE_CASE)
+    private val fileVideoExtensions = setOf("mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "flv", "mpg", "mpeg", "ts", "m2ts", "mts", "vob", "3gp")
     private fun imageNode(id: String, type: String, index: Int, tag: String = "") = JSONObject()
         .put("id", id).put("image_type", type).put("image_index", index).put("image_tag", tag.take(256))
     private fun backdrops(data: JSONObject, artwork: JSONArray): JSONArray {

@@ -101,6 +101,7 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
                         when (req.optString("action")) {
                             "home" -> client.home(req)
                             "favorite" -> client.favorite(req)
+                            "delete_file" -> client.deleteFile(req)
                             "browse" -> client.browse(req)
                             "folder_artwork" -> client.folderArtwork(req.getString("scene_id"))
                             "candidates" -> client.candidates(req)

@@ -600,7 +600,8 @@ $audioMethod = Get-Content (Join-Path $logDirectory 'mpv-audio-plugin-method.log
 if (-not $audioMethod.Contains('.method public final set_mpv_audio(IIDZ)Z') -or -not $audioMethod.Contains('.annotation runtime Lorg/godotengine/godot/plugin/UsedByGodot;') -or -not $audioMethod.Contains('MpvVideoBridge;->setAudio(IIDZ)Z')) { throw 'APK MPV audio method/Godot annotation differs.' }
 & "$workspace\tools\Verify-MpvCandidate.ps1" -ToolRoot $ToolRoot -Candidate $MpvCandidate -ApkPath $apkPath
 foreach ($binding in @(@('set_mpv_subtitle(II)Z', 'setSubtitle(II)Z'), @('get_mpv_subtitles(IJ)Ljava/lang/String;', 'subtitles(IJ)Ljava/lang/String;'), @('get_mpv_subtitle_bitmap(IJ)[B', 'subtitleBitmap(IJ)[B'), @('set_mpv_narration(ILjava/lang/String;)Z', 'setNarration(ILjava/lang/String;)Z'),
-    @('get_mpv_subtitle_bitmap_tinted(IJI)[B', 'subtitleBitmap(IJI)[B'),
+    @('get_mpv_subtitle_bitmap_tinted(IJI)[B', 'subtitleBitmap(IJIF)[B'),
+    @('get_mpv_subtitle_bitmap_styled(IJIF)[B', 'subtitleBitmap(IJIF)[B'),
     @('set_mpv_secondary_subtitle(IID)Z', 'setSecondarySubtitle(IID)Z'),
     @('mpv_voice_clone_request(ILjava/lang/String;)Z', 'voiceCloneRequest(ILjava/lang/String;)Z'), @('mpv_voice_clone_status(I)Ljava/lang/String;', 'voiceCloneStatus(I)Ljava/lang/String;'),
     @('narration_voice_manager_request(Ljava/lang/String;)Z', 'voiceManagerRequest(Ljava/lang/String;)Z'), @('narration_voice_manager_status()Ljava/lang/String;', 'voiceManagerStatus()Ljava/lang/String;'))) {

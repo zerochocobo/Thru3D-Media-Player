@@ -6,6 +6,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WebVideoBilibiliCaptureTest {
+    @Test fun observed8kAv1SdrRetainsItsExactVideoAndAudioPair() {
+        val media = fixture().put("width", 7680).put("height", 3840)
+        val data = media.getJSONObject("bilibili").put("quality", 127)
+        data.getJSONArray("video").getJSONObject(0).put("id", 127)
+            .put("width", 7680).put("height", 3840)
+            .put("codec", "av01.0.01M.10.0.110.01.01.01.0")
+        val selected = WebVideoFormats.select(page, WebVideoBilibiliCapture.formats(page, media)!!) {
+            WebVideoCapabilities.av1SdrProfile(it.videoCodec) != null
+        }
+        assertEquals(7680, selected.video.width)
+        assertEquals(3840, selected.video.height)
+        assertEquals(url(80), selected.video.url.toString())
+        assertEquals(url(30280), selected.audio!!.url.toString())
+        media.getJSONArray("network").remove(0)
+        assertNull(WebVideoBilibiliCapture.formats(page, media))
+    }
+
     @Test fun automaticQualityUsesObservedRepresentationAndAvidMustMatchPage() {
         val media = fixture(); val data = media.getJSONObject("bilibili")
         data.put("quality", 120).put("avid", "1").put("aid", "1")

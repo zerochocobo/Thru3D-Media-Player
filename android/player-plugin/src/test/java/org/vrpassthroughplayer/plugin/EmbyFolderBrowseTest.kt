@@ -9,6 +9,108 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class EmbyFolderBrowseTest {
+    @Test fun deleteRequiresFreshPermissionAndExactlyTheConfirmedFile() {
+        val file = "/fixture/Disposable Part 2.mp4"
+        val item = JSONObject().put("Id", "123").put("Name", "Disposable").put("CanDelete", true)
+            .put("Type", "Video").put("MediaType", "Video").put("PartCount", 1).put("Path", file)
+            .put("MediaSources", JSONArray().put(JSONObject().put("Id", "source").put("Protocol", "File").put("Path", file)))
+        var paths = listOf(file)
+        var additional = emptyList<JSONObject>()
+        var revision = "original"
+        var deletes = 0
+        MediaServerClientTest.Fixture { request, headers, _ ->
+            assertEquals("fake", headers["x-emby-token"])
+            val path = URI(request.split(' ')[1]).path
+            when {
+                request.startsWith("DELETE ") -> {
+                    assertEquals("/emby/Items/123", path)
+                    deletes++
+                    MediaServerClientTest.Reply(204, body = byteArrayOf())
+                }
+                path.endsWith("/DeleteInfo") -> {
+                    assertEquals("user1", query(request)["UserId"])
+                    MediaServerClientTest.Reply(body = JSONObject().put("Paths", JSONArray(paths)).toString().toByteArray())
+                }
+                path.endsWith("/AdditionalParts") -> reply(additional, emptyMap())
+                else -> MediaServerClientTest.Reply(body = item.put("Etag", revision).toString().toByteArray())
+            }
+        }.use { fixture ->
+            val account = MediaServerAccount("test", "Test", fixture.url + "/emby", "fake", "emby", "user1")
+            MediaServerHttp(account).use { http ->
+                val client = EmbyClient(account, http)
+                val plan = client.detail("123").getJSONObject("delete_plan")
+                assertEquals("Disposable Part 2.mp4", plan.getString("filename"))
+                assertFalse(plan.toString().contains(file))
+                val request = JSONObject().put("scene_id", "123").put("token", plan.getString("token"))
+                assertThrows(MediaServerFailure::class.java) { client.deleteFile(JSONObject().put("scene_id", "123")) }
+                for (unsafe in listOf(emptyList(), listOf("/fixture"), listOf(file, "$file.srt"))) {
+                    paths = unsafe
+                    val detail = client.detail("123")
+                    assertFalse(detail.has("delete_plan"))
+                    assertTrue(detail.getBoolean("delete_scope_unverified"))
+                    assertThrows(MediaServerFailure::class.java) { client.deleteFile(request) }
+                }
+                paths = listOf(file)
+                additional = listOf(JSONObject(item.toString()).put("Id", "124"))
+                assertTrue(client.detail("123").getBoolean("delete_scope_unverified"))
+                assertThrows(MediaServerFailure::class.java) { client.deleteFile(request) }
+                additional = emptyList()
+                item.put("CanDelete", false)
+                val denied = client.detail("123")
+                assertFalse(denied.has("delete_plan"))
+                assertFalse(denied.has("delete_scope_unverified"))
+                assertThrows(MediaServerFailure::class.java) { client.deleteFile(request) }
+                item.put("CanDelete", true)
+                val sources = item.getJSONArray("MediaSources")
+                sources.put(JSONObject().put("Id", "second"))
+                assertFalse(client.detail("123").has("delete_plan"))
+                assertThrows(MediaServerFailure::class.java) { client.deleteFile(request) }
+                sources.remove(1)
+                revision = "changed"
+                assertThrows(MediaServerFailure::class.java) { client.deleteFile(request) }
+                assertEquals(0, deletes)
+                request.put("token", client.detail("123").getJSONObject("delete_plan").getString("token"))
+                assertTrue(client.deleteFile(request).getBoolean("deleted"))
+                assertEquals(1, deletes)
+            }
+        }
+    }
+
+    @Test fun randomSortTraversesFourPagesAndRespectsFilters() {
+        val items = (1..177).map { id -> JSONObject().put("Id", "$id").put("Type", "Movie") }
+        val expected = (1..177).filter { it % 13 != 0 }.map(Int::toString).toSet()
+        MediaServerClientTest.Fixture { request, _, _ ->
+            val args = query(request)
+            assertEquals("Random", args["SortBy"])
+            assertNull(args["SortOrder"])
+            assertEquals("library", args["ParentId"])
+            assertEquals("false", args["IsPlayed"])
+            val seed = args.getValue("RandomSeed").toInt()
+            reply(items.filter { it.getString("Id") in expected }.shuffled(kotlin.random.Random(seed)), args)
+        }.use { fixture ->
+            val account = MediaServerAccount("test", "Test", fixture.url, "fake", "emby", "user1")
+            MediaServerHttp(account).use { http ->
+                val client = EmbyClient(account, http)
+                assertTrue("random" in client.capabilities().getJSONArray("sorts").toString())
+                val jellyfin = EmbyClient(account.copy(provider = "jellyfin"), http)
+                assertFalse("random" in jellyfin.capabilities().getJSONArray("sorts").toString())
+                val request = JSONObject().put("sort", "random").put("direction", "DESC")
+                    .put("library_id", "library").put("watched", false)
+                fun page(seed: Int, page: Int): List<String> {
+                    val result = client.browse(request.put("page", page).put("random_seed", seed))
+                    assertEquals(expected.size, result.getInt("total"))
+                    return result.getJSONArray("entries").objects().map { it.getString("id") }
+                }
+                val pages = (1..4).map { page(12345, it) }
+                assertEquals(listOf(48, 48, 48, expected.size - 144), pages.map { it.size })
+                assertEquals(expected.size, pages.flatten().size)
+                assertEquals(expected, pages.flatten().toSet())
+                assertEquals(pages[0], page(12345, 1))
+                assertNotEquals(pages[0], page(67890, 1))
+            }
+        }
+    }
+
     @Test fun photoLibrariesAndMixedFoldersPreservePhotosAndAlbums() {
         val photo = JSONObject().put("Id", "p1").put("Name", "No extension").put("Type", "Photo")
             .put("MediaType", "Photo").put("Width", 1365).put("Height", 2048).put("Path", "/private/picture_SBS.jpg")

@@ -42,9 +42,14 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         // A process has one runtime; recreating an Activity closes its sessions, not Gecko itself.
         private var runtime: GeckoRuntime? = null
         private var runtimeViewport: WebBrowserViewport? = null
-        @Synchronized private fun viewport(lowEnd: Boolean = false): WebBrowserViewport =
-            runtimeViewport ?: WebBrowserViewport(lowEnd).also { runtimeViewport = it }
+        @Synchronized private fun viewport(lowEnd: Boolean = false, units: Int? = null): WebBrowserViewport =
+            runtimeViewport ?: (if (units == null) WebBrowserViewport(lowEnd) else WebBrowserViewport(lowEnd, units))
+                .also { runtimeViewport = it }
         internal fun loginViewport(): WebBrowserViewport = viewport()
+        // Select once before Gecko starts: its density and screen size are process-wide.
+        // The returned units keep Godot in sync if an earlier non-UI request already
+        // created the runtime; a changed choice applies after the next app start.
+        internal fun configureViewport(lowEnd: Boolean, units: Int): Int = viewport(lowEnd, units).pixelUnits
         /** One process runtime; login sessions share the profile but have no ordinary tab delegates. */
         internal fun engine(owner: Activity): GeckoRuntime {
             check(Looper.myLooper() == Looper.getMainLooper())
@@ -93,6 +98,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         var restoreThroughScript = false
         var restoreOrigin = ""
         var capturedFullscreenRequest = 0L
+        /** Focus video: every frame's video geometry for one request, gathered for Godot to choose. */
+        var videoLocate: JSONObject? = null
         // P0 is per-tab and process-local. Production remains on the verified backend
         // until the pinned Gecko response/SPA and device playback gates have passed.
         var bilibiliProbe = "off"
@@ -130,6 +137,12 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     private val exiting = AtomicBoolean(false)
     private val tabs = mutableListOf<Tab>()
     private val playbackHold = WebBrowserPlaybackHold()
+    private fun syncPlaybackPriority() {
+        // Inactive releases drawing/decoding resources, but must not demote the
+        // one document promised for return to an expendable background process.
+        tabs.filter { it.awake }.forEach { tab -> tab.session.setPriorityHint(
+            if (playbackHold.protects(tab.id, tab.navigation)) GeckoSession.PRIORITY_HIGH else GeckoSession.PRIORITY_DEFAULT) }
+    }
     private class PendingRetention(val owner: WebBrowserPlaybackHold.Owner, val ports: Set<WebExtension.Port>,
         val ticket: WebBrowserMediaRelease.Ticket) { val suspended = mutableSetOf<WebExtension.Port>() }
     private var pendingRetention: PendingRetention? = null
@@ -138,6 +151,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     private val mediaReadbacks = mutableMapOf<String, MediaReadback>()
     private fun invalidatePlaybackHold(tab: Tab) {
         playbackHold.invalidate(tab.id)
+        syncPlaybackPriority()
         pendingRetention?.takeIf { it.owner.tab == tab.id }?.let { it.ticket.complete(false); pendingRetention = null }
     }
     private var extension: WebExtension? = null
@@ -205,10 +219,6 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     )
     @Volatile private var state = "{}"
     init { WebBrowserSurfaceBridge.install(this) }
-
-    // Select once before Gecko starts. The returned tier also keeps Godot in sync
-    // if an earlier non-UI request has already created the process-wide runtime.
-    fun configureViewport(lowEnd: Boolean): Boolean = viewport(lowEnd).lowEnd
 
     // Called from Godot's main thread several times per second: append, never reparse.
     @Volatile private var memoryCheckedAt = 0L
@@ -681,6 +691,13 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                 if (data.optBoolean("retry")) restoreMedia(tab) else tab.restorePosition = null
                             }
                             return
+                        }
+                        if (data.optString("type") == "locate_video_result") {
+                            val locate = tab.videoLocate ?: return
+                            if (data.optLong("request") != locate.optLong("request")) return
+                            data.remove("type"); data.remove("request")
+                            locate.getJSONArray("frames").takeIf { it.length() < 32 }?.put(data)
+                            publish(); return
                         }
                         if (data.optString("type") != "media") return
                         val items = data.optJSONArray("videos") ?: return
@@ -1180,6 +1197,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             if (!tab.awake || window(tab.window).tab != tab.id || memoryTight()) return
             val current = WebBrowserPlaybackHold.Owner(tab.id, tab.navigation, tab.url, tab.pauseToken)
             if (!playbackHold.retain(holdOwner(request), current, pauseConfirmed(tab))) return
+            syncPlaybackPriority()
             if (request.optBoolean("hide")) {
                 pendingRetention?.ticket?.complete(false)
                 val pending = PendingRetention(current, tab.ports.filterValues { it == tab.navigation }.keys.toSet(), ticket)
@@ -1446,9 +1464,19 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 }
             }
             "capture_video", "restore_video" -> videoReturn(request)
+            "locate_video" -> {
+                val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id } ?: return@dispatch
+                val number = request.optLong("request")
+                if (!tab.awake || number <= 0 || tab.navigation != request.optLong("navigation", -1)) return@dispatch
+                val ports = tab.ports.filterValues { it == tab.navigation }.keys
+                tab.videoLocate = JSONObject().put("request", number).put("navigation", tab.navigation)
+                    .put("ports", ports.size).put("frames", JSONArray())
+                ports.forEach { runCatching { it.postMessage(JSONObject().put("action", "locate_video").put("request", number)) } }
+            }
             "resume_retained_page" -> resumeRetainedPage(request)
             "release_retained_page" -> {
                 if (playbackHold.release(holdOwner(request))) {
+                    syncPlaybackPriority()
                     tabs.firstOrNull { it.id == request.optInt("tab") && it.navigation == request.optLong("navigation", -1) &&
                         it.url == request.optString("origin") && it.pauseToken == request.optLong("pause_token") }?.let { tab ->
                         tab.ports.keys.forEach { runCatching { it.postMessage(JSONObject().put("action", "release_pause_media")
@@ -1486,6 +1514,21 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                         .put("time",request.optLong("position_ms").coerceAtLeast(0)/1000.0).put("play",request.optBoolean("play")))
                 }
             }
+            "restore_bilibili" -> {
+                val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id } ?: return@dispatch
+                if (!tab.awake || window(id).tab != tab.id || tab.navigation != request.optLong("navigation", -1) ||
+                    tab.url != request.optString("origin")) return@dispatch
+                for ((port, list) in tab.sources) for (index in 0 until list.length()) {
+                    val item = list.getJSONObject(index)
+                    if (WebBrowserMediaPolicy.selectedCandidate(listOf(item), request.optString("selection")) == null) continue
+                    val data = item.optJSONObject("bilibili") ?: continue
+                    port.postMessage(JSONObject().put("action", "restore_bilibili").put("id", item.optString("id"))
+                        .put("epoch", item.optLong("network_epoch")).put("source", item.optString("bilibili_source"))
+                        .put("page", data.optString("page")).put("content", data.optString("id"))
+                        .put("cid", data.optString("cid")).put("part", data.optInt("part")).put("ep", data.optString("ep"))
+                        .put("time", request.optLong("position_ms").coerceAtLeast(0) / 1000.0).put("play", request.optBoolean("play")))
+                }
+            }
             "restore_direct" -> {
                 val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id } ?: return@dispatch
                 if (!tab.awake || window(id).tab != tab.id || tab.navigation != request.optLong("navigation", -1) ||
@@ -1516,7 +1559,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     originals.forEach { (port, items) -> runCatching { port.postMessage(JSONObject().put("action", "pause_media").put("token", token)
                         .put("playing_ids", JSONArray(items.filter { it.optBoolean("playing") }.map { it.optString("id") }))) } }
                 } else if (tab.pauseToken > 0 && tab.pauseToken == request.optLong("pause_token")) {
-                    playbackHold.release(holdOwner(request))
+                    if (playbackHold.release(holdOwner(request))) syncPlaybackPriority()
                     // DOM videos restore their own saved state. MediaSession.play can arrive
                     // after a subsequent pause; use it only for players without a DOM video.
                     val dom = tab.pauseHasDom || tab.pauseReports.values.any { it.first == tab.pauseToken && it.second }
@@ -1980,6 +2023,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             .put("beta_request", tab?.betaRequest ?: 0).put("beta_selection", tab?.betaSelection.orEmpty())
             .put("fullscreen_request", tab?.fullscreen?.request ?: 0).put("fullscreen_video", tab?.fullscreen?.active == true)
             .put("captured_fullscreen_request", tab?.capturedFullscreenRequest ?: 0)
+            .put("video_locate", tab?.videoLocate?.takeIf { it.optLong("navigation") == tab.navigation } ?: JSONObject())
             .put("url", tab?.url ?: "about:blank").put("title", tab?.title.orEmpty())
             .put("bookmark_url", tab?.url?.let(WebBrowserAddress::recordable).orEmpty())
             .put("progress", tab?.progress ?: 0).put("back", tab?.back == true || tab?.fullScreen == true).put("forward", tab?.forward == true)

@@ -30,9 +30,9 @@ class Cinema extends RefCounted:
 	func show_guide(_viewer: Node, _head: Variant, _shown: bool) -> void: pass
 
 class Beach extends Node3D:
-	var restored := {}
+	var discarded := false
 	var ends := 0
-	func request_screen(parameters: Dictionary) -> bool: restored = parameters; return true
+	func end_screen_preview(commit: bool) -> bool: discarded = not commit; return false
 	func show_screen_marks(_marks: Dictionary) -> void: pass
 	func set_scene_highlight(_body: bool, _control: bool) -> void: pass
 	func end_drag() -> void: ends += 1
@@ -164,10 +164,9 @@ func cancellation_cases() -> void:
 	scene.screen_committed.connect(func(_parameters): commits.append("screen"))
 	scene.hours_committed.connect(func(_hours): commits.append("hours"))
 	scene._scene_hand = "right_hand"; scene._scene_kind = "screen_move"
-	scene._screen_drag = {"before": {"width": 10.0}}
 	scene._capture_hand = "right_hand"; scene._capture = {"kind": "floor"}
 	scene.cancel_for_hand_lock("right_hand")
-	check(beach.restored == {"width": 10.0} and scene._capture.is_empty() and scene._scene_hand.is_empty() and commits.is_empty(), "Lock discards pending beach screen and teleport commits")
+	check(beach.discarded and scene._capture.is_empty() and scene._scene_hand.is_empty() and commits.is_empty(), "Lock discards pending beach screen and teleport commits")
 	scene._scene_hand = "right_hand"; scene._scene_kind = "drag"
 	scene.cancel_for_hand_lock("right_hand")
 	check(beach.ends == 1 and commits.is_empty(), "Lock stops celestial dragging without hours commit")

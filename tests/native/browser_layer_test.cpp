@@ -59,7 +59,7 @@ int main() {
         "Browser retains its original raster and Android Surface creation requirements");
     check(!create(1) && fixture::destroyed == 0, "A live producer cannot be replaced without acknowledged destruction");
     const auto* layer = update(1);
-    check(layer && layer->subImage.imageRect.offset.y == 675 && layer->subImage.imageRect.extent.width == 960, "Production JNI submits the selected source pixels");
+    check(layer && layer->subImage.imageRect.offset.y == 225 && layer->subImage.imageRect.extent.width == 960, "Production JNI submits the selected top-left source pixels on flipped runtimes");
     check(layer && layer->pose.orientation.w == 1 && layer->space == reinterpret_cast<XrSpace>(3), "Pose is normalized in the supplied reference space");
     auto swapchain = layer->subImage.swapchain;
     values.data[9] = 0; values.data[10] = 0; values.data[11] = 2400; values.data[12] = 1500;

@@ -120,7 +120,7 @@ static func info(row: Dictionary, catalog: RefCounted = null, recent: bool = fal
 	elif folder:
 		var count := int(node.get("child_count", -1))
 		if bool(node.get("volume", false)) and bool(node.get("removable", false)):
-			parts.append(I18n.t("App managed" if bool(node.get("managed_usb", false)) else "System mounted"))
+			parts.append(I18n.t("App managed" if bool(node.get("managed_usb", false)) else "USB drive"))
 			parts.append(I18n.t("Read-only"))
 		elif count >= 0: parts.append(I18n.t("%d items") % count)
 		elif not modified.is_empty(): parts.append(modified)

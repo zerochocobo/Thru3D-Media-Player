@@ -87,7 +87,8 @@ func run() -> void:
 	host.depth.enabled = false
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(host.depth.config_path))
 	platform.browser.url = "https://www.bilibili.com/video/BV1xx411c7mD/"
-	platform.browser.bilibili_beta_available = true; platform.browser.videos[0].bilibili_ready = true; poll()
+	platform.browser.bilibili_beta_available = true; platform.browser.videos[0].bilibili_ready = true
+	platform.browser.videos[0].selection = "bili:fullscreen-current"; poll()
 	menu.web_browser.action(menu.web_browser.BASE + 18)
 	check(menu.web_browser.handoff and menu.web_browser.handoff_waiting_pause and menu.web_video.pending == 0,
 		"Explicit Beta still pauses before resolving while the website is fullscreen")

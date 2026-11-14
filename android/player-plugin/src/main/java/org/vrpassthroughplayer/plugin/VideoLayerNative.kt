@@ -63,8 +63,10 @@ internal object VideoLayerNative {
     @JvmStatic external fun runtimeExtensions(): String
     /** Layers can carry a colour scale/bias (the colour grade) instead of leaving the compositor. */
     @JvmStatic external fun colorScaleBias(): Boolean
-    /** The instance enabled XR_QIYU_passthrough (iQIYI QIYU community runtime). */
+    /** The instance enabled XR_QIYU_passthrough (iQIYI QIYU factory runtime). */
     @JvmStatic external fun qiyuPassthrough(): Boolean
+    /** Starts/pauses QIYU passthrough: its layer's address, 0 when paused or absent, or a negative XrResult. */
+    @JvmStatic external fun qiyuPassthroughLayer(enabled: Boolean): Long
     @JvmStatic external fun layerCount(): Int
     @JvmStatic external fun layerAddress(index: Int): Long
 }

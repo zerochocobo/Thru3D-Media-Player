@@ -509,7 +509,7 @@ func draw_gecko() -> void:
 	menu._label(provider_name(provider), Vector3(0, top + 0.27, 0.009), 24)
 	var actions := [
 		[BASE, "up", "Back"], [BASE + 17, "back", "Back"], [BASE + 18, "refresh", "Reload"],
-		[BASE + 29, "close" if web_selecting else "expand" if web_focus != Focus.FULL else "region_focus", "Cancel selection" if web_selecting else "Exit focus" if web_focus != Focus.FULL else "Focus region"]]
+		[BASE + 29, "close" if web_selecting else "expand" if web_focus != Focus.FULL else "region_focus", "Cancel selection" if web_selecting else "Exit focus" if web_focus != Focus.FULL else "Focus free region"]]
 	if not info.get("desktop_only", false): actions.append([BASE + 30, "phone" if info.get("desktop", false) else "desktop", "Mobile site" if info.get("desktop", false) else "Desktop site"])
 	actions.append([menu.CLOSE, "close", "Close"])
 	for i in actions.size():

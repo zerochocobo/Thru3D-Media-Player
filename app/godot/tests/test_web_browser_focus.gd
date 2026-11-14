@@ -87,7 +87,10 @@ func run() -> void:
 	browser.focus_regions[1] = Rect2(0.2, 0.1, 0.2, 0.7); host.refresh(); host._process(0)
 	var bar_ray: Vector3 = full.pose * Vector3(-full.size.x * 0.4, 0, 0.5)
 	var bar_hit: Dictionary = host.local_hit(bar_ray, direction)
-	check(not bar_hit.is_empty() and not bar_hit.get("enabled", true), "Letterbox bars block clicks through to peer windows")
+	# A reshaped window has no letterbox bars: beside the narrowed page is empty space.
+	check(bar_hit.is_empty() or (int(bar_hit.get("target", -1)) != host.WEB and not bar_hit.get("enabled", true)), "Space beside a reshaped page never reaches the webpage")
+	var narrowed: Dictionary = host.page_layout()
+	check(narrowed.size.x < full.size.x and narrowed.size.y > full.size.y and absf(narrowed.size.x * narrowed.size.y - full.size.x * full.size.y) < 0.0001, "A tall region reshapes the floating window at the same area instead of adding margins")
 	browser.cinema_provider = func(): return {"position": [0, 3, -12], "width": 10.0, "height": 5.625}
 	host.set_mode("cinema"); host.refresh(); host._process(0)
 	var cinema_ray := ray(host, Vector2(0.4, 0.6))

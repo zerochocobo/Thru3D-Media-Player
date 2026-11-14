@@ -806,6 +806,8 @@ func _update_highlights() -> void:
 	var hovered_targets: Array = _hover.values()
 	for button in _buttons:
 		var hovered: bool = button.enabled and hovered_targets.has(button.target)
+		for mark: Node3D in button.get("hover_marks", []):
+			if mark.visible != hovered: mark.visible = hovered; changed = true
 		if button.has("select_arrow"):
 			var ink: Color = (ACCENT if hovered and button.has("hover_labels") else button.foreground) if button.enabled else MUTED
 			if button.select_arrow.material_override.albedo_color != ink:

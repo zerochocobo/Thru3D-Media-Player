@@ -105,7 +105,7 @@ Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_update(JNIEnv* env, jc
     quad.pose = {{v[3]/norm, v[4]/norm, v[5]/norm, v[6]/norm}, {v[0], v[1], v[2]}};
     quad.size = {v[7], v[8]};
     quad.subImage.swapchain = layer->swapchain;
-    quad.subImage.imageRect = quest::browser_image_rect(v.data() + 9, layer->height, v[13] > 0.5f);
+    quad.subImage.imageRect = quest::browser_image_rect(v.data() + 9);
     quad.next = quest::image_layout_next(layer->layout, v[13], nullptr);
     return static_cast<jlong>(reinterpret_cast<uintptr_t>(&quad));
 }

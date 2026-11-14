@@ -13,7 +13,7 @@ class Platform extends Fixture.Platform:
 	var beta_requests := 0
 	var selected_requests: Array = []
 	func web_video_resolve_selected(url: String, selection: String) -> int:
-		selected_requests.append([url, selection]); return web_video_resolve(url)
+		beta_requests += 1; selected_requests.append([url, selection]); return web_video_resolve(url)
 	func web_video_resolve_beta(url: String) -> int:
 		beta_requests += 1
 		return web_video_resolve(url)
@@ -48,6 +48,7 @@ func _run() -> void:
 	platform.browser.url = "https://www.bilibili.com/video/BV1xx411c7mD"
 	platform.browser.bilibili_beta_available = true
 	platform.browser.videos[0].bilibili_ready = true
+	platform.browser.videos[0].selection = "bili:toolbar"
 	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
 	var beta_buttons: Array = menu.web_browser.input_host()._buttons.filter(func(button): return button.target in [Browser.BASE + 6, Browser.BASE + 18])
 	check(beta_buttons.size() == 1 and beta_buttons[0].target == Browser.BASE + 18, "Adapted Chinese sites show Beta without the legacy target")
@@ -98,6 +99,7 @@ func _run() -> void:
 	check(menu.web_browser.beta_media_ready(platform.browser), "Douyin readiness selects the bound main video")
 	platform.browser.douyin_beta_available = false
 	platform.browser.videos[0].douyin_ready = false
+	platform.selected_requests.clear()
 	var previous := platform.browser.duplicate(true)
 	platform.browser = {"url": "https://weibo.com/newlogin", "tab_id": 9, "navigation": 1, "focused_window": 1,
 		"active": true, "native_supported": false, "weibo_beta_available": true,
@@ -133,6 +135,13 @@ func _run() -> void:
 	menu.web_browser.next_poll=0;menu.web_browser.tick()
 	check(platform.selected_requests.back()==[platform.browser.url,"bili:cid123"] and menu.web_browser.handoff_start_ms==19000,
 		"Bilibili DOM selection reaches the selected resolver with the current video's playhead")
+	check(menu.web_browser.handoff_context.bilibili, "Bilibili return is explicitly routed instead of falling through to Weibo")
+	var bili_context: Dictionary = menu.web_browser.handoff_context.duplicate(true)
+	menu.web_browser.playback_return = bili_context
+	menu.web_browser.restore_playback(false, 57000)
+	check(platform.browser_commands.back().action == "restore_bilibili" and platform.browser_commands.back().selection == "bili:cid123" and platform.browser_commands.back().position_ms == 57000,
+		"Bilibili returns its exact selected part at the native playhead")
+	check(menu.web_browser.bilibili_target({"videos":[{"bilibili_ready":true,"selection":"one"},{"bilibili_ready":true,"selection":"two"}]}).is_empty(), "Ambiguous Bilibili toolbar media cannot be guessed")
 	platform.browser.videos[0].selection="bili:cid456"
 	menu.web_browser.next_poll=0;menu.web_browser.tick()
 	check(not menu.web_browser.handoff,"Replacing the Bilibili part rejects the old DOM click")

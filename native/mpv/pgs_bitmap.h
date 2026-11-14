@@ -15,6 +15,7 @@ struct PgsImage {
 // Tint neutral (white/gray) ink in premultiplied RGBA. Black outlines and alpha
 // stay intact; a soft chroma gate preserves authored colored captions.
 void tint_pgs_rgba(std::vector<uint8_t>& rgba, uint32_t rgb);
+void fade_pgs_rgba(std::vector<uint8_t>& rgba, float opacity);
 inline PgsImage compose_pgs(const quest_mpv_pgs_frame& frame) {
     PgsImage out;
     if (frame.canvas_width < 1 || frame.canvas_height < 1 ||

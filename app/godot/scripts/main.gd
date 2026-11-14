@@ -612,7 +612,7 @@ func _ready() -> void:
 	menu_composition.register_companion(ChineseInput.ensure(origin))
 	ChineseInput.head_provider = _head_pose
 	ChineseInput.on_open = _on_chinese_keyboard_opened
-	recent_menu.web_browser.configure_quality(low_end_gpu)
+	recent_menu.web_browser.configure_quality(low_end_gpu, str(settings.get_value("web", "clarity", "")))
 	recent_menu.web_browser.window_created = func(window):
 		menu_composition.register_companion(window)
 		_connect_session_controls(window.effect_controls)
@@ -1767,6 +1767,8 @@ func _route_sticks(left: Vector2, right: Vector2, delta: float) -> String:
 		stick_controls.suspend(); return "routed.airplay_distance"
 	if _vr_passthrough_active(): return "blocked.temporary_passthrough"
 	_cinema_adjusting = false
+	if _beach_active() and beach_environment.scene_stick(left, right, delta):
+		stick_controls.suspend(); _update_cinema_guide(); return "routed.beach_scene"
 	var route := _process_stick_input(left, right, delta)
 	_update_cinema_guide()
 	return route
@@ -1832,8 +1834,10 @@ func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> String
 			for target in interface_move.capture.get("targets", []):
 				if target.kind == "screen" and is_instance_valid(target.node): target.node.set_screen_distance(_surface_distance(target.node))
 			if menu and not interface_move.capture.is_empty(): _update_menu_pointer(interface_move.capture.hand)
-		if not chord_pending and _resize_gripped_video(held, delta):
+		if not chord_pending and _resize_gripped_media(held, delta):
 			stick_controls.suspend(); return "routed.flat_grip_size"
+		if not chord_pending and _resize_gripped_browser(held, delta):
+			stick_controls.suspend(); return "routed.browser_grip_size"
 		if not chord_pending: stick_controls.suspend(); return "routed.interface_distance"
 	if not interface_move.capture.is_empty() and interface_move.capture.moved:
 		stick_controls.suspend(); return "blocked.interface_move"
@@ -2356,6 +2360,7 @@ func _controller_input_context(hand: String) -> Dictionary:
 		"focused": _input_focused(), "source": hand_pointers[hand].source if hand_pointers.has(hand) else "",
 		"menu": _controller_menu_label(menu), "menu_capture": _menu_captured(menu),
 		"cinema": cinema_environment.interaction if _cinema_scene_active() else "",
+		"beach_screen_busy": _beach_active() and beach_environment.beach.screen_loading,
 		"photo": photo_active, "hand_lock": hand_lock.effective(),
 		"wrist_watch": _watch_owned, "screen_locked": screen_edit_lock.locked(),
 		"interface_move": not interface_move.capture.is_empty(), "picture_capture": not _grab.is_empty(),
@@ -2488,9 +2493,6 @@ func _screen_rotation_mouse_input(event: InputEvent) -> bool:
 
 func _update_flat_grab_stick(left: Vector2, right: Vector2, delta: float) -> void:
 	_controller_pre_stick_routes.clear()
-	if _beach_active() and beach_environment.scene_stick(left, right, delta):
-		for hand in ControllerBindings.HANDS: _controller_pre_stick_routes[hand] = "routed.beach_scene"
-		stick_controls.suspend(); return
 	if not _input_focused() or _active_menu() or not interface_move.capture.is_empty() or _grab.is_empty() or _grab.has("resize") or _grab.has("inspect") or _grab.has("rotate") or _viewer().geometry != Geometry.Geometry.FLAT:
 		return
 	var held := left if _grab.hand == "left_hand" else right
@@ -3064,21 +3066,43 @@ func _zoom_video(amount: float, hand: String = "right_hand") -> void:
 		_immersive_zoom_pending = true
 		_show_immersive_adjustment("view_zoom")
 
-## The captured video's own grip owns horizontal resizing; menus/photos keep their existing input.
-func _resize_gripped_video(stick: Vector2, delta: float) -> bool:
-	if photo_active or not video or video.geometry != Geometry.Geometry.FLAT or screen_edit_lock.locked() or _cinema_video_locked(): return false
+## The captured picture's own grip owns horizontal resizing; menu-only grabs keep their input.
+func _resize_gripped_media(stick: Vector2, delta: float) -> bool:
+	var surface := _viewer()
+	if not surface or screen_edit_lock.locked(): return false
+	var gallery_overview: bool = photo_active and photo.gallery.overview()
+	if surface.geometry != Geometry.Geometry.FLAT and not gallery_overview: return false
+	if (photo_active and photo.inspect) or (not photo_active and _cinema_video_locked()): return false
 	var capture := interface_move.capture
 	if capture.is_empty() or capture.input != "grip_click" or not capture.get("depth_ready", false): return false
 	if not stick.is_finite() or not is_finite(delta) or delta <= 0.0 or absf(stick.x) <= 0.2 or absf(stick.x) <= absf(stick.y): return false
 	if _move_pose(capture.hand) == null or controller_bindings.down[capture.hand].has("trigger_click"): return false
 	for target in capture.targets:
-		if target.node != video or target.kind != "screen": continue
-		var before: Transform3D = video.global_transform * video.flat_pose
+		if gallery_overview:
+			if target.node != photo.gallery or target.kind != "gallery": continue
+		elif target.node != surface or target.kind != "screen": continue
+		var before: Transform3D = surface.global_transform * surface.flat_pose
 		var amount := signf(stick.x) * (absf(stick.x) - 0.2) / 0.8 * ZOOM_SPEED * minf(delta, 0.1)
-		_zoom_video(amount, capture.hand)
+		if is_zero_approx(amount): return false
+		if photo_active: photo.zoom_picture(amount)
+		else: _zoom_video(amount, capture.hand)
 		# Upright screens resize about their bottom edge. Keep the grip's original
 		# movement baseline in step so its next update cannot undo that placement.
-		if target.get("cinema", false): target.pose.origin += (video.global_transform * video.flat_pose).origin - before.origin
+		if target.get("cinema", false): target.pose.origin += (surface.global_transform * surface.flat_pose).origin - before.origin
+		capture.moved = true
+		return true
+	return false
+
+## A gripped browser window scales uniformly; its webpage layout does not reflow.
+func _resize_gripped_browser(stick: Vector2, delta: float) -> bool:
+	var capture := interface_move.capture
+	if capture.is_empty() or capture.input != "grip_click" or not capture.get("depth_ready", false): return false
+	if not stick.is_finite() or not is_finite(delta) or delta <= 0.0 or absf(stick.x) <= 0.2 or absf(stick.x) <= absf(stick.y): return false
+	if controller_bindings.down[capture.hand].has("trigger_click"): return false
+	if not recent_menu or not recent_menu.web_browser.active(): return false
+	for target in capture.targets:
+		if not is_instance_valid(target.node) or not recent_menu.web_browser.windows.values().has(target.node): continue
+		if not target.node.grip_zoom(stick.x, delta, target): return false
 		capture.moved = true
 		return true
 	return false
@@ -3301,7 +3325,9 @@ func _poll_external_video() -> void:
 	video.open_local(_external_video_uri, str(request.get("title", "Video")), int(request.get("start_ms", 0)),
 		true, false, "", {"external_temporary": bool(request.get("temporary", true))})
 	if not _external_video_uri.is_empty(): _show_player_menu()
-	Log.record("external_video_open", {"temporary": bool(request.get("temporary", true))})
+	Log.record("external_video_open", {"temporary": bool(request.get("temporary", true)),
+		"reuse_last_mode": video.reuse_last_mode, "last_mode": video.last_mode.duplicate(),
+		"mode_lock": video.mode_lock.duplicate()})
 
 func _on_library_chosen(uri: String, title: String, retained_photo: Dictionary = {}) -> void:
 	_external_video_uri = ""
@@ -4472,6 +4498,7 @@ func _restore_subtitle_settings() -> void:
 	video.subtitle_vertical_center = video.SubtitleDepth.restore_center(settings, true)
 	video.subtitle_size = video.SubtitleStyle.size_ratio(float(settings.get_value("subtitles", "size", 1.0)))
 	video.subtitle_style = video.SubtitleStyle.normalize(settings.get_value("subtitles", "style", video.SubtitleStyle.DEFAULT))
+	video.subtitle_transparency = float(settings.get_value("subtitles", "transparency", 0.0))
 	video.subtitle_pgs_tint = video.SubtitleStyle.normalize_pgs(settings.get_value("subtitles", "pgs_tint", video.SubtitleStyle.PGS_DEFAULT))
 	video.subtitle_line = video.SubtitleStyle.normalize_line(settings.get_value("subtitles", "line", 0))
 	video.subtitle_flat_position = float(settings.get_value("subtitles", "flat_position", 0.0))
@@ -4580,6 +4607,7 @@ func _library_settings() -> Dictionary:
 		"subtitle_direction": video.subtitle_direction,
 		"subtitle_size": video.subtitle_size * 100.0,
 		"subtitle_style": video.subtitle_style,
+		"subtitle_transparency": video.subtitle_transparency,
 		"subtitle_pgs_tint": video.subtitle_pgs_tint,
 		"subtitle_line": video.subtitle_line,
 		"background": background.choice if background else "cinema",
@@ -4712,6 +4740,13 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 					platform_plugin.set_depth_render_mode(str(value))
 		"restart_app", "quit_app":
 			_finish_app(key == "restart_app")
+		"web_clarity":
+			# Gecko's density is process-wide: the page raster changes at the next app start.
+			var browser: RefCounted = recent_menu.web_browser if recent_menu else null
+			if browser and browser.CLARITY_UNITS.has(str(value)):
+				browser.clarity = str(value)
+				settings.set_value("web", "clarity", browser.clarity); settings.save(settings_path)
+				for window in browser.windows.values(): window.refresh()
 		"display_quality":
 			display_quality = clampi(int(value), Quality.AUTO, Quality.SCALES.size() - 1)
 			# Apply at next startup: live OpenXR resizing fails to free GLES3 targets on Quest.
@@ -4905,6 +4940,10 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 		"subtitle_distance":
 			video.subtitle_distance = float(value)
 			settings.set_value("subtitles", "distance", video.subtitle_distance)
+			settings.save(settings_path)
+		"subtitle_transparency":
+			_on_playback_adjustment(key, value)
+			settings.set_value("subtitles", "transparency", video.subtitle_transparency)
 			settings.save(settings_path)
 		"subtitle_size":
 			_on_playback_adjustment(key, value)
@@ -5120,7 +5159,7 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		"spatial_auto_disparity": video.set_spatial_auto_disparity(bool(value))
 		"spatial_match_fov":
 			if video.match_spatial_fov(): _save_screen()
-		"subtitle_size", "subtitle_flat_position": _on_playback_adjustment(key, value); _save_playback_adjustments()
+		"subtitle_size", "subtitle_transparency", "subtitle_flat_position": _on_playback_adjustment(key, value); _save_playback_adjustments()
 		"loop": _set_playback_mode("repeat_one" if bool(value) else "single")
 		"reuse_last_mode": video.set_reuse_last_mode(bool(value))
 		"playback_mode": _set_playback_mode(str(value))
@@ -5325,6 +5364,7 @@ func _menu_state() -> Dictionary:
 		"show_status_info": bool(settings.get_value("ui", "show_status_info", true)),
 		"show_fps": fps_overlay != null and fps_overlay.visible,
 		"subtitle_size": video.subtitle_size * 100, "subtitle_flat_position": video.subtitle_flat_position * 100,
+		"subtitle_transparency": video.subtitle_transparency,
 		"subtitle_below_screen": video.depth_subtitles_below(),
 		"subtitle_below_available": video.depth_subtitles_available(),
 		"subtitle_style": video.subtitle_style,
@@ -6033,7 +6073,7 @@ func _set_beach_curve(value: float) -> void:
 	_apply_beach_curve()
 
 func _apply_beach_curve() -> void:
-	if _beach_curve_pending < 0.0 or not beach_environment or beach_environment.beach.screen_loading: return
+	if _beach_curve_pending < 0.0 or not beach_environment or beach_environment.beach.screen_loading or beach_environment.beach.screen_previewing(): return
 	var width: float = beach_environment.beach.screen_layout.half_size.x * 2.0
 	var degrees := _beach_curve_pending
 	_beach_curve_pending = -1.0
@@ -6749,6 +6789,9 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 	elif key in ["alpha_feather", "alpha_shrink"]:
 		_apply_alpha_edge(key, value)
 		return
+	elif key == "subtitle_transparency":
+		if not is_finite(float(value)): return
+		video.subtitle_transparency = float(value)
 	elif key == "subtitle_size":
 		if not is_finite(float(value)): return
 		video.subtitle_size = clampf(float(value) / 100.0, 0.5, 2.0)
@@ -6793,6 +6836,7 @@ func _save_playback_adjustments() -> void:
 	if not _cinema_video_locked() and not portrait_screen.active: _set_screen_preference("curve_degrees", video.screen_curve)
 	settings.set_value("subtitles", "size", video.subtitle_size)
 	settings.set_value("subtitles", "style", video.subtitle_style)
+	settings.set_value("subtitles", "transparency", video.subtitle_transparency)
 	settings.set_value("subtitles", "pgs_tint", video.subtitle_pgs_tint)
 	settings.set_value("subtitles", "line", video.subtitle_line)
 	settings.set_value("subtitles", "flat_position", video.subtitle_flat_position)
@@ -7021,6 +7065,20 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 					var file := FileAccess.open("user://diagnostics/browser_click_" + str(command.request_key) + ".json", FileAccess.WRITE)
 					if file: file.store_string(JSON.stringify({"request": command.request_key, "pressed": pressed, "held": held,
 						"released": not browser.owns_pointer(owner, "trigger_click")}))
+			"focus":
+				# "x,y,w,h" in page UV, "video" for focus video, or empty to leave focus; the real drag's selection rules apply.
+				var browser: RefCounted = recent_menu.web_browser
+				if browser.active() and browser.windows.has(browser.focused_window):
+					var host: Node = browser.windows[browser.focused_window]
+					var Focus := preload("res://scripts/web_browser_focus.gd")
+					var parts := str(command.get("url", "")).split(",")
+					browser.focus_regions.erase(host.focus_tab())
+					if parts[0] == "video": host.toggle_video_focus()
+					elif parts.size() == 4:
+						var corner := Vector2(float(parts[0]), float(parts[1]))
+						var region: Rect2 = Focus.selection(corner, corner + Vector2(float(parts[2]), float(parts[3])), host.page_size)
+						if Focus.valid(region): browser.focus_regions[host.focus_tab()] = region
+					host.refresh(); browser.effects_changed.emit()
 			"effect":
 				var browser: RefCounted = recent_menu.web_browser
 				var target := int(command.get("target", 0))

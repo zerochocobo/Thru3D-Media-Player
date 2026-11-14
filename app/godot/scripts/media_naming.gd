@@ -97,7 +97,7 @@ static func _lens_fov(name: String) -> int:
 	return best
 
 ## Fills missing layout details from metadata and frame size. An exact 2:1 video defaults
-## to VR180 SBS only when neither its projection nor its stereo layout has been stated.
+## to VR180 SBS, including external opens, only when neither its projection nor stereo layout is stated.
 ## 3.2:1 and wider is a flat full-SBS film; a large square frame (2880 px and up) is 360
 ## top-bottom; stated top-bottom: square is 360.
 static func complete(stated: Dictionary, width: int, height: int, format: Dictionary = {}, file_name: String = "") -> Dictionary:
@@ -125,7 +125,7 @@ static func complete(stated: Dictionary, width: int, height: int, format: Dictio
 			geometry = Geometry.Geometry.EQUIRECT_360
 		elif stacked:
 			geometry = Geometry.Geometry.FLAT
-		elif shape_inference and width > 0 and height > 0 and width == height * 2 and not stated.has("stereo"):
+		elif width > 0 and height > 0 and width == height * 2 and not stated.has("stereo"):
 			geometry = Geometry.Geometry.HALF_EQUIRECT
 		else:
 			geometry = Geometry.Geometry.FLAT

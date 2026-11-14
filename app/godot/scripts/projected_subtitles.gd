@@ -13,9 +13,11 @@ var _text := ""
 var _vertical := false
 var _size := 1.0
 var _style := ""
+var _opacity := 1.0
 const SubtitleStyle := preload("res://scripts/subtitle_style.gd")
 const SubtitleDepth := preload("res://scripts/subtitle_depth.gd")
 var vertical_text: Control
+var fade: ColorRect
 const VerticalText := preload("res://scripts/vertical_subtitle_text.gd")
 
 func _ready() -> void:
@@ -39,6 +41,8 @@ func _ready() -> void:
 	vertical_text.size = Vector2(PATCH_SIZE, PATCH_SIZE)
 	vertical_text.visible = false
 	viewport.add_child(vertical_text)
+	fade = preload("res://scripts/subtitle_canvas_fade.gd").new()
+	viewport.add_child(fade)
 
 func clear(target: ShaderMaterial) -> void:
 	if target: target.set_shader_parameter("subtitle_enabled", false)
@@ -48,7 +52,9 @@ func update_patch(caption: Label3D, target: ShaderMaterial, anchor: Basis, dista
 		clear(target)
 		return
 	text_style = SubtitleStyle.normalize(text_style)
-	if _text != caption.text or _vertical != vertical or not is_equal_approx(_size, text_size) or _style != text_style:
+	if _text != caption.text or _vertical != vertical or not is_equal_approx(_size, text_size) or _style != text_style or not is_equal_approx(_opacity, caption.modulate.a):
+		_opacity = caption.modulate.a
+		fade.set_opacity(_opacity) # Glyphs stay opaque; the finished canvas fades as one layer.
 		_size = text_size
 		_style = text_style
 		var appearance := SubtitleStyle.colors(_style)

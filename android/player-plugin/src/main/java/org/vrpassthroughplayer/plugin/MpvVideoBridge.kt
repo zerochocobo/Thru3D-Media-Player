@@ -1179,10 +1179,12 @@ internal class MpvVideoBridge(
         return true
     }
     fun subtitleBitmap(id: Int, version: Long): ByteArray = subtitleBitmap(id, version, 0xffffff)
-    fun subtitleBitmap(id: Int, version: Long, rgb: Int): ByteArray {
+    fun subtitleBitmap(id: Int, version: Long, rgb: Int, opacity: Float = 1f): ByteArray {
         val session = sessions[id] ?: return ByteArray(0)
         if (!active(session) || session.host.handle <= 0 || version <= 0) return ByteArray(0)
-        val pixels = if (rgb == 0xffffff) MpvSourceNative.subtitleBitmap(session.host.handle, version)
+        val alpha = if (opacity.isFinite()) opacity.coerceIn(0f, 1f) else 1f
+        val pixels = if (alpha != 1f) MpvSourceNative.subtitleBitmapStyled(session.host.handle, version, rgb, alpha)
+            else if (rgb == 0xffffff) MpvSourceNative.subtitleBitmap(session.host.handle, version)
             else MpvSourceNative.subtitleBitmapTinted(session.host.handle, version, rgb)
         return if (active(session)) pixels else ByteArray(0)
     }

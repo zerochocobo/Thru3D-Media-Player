@@ -19,6 +19,18 @@
     changed:() => changed()
   });
   const keepDirectReturnPaused = video => directReturn.holds(video);
+  let bilibiliReturnPause = null;
+  const keepBilibiliReturnPaused = video => {
+    const saved = bilibiliReturnPause;
+    if (!saved) return false;
+    const age = Date.now() - saved.at;
+    if (age < 0 || age > 30000 || saved.page !== location.href || !saved.video.isConnected ||
+        saved.video.currentSrc !== saved.source || mediaEpoch.get(saved.video)?.id !== saved.epoch ||
+        bilibiliOwner?.video !== saved.video || biliKey(bilibiliOwner.data) !== saved.key) {
+      bilibiliReturnPause = null; return false;
+    }
+    return video === saved.video;
+  };
   let iqiyiReturnPause = null;
   let tiktokReturnPause = null;
   const keepTikTokReturnPaused=video=>{
@@ -115,7 +127,7 @@
   // position. Preserve that return intent through buffering, until a real gesture.
   for(const name of ['pointerdown','mousedown','touchstart','keydown'])addEventListener(name,event=>{
     directReturn.gesture(event);
-    if(event.isTrusted){iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;tiktokReturnPause=null;instagramReturnPause=null;instagramRestore=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;redditReturnPause=null;naverReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;}
+    if(event.isTrusted){bilibiliReturnPause=null;iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;tiktokReturnPause=null;instagramReturnPause=null;instagramRestore=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;redditReturnPause=null;naverReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;}
   },true);
   const holdPaused = video => {
     if (pauseLease && pauseLease.page !== location.href) pauseLease = null;
@@ -769,7 +781,7 @@
   let bilibiliViews = [];
   let bilibiliStatus = 'idle', bilibiliResponseApi = false;
   let bilibiliInitial = null, bilibiliInitialPage = '', bilibiliScanAt = 0;
-  let bilibiliOwner = null;
+  let bilibiliOwner = null, bilibiliCurrent = null;
   const naverNetworkTrace=[];let naverNetworkConnections=0;
   const traceNaverNetwork=(event,reset=false)=>{
     try{const u=new URL(location.href);if(u.origin!=='https://m.naver.com'||u.pathname!=='/shorts/')return;
@@ -867,6 +879,7 @@
     scheduled = false;
     if (closed) return;
     directReturn.sync();
+    bilibiliCurrent = null;
     if(redbullEnabled&&!suspended&&!pauseLease&&!document.hidden)discoverRedBullShadow();
     weiboControls?.sync(weiboEnabled);
     if (networkPage !== location.href) {
@@ -1008,7 +1021,7 @@
         }).slice(0,24);
       }
       const biliReady = !!biliMatched && Thru3DBilibili.ready(biliMatched, requests, video.videoWidth, video.videoHeight);
-      if (biliReady) bilibiliOwner = {video, page:location.href, cid:biliCid, source:currentSource, epoch:epoch.id,
+      if (biliReady) bilibiliCurrent = bilibiliOwner = {video, page:location.href, cid:biliCid, source:currentSource, epoch:epoch.id,
         data:biliMatched,requests:requests.filter(c=>Number.isFinite(c.at))};
       if (biliMatched) bilibiliTarget={video,source:currentSource,epoch:epoch.id,key:biliKey(biliMatched),ready:biliReady};
       const biliClicked = biliReady && bilibiliChoice?.video === video && bilibiliChoice.key === biliKey(biliMatched) &&
@@ -1092,6 +1105,7 @@
         protected: protectedMedia, frame: location.href, agent: navigator.userAgent,
         network: requests, network_epoch: epoch.id, blob: currentSource.startsWith('blob:'),
         bilibili: biliMatched,
+        bilibili_source: biliMatched ? currentSource : "",
         bilibili_ready: biliReady,
         bilibili_request: biliClicked ? bilibiliChoice.request : 0,
         mango,mango_ready:!!mango,mango_request:mangoClicked?mangoChoice.request:0,
@@ -1231,8 +1245,8 @@
       video.addEventListener("encrypted", () => { encrypted.add(video); changed(); });
       for (const event of ["loadedmetadata", "resize", "durationchange", "play", "playing", "seeked", "pause", "emptied", "ended", "timeupdate"])
         video.addEventListener(event, changed);
-      video.addEventListener("play", () => { if (suspended||keepDirectReturnPaused(video)||keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)||keepTikTokReturnPaused(video)||keepInstagramReturnPaused(video)||keepTedReturnPaused(video)||keepRedBullReturnPaused(video)||keepStreamableReturnPaused(video)||keepRedditReturnPaused(video)||keepNaverReturnPaused(video)||keepArchiveReturnPaused(video)||keepOdyseeReturnPaused(video)||keepDailymotionReturnPaused(video)) video.pause(); else holdPaused(video); });
-      for(const event of ['loadeddata','playing','seeked'])video.addEventListener(event,()=>{if(keepDirectReturnPaused(video)||keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)||keepTikTokReturnPaused(video)||keepInstagramReturnPaused(video)||keepTedReturnPaused(video)||keepRedBullReturnPaused(video)||keepStreamableReturnPaused(video)||keepRedditReturnPaused(video)||keepNaverReturnPaused(video)||keepArchiveReturnPaused(video)||keepOdyseeReturnPaused(video)||keepDailymotionReturnPaused(video))video.pause();});
+      video.addEventListener("play", () => { if (suspended||keepDirectReturnPaused(video)||keepBilibiliReturnPaused(video)||keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)||keepTikTokReturnPaused(video)||keepInstagramReturnPaused(video)||keepTedReturnPaused(video)||keepRedBullReturnPaused(video)||keepStreamableReturnPaused(video)||keepRedditReturnPaused(video)||keepNaverReturnPaused(video)||keepArchiveReturnPaused(video)||keepOdyseeReturnPaused(video)||keepDailymotionReturnPaused(video)) video.pause(); else holdPaused(video); });
+      for(const event of ['loadeddata','playing','seeked'])video.addEventListener(event,()=>{if(keepDirectReturnPaused(video)||keepBilibiliReturnPaused(video)||keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)||keepTikTokReturnPaused(video)||keepInstagramReturnPaused(video)||keepTedReturnPaused(video)||keepRedBullReturnPaused(video)||keepStreamableReturnPaused(video)||keepRedditReturnPaused(video)||keepNaverReturnPaused(video)||keepArchiveReturnPaused(video)||keepOdyseeReturnPaused(video)||keepDailymotionReturnPaused(video))video.pause();});
       holdPaused(video);
     }
     // Feeds and comments mutate constantly; only a new <video> changes the report.
@@ -1342,6 +1356,22 @@
       if (weibo !== weiboEnabled) { weiboEnabled = weibo; weiboChoice = null; network = []; networkContext(true); changed(); }
       if (enabled !== networkEnabled) { networkEnabled = enabled; network = []; networkContext(true); changed(); }
       else networkContext();
+    } else if (message?.action === "restore_bilibili") {
+      // Re-evaluate the current part/episode, not a retained API response alone.
+      send();
+      const owner = bilibiliCurrent, video = owner?.video;
+      const key = [message.content, message.cid, message.part, message.ep || ''].join(':');
+      if (!owner || String(videos.get(video)) !== message.id || owner.epoch !== message.epoch ||
+          owner.source !== message.source || owner.page !== message.page || owner.page !== location.href ||
+          biliKey(owner.data) !== key || encrypted.has(video) || video.mediaKeys ||
+          !Number.isFinite(message.time) || message.time < 0) return;
+      suspended = false;
+      bilibiliReturnPause = message.play === true ? null : {...owner, key, at:Date.now()};
+      video.pause();
+      try { video.currentTime = Math.min(message.time, Math.max(0, video.duration - .05)); }
+      catch (_) { bilibiliReturnPause = null; return; }
+      if (message.play === true) { try { Promise.resolve(video.play()).catch(() => {}); } catch (_) {} }
+      send();
     } else if (message?.action === "restore_direct") {
       const video = [...videos.keys()].find(v => String(videos.get(v)) === String(message.id));
       if (!video || !video.isConnected || encrypted.has(video) || video.mediaKeys ||
@@ -1385,7 +1415,7 @@
       send();
     } else if (message?.action === "suspend") {
       instagramRestore=null;
-      iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;tiktokReturnPause=null;instagramReturnPause=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;redditReturnPause=null;naverReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;
+      bilibiliReturnPause=null;iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;tiktokReturnPause=null;instagramReturnPause=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;redditReturnPause=null;naverReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;
       // A retained native handoff keeps the exact original playing-state lease.
       // Ordinary tab/background suspension still releases its temporary hold.
       if(message.keep_pause!==true||message.pause_token!==pauseLease?.token)pauseLease = null;
@@ -1397,6 +1427,9 @@
       // Returning to the browser allows user-initiated playback; never auto-play it.
       suspended = false;
       send();
+    } else if (message?.action === "locate_video" && Number.isSafeInteger(message.request) && message.request > 0) {
+      const found = typeof Thru3DVideoFocus !== 'undefined' ? Thru3DVideoFocus.locate(window, videos.keys()) : { videos: [] };
+      try { port.postMessage({ type: "locate_video_result", request: message.request, ...found }); } catch (_) {}
     } else if (message?.action === "capture_video" && Number.isSafeInteger(message.request) && message.request > 0) {
       const entry = [...videos].find(([, id]) => String(id) === message.id);
       const server = entry && serverState.get(entry[0]);

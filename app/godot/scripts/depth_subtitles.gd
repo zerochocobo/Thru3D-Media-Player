@@ -5,11 +5,13 @@ const Canvas := preload("res://scripts/flat_subtitle_canvas.gd")
 const Layer := preload("res://scripts/video_layer.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
 const Facing := preload("res://scripts/surface_facing.gd")
+const FadedCaption := preload("res://scripts/faded_caption.gd")
 var video: Node3D
 var text: Label3D
 var bitmap: MeshInstance3D
 var hole: MeshInstance3D
 var canvas: Node
+var faded: MeshInstance3D
 var active := false
 var kind := ""
 var prepared := false
@@ -57,6 +59,7 @@ func sync_surface_facing(front_only: bool) -> void:
 		text.double_sided=not front_only
 	if bitmap: Facing.apply(bitmap.material_override,front_only)
 	if hole: Facing.apply(hole.material_override,front_only)
+	if faded: Facing.apply(faded.material_override,front_only)
 
 func suspend() -> void:
 	active = false
@@ -139,9 +142,24 @@ func _clear_ground(surface: Node3D,bounds: AABB) -> void:
 func commit(submitted: bool) -> void:
 	var on_layer := active and prepared and submitted
 	text.visible = active and kind == "text"
-	text.layers = 0 if on_layer else 1
+	var shown_faded := text.visible and not on_layer and _fade_text()
+	if faded and not shown_faded: faded.visible = false
+	text.layers = 0 if on_layer or shown_faded else 1
 	bitmap.visible = active and kind == "bitmap" and not on_layer
 	hole.visible = on_layer
+
+## Semi-transparent eye-buffer text is drawn from its canvas, faded as one layer.
+func _fade_text() -> bool:
+	if text.modulate.a >= 1.0: return false
+	if not canvas:
+		canvas = Canvas.new()
+		add_child(canvas)
+	if not faded:
+		faded = FadedCaption.new()
+		text.add_child(faded)
+		Facing.apply(faded.material_override, not text.no_depth_test)
+	# The layer path's image limit: alternating limits would recapture the canvas every frame.
+	return faded.show_caption(text, canvas, video.video_layer.runtime_image_size if video.video_layer else Vector2i.ZERO)
 
 func layer_extras(origin: XROrigin3D) -> Array:
 	prepared = false

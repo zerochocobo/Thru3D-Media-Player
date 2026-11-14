@@ -91,6 +91,8 @@ object WebVideoCnDesktopProbe {
                 result.put("beta_default_enabled",WebBrowserDouyin.enabled(media.getString("frame"))).put("rendered_card_research",true)
             }
             val weibo = media.optBoolean("weibo_enabled")
+            val bilibili = media.optBoolean("bilibili_ready") && media.optJSONObject("bilibili") != null
+            if (bilibili) media.put("bilibili_enabled", true)
             val tencent = media.optBoolean("tencent_ready") && media.optJSONObject("tencent") != null
             val mango = media.optBoolean("mango_ready") && media.optJSONObject("mango") != null
             val youku = media.optBoolean("youku_ready") && media.optJSONObject("youku") != null
@@ -143,8 +145,8 @@ object WebVideoCnDesktopProbe {
                 else if (mango) WebVideoMangoCapture.page(media.getString("frame"),media) ?: error("Mango identity unavailable")
                 else if (tencent) WebVideoTencentCapture.page(media.getString("frame"),media) ?: error("Tencent identity unavailable")
                 else WebVideoPage.parse(media.getString("frame"))
-            require(page.site in setOf("mgtv","youku","weibo","tencent","iqiyi","douyin","niconico","twitch","tiktok","ted","instagram","dailymotion","redbull","naver","reddit","streamable","archive","odysee"))
-            require(!media.optBoolean("protected") && (douyin || weibo || tencent || twitch || naver || reddit || streamable || archive || odysee || tiktok || instagram || media.optBoolean("blob")))
+            require(page.site in setOf("bilibili","mgtv","youku","weibo","tencent","iqiyi","douyin","niconico","twitch","tiktok","ted","instagram","dailymotion","redbull","naver","reddit","streamable","archive","odysee"))
+            require(!media.optBoolean("protected") && (bilibili || douyin || weibo || tencent || twitch || naver || reddit || streamable || archive || odysee || tiktok || instagram || media.optBoolean("blob")))
             if (douyin) { result.put("bridge_metadata",WebBrowserDouyin.metadata(media,media.getString("frame"),true)!=null);check(result.getBoolean("bridge_metadata")) }
             if (weibo) { result.put("bridge_metadata",WebBrowserWeibo.metadata(media,media.getString("frame"))!=null);check(result.getBoolean("bridge_metadata")) }
             if (tencent) { result.put("bridge_metadata",WebBrowserTencent.metadata(media,media.getString("frame"))!=null);check(result.getBoolean("bridge_metadata")) }
@@ -262,18 +264,23 @@ object WebVideoCnDesktopProbe {
                     .put("content_duration",data.optDouble("content_duration"))
                     .put("playlist_duration",data.optString("playlist").lineSequence().filter { it.startsWith("#EXTINF:") }.sumOf { it.substringAfter(':').substringBefore(',').toDouble() }))
             }
-            val info=(if(douyin) WebVideoDouyinCapture.resolve(page,media,capture) else if(weibo) WebVideoWeiboCapture.resolve(page,media,capture) else if(tencent) WebVideoTencentCapture.resolve(page,media,capture) else if(mango) WebVideoMangoCapture.resolve(page,media,capture) else if(dailymotion)WebVideoDailymotionCapture.resolve(page,media,capture) else if(ted)WebVideoTedCapture.resolve(page,media,capture) else if(redbull)WebVideoRedBullCapture.resolve(page,media,capture) else if(instagram)WebVideoInstagramCapture.resolve(page,media,capture) else if(tiktok)WebVideoTikTokCapture.resolve(page,media,capture) else if(naver)WebVideoNaverCapture.resolve(page,media,capture) else if(reddit)WebVideoRedditCapture.resolve(page,media,capture) else if(streamable)WebVideoStreamableCapture.resolve(page,media,capture) else if(odysee)WebVideoOdyseeCapture.resolve(page,media,capture) else if(archive)WebVideoArchiveCapture.resolve(page,media,capture) else if(twitch)WebVideoTwitchCapture.resolve(page,media,capture) else if(niconico)WebVideoNiconicoCapture.resolve(page,media,capture) else if(youku) WebVideoYoukuCapture.resolve(page,media,capture) else if(iqiyi) WebVideoIqiyiCapture.resolve(page,media,capture) else capture.resolveCurrent(page,media)) ?: error("Current stream not bound")
+            val info=(if(bilibili) WebVideoBilibiliCapture.formats(page,media) else if(douyin) WebVideoDouyinCapture.resolve(page,media,capture) else if(weibo) WebVideoWeiboCapture.resolve(page,media,capture) else if(tencent) WebVideoTencentCapture.resolve(page,media,capture) else if(mango) WebVideoMangoCapture.resolve(page,media,capture) else if(dailymotion)WebVideoDailymotionCapture.resolve(page,media,capture) else if(ted)WebVideoTedCapture.resolve(page,media,capture) else if(redbull)WebVideoRedBullCapture.resolve(page,media,capture) else if(instagram)WebVideoInstagramCapture.resolve(page,media,capture) else if(tiktok)WebVideoTikTokCapture.resolve(page,media,capture) else if(naver)WebVideoNaverCapture.resolve(page,media,capture) else if(reddit)WebVideoRedditCapture.resolve(page,media,capture) else if(streamable)WebVideoStreamableCapture.resolve(page,media,capture) else if(odysee)WebVideoOdyseeCapture.resolve(page,media,capture) else if(archive)WebVideoArchiveCapture.resolve(page,media,capture) else if(twitch)WebVideoTwitchCapture.resolve(page,media,capture) else if(niconico)WebVideoNiconicoCapture.resolve(page,media,capture) else if(youku) WebVideoYoukuCapture.resolve(page,media,capture) else if(iqiyi) WebVideoIqiyiCapture.resolve(page,media,capture) else capture.resolveCurrent(page,media)) ?: error("Current stream not bound")
             val selected=WebVideoFormats.select(page,info){true}
+            if (bilibili && selected.video.videoCodec.startsWith("av01")) {
+                val profile = WebVideoCapabilities.av1SdrProfile(selected.video.videoCodec)
+                result.put("av1_sdr_profile", profile)
+                check(profile != null)
+            }
             result.put("site",page.site).put("width",selected.video.width).put("height",selected.video.height)
                 .put("video_codec",selected.video.videoCodec).put("audio_codec",selected.audio?.audioCodec ?: selected.video.audioCodec)
                 .put("transport",selected.video.transport).put("current_size",selected.video.width==media.optInt("width") && selected.video.height==media.optInt("height"))
-            check(result.getBoolean("current_size") && (douyin || weibo || tencent || twitch || naver || reddit || streamable || archive || odysee || tiktok || instagram || selected.video.transport=="hls"))
+            check(result.getBoolean("current_size") && (bilibili || douyin || weibo || tencent || twitch || naver || reddit || streamable || archive || odysee || tiktok || instagram || selected.video.transport=="hls"))
             stage="lease"
             LocalStreamServer().use { server -> WebVideoStreams { server }.use { streams ->
                 val local=streams.prepare(selected)
                 val audio=streams.audio(page.url).firstOrNull()?.location
                 stage="probe"
-                val probe=run(listOf("ffprobe","-v","error","-show_entries","stream=codec_type,codec_name,width,height,sample_aspect_ratio,sample_rate,channels:format=duration,start_time","-of","json",local))
+                val probe=run(listOf("ffprobe","-v","error","-show_entries","stream=codec_type,codec_name,width,height,pix_fmt,color_space,color_transfer,color_primaries,sample_aspect_ratio,sample_rate,channels:format=duration,start_time","-of","json",local))
                 check(probe.code==0)
                 val tracks=JSONObject(probe.bytes.toString(Charsets.UTF_8)).getJSONArray("streams")
                 val list=(0 until tracks.length()).map{tracks.getJSONObject(it)}

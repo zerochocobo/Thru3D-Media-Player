@@ -176,7 +176,64 @@ func _run() -> void:
 	check(platform.next == outside and menu.section == Menu.Section.RECENT and menu.status == outside_status, "account notification leaves other sections alone")
 	menu._activate(Menu.NAV_BASE + Menu.Section.MEDIA_SERVER)
 	check(platform.requests[platform.next].action == "servers", "returning to servers reads the latest accounts")
+	_test_emby_actions(menu, platform)
 	menu.free(); platform.free()
 	for failure in failures: push_error(failure)
 	print("media server checks=%d failures=%d" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func _test_emby_actions(menu: Node, platform: Platform) -> void:
+	var b: RefCounted = menu.server_browser
+	b.cancel(); b.server = {"id": "emby-test", "provider": "emby"}
+	b.capabilities = {"sorts": Browser.SORTS, "artwork": true, "favorite_scope": "server"}
+	b.display_preferences_path = "user://settings/emby-actions-test.cfg"
+	b.view = "scenes"; b.query = {"sort": "title", "direction": "ASC"}; menu.refresh()
+	menu._activate(Browser.ACTION + 4); menu._activate(Browser.ACTION + 178)
+	check(b.sorting() and not menu._buttons.any(func(button): return button.target in [Browser.ACTION + 175, Browser.ACTION + 176]), "random draft hides direction controls")
+	menu._activate(Browser.ACTION + 11)
+	var seed: int = int(platform.requests[platform.next].random_seed)
+	check(seed > 0 and b.sort_caption() == "Random", "random uses a positive seed and an arrow-free caption")
+	var movies: Array = []
+	for i in 48: movies.append({"id": str(i + 1), "title": "Fixture %d" % i, "uri": "medialib://emby-test/scene/%d" % (i + 1)})
+	platform.answer(platform.next, {"entries": movies, "total": 96})
+	b.more()
+	check(platform.requests[platform.next].page == 2 and int(platform.requests[platform.next].random_seed) == seed, "next page preserves the seed")
+	platform.answer(platform.next, {"state": "error", "error": "Server unavailable"})
+	b.choose({"scene": movies[5]})
+	var allowed: Dictionary = movies[5].merged({"delete_plan": {"token": "fixture-token", "filename": "disposable.mp4"}})
+	platform.answer(platform.next, {"detail": allowed})
+	check(menu._buttons.any(func(button): return button.target == Browser.DETAIL_MORE), "authorized detail offers More")
+	var deleted: Array = []
+	menu.file_deleted.connect(func(uri): deleted.append(uri))
+	menu._activate(Browser.DETAIL_MORE); menu._activate(Browser.DELETE_FILE)
+	var before: int = platform.next
+	check(b.detail_actions == "confirm" and not b.busy, "choosing Delete file only opens confirmation")
+	check(menu.text_snapshot().contains("Permanently deletes the original file"), "confirmation explains server file deletion")
+	var origin: Vector3 = menu.to_global(Vector3(0.35, -0.095, 1.0))
+	var ray: Vector3 = -menu.global_basis.z
+	check(menu.ray_hit(origin, ray).target == Browser.CONFIRM_DELETE, "confirmation button is the top ray target")
+	menu._activate(Browser.CANCEL_DELETE)
+	check(platform.next == before and b.detail_actions.is_empty(), "cancel sends no deletion")
+	menu._activate(Browser.DETAIL_MORE); menu._activate(Browser.DELETE_FILE)
+	menu.press_pointer("left_hand", origin, ray, true); menu.release_pointer("left_hand", origin, ray, true)
+	var request_id: int = platform.next
+	var sent: Dictionary = platform.requests[request_id]
+	menu._activate(Browser.CONFIRM_DELETE)
+	check(sent.action == "delete_file" and sent.scene_id == "6" and sent.token == "fixture-token" and platform.next == request_id, "confirmation sends exactly one scoped mutation")
+	platform.answer(request_id, {"scene_id": "6", "deleted": true})
+	check(b.view == "scenes" and b.entries.size() == 47 and b.total == 95 and deleted == [allowed.uri], "deletion returns to the list and propagates file cleanup")
+	b.more()
+	var next: Dictionary = platform.requests[platform.next]
+	check(next.start_index == 47 and int(next.random_seed) == seed, "pagination resumes without skipping the shifted row")
+	platform.answer(platform.next, {"entries": [movies[0]], "total": 95})
+	check(b.end_reached and b.entries.size() == 47 and menu.status == "Server query unsupported", "unstable random pages are detected rather than silently dropping duplicates")
+	b.cancel(); b.view = "detail"; b.detail = movies[0].duplicate(); menu.refresh()
+	check(not menu._buttons.any(func(button): return button.target == Browser.DETAIL_MORE), "details without delete permission hide the menu")
+	b.detail.delete_scope_unverified = true; menu.refresh()
+	check(menu._buttons.any(func(button): return button.target == Browser.DETAIL_MORE), "an authorized item with an unverified scope explains the limitation in More")
+	menu._activate(Browser.DETAIL_MORE)
+	check("Emby did not confirm single-file deletion." in menu.text_snapshot(), "More explains why the app cannot delete this item")
+	check(not menu._buttons.any(func(button): return button.target in [Browser.DELETE_FILE, Browser.CONFIRM_DELETE]), "unverified scope has no deletion action")
+	before = platform.next
+	menu._activate(Browser.DELETE_FILE); menu._activate(Browser.CONFIRM_DELETE)
+	check(platform.next == before, "unverified scope cannot submit a deletion")

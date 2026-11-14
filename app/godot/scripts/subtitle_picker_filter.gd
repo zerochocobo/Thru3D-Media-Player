@@ -1,5 +1,6 @@
 extends RefCounted
-## One temporary query for the subtitle picker. Complete directories stay local;
+## Shared temporary filename filter for subtitles and SMB/DLNA directories.
+## Complete directories stay local;
 ## incomplete cloud directories use the existing search/resolve protocol.
 const OPEN := 985100
 const INPUT := 985101
@@ -14,6 +15,10 @@ var context := ""
 var anchor := {}
 var remote_key := ""
 var generation := 0
+var directory_mode := false
+const DIRECTORY_HINT := "Current folder · No subfolders"
+
+func title() -> String: return "Filter current folder" if directory_mode or not menu.subtitle_picker_mode else "Filter subtitles"
 
 func _init(owner: Node) -> void: menu = owner
 
@@ -28,9 +33,13 @@ static func default_query(filename: String) -> String:
 func reset(filename: String = "") -> void:
 	close(false)
 	seed = default_query(filename); query = ""; draft = ""; context = ""; anchor = {}
+	directory_mode = false
 
 func available() -> bool:
-	if not menu.subtitle_picker_mode or menu.archives.browsing or menu.account_panel.active() or not menu._editor.is_empty(): return false
+	if menu.archives.browsing or menu.account_panel.active() or not menu._editor.is_empty(): return false
+	if not menu.subtitle_picker_mode:
+		if menu.audio_import_mode or menu.voice_picker_mode or menu.image_picker_mode: return false
+		return (menu.section == menu.Section.SMB and not menu._smb_server.is_empty() and not menu._smb_path.is_empty()) or (menu.section == menu.Section.DLNA and not menu._dlna_server.is_empty())
 	match menu.section:
 		menu.Section.LOCAL: return not menu._local_stack.is_empty()
 		menu.Section.SMB: return not menu._smb_server.is_empty()
@@ -52,8 +61,10 @@ func action(target: int) -> bool:
 	if target == OPEN and available():
 		if enabled: close()
 		else:
+			directory_mode = not menu.subtitle_picker_mode
+			menu._save_folder_position()
 			anchor = menu.capture_position(); context = menu._filter_location()
-			enabled = true; query = seed; draft = query
+			enabled = true; query = "" if directory_mode else seed; draft = query
 			menu._reset_navigation(); menu.refresh()
 		return true
 	if not active(): return false
@@ -96,6 +107,8 @@ func cloud_complete() -> bool:
 func prepare() -> void:
 	if not enabled: return
 	var current: String = menu._filter_location()
+	if directory_mode and (context != current or not available() or menu.subtitle_picker_mode):
+		reset(); return
 	if context != current:
 		menu.system_text_input.cancel("subtitle_filter")
 		if menu.cloud_search.subtitle_context: menu.cloud_search.close()
@@ -118,25 +131,30 @@ func _search(id: int, key: String) -> void:
 func filter_rows() -> void:
 	if not active() or query.is_empty() or menu.cloud_search.subtitle_context: return
 	var needle := query.to_lower()
-	menu.rows.assign(menu.rows.filter(func(row): return row.get("folder", false) or not row.has("uri") or str(row.get("title", "")).to_lower().contains(needle)))
+	menu.rows.assign(menu.rows.filter(func(row): return (not directory_mode and (row.get("folder", false) or not row.has("uri"))) or str(row.get("title", "")).to_lower().contains(needle)))
 	menu.scroll = clampf(menu.scroll, 0, menu._max_scroll())
 
 func status_text() -> String:
-	if active() and not query.is_empty() and menu.status.is_empty() and not menu.cloud_search.subtitle_context and remote_key.is_empty() and not menu.rows.any(func(row): return row.has("uri") and not row.get("folder", false)):
+	if active() and not query.is_empty() and menu.status.is_empty() and not menu.cloud_search.subtitle_context and remote_key.is_empty() and not menu.rows.any(func(row): return directory_mode or (row.has("uri") and not row.get("folder", false))):
 		return "No matching files"
 	return menu.status
 
 func draw() -> void:
 	if not active(): return
 	var text := draft if menu.system_text_input.active("subtitle_filter") else query
-	menu._button(INPUT, menu._fit_title(text if not text.is_empty() else menu.I18n.t("Filter subtitles"), "", 0.98, 20), Vector2(0.10, 0.335), Vector2(1.13, 0.075), true, "", menu.system_text_input.active("subtitle_filter"))
+	var compact: bool = menu.compact
+	var y := 0.215 if compact else 0.335
+	var width := 0.88 if compact else 1.13
+	menu._button(INPUT, menu._fit_title(text if not text.is_empty() else menu.I18n.t(title()), "", width - 0.15, 20), Vector2(-0.04 if compact else 0.10, y), Vector2(width, 0.075), true, "", menu.system_text_input.active("subtitle_filter"))
 	var button: Node3D = menu._buttons.back().node
 	var label: Label3D = button.get_child(0)
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.position = Vector3(-0.46, 0, 0.004)
-	menu._icon("search", Vector3(-0.51, 0, 0.006), 0.026, menu.MUTED, button)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.position = Vector3(-width * 0.5 + 0.105, 0, 0.004)
+	menu._icon("search", Vector3(-width * 0.5 + 0.055, 0, 0.006), 0.026, menu.MUTED, button)
 	menu._tips[INPUT] = text
-	menu._button(CLEAR, "", Vector2(0.75, 0.335), Vector2(0.075, 0.075), not text.is_empty(), "close")
+	menu._button(CLEAR, "", Vector2(0.47 if compact else 0.75, y), Vector2(0.075, 0.075), not text.is_empty(), "close")
 	menu._tips[CLEAR] = menu.I18n.t("Clear")
+	if directory_mode:
+		menu._label(menu.I18n.t(DIRECTORY_HINT), Vector3(0 if compact else 0.13, y - 0.07, 0.004), 15).modulate = menu.MUTED
 
 func draw_paging(y: float) -> bool:
 	if not active() or query.is_empty(): return false
