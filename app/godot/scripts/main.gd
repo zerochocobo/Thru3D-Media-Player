@@ -99,6 +99,7 @@ var _cinema_stick_waiting_for_neutral := true
 var _cinema_stick_hand := "right_hand"
 var _scene_move_hint_until := 0
 var _cinema_menu_overlays := {}
+var _scene_import_menu_overlays := {}
 var _cinema_viewing_preview := false
 var _cinema_gesture_hint := ""
 var _cinema_gesture_hint_until := 0
@@ -4607,6 +4608,7 @@ func _library_settings() -> Dictionary:
 		"seek_mode": video.SeekPolicy.normalize(video.seek_mode),
 		"hdr_to_sdr": video.hdr_to_sdr_mode(),
 		SeekStep.KEY: SeekStep.seconds(settings),
+		"scene_body_height": scene_import.body_height if scene_import != null else 0.0,
 		"depth_render": _depth_render_mode(),
 		"depth_position_default": video.depth_position,
 		"video_auto_3d": video.default_auto_depth,
@@ -4725,6 +4727,9 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			video.set_hdr_to_sdr(str(value))
 			settings.set_value("video", "hdr_to_sdr", video.hdr_to_sdr)
 			settings.save(settings_path)
+			if recent_menu: recent_menu.refresh()
+		"scene_body_height":
+			if scene_import: scene_import.set_body_height(float(value))
 			if recent_menu: recent_menu.refresh()
 		SeekStep.KEY:
 			value = SeekStep.normalize(value)
@@ -6168,6 +6173,21 @@ func _sync_cinema_menu_overlays() -> void:
 			menu.set_scene_overlay(_cinema_menu_overlays[id])
 			_cinema_menu_overlays.erase(id)
 
+## An imported scene has walls wherever its author put them, and flying goes through them: a menu
+## behind one would be out of reach. Menus draw over the scene, as they do in the hall.
+func _sync_scene_import_menu_overlays() -> void:
+	var over: bool = scene_import != null and scene_import.movable()
+	for menu in [recent_menu, video_menu, photo_menu, music_menu, scenery_menu]:
+		if not is_instance_valid(menu): continue
+		var id: int = menu.get_instance_id()
+		if over:
+			if not _scene_import_menu_overlays.has(id):
+				_scene_import_menu_overlays[id] = menu.scene_overlay
+				menu.set_scene_overlay(true)
+		elif _scene_import_menu_overlays.has(id):
+			menu.set_scene_overlay(_scene_import_menu_overlays[id])
+			_scene_import_menu_overlays.erase(id)
+
 func _sync_cinema_transport(recenter: bool = false) -> void:
 	_sync_cinema_menu_overlays()
 	if not is_instance_valid(video_menu) or not video_menu.is_inside_tree(): return
@@ -6303,8 +6323,11 @@ func _update_background() -> void:
 		_beach_ambient_saved.clear()
 		display.set_scenery(null if hide_scenery or wants_passthrough else scenery.ready_sky(), scenery.yaw)
 	# An imported scene shows over the plain dark background, under the same rules as scenery.
-	if scene_import and scene_import.present(scenery.choice == "dark" and not hide_scenery and not wants_passthrough and not photo_active) and scene_import.sky():
-		display.set_scenery(scene_import.sky(), 0.0, scene_import.backdrop())
+	if scene_import and scene_import.present(scenery.choice == "dark" and not hide_scenery and not wants_passthrough and not photo_active):
+		if scene_import.sky(): display.set_scenery(scene_import.sky(), 0.0, scene_import.backdrop())
+		# A scene without a sky takes the panorama its viewer chose for it.
+		elif scene_import.panorama(): display.set_scenery(scene_import.panorama(), 0.0)
+	_sync_scene_import_menu_overlays()
 	var passthrough: bool = wants_passthrough and display.supports_passthrough()
 	if display.applied_passthrough != passthrough or display.requested_passthrough != passthrough:
 		display.set_passthrough(passthrough)
@@ -6351,7 +6374,7 @@ func _session_controls_state() -> Dictionary:
 		"passthrough_supported": display.supports_passthrough(),
 		"passthrough": _vr_passthrough_active() if _vr_video_present() and not _person_passthrough() else display.applied_passthrough, "alpha": _person_passthrough(),
 		"cinema_visible": _cinema_scene_active() and not photo_active, "cinema_moving": _cinema_interaction_owns(),
-		"scene_move": scene_import.motion.mode if scene_import != null and scene_import.movable() and not photo_active else "",
+		"scene_move": scene_import.stance() if scene_import != null and scene_import.movable() and not photo_active else "",
 		"cinema_light_tip": _beach_time_tip() if _beach_active() else _cinema_light_tip(),
 		"cinema_lights": {"auto": "auto", "day": "on", "night": "off"}[_beach_time_mode()] if _beach_active() else str(settings.get_value("appearance", "cinema_lights", "auto"))}
 
@@ -6380,13 +6403,18 @@ func _on_session_control(operation: String) -> void:
 		var current := modes.find(str(settings.get_value("appearance", "cinema_lights", "auto")))
 		_on_setting_changed("cinema_lights", modes[(current + 1) % modes.size()])
 		_refresh_session_controls(); return
-	if operation == "scene_move_cycle":
+	if operation.begins_with("scene_"):
 		if scene_import == null or not scene_import.movable() or photo_active: return
-		# The same switch as the built-in scenes', with flying as a third stop.
-		scene_import.cycle_movement()
+		if operation == "scene_entry":
+			# The scene menu owns the confirmation; it opens over whichever menu the row was on.
+			if scenery and not scenery_menu.visible: scenery.open()
+			if scenery_menu.visible: scenery_menu.ask_entry()
+			return
+		# Standing, sitting or lying stops where the viewer is; walking and flying hand the sticks to movement.
+		scene_import.set_stance(operation.trim_prefix("scene_"))
 		_cinema_request_interaction(scene_import.interaction)
-		# The controls go away with the switch; say what it left the viewer in.
-		_scene_move_hint_until = Time.get_ticks_msec() + 6000
+		# Moving sends the controls away; say how the way of moving just chosen works.
+		_scene_move_hint_until = Time.get_ticks_msec() + 6000 if scene_import.interaction == "move" else 0
 		if playback_status_overlay: playback_status_overlay.refresh()
 		_refresh_session_controls(); return
 	if operation == "cinema_move_toggle":
@@ -6902,7 +6930,8 @@ func _scene_move_caption() -> String:
 	var mode: String = scene_import.motion.mode
 	var searching: bool = mode == "walk" and not scene_import.motion.prepared
 	if Time.get_ticks_msec() >= _scene_move_hint_until and not searching: return ""
-	var lines := [I18n.t({"walk": "Free movement", "fly": "Fly"}.get(mode, "Stay in place"))]
+	if mode == "fixed": return ""
+	var lines := [I18n.t({"walk": "Free movement", "fly": "Fly"}[mode])]
 	if searching: lines.append(I18n.t("Finding the floor…"))
 	elif mode == "walk": lines.append(I18n.t("Push either stick forward to aim, release to land · Sideways to turn"))
 	elif mode == "fly": lines.append(I18n.t("Push either stick forward or back to fly where you look · Sideways to turn"))

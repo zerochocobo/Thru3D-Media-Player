@@ -349,6 +349,21 @@ Connections:  {
 	_bytes(fake, "not a scene".to_utf8_buffer())
 	_check(loader.load_scene(fake, Budget.LOW, {"use_cache": false}).get("error", "") == "Unsupported scene format", "A file that only carries the FBX name is refused before the engine reads it")
 
+	# The entry point a viewer sets stays with the scene's catalog entry.
+	var shelf: Node = preload("res://scripts/scene_import/scene_import_library.gd").new()
+	shelf.directory = fixtures.path_join("shelf")
+	DirAccess.make_dir_recursive_absolute(shelf.directory.path_join("sources"))
+	DirAccess.copy_absolute(marked, shelf.directory.path_join("sources/abc123.glb"))
+	shelf.entries["abc123"] = {"title": "Room", "name": "room.glb", "file": "abc123.glb", "bytes": 1, "added": 1, "summary": {}}
+	var stood := Transform3D(Basis(Vector3.UP, 0.75), Vector3(2, 0.5, -3))
+	_check(shelf.entry("abc123") == null and shelf.set_entry("abc123", stood) and not shelf.set_entry("missing", stood), "An entry point is saved for a scene in the library only")
+	shelf.load_catalog()
+	var kept: Variant = shelf.entry("abc123")
+	_check(kept is Transform3D and (kept as Transform3D).is_equal_approx(stood), "The entry point comes back with the catalog (%s)" % kept)
+	shelf.entries["abc123"]["entry"] = [0, "x", 0, 0]
+	_check(shelf.entry("abc123") == null, "A malformed entry point is ignored")
+	shelf.free()
+
 	loader.finished.connect(_threaded)
 	loader.start(marked, Budget.HIGH, options)
 

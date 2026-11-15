@@ -31,6 +31,7 @@ func error_hint() -> String:
 		"browser_page_changed": "Web video changed during transfer; retry",
 		"browser_observation_unavailable": "Browser capture unavailable; reload and retry",
 		"browser_capture_mismatch": "Video data does not match; reload and retry",
+		"browser_format_unsupported": "This headset cannot decode the current video format",
 		"browser_pause_timeout": "Could not pause web video; pause it and retry",
 		"timeout": "Video transfer timed out; retry",
 		"region_restricted": "Unavailable in this region"}

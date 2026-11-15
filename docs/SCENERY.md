@@ -25,3 +25,7 @@ My scenes lists panoramas and compatible imported GLB and Unity scene bundles in
 ## Additional scene formats in 0.17.11
 
 Experimental scene import accepts supported FBX files with embedded textures and compatible Unity .ab bundles. The scene picker remembers its last directory. Scenes without a spawn marker can use the widest qualifying floor for the initial position.
+
+## Imported scene controls in 0.17.12
+
+An imported scene can remember an entry point. The stance row offers posture and movement choices. Scenes without a sky can use a panorama in the background. Imported scenes can dim during film playback and remain visible beneath overlaid menus.

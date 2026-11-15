@@ -26,6 +26,12 @@ const TEMP_PASSTHROUGH := -1002
 const FREE_MOVEMENT := -1003
 const CINEMA_LIGHTS := -1004
 const SCENERY := -1005
+## In the viewer's own scene the movement button opens these, counted down from SCENE_STANCE:
+## three ways to watch in place, two ways to move, and making this spot the scene's entry point.
+const SCENE_STANCE := -1010
+const SCENE_STANCES := [["stand", "standing", "Stand"], ["sit", "seated", "Sit"], ["lie", "lying", "Lie down"],
+	["walk", "walking", "Free movement"], ["fly", "fly", "Fly"], ["entry", "entry_point", "Set as entry point"]]
+var _scene_stances_open := false
 const LIGHT_ICONS := {"auto": "light_auto", "on": "light", "off": "light_off"}
 const LIGHT_TIPS := {"auto": "Auto lights: off while a film plays, on when it stops", "on": "Lights on", "off": "Lights off"}
 const FOOTER_DIAMETER := 0.09
@@ -271,6 +277,7 @@ func toggle() -> void:
 
 func dismiss() -> void:
 	if music_quick: music_quick.reset()
+	_scene_stances_open = false
 	visible = false
 	clear_pointer_visuals()
 
@@ -449,19 +456,26 @@ func _activate_hit(hit: Dictionary) -> void:
 func _activate_footer(target: int) -> bool:
 	if target == SCENERY:
 		scenery_requested.emit(); return true
+	if _scene_stance_target(target):
+		session_control_requested.emit("scene_" + str(SCENE_STANCES[SCENE_STANCE - target][0]))
+		refresh_session_controls(true)
+		return true
 	if target not in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT, CINEMA_LIGHTS]: return false
 	var state := _session_controls()
 	if target == CINEMA_LIGHTS:
 		if state.get("cinema_visible", false): session_control_requested.emit("cinema_lights_cycle")
 	elif target == FREE_MOVEMENT:
 		if state.get("cinema_visible", false): session_control_requested.emit("cinema_move_toggle")
-		elif not str(state.get("scene_move", "")).is_empty(): session_control_requested.emit("scene_move_cycle")
+		elif not str(state.get("scene_move", "")).is_empty(): _scene_stances_open = not _scene_stances_open
 	elif target == FOLLOW:
 		session_control_requested.emit("follow")
 	elif state.get("passthrough_visible", false) and state.get("passthrough_supported", true) and not state.get("alpha", false):
 		session_control_requested.emit("temporary_passthrough")
 	refresh_session_controls(true)
 	return true
+
+func _scene_stance_target(target: int) -> bool:
+	return target <= SCENE_STANCE and target > SCENE_STANCE - SCENE_STANCES.size()
 
 func _set_backdrop(size: Vector2, centre: Vector2 = Vector2.ZERO) -> void:
 	if _backdrop.get_meta("control_bar", false):
@@ -589,7 +603,7 @@ func refresh_session_controls(force: bool = false) -> void:
 	if not force and state == _footer_state: return
 	_footer_state = state.duplicate()
 	for index in range(_buttons.size() - 1, -1, -1):
-		if _buttons[index].target in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT, CINEMA_LIGHTS, SCENERY, app_actions.STATUS]:
+		if _buttons[index].target in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT, CINEMA_LIGHTS, SCENERY, app_actions.STATUS] or _scene_stance_target(_buttons[index].target):
 			_buttons[index].node.free()
 			_buttons.remove_at(index)
 	var show_passthrough: bool = state.get("passthrough_visible", false)
@@ -615,10 +629,25 @@ func refresh_session_controls(force: bool = false) -> void:
 		_footer_button(FREE_MOVEMENT,"standing",Vector2(cinema_left+pitch+FOOTER_DIAMETER*.5,_footer_centre.y),
 			state.get("cinema_moving",false),true,I18n.t("Free movement"))
 	elif not str(state.get("scene_move","")).is_empty():
-		# The viewer's own scene has the same switch, with flying as a third stop.
+		# The viewer's own scene shows what the viewer is doing there; pressing it lays the choices
+		# out in a row beneath: every one a single press, none hidden behind another.
 		var movement:=str(state.scene_move)
-		_footer_button(FREE_MOVEMENT,"fly" if movement=="fly" else "standing",Vector2(scene_centre.x+.09+FOOTER_GAP+FOOTER_DIAMETER*.5,_footer_centre.y),
-			movement!="fixed",true,I18n.t({"walk":"Free movement","fly":"Fly"}.get(movement,"Stay in place")))
+		var chosen:=SCENE_STANCES.filter(func(item): return item[0]==movement)
+		var anchor:=Vector2(scene_centre.x+.09+FOOTER_GAP+FOOTER_DIAMETER*.5,_footer_centre.y)
+		_footer_button(FREE_MOVEMENT,str(chosen[0][1]) if not chosen.is_empty() else "standing",anchor,_scene_stances_open,true,
+			I18n.t(str(chosen[0][2]) if not chosen.is_empty() else "Stand"))
+		if _scene_stances_open:
+			var pitch:=FOOTER_DIAMETER+FOOTER_GAP
+			# A rule in a wider gap sets the postures, the ways of moving and the entry point apart.
+			var x:=anchor.x-pitch*4.0-FOOTER_GAP*4.0
+			for index in SCENE_STANCES.size():
+				var grouped:=index in [3,5]
+				if grouped: x+=FOOTER_GAP*2.0
+				var item: Array=SCENE_STANCES[index]
+				_footer_button(SCENE_STANCE-index,str(item[1]),Vector2(x,_footer_centre.y-pitch),item[0]==movement,true,I18n.t(str(item[2])))
+				if grouped: _buttons.back().node.add_child(_quad(Vector2(.003,FOOTER_DIAMETER*.6),Vector3(-pitch*.5-FOOTER_GAP,0,0),UiTheme.color("divider"),11))
+				x+=pitch
+	else: _scene_stances_open=false
 	_footer_button(FOLLOW, "head_follow", Vector2(follow_left + FOOTER_DIAMETER * 0.5, _footer_centre.y),
 		state.get("follow", false), state.get("follow_enabled", true), I18n.t("Disable follow" if state.get("follow", false) else "Enable follow"))
 	if show_passthrough:

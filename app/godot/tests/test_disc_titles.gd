@@ -168,6 +168,13 @@ func _run() -> void:
 		{"playlist": 1, "dvd_title": 1, "duration_ms": 1200000}, {"playlist": 2, "dvd_title": 2, "duration_ms": 1200000}]
 	check(DiscTitles.ordered(dvd_rows, 2).map(func(row): return row.playlist) == [1, 2, 3],
 		"Equal-length DVD episodes keep their authored title numbers and are never deduplicated")
+	check(DiscTitles.folder_index("VIDEO_TS.IFO") and DiscTitles.folder_index("video_ts.ifo") and not DiscTitles.folder_index("VTS_01_0.IFO"),
+		"Only the DVD folder index stands for the disc")
+	check(DiscTitles.folder_title("smb://nas/share/Ikkyu/VIDEO_TS/VIDEO_TS.IFO", "DVD") == "Ikkyu", "A disc folder is named by the folder holding VIDEO_TS")
+	check(DiscTitles.folder_title("cloud://acc/Films/Ikkyu%20298/VIDEO_TS.IFO", "DVD") == "Ikkyu 298", "Disc files directly in a named folder use that folder")
+	check(DiscTitles.folder_title("content://com.android.externalstorage.documents/tree/1A2B-3C4D%3A/document/1A2B-3C4D%3AFilms%2FIkkyu%2FVIDEO_TS%2FVIDEO_TS.IFO", "DVD") == "Ikkyu",
+		"A storage document names the disc by its folder")
+	check(DiscTitles.folder_title("smb://nas/VIDEO_TS/VIDEO_TS.IFO", "DVD") == "DVD", "A disc at a source root keeps the generic name")
 	var dvd := DiscTitles.new()
 	dvd.uri = "file:///episodes.iso"; dvd.menu_kind = "dvd"
 	check(dvd.menu_available() and not dvd.menu_unsupported(), "DVD menus use the existing ray/trigger menu path")

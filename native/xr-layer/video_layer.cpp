@@ -299,6 +299,8 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_bind(JNIEnv* env, jclass, j
         state.session = new_session;
         state.space = reinterpret_cast<XrSpace>(static_cast<uintptr_t>(space));
         state.get_proc = reinterpret_cast<PFN_xrGetInstanceProcAddr>(static_cast<uintptr_t>(get_proc));
+        // Kept even when the lookups below fail: QIYU passthrough needs only these handles, and the
+        // QIYU factory runtime has no Android-surface swapchains.
         state.logged_layout = {};
         state.create_surface = proc<PFN_xrCreateSwapchainAndroidSurfaceKHR>("xrCreateSwapchainAndroidSurfaceKHR");
         state.destroy_swapchain = proc<PFN_xrDestroySwapchain>("xrDestroySwapchain");

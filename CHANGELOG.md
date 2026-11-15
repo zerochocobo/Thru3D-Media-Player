@@ -4,6 +4,14 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.17.12 — 2026-11-15
+
+- Play supported unencrypted DVD-Video folders from local storage and SMB through the disc player, with title, chapter and disc-menu controls. Both storage paths were tested with sample media on Quest 3.
+- Set an entry point and choose a posture or movement mode in imported 3D scenes. Use a panorama behind scenes without a sky, dim the scene during playback and keep it visible beneath menus.
+- Improve discovery of Windows SMB shares that do not answer WS-Discovery.
+- Keep the beach screen adjustable while playback is paused and display clearer screen-lock feedback.
+- Show a clearer unsupported-format message for Bilibili Play Beta and include playback stages in standard Release diagnostics. PICO Neo3 8K playback remains unresolved.
+
 ## 0.17.11 — 2026-11-15
 
 - Add Play Beta for compatible Bilibili live streams, with quality switching in the built-in player. Improve quality selection for supported Bilibili on-demand videos. The recorded playback checks cover selected Quest 3 paths.

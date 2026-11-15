@@ -258,7 +258,9 @@ func update_session() -> void:
 func sync_qiyu_passthrough() -> void:
 	if not _qiyu_provider or not _api or not _api.is_running(): return
 	update_session()
-	if not bound: return
+	# Not `bound`: the QIYU factory runtime lacks Android-surface swapchains, so the video layer bind
+	# fails there, after the native side has already kept the session handles passthrough needs.
+	if _session == 0: return
 	var xr := XRServer.find_interface("OpenXR") as OpenXRInterface
 	var wanted := xr != null and xr.environment_blend_mode == XRInterface.XR_ENV_BLEND_MODE_ALPHA_BLEND
 	if wanted == _qiyu_on and _session == _qiyu_session: return

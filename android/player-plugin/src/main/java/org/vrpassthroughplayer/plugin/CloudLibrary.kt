@@ -404,6 +404,32 @@ internal object CloudLibrary {
         val client = drive(account, selected.cancellation, selected.page.folderId)
         SidecarAudio.forCloud(remote, selected.automatic(client)) { publishCompanion(account, client, it, server, selected) }
     }
+    /** A VIDEO_TS folder, named by its VIDEO_TS.IFO, as one disc image under the video's lease. */
+    fun discPlayable(uri: String, server: LocalStreamServer): String = safe {
+        val (id, remote) = split(CloudPaths.path(uri))
+        val account = credentials(id)
+        val parent = remote.substringBeforeLast('/').ifEmpty { "/" }
+        val companions = playbackPages.forVideo(id, identity(account), remote)
+        val client = drive(account, folderId = companions.folderId)
+        val files = (if (companions.complete) companions.files else client.list(parent)).filter { !it.folder }
+        val disc = DvdFolderSource.of(files.map { it.name to it.size }) { name ->
+            val file = client.findForPlayback(CloudPaths.child(parent, name), files.single { it.name == name })
+            source(account, client, file).also { part ->
+                try { part.prepare() } catch (error: Exception) { part.close(); throw error }
+            }
+        }
+        try {
+            synchronized(this) {
+                if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
+                stopStreams()
+                val url = server.publish(disc, "video.iso", IsoMetadataMemory.key(identity(account), id, remote, disc.identity))
+                activeStreams.getOrPut(id) { ArrayList() }.add(server to url)
+                playbackCompanions[id] = CloudPlaybackPages.Playback(remote, identity(account), companions)
+                url
+            }
+        } catch (error: Exception) { disc.close(); throw error }
+    }
+
     fun subtitleFiles(uri: String): List<String> = safe {
         val (id, remote) = split(CloudPaths.path(uri))
         companionSelection(id, credentials(id), remote)?.subtitleNames() ?: emptyList()

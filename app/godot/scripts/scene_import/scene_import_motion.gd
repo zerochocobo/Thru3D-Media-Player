@@ -74,6 +74,10 @@ func home() -> void:
 	suspend()
 	if _scene: _scene.transform = _home
 
+## Where the viewer is now becomes the place to come back to.
+func mark_home(shift: Vector3 = Vector3.ZERO) -> void:
+	if _scene: _home = _scene.transform.translated(shift)
+
 func _prepare() -> void:
 	if _task >= 0 or prepared or _scene == null: return
 	# Only meshes and transforms cross to the worker; the tree stays with the main thread.

@@ -37,3 +37,7 @@ Supported unencrypted DVD ISOs use the seekable source adapter, title/chapter se
 `third_party/dvd/source-lock.json` pins libdvdread 7.0.1 and libdvdnav 7.0.0, both GPL-2.0-or-later. `tools/environment/Prepare-DvdSources.py`, `tools/environment/mpv-linux/build_dvd.sh` and the FFmpeg adapter build the corresponding native component. `tools/media/Test-DvdIsoHost.py` is an optional external-media check, not bundled film data. Source receipt and native libraries must be rebuilt together. No ISO, menu imagery or third-party binary is included.
 
 0.17.0 accepts compatible UDF metadata represented by a plain File Entry rather than only Extended File Entry. Bounded MKV preflight failures fall back to ordinary playback, which may display unrecognized MVC as 2D; this does not add encrypted-disc or universal UDF/MVC support.
+
+## DVD-Video folders in 0.17.12
+
+The disc player can open supported unencrypted VIDEO_TS folders on local storage and SMB. Title and chapter controls and controller-ray disc menus use the existing DVD path. Quest 3 tests covered both storage sources with sample media.

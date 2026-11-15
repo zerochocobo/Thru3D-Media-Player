@@ -12,6 +12,8 @@ var attempts := {}
 var notice := ""
 var notice_until := 0
 var notice_count := 0
+## The corner button stays out of sight until hovered; a blocked attempt reveals where to unlock.
+var reveal_until := 0
 var _explained := false
 var _last_notice := -2000
 
@@ -37,6 +39,7 @@ func deny(hand: String = "", operation: String = "edit") -> bool:
 	var key := hand + "/" + operation
 	var previous: int = attempts.get(key, -2000)
 	attempts[key] = now
+	reveal_until = now + 1500
 	# Continuous input stays silent until released/idle, even after the toast expires.
 	if now - previous > 350 and now - _last_notice >= 1500:
 		_last_notice = now
@@ -129,7 +132,7 @@ func update() -> void:
 	if not is_instance_valid(control): return
 	var hits := {}
 	for hand in ["left_hand", "right_hand", "mouse"]: hits[hand] = hit(host._ray(hand))
-	control.sync(host.video, hits.values().has(true), locked())
+	control.sync(host.video, hits.values().has(true) or (locked() and Time.get_ticks_msec() < reveal_until), locked())
 	if control.visible:
 		for hand in hits:
 			var ray: Variant = host._ray(hand)
@@ -139,8 +142,13 @@ func caption() -> String:
 	return notice if applicable() and host._input_focused() and Time.get_ticks_msec() < notice_until else ""
 
 
+## The beach screen is only fixed during playback; paused or idle, it stays adjustable.
+func beach_locked() -> bool:
+	return locked() and host.video.media.state == "playing"
+
+
 func beach_attempt(ray: Variant, hand: String, corners_only: bool) -> bool:
-	if not locked() or ray == null or not host.beach_environment: return false
+	if not beach_locked() or ray == null or not host.beach_environment: return false
 	var beach: Node3D = host.beach_environment.beach
 	# Keep the scene's existing firework/snack priority ahead of screen resizing.
 	if corners_only:
@@ -154,4 +162,4 @@ func beach_attempt(ray: Variant, hand: String, corners_only: bool) -> bool:
 
 
 func beach_hover_allowed(ray: Variant) -> bool:
-	return not locked() or ray == null or not host.beach_environment or host.beach_environment.beach.firework_hit(ray[0], ray[1]) or host.beach_environment.beach.screen_hit(ray[0], ray[1]).is_empty()
+	return not beach_locked() or ray == null or not host.beach_environment or host.beach_environment.beach.firework_hit(ray[0], ray[1]) or host.beach_environment.beach.screen_hit(ray[0], ray[1]).is_empty()

@@ -191,6 +191,7 @@ const FILTER_BASE := 70
 const MEDIA_FILTERS := ["All", "Video", "Images"]
 const FOLDER_FILTER := 3 # Keep existing video/image filter IDs and saved positions stable.
 const ImageInfo := preload("res://scripts/image_info.gd")
+const DiscTitles := preload("res://scripts/disc_titles.gd")
 const Presentation := preload("res://scripts/library_presentation.gd")
 const VIEW_LIST := 88
 const VIEW_GRID := 89
@@ -2205,6 +2206,10 @@ func _rebuild_rows() -> void:
 				rows.append_array(file_actions.settings_rows())
 				rows.append(_choice_row("Restore folder position", "library_restore_position", restore_directory_position,
 					[{"value": false, "label": "Off", "hint": BROWSE_POSITION_HINT}, {"value": true, "label": "On", "hint": BROWSE_POSITION_HINT}], false, BROWSE_POSITION_HINT))
+				if float(settings.get("scene_body_height", 0.0)) > 0.0:
+					rows.append({"title": I18n.t("Body height"), "key": "scene_body_height", "value": int(settings.get("scene_body_height", 170)),
+						"slider": true, "span": Vector3(140, 200, 1), "unit": " cm", "decimals": 0, "reset_value": 170.0,
+						"info": "In your own 3D scenes, standing, sitting and lying set your eye height from this, whatever your real posture."})
 				# Library thumbnails plus Android photo/depth/SBS files.
 				# Scanned off the main thread (one file open per thumbnail); the size shows once known.
 				if _cache_usage == null: _scan_cache_usage()
@@ -2489,6 +2494,10 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 		if entry.has(field): row[field] = entry[field]
 	if not str(entry.get("cover", "")).is_empty():
 		row["cover"] = str(entry.cover)
+	if row.kind == "video" and DiscTitles.folder_index(str(entry.title)):
+		# The index stands for the disc: renaming or deleting it alone would break the folder.
+		row.title = DiscTitles.folder_title(row.uri, "DVD"); row.icon = "disc"
+		row.can_delete = false; row.can_rename = false
 	if section == Section.DLNA and row.has("id") and not _dlna_server.is_empty():
 		row.uri = "dlna://" + _dlna_server.uri_encode() + "/" + str(row.id).uri_encode()
 	row.location = preload("res://scripts/media_location.gd").capture(self, row)

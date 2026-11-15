@@ -24,10 +24,13 @@ internal object CrashTrail {
     private const val TEXT = SLOT - 10
     private const val CLEAN = 1
     private const val FOREGROUND = 2
+    private const val WEB_BETA_SLOTS = 64
 
     class Session(val pid: Int, val startedMs: Long, val clean: Boolean, val foreground: Boolean, val lines: List<String>)
+    private data class WebBetaStep(val timestamp: Long, val text: String)
 
     @Volatile private var buffer: MappedByteBuffer? = null
+    private val webBetaSteps = ArrayDeque<WebBetaStep>(WEB_BETA_SLOTS)
 
     /** Maps [file], returns the session it held (null if none or unreadable) and starts this one. */
     @Synchronized fun open(file: File, pid: Int, nowMs: Long = System.currentTimeMillis()): Session? {
@@ -62,13 +65,22 @@ internal object CrashTrail {
 
     /** One step: "photo.decode", "w=4000 h=3000 sample=2". Cheap enough for every image, not every frame. */
     fun mark(stage: String, detail: String = "") {
-        val map = buffer ?: return
+        val webBeta = stage.startsWith("web_beta.")
+        val map = buffer
+        if (map == null && !webBeta) return
         val text = "[" + Thread.currentThread().name.take(24) + "] " + stage + (if (detail.isEmpty()) "" else " $detail")
         val bytes = text.toByteArray(Charsets.UTF_8).let { if (it.size > TEXT) it.copyOf(TEXT) else it }
         synchronized(this) {
+            val timestamp = System.currentTimeMillis()
+            // Keep recent Beta attempts available even if another subsystem fills the crash ring.
+            if (webBeta) {
+                if (webBetaSteps.size == WEB_BETA_SLOTS) webBetaSteps.removeFirst()
+                webBetaSteps.addLast(WebBetaStep(timestamp, bytes.toString(Charsets.UTF_8)))
+            }
+            if (map == null) return
             val index = map.getInt(8)
             val base = HEADER + (index % SLOTS) * SLOT
-            map.putLong(base, System.currentTimeMillis())
+            map.putLong(base, timestamp)
             map.putShort(base + 8, bytes.size.toShort())
             for (offset in bytes.indices) map.put(base + 10 + offset, bytes[offset])
             map.putInt(8, index + 1)
@@ -86,6 +98,12 @@ internal object CrashTrail {
     /** This session's steps so far, oldest first, for a log saved without a crash. */
     fun current(): List<String> = synchronized(this) { buffer?.let { runCatching { read(it)?.lines }.getOrNull() } ?: emptyList() }
 
+    fun recentWebBetaSteps(): List<String> {
+        val steps = synchronized(this) { webBetaSteps.toList() }
+        val time = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+        return steps.map { time.format(Date(it.timestamp)) + " " + it.text }
+    }
+
     /** Tests only. */
-    internal fun detach() { buffer = null }
+    @Synchronized internal fun detach() { buffer = null; webBetaSteps.clear() }
 }

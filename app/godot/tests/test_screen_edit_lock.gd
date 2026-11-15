@@ -114,6 +114,12 @@ func run() -> void:
 	var notices: int = guard.notice_count
 	for i in 180: main._zoom_video(0.02, "left_hand")
 	check(guard.notice_count == notices + 1 and main.pulses == ["left_hand"] and picture(video) == baseline, "Continuous zoom gives one toast and one owning-hand pulse, with no change")
+	var aimed: Dictionary = main.rays.duplicate()
+	main.rays.clear(); guard.update()
+	check(control.visible and control._locked, "Blocked attempt reveals the upper-left lock without hovering it")
+	guard.reveal_until = 0; guard.update()
+	check(not control.visible, "Revealed lock hides again after the hint")
+	main.rays = aimed
 	main.settings.set_value("ui", "show_status_info", false)
 	check(main._playback_status_sample().get("caption", "") == menu.I18n.t("Screen locked"), "Action feedback survives passive-status preference and an open menu")
 	# Keep attempting past toast expiry: a held gesture must never re-trigger it.

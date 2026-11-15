@@ -35,6 +35,7 @@ const REASONS := {
 	"source_missing": "The media file or cloud account was not found.",
 	"link_expired": "The media link has expired.",
 	"file_changed": "The media file changed. Refresh the folder.",
+	"disc_incomplete": "The DVD folder is incomplete. Play its VOB files instead.",
 	"network_timeout": "Reading media timed out.",
 	"tls_failed": "Cannot verify the media server's certificate. Check its HTTPS configuration.",
 	"host_not_found": "The media server could not be found.",

@@ -40,6 +40,21 @@ class CrashRecordsTest {
         assertTrue(previous.clean); assertFalse(previous.foreground)
     }
 
+    @Test fun exportedBetaStepsSurviveUnrelatedActivityAndStayBounded() {
+        assertTrue(DiagnosticLogs.webBetaSection().contains("(none recorded)"))
+        CrashTrail.open(File(directory, "trail.bin"), pid = 1)
+        repeat(70) { CrashTrail.mark("web_beta.resolve", "id=$it") }
+        CrashTrail.mark("web_beta.resolve_failed", "id=69 code=browser_format_unsupported cookie=private_value")
+        repeat(CrashTrail.SLOTS + 1) { CrashTrail.mark("photo.decode", "idx=$it") }
+
+        assertFalse(CrashTrail.current().any { "web_beta." in it })
+        val lines = DiagnosticLogs.webBetaSection().lineSequence().filter { "web_beta." in it }.toList()
+        assertEquals(64, lines.size)
+        assertTrue(lines.first().endsWith("web_beta.resolve id=7"))
+        assertTrue(lines.last().endsWith("code=browser_format_unsupported cookie=***"))
+        assertFalse(lines.any { "private_value" in it })
+    }
+
     @Test fun crashDecision() {
         assertTrue(CrashRecords.decide(java = true, exitSaysCrash = false, foreground = false))
         assertTrue(CrashRecords.decide(java = false, exitSaysCrash = null, foreground = true)) // Android 10: unclean while in front

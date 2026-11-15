@@ -47,6 +47,44 @@ func load_catalog() -> void:
 		if not supported(str(entry.file)) or not FileAccess.file_exists(_sources().path_join(str(entry.file))): continue
 		entries[str(id)] = {"title": str(entry.get("title", "")).left(160), "name": str(entry.get("name", "")).left(255), "file": str(entry.file), "bytes": int(entry.get("bytes", 0)),
 			"added": int(entry.get("added", 0)), "summary": entry.get("summary", {}) if entry.get("summary") is Dictionary else {}}
+		if _entry_valid(entry.get("entry")): entries[str(id)]["entry"] = entry.entry
+		if entry.get("backdrop") is String and not str(entry.backdrop).is_empty(): entries[str(id)]["backdrop"] = str(entry.backdrop).left(64)
+
+static func _entry_valid(value: Variant) -> bool:
+	return value is Array and value.size() in [4, 5] and value.all(func(number: Variant) -> bool: return (number is float or number is int) and is_finite(number))
+
+## Where the viewer chose to enter this scene, in the scene's own space; null while the scene decides.
+func entry(id: String) -> Variant:
+	var saved: Variant = entries.get(id, {}).get("entry")
+	return Transform3D(Basis(Vector3.UP, float(saved[3])), Vector3(saved[0], saved[1], saved[2])) if _entry_valid(saved) else null
+
+## The panorama the viewer put behind a scene that has no sky of its own; empty for none.
+func backdrop(id: String) -> String:
+	return str(entries.get(id, {}).get("backdrop", ""))
+
+func set_backdrop(id: String, panorama: String) -> bool:
+	if not entries.has(id): return false
+	var previous := backdrop(id)
+	if panorama.is_empty(): entries[id].erase("backdrop")
+	else: entries[id]["backdrop"] = panorama.left(64)
+	if save_catalog(): return true
+	if previous.is_empty(): entries[id].erase("backdrop")
+	else: entries[id]["backdrop"] = previous
+	return false
+
+## The posture (index into the controller's list) the entry point was saved with.
+func entry_pose(id: String) -> int:
+	var saved: Variant = entries.get(id, {}).get("entry")
+	return maxi(0, int(saved[4])) if _entry_valid(saved) and saved.size() == 5 else 0
+
+func set_entry(id: String, place: Transform3D, posture: int = 0) -> bool:
+	if not entries.has(id) or not place.is_finite(): return false
+	var previous: Variant = entries[id].get("entry")
+	entries[id]["entry"] = [place.origin.x, place.origin.y, place.origin.z, place.basis.get_euler().y, posture]
+	if save_catalog(): return true
+	if previous == null: entries[id].erase("entry")
+	else: entries[id]["entry"] = previous
+	return false
 
 func save_catalog() -> bool:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(directory))

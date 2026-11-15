@@ -188,8 +188,8 @@ func _run() -> void:
 	var floor_top := home_at.y + 0.5
 	_check(controller.movable() and controller.interaction == "watch" and not controller.poll_sticks(Vector2(0, 1), Vector2.ZERO, 0.2)
 		and shown.global_position.is_equal_approx(home_at), "A scene starts with the viewer in place")
-	controller.cycle_movement()
-	_check(controller.interaction == "move" and controller.motion.mode == "walk" and not controller.snapshot().floor_ready, "The switch goes to walking first, and the floor is looked for")
+	controller.set_stance("walk")
+	_check(controller.interaction == "move" and controller.motion.mode == "walk" and not controller.snapshot().floor_ready, "Choosing to walk starts movement, and the floor is looked for")
 	while not controller.motion.prepared: await process_frame
 	var hand_at := Vector3(0.2, 1.2, 0)
 	var aim := Vector3(0, -0.2, -1).normalized()
@@ -213,7 +213,7 @@ func _run() -> void:
 	_check(absf(absf(wrapf(shown.global_rotation.y, -PI, PI)) - 5.0 * PI / 6.0) < 0.01, "Pulling back turns the viewer round")
 	controller.home()
 	_check(shown.global_position.is_equal_approx(home_at) and is_zero_approx(shown.global_rotation.y), "Return to start puts the viewer back where the scene placed them")
-	controller.cycle_movement()
+	controller.set_stance("fly")
 	controller.poll_sticks(Vector2(0, 1), Vector2.ZERO, 0.25)
 	_check(controller.motion.mode == "fly" and shown.global_position.z > home_at.z + 0.4 and is_equal_approx(shown.global_position.y, home_at.y), "Flying, a stick carries the viewer along the line of sight")
 	var flown_to := shown.global_position
@@ -229,10 +229,61 @@ func _run() -> void:
 	controller.poll_sticks(Vector2(0, -1), Vector2.ZERO, 0.25)
 	_check(shown.global_position.distance_to(flown_to) > 0.3 and absf(absf(shown.global_rotation.y) - PI / 6.0) < 0.01, "Pulling back flies backwards rather than turning round")
 	_check(not controller.pointer_press("right_hand", hand_at, aim), "Flying has no landing arc")
-	controller.cycle_movement()
-	_check(controller.interaction == "watch" and controller.motion.mode == "fixed", "A third press stays in place again")
+	controller.set_stance("stand")
+	_check(controller.interaction == "watch" and controller.motion.mode == "fixed" and controller.stance() == "stand", "Choosing a posture stays in place again")
 	_check(controller.set_interaction("move") and controller.motion.mode == "fly" and controller.set_interaction("watch") and controller.interaction == "watch", "Free movement resumes the way of moving last used")
 	controller.home()
+
+	# Standing, sitting and lying are eye heights: the scene is raised by what the real head is above them.
+	var stood: float = shown.global_position.y
+	controller.set_stance("sit")
+	_check(controller.stance() == "sit" and absf(shown.global_position.y - stood - 0.5) < 0.001, "Sitting brings the eyes down to sitting height (%s)" % (shown.global_position.y - stood))
+	app.xr_camera.position.y = 1.2
+	controller.set_stance("stand")
+	_check(absf(shown.global_position.y - stood + 0.4) < 0.001, "A viewer who is really seated stands at standing height in the scene")
+	controller.set_body_height(180.0)
+	_check(absf(shown.global_position.y - stood + 0.5) < 0.001 and app.settings.get_value("scene_import", "body_height", 0.0) == 180.0, "A taller body height stands taller, and is kept")
+	controller.set_body_height(170.0)
+	controller.set_stance("lie")
+	_check(absf(shown.global_position.y - stood - 0.8) < 0.001, "Lying down brings the eyes near the floor")
+	_check(controller.set_entry() and controller.library.entry_pose(plaza) == 2, "The entry point keeps the posture it was set with")
+	controller.set_stance("walk")
+	controller.set_stance("stand")
+	controller.home()
+	_check(controller.stance() == "lie" and absf(shown.global_position.y - stood - 0.8) < 0.001, "Return to start comes back to the entry point as it was set (%s)" % (shown.global_position.y - stood))
+	controller.library.entries[plaza].erase("entry")
+	controller.library.save_catalog()
+	app.xr_camera.position.y = 0.0
+	controller.home()
+	_check(controller.stance() == "stand" and absf(shown.global_position.y - stood) < 0.001, "Without a saved entry point a scene is entered standing")
+	# The scene dims while a film plays and comes back when it stops.
+	controller.set_play_dim(0.25)
+	app.video.playing = true
+	for frame in 2000:
+		if is_equal_approx(controller._dimmed, 0.25): break
+		await process_frame
+	_check(is_equal_approx(app.display.environment.ambient_light_energy, Controller.AMBIENT * 0.25) and controller.snapshot().play_dim == 0.25
+		and app.settings.get_value("scene_import", "play_dim", 1.0) == 0.25, "A playing film brings the scene down to the brightness chosen for it")
+	app.video.playing = false
+	for frame in 2000:
+		if is_equal_approx(controller._dimmed, 1.0): break
+		await process_frame
+	_check(is_equal_approx(app.display.environment.ambient_light_energy, Controller.AMBIENT), "With the film stopped the scene is back at its own brightness")
+	controller.set_play_dim(1.0)
+	# A scene that came without a sky can have a panorama put behind it.
+	_check(controller.panorama() == null and not controller.snapshot().own_sky and controller.snapshot().backdrop == "", "A scene without a sky starts on the plain dark background")
+	controller.set_backdrop("morning")
+	for frame in 600:
+		if not controller._panorama.loading: break
+		await process_frame
+	_check(controller.panorama() != null and controller.library.backdrop(plaza) == "morning" and controller.snapshot().backdrop == "morning", "A built-in panorama goes behind the scene and is kept with it")
+	controller.present(false)
+	_check(controller.panorama() == null, "Hidden, the scene's panorama is not offered")
+	controller.present(true)
+	controller.set_backdrop("0123456789abcdef")
+	_check(controller.panorama() == null, "A panorama that is no longer there leaves the dark background")
+	controller.set_backdrop("")
+	_check(controller.panorama() == null and not controller.library.entries[plaza].has("backdrop"), "Choosing none takes the panorama away again")
 	_check(controller.backdrop() == null and Controller.Unity.sky_backdrop(null) == null, "A scene without its own sky needs no backdrop")
 	var sky := Sky.new()
 	sky.sky_material = ShaderMaterial.new()

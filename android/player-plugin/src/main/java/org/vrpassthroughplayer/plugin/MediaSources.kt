@@ -94,6 +94,7 @@ internal class MediaSources(
     init {
         CloudAccountChanges.subscribe(cloudAccountChanged)
         DlnaClient.log = { if (PlaybackPrivacy.diagnostics) android.util.Log.i("QuestDlna", it) }
+        SmbLanScan.log = { if (PlaybackPrivacy.diagnostics) android.util.Log.i("QuestSmb", it) }
         cloudNetwork.execute {
             if (!stopped) runCatching { context()?.let { CloudWebDav.restore(it) } }
             if (stopped) CloudWebDav.stop()
@@ -370,7 +371,49 @@ internal class MediaSources(
     fun captureAudio(uri: String, reader: String): List<SidecarAudio.Track> =
         mediaServers.captureAudio(reader) ?: sidecarAudio(uri)
 
+    /** VIDEO_TS.IFO of a browsable folder stands for the disc; it is published under an ISO name
+     * so preflight, titles and the disc menu treat the folder exactly like a DVD image. */
+    private fun discFolder(uri: String): Boolean =
+        android.net.Uri.parse(uri).scheme in setOf("file", "content", "smb", "usb", "cloud") &&
+            DvdFolderImage.index(android.net.Uri.decode(uri.substringAfterLast('/')).substringAfterLast('/'))
+
+    private fun discPlayable(uri: String): String {
+        val app = context() ?: error("Activity unavailable")
+        fun publish(source: DvdFolderSource): String =
+            try { streams().publish(source, "video.iso", IsoMetadataMemory.key("dvd-folder", uri, source.identity)) }
+            catch (error: Exception) { source.close(); throw error }
+        fun rows(entries: JSONArray) = (0 until entries.length()).map(entries::getJSONObject).filter { !it.optBoolean("container") }
+        return when {
+            uri.startsWith("file://") -> {
+                val folder = java.io.File(android.net.Uri.parse(uri).path ?: "").parentFile ?: error("No parent folder")
+                val files = folder.listFiles() ?: throw java.nio.file.AccessDeniedException("disc folder")
+                publish(DvdFolderSource.of(files.filter { it.isFile }.map { it.name to it.length() }) { name ->
+                    ArchiveFileSource(app, android.net.Uri.fromFile(java.io.File(folder, name)).toString())
+                })
+            }
+            uri.startsWith("smb://") -> publish(smb.discSource(uri))
+            uri.startsWith("usb://") -> {
+                val source = DvdFolderSource.of(rows(usb.siblings(uri)).map { it.getString("title") to it.getLong("size") }) { name ->
+                    usb.source(usb.sibling(uri, name))
+                }
+                usb.publish(uri, streams(), source, "video.iso", IsoMetadataMemory.key("dvd-folder", uri, source.identity))
+            }
+            uri.startsWith("cloud://") -> {
+                CloudLibrary.start(app)
+                CloudLibrary.discPlayable(uri, streams())
+            }
+            else -> {
+                require(local.documents.owns(uri))
+                val entries = rows(local.documents.siblings(uri)).associateBy { it.getString("title") }
+                publish(DvdFolderSource.of(entries.map { it.key to it.value.optLong("size", -1) }) { name ->
+                    DocumentStreamSource(app, android.net.Uri.parse(entries.getValue(name).getString("uri")))
+                })
+            }
+        }
+    }
+
     private fun directPlayable(uri: String): String = when {
+        discFolder(uri) -> discPlayable(uri)
         uri.startsWith("externalvideo://") -> externalVideo.playable(uri) ?: error("External video unavailable")
         webVideo.descriptor(uri) != null -> webVideo.prepare(webVideo.descriptor(uri)!!)
         uri.startsWith("webvideo:") -> error("Captured video session is no longer available")

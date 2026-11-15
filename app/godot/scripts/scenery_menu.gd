@@ -37,6 +37,8 @@ const ADD_SCENE := 10121
 ## The two pages of the requirements card.
 const HELP_IMAGE := 10122
 const HELP_SCENE := 10123
+## Makes where the viewer stands the place an imported scene is entered.
+const SET_ENTRY := 10124
 const ADDING_CARD := "adding"
 var _followed := ""
 var scene_import: Node
@@ -122,6 +124,10 @@ func _custom_rows(everywhere: bool = false) -> Array:
 func show_added_scene() -> void:
 	mode="global"; view="scene"; modal=""; bulk=false; selected.clear(); page=0; _followed=""
 	refresh()
+
+## Asked from the stance row under any menu: straight to the confirmation, over the scene's own page.
+func ask_entry() -> void:
+	mode="global"; view="adjust"; modal="entry"; bulk=false; selected.clear(); choices.reset(); refresh()
 
 ## What is being done to the scene on its way in, in the viewer's language.
 func _stage_text() -> String:
@@ -254,7 +260,7 @@ func _draw() -> void:
 	elif view in ["manage","review"]:
 		var count: int=library.reviews.size() if view=="review" else _custom_rows(true).size()
 		height=.46+clampi(ceili(count/3.0),1,2)*.30
-	elif view=="adjust": height=(.74 if _scene_state().get("baked",false) else .62) if _scene_active() else 1.0 if _state.get("choice","")=="cinema" else .87 if _state.get("choice","")=="private_beach" else .62
+	elif view=="adjust": height=(.74+(.12 if _scene_state().get("baked",false) else 0.0)+(0.0 if _scene_state().get("own_sky",true) else .12)) if _scene_active() else 1.0 if _state.get("choice","")=="cinema" else .87 if _state.get("choice","")=="private_beach" else .62
 	elif view=="beach_screen": height=1.12
 	elif view in ["import","import_error"]: height=.82
 	_top=height/2; _bottom=-_top
@@ -269,6 +275,7 @@ func _draw() -> void:
 	elif modal=="requirements": title=I18n.t("Format requirements")
 	elif modal=="issues": title=I18n.t("Images not added")
 	elif modal=="add": title=I18n.t("Add")
+	elif modal=="entry": title=I18n.t("Set as entry point")
 	elif view=="manage": title=I18n.t("Manage my scenes")
 	elif view=="review": title=I18n.t("Confirm panoramas")
 	elif view=="adjust": title=_selected_title()
@@ -288,6 +295,11 @@ func _draw() -> void:
 	elif modal=="issues": _draw_import_failure()
 	elif modal == "delete": _draw_delete()
 	elif modal == "add": _draw_add()
+	elif modal == "entry":
+		_left(I18n.t("Start here, facing this way, whenever this scene opens."),Vector2(LEFT,_top-.24),TEXT_BODY)
+		_left(I18n.t("The scene's picture is retaken from this view."),Vector2(LEFT,_top-.32),TEXT_BODY,1.30,MUTED)
+		_button(BACK,I18n.t("Cancel"),Vector2(.16,_bottom+.09),Vector2(.30,.075))
+		_button(CONFIRM,I18n.t("Confirm"),Vector2(.51,_bottom+.09),Vector2(.30,.075),_scene_active(),"",true)
 	elif modal == "rename":
 		_button(EDIT,"",Vector2(0,_top-.27),Vector2(1.34,.09))
 		_left(draft,Vector2(LEFT+.02,_top-.27),TEXT_BODY,1.25)
@@ -298,7 +310,8 @@ func _draw() -> void:
 	elif view in ["import","import_error"]: _draw_import()
 	else: _draw_cards()
 	if view not in ["import","import_error","beach_screen"] and modal not in ["requirements","issues"]:
-		var show_issues: bool=modal.is_empty() and not library.import_progress.get("errors",[]).is_empty()
+		# Why images were turned down belongs with the lists of scenes, not on a scene's own page.
+		var show_issues: bool=modal.is_empty() and view in ["scene","manage","review"] and not library.import_progress.get("errors",[]).is_empty()
 		var status:=_scene_status()
 		if status.is_empty(): status=_notice if not _notice.is_empty() else I18n.t(str(_state.get("status","")))
 		_left(status,Vector2(LEFT,_bottom+.055),TEXT_AUX,.65 if not modal.is_empty() else .94 if show_issues else 1.30,MUTED)
@@ -591,11 +604,23 @@ func _draw_adjust() -> void:
 	if _scene_active():
 		var scenes:=_scene_state()
 		rows=[{"key":"scene_screen_light","value":scenes.get("screen_light",.7),"choices":[{"value":0.0,"label":"Off"},{"value":.35,"label":"Low"},{"value":.7,"label":"Medium"},{"value":1.0,"label":"High"}]}]
-		names=["Screen ambient light"]
-		_button(CURRENT,I18n.t("Return to start"),Vector2(.44,_bottom+.13),Vector2(.46,.075))
+		rows.append({"key":"scene_play_dim","value":scenes.get("play_dim",1.0),"choices":[{"value":1.0,"label":"100%"},{"value":.5,"label":"50%"},{"value":.25,"label":"25%"},{"value":.1,"label":"10%"}]})
+		names=["Screen ambient light","Scene brightness during playback"]
+		_button(CURRENT,I18n.t("Return to start"),Vector2(-.04,_bottom+.13),Vector2(.46,.075))
+		_button(SET_ENTRY,I18n.t("Set as entry point"),Vector2(.44,_bottom+.13),Vector2(.46,.075))
+		_tips[SET_ENTRY]=I18n.t("Start here, facing this way, whenever this scene opens.")
 		if scenes.get("baked",false):
 			rows.append({"key":"scene_bake","value":scenes.get("bake",1.0),"choices":[{"value":0.0,"label":"Off"},{"value":.5,"label":"50%"},{"value":1.0,"label":"100%"}]})
 			names.append("Baked lighting")
+		if not scenes.get("own_sky",true):
+			# A scene that came without a sky can have any panorama behind it.
+			var skies: Array=[{"value":"","label":"Dark background"}]
+			for item in BUILTINS:
+				if item[0] in ["belfast","morning","night"]: skies.append({"value":item[0],"label":item[1]})
+			for row in library.rows(): skies.append({"value":str(row.id),"label":str(row.title)})
+			var behind:=str(scenes.get("backdrop",""))
+			rows.append({"key":"scene_backdrop","value":behind if skies.any(func(option): return option.value==behind) else "","choices":skies})
+			names.append("Background")
 	elif choice=="cinema":
 		rows=[{"key":"cinema_lights","value":_state.get("cinema_lights","auto"),"choices":[{"value":"auto","label":"Auto lights"},{"value":"on","label":"Lights on"},{"value":"off","label":"Lights off"}]},
 			{"key":"cinema_interaction","value":_state.get("cinema_interaction","watch"),"choices":[{"value":"watch","label":"Watch"},{"value":"move","label":"Free movement"}]},
@@ -666,6 +691,9 @@ func _activate(target: int) -> void:
 		_help_scene=modal!="issues" and view not in ["review","import_error"]
 		_help_return=modal; modal="requirements"; refresh(); return
 	if target in [HELP_IMAGE,HELP_SCENE]: _help_scene=target==HELP_SCENE; refresh(); return
+	if target==SET_ENTRY: modal="entry"; refresh(); return
+	if target==CONFIRM and modal=="entry":
+		modal=""; _notice=I18n.t("Entry point saved"); command.emit("scene_set_entry",null); refresh(); return
 	if target==ISSUES: modal="issues"; _issue_index=0; refresh(); return
 	if target in [NEXT,PREVIOUS]:
 		if modal=="issues" or view=="import_error": _issue_index+=1 if target==NEXT else -1

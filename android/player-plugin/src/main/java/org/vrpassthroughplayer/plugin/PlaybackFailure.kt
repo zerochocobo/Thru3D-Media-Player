@@ -48,6 +48,9 @@ internal data class PlaybackFailure(
         fun from(error: Throwable, stage: String = "opening"): PlaybackFailure {
             val chain = generateSequence(error) { it.cause?.takeIf { next -> next !== it } }.take(8).toList()
             chain.filterIsInstance<PlaybackFailureException>().firstOrNull()?.let { return it.failure }
+            chain.filterIsInstance<DvdFolderImage.Incomplete>().firstOrNull()?.let {
+                return PlaybackFailure("disc_incomplete", stage, it.message.orEmpty(), exceptionType = "Incomplete")
+            }
             val typed = chain.firstOrNull { it is SocketTimeoutException || it is SSLException || it is UnknownHostException ||
                 it is ConnectException || it is SecurityException || it is StorageProviderUnavailable || it is FileNotFoundException }
                 ?: chain.firstOrNull { it is CloudFailure || it is MediaServerFailure } ?: error

@@ -86,11 +86,19 @@ internal object DiagnosticLogs {
         append(redact(header)).append('\n')
         append(if (full) "Detail: full\n\n" else "Detail: compact (VrApi every 10 s and whenever frames, stale frames or free memory go wrong; " +
             "other periodic lines every 30 s; repeated messages merged)\n\n")
+        append(webBetaSection()).append('\n')
         append(redact(CrashRecords.exportSection(context))).append('\n')
         append(events(context, if (full) 6000 else 1500)).append('\n')
         append("== Log of this session ==\n")
         val log = logcat(android.os.Process.myPid(), "-t", "30000")
         append(redact(if (full) log else condense(log)))
+    }
+
+    internal fun webBetaSection(): String = buildString {
+        append("== Playback Beta (this session, oldest first) ==\n")
+        val steps = CrashTrail.recentWebBetaSteps()
+        if (steps.isEmpty()) append("(none recorded)\n")
+        else steps.forEach { append(redact(it)).append('\n') }
     }
 
     /** The crash report saved on the next launch; the player settings header is not known that early. */

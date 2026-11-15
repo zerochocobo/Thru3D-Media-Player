@@ -2,9 +2,9 @@ extends SceneTree
 const Menu:=preload("res://scripts/scenery_menu.gd")
 const Library:=preload("res://scripts/background_library.gd")
 const I18n:=preload("res://scripts/i18n.gd")
-func save_frame(viewport: SubViewport,camera: Camera3D,menu: Node3D,path: String) -> void:
+func save_frame(viewport: SubViewport,camera: Camera3D,menu: Node3D,path: String,below: float = .22) -> void:
 	var a:=camera.unproject_position(menu.to_global(Vector3(-.80,menu._top+.055,0)))
-	var b:=camera.unproject_position(menu.to_global(Vector3(.80,menu._bottom-.22,0)))
+	var b:=camera.unproject_position(menu.to_global(Vector3(.80,menu._bottom-below,0)))
 	var rectangle:=Rect2i(Vector2i(a.floor()),Vector2i((b-a).ceil())).intersection(Rect2i(Vector2i.ZERO,viewport.size))
 	viewport.get_texture().get_image().get_region(rectangle).save_png(path)
 func _initialize() -> void: _run.call_deferred()
@@ -57,6 +57,12 @@ func _run() -> void:
 	menu.refresh()
 	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
 	save_frame(viewport,camera,menu,output.path_join("cinema-footer.png"))
+	# In the viewer's own scene the movement button opens a row of postures and ways to move.
+	menu.session_controls_provider=func(): return {"scene_move":"sit","passthrough_visible":true}
+	menu.refresh(); menu._activate_footer(menu.FREE_MOVEMENT)
+	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
+	save_frame(viewport,camera,menu,output.path_join("scene-stances.png"),.36)
+	menu._scene_stances_open=false
 	menu.session_controls_provider=Callable()
 	menu.view="manage"; menu.modal="rename"; menu.draft="暮色全景"; menu.refresh()
 	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
@@ -106,6 +112,18 @@ func _run() -> void:
 	menu.finish_import(library.import_progress)
 	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
 	save_frame(viewport,camera,menu,output.path_join("partial-import.png"))
+	# An imported scene's own page, and the confirmation for moving its entry point.
+	menu.open("global")
+	menu.state_provider=func(_mode): return {"selected":"dark","choice":"dark","status":"","busy":false,"import_progress":{},
+		"scene_import":{"rows":[{"id":"abc","title":"海边小屋","added":1,"summary":{},"thumb":false}],"active":"abc","pending":"","screen_light":.7,"floor_ready":true,"own_sky":false,"backdrop":"morning"}}
+	menu.view="adjust"; menu.refresh()
+	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
+	save_frame(viewport,camera,menu,output.path_join("scene-adjust.png"))
+	for language in ["zh","en","ja"]:
+		I18n.use(language); menu.modal=""; menu._activate(menu.SET_ENTRY)
+		await create_timer(.15).timeout; await RenderingServer.frame_post_draw
+		save_frame(viewport,camera,menu,output.path_join("scene-entry-%s.png"%language))
+	I18n.use("zh")
 	menu.free()
 	var controls:=preload("res://scripts/photo_menu.gd").new()
 	controls.state_provider=func(): return {"has_image":true,"title":"暮色全景","geometry":3,"can_background":true,"count":1,"index":0,"source_size":"8192 × 4096"}

@@ -170,6 +170,8 @@ internal class WebVideoDescriptor(val page: WebVideoPage, val title: String, val
 
 /** Discovery and selection; file and HLS transports have separate lease implementations. */
 internal object WebVideoFormats {
+    internal class DecoderRejected(val track: WebVideoTrack) : IllegalStateException("No compatible video stream")
+
     private fun cdnPreference(track: WebVideoTrack): Int {
         val host = track.url.host.lowercase(Locale.ROOT)
         // Bilibili supplies UPOS backups for peer/CDN nodes that may ignore Range.
@@ -193,9 +195,11 @@ internal object WebVideoFormats {
         val silent = (page.site == "instagram" || silentRedditGif) && list.length() > 0 &&
             (0 until list.length()).all { list.optJSONObject(it)?.optString("acodec") == "none" } &&
             tracks.any { it.hasVideo && it.transport == "file" && (silentRedditGif || it.formatId.all(Char::isDigit) || json.optBoolean("browser_explicit_silent")) }
-        val video = tracks.filter { it.hasVideo && accepts(it) && (it.hasAudio || audio != null || silent) }
-            .maxWithOrNull(compareBy<WebVideoTrack> { it.projectionHint.isNotEmpty() }.thenBy { it.height.toLong() * it.width }.thenBy { it.fps }.thenBy { it.bitrate }.thenBy { cdnPreference(it) }.thenBy { it.sourcePreference })
-            ?: error("No compatible video stream")
+        val playable = tracks.filter { it.hasVideo && (it.hasAudio || audio != null || silent) }
+        val preference = compareBy<WebVideoTrack> { it.projectionHint.isNotEmpty() }.thenBy { it.height.toLong() * it.width }
+            .thenBy { it.fps }.thenBy { it.bitrate }.thenBy { cdnPreference(it) }.thenBy { it.sourcePreference }
+        val video = playable.filter(accepts).maxWithOrNull(preference)
+            ?: throw DecoderRejected(playable.maxWithOrNull(preference) ?: error("No compatible video stream"))
         return WebVideoDescriptor(page, json.optString("title", page.id).take(1024), video, if (video.hasAudio) null else audio,
             json.optDouble("duration", 0.0).let { if (it.isFinite() && it > 0) it else 0.0 }, silent = silent)
     }

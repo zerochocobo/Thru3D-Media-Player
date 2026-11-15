@@ -56,7 +56,9 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
         cancel()
         val id = ++sequence
         val publicPage = (if (bilibiliBeta) WebVideoDouyinCapture.page(url) else null) ?: runCatching { WebVideoPage.parse(url) }.getOrNull()
+        val bilibiliVod = bilibiliBeta && publicPage?.site == "bilibili"
         val attempt = Attempt(id); active = attempt
+        if (bilibiliVod) CrashTrail.mark("web_beta.resolve", "id=$id selected=${selection.isNotEmpty()}")
         fun currentMedia() = if (selection.isEmpty()) browserMedia(url) else selectedMedia(url, selection)
         state = JSONObject().put("id", id).put("state", "resolving")
         job = executor.submit {
@@ -65,8 +67,18 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                 val media = if (bilibiliBeta && publicPage?.site == "bilibili") {
                     attempt.stage = "browser_capture"
                     var reason = "browser_session_unavailable"
-                    WebVideoBilibiliCapture.awaitReady(publicPage, { currentMedia() }, attempt::check, unavailable = { reason = it })
-                        ?: throw ExtractionFailure(reason)
+                    var observed: JSONObject? = null
+                    WebVideoBilibiliCapture.awaitReady(publicPage, { currentMedia().also { observed = it } }, attempt::check, unavailable = { reason = it })
+                        ?: run {
+                            observed?.let {
+                                val counts = WebVideoBilibiliCapture.diagnostics(it)
+                                val video = counts.optJSONObject("video")?.optInt("exact_matches") ?: 0
+                                val audio = counts.optJSONObject("audio")?.optInt("exact_matches") ?: 0
+                                val width = it.optInt("width"); val height = it.optInt("height")
+                                CrashTrail.mark("web_beta.capture", "id=$id display=${width}x$height video_matches=$video audio_matches=$audio")
+                            }
+                            throw ExtractionFailure(reason)
+                        }
                 } else currentMedia()
                 if (media?.optBoolean("protected") == true) throw ExtractionFailure("protected_content")
                 if (publicPage?.site == "bilibili_live") {
@@ -163,9 +175,15 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                         readBrowserResource(uri, headers, false, attempt, deadline)
                     }
                 } else null
-                val (info, initial) = WebVideoResolution.select(page, {
+                val (info, initial) = if (bilibiliEnabled) {
+                    val captured = WebVideoBilibiliCapture.formats(page, media)
+                        ?: throw ExtractionFailure(WebVideoBilibiliCapture.unavailableReason(media))
+                    attempt.stage = "selection"
+                    val selected = selectBilibiliFormat(page, captured, capabilities, id)
+                    attempt.check()
+                    captured to selected
+                } else WebVideoResolution.select(page, {
                     if (media?.optBoolean("server") == true) legacy
-                    else if (bilibiliEnabled) WebVideoBilibiliCapture.formats(page, media)
                     else if (douyinEnabled) WebVideoDouyinCapture.resolve(page, media, network)
                     else if (weiboEnabled) WebVideoWeiboCapture.resolve(page, media, network)
                     else if (tencentEnabled) WebVideoTencentCapture.resolve(page,media,network)
@@ -294,7 +312,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     }
                     if (bilibiliEnabled) {
                         val current = WebVideoBilibiliCapture.formats(page, latest) ?: throw ExtractionFailure(WebVideoBilibiliCapture.unavailableReason(latest))
-                        val pair = WebVideoFormats.select(page, current, capabilities)
+                        val pair = selectBilibiliFormat(page, current, capabilities, id)
                         if (pair.video.url != selected.video.url || pair.audio?.url != selected.audio?.url)
                             throw ExtractionFailure("browser_stream_changed")
                     }
@@ -305,12 +323,17 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     if (closed || active !== attempt || attempt.cancelled.get()) return@submit
                     ready(descriptor)
                     state = descriptor.publicJson().put("id", id).put("state", "ready").put("resolution_route", route)
+                    if (bilibiliVod) CrashTrail.mark("web_beta.resolved", "id=$id")
                 }
             } catch (error: Exception) {
                 synchronized(this) {
-                    if (!closed && active === attempt && !attempt.cancelled.get()) state = JSONObject().put("id", id)
-                        .put("state", "error").put("error", "Video extraction failed. Try the web page or another video.")
-                        .put("error_code", failureCode(error, attempt.stage)).put("stage", attempt.stage)
+                    if (!closed && active === attempt && !attempt.cancelled.get()) {
+                        val code = failureCode(error, attempt.stage)
+                        if (bilibiliVod) CrashTrail.mark("web_beta.resolve_failed", "id=$id stage=${attempt.stage} code=$code")
+                        state = JSONObject().put("id", id).put("state", "error")
+                            .put("error", "Video extraction failed. Try the web page or another video.")
+                            .put("error_code", code).put("stage", attempt.stage)
+                    }
                 }
             } finally { attempt.process?.destroyForcibly(); attempt.process = null }
         }
@@ -322,6 +345,20 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
         state = JSONObject().put("state", "idle")
     }
     override fun close() { synchronized(this) { closed = true; cancel() }; executor.shutdownNow() }
+
+    private fun selectBilibiliFormat(page: WebVideoPage, info: JSONObject, accepts: (WebVideoTrack) -> Boolean, id: Int): WebVideoDescriptor =
+        try {
+            WebVideoFormats.select(page, info, accepts).also { logBilibiliFormat(id, it.video, true) }
+        } catch (error: WebVideoFormats.DecoderRejected) {
+            logBilibiliFormat(id, error.track, false)
+            throw ExtractionFailure("browser_format_unsupported")
+        }
+
+    private fun logBilibiliFormat(id: Int, track: WebVideoTrack, supported: Boolean) {
+        val codec = track.videoCodec.substringBefore('.').takeIf { it in setOf("avc1", "hev1", "hvc1", "av01") } ?: "other"
+        val av1Profile = if (codec == "av01") WebVideoCapabilities.av1SdrProfile(track.videoCodec) else null
+        CrashTrail.mark("web_beta.format", "id=$id codec=$codec av1_profile=$av1Profile ${track.width}x${track.height} fps=${track.fps} supported=$supported")
+    }
 
     private fun readBrowserResource(uri: java.net.URI, headers: Map<String, String>, prefix: Boolean,
         attempt: Attempt, deadline: Long): Pair<java.net.URI, ByteArray> {

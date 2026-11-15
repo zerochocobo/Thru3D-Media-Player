@@ -83,3 +83,7 @@ The free-region change includes a contribution by [@ghanshyamv1](https://github.
 ## Bilibili playback in 0.17.11
 
 Compatible live streams support Play Beta and quality switching in the built-in player. Compatible on-demand videos maintain the selected quality when handing off the current video. Quest 3 verification covered selected live and 8K and 4K on-demand paths. PICO playback validation remains pending.
+
+## Playback Beta diagnostics in 0.17.12
+
+Standard Release diagnostics include playback stage information. Bilibili Beta can report an unsupported format separately from a generic playback failure. PICO Neo3 verification covered a selected AVC handoff, with the tested 8K path still unresolved.

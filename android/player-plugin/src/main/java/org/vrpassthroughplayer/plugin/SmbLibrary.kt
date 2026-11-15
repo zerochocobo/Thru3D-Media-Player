@@ -319,6 +319,23 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
 
     fun stream(uri: String): String = streams().publish(source(uri), uri.substringAfterLast('/'))
 
+    /** A VIDEO_TS folder, named by its VIDEO_TS.IFO, read as one disc image. */
+    fun discSource(uri: String): DvdFolderSource {
+        val rest = uri.removePrefix("smb://")
+        val server = server(rest.substringBefore('/'))
+        val folder = rest.substringAfter('/').substringBeforeLast('/', "")
+        require(folder.isNotEmpty() || server.host.contains('/'))
+        val url = "smb://${server.host}/" + if (folder.isEmpty()) "" else "$folder/"
+        val files = connection(server).read { current ->
+            SmbClientPolicy.file(url, current).use { directory ->
+                val children = directory.listFiles()
+                try { children.filter { !it.isDirectory }.map { it.name.trimEnd('/') to it.length() } }
+                finally { children.forEach { runCatching { it.close() } } }
+            }
+        }
+        return DvdFolderSource.of(files) { name -> source(uri.substringBeforeLast('/') + "/" + name) }
+    }
+
     fun pdfStream(uri: String): Pair<String, Long> {
         val source = source(uri)
         return try { streams().publish(source, "document.pdf") to source.size }
@@ -335,14 +352,25 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
         return SmbStreamSource(url, connection, size)
     }
 
-    /** SMB hosts seen within [timeoutMs]: mDNS _smb._tcp (NAS, macOS, Samba) plus WS-Discovery,
-     * which Windows uses instead of mDNS for its file shares. [{name, host}] */
+    /** SMB hosts seen within [timeoutMs]: mDNS _smb._tcp (NAS, macOS, Samba), WS-Discovery, which
+     * Windows uses instead of mDNS, and a TCP 445 sweep of the local subnet for Windows machines
+     * that keep WS-Discovery off (Public network, publication service stopped). Hosts without a
+     * name are named over NetBIOS. [{name, host}] */
     fun discover(timeoutMs: Long = 2500): JSONArray {
         val windows = Thread { wsdHosts.clear(); wsdHosts.addAll(wsDiscovery(timeoutMs.toInt())) }.apply { start() }
+        val open = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        val sweep = Thread { open.addAll(SmbLanScan.hosts(DlnaClient.lanInterfaces(), timeoutMs.toInt())) }.apply { start() }
         val found = mdns(timeoutMs)
         windows.join(timeoutMs + 1000)
+        sweep.join(timeoutMs + 1000)
         val seen = (0 until found.length()).map { found.getJSONObject(it).getString("host") }.toHashSet()
-        for ((host, name) in wsdHosts.toList()) if (seen.add(host)) found.put(JSONObject().put("name", name).put("host", host))
+        val mdnsCount = seen.size
+        val extra = LinkedHashMap<String, String>()
+        for ((host, name) in wsdHosts.toList()) if (host !in seen) extra.putIfAbsent(host, name)
+        for (host in open.toList()) if (host !in seen) extra.putIfAbsent(host, host)
+        val names = SmbLanScan.names(extra.filter { it.key == it.value }.keys, 800)
+        for ((host, name) in extra) found.put(JSONObject().put("name", names[host] ?: name).put("host", host))
+        SmbLanScan.log("smb discover: mdns $mdnsCount, wsd ${wsdHosts.size}, 445 ${open.size}, listed ${found.length()}")
         return found
     }
     private val wsdHosts = java.util.concurrent.ConcurrentLinkedQueue<Pair<String, String>>()

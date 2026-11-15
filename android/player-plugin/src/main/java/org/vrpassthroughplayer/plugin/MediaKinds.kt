@@ -13,6 +13,7 @@ internal object MediaKinds {
     fun supported(name: String) = pdf(name) || ArchiveKinds.named(name) || image(name) || audio(name) || scene(name) || DlnaClient.isVideoName(name) || StrmFile.named(name)
     fun kind(name: String) = if (pdf(name)) "pdf" else if (ArchiveKinds.named(name)) "archive" else if (image(name)) "image" else if (audio(name)) "audio" else if (scene(name)) "scene" else "video"
     // Directory and search metadata contain literal filenames, including # and ?.
+    // VIDEO_TS.IFO stands for its whole DVD folder; the other IFO/BUP files stay unlisted.
     fun fileNameKind(name: String) = name.substringAfterLast('.', "").lowercase().let { if (it == "pdf") "pdf" else if (it in ArchiveKinds.extensions) "archive" else if (it in images) "image" else if (it in audio) "audio" else if (it in scenes) "scene" else "video" }
-    fun supportedFileName(name: String) = name.substringAfterLast('.', "").lowercase().let { it == "pdf" || it in ArchiveKinds.extensions || it in images || it in audio || it in scenes || it in DlnaClient.VIDEO_EXTENSIONS || it == "strm" }
+    fun supportedFileName(name: String) = name.substringAfterLast('.', "").lowercase().let { it == "pdf" || it in ArchiveKinds.extensions || it in images || it in audio || it in scenes || it in DlnaClient.VIDEO_EXTENSIONS || it == "strm" } || DvdFolderImage.index(name)
 }

@@ -214,7 +214,7 @@ func current_image_state(source: Dictionary) -> Dictionary:
 func snapshot(mode: String) -> Dictionary:
 	var background: Node=_background(mode)
 	var state: Dictionary=app._library_settings()
-	state["screen_edit_locked"] = app.screen_edit_lock.locked()
+	state["screen_edit_locked"] = app.screen_edit_lock.beach_locked()
 	var selected: String=str(library.bindings.get(mode,{}).get("id",background.choice))
 	var status:=_error if not _error.is_empty() else library.error
 	if library.busy or _pending.has(mode): status="Loading…"
@@ -236,8 +236,10 @@ func snapshot(mode: String) -> Dictionary:
 	return state
 
 func _command(operation: String,value: Variant) -> void:
-	if operation == "screen_lock_notice": app.screen_edit_lock.deny(str(value), "beach_menu"); return
-	if operation in ["edit_beach_screen", "apply_beach_screen"] and app.screen_edit_lock.deny("", "beach_menu"): return
+	if operation == "screen_lock_notice":
+		if app.screen_edit_lock.beach_locked(): app.screen_edit_lock.deny(str(value), "beach_menu")
+		return
+	if operation in ["edit_beach_screen", "apply_beach_screen"] and app.screen_edit_lock.beach_locked() and app.screen_edit_lock.deny("", "beach_menu"): return
 	match operation:
 		"select": select(str(value.mode),str(value.id))
 		"use_current": import_current(app.photo.background_source(),app.photo.display_name,str(value))
@@ -247,6 +249,7 @@ func _command(operation: String,value: Variant) -> void:
 		"scene_remove": app.scene_import.remove(value)
 		"scene_rename": app.scene_import.library.rename(str(value.id),str(value.title))
 		"scene_home": app.scene_import.home()
+		"scene_set_entry": app.scene_import.set_entry()
 		"home": app._on_setting_changed("cinema_home",true)
 		"edit_beach_screen":
 			if app.background.choice=="private_beach" and app.beach_environment.is_ready:
@@ -262,6 +265,8 @@ func _command(operation: String,value: Variant) -> void:
 			var mode:=str(value.mode); var key:=str(value.key)
 			if key=="scene_screen_light": app.scene_import.set_screen_light(float(value.value))
 			elif key=="scene_bake": app.scene_import.set_bake(float(value.value))
+			elif key=="scene_play_dim": app.scene_import.set_play_dim(float(value.value))
+			elif key=="scene_backdrop": app.scene_import.set_backdrop(str(value.value))
 			elif key.begins_with("cinema_") or key.begins_with("beach_"): app._on_setting_changed(key,value.value)
 			else:
 				var background: Node=_background(mode)

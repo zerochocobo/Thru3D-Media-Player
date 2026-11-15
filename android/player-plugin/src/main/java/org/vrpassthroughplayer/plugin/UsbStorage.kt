@@ -331,11 +331,12 @@ internal class UsbStorage(private val host: () -> Activity?, private val emit: (
         val values=synchronized(this) { sessions.values.toList() }
         values.forEach { s->synchronized(s) { s.streams.remove(uri) } }
     }
-    fun stream(uri:String,server:LocalStreamServer):String {
+    fun stream(uri:String,server:LocalStreamServer):String = publish(uri,server,source(uri),Uri.parse(uri).lastPathSegment ?: "video")
+    /** [source] reads files of [uri]'s device and is revoked with it, like any single-file stream. */
+    fun publish(uri:String,server:LocalStreamServer,source:StreamSource,name:String,isoMemory:String?=null):String {
         val s=session(uri)
-        val source=source(uri)
         return synchronized(s) {
-            try { check(s.active && !s.stopping) { "USB access stopped" }; server.publish(source,Uri.parse(uri).lastPathSegment ?: "video").also { s.streams[it]=server } }
+            try { check(s.active && !s.stopping) { "USB access stopped" }; server.publish(source,name,isoMemory).also { s.streams[it]=server } }
             catch(e:Exception) { source.close(); throw e }
         }
     }

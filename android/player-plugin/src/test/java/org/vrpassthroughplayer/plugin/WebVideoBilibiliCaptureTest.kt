@@ -19,6 +19,12 @@ class WebVideoBilibiliCaptureTest {
         assertEquals(3840, selected.video.height)
         assertEquals(url(80), selected.video.url.toString())
         assertEquals(url(30280), selected.audio!!.url.toString())
+        val unsupported = assertThrows(WebVideoFormats.DecoderRejected::class.java) {
+            WebVideoFormats.select(page, WebVideoBilibiliCapture.formats(page, media)!!) { false }
+        }
+        assertEquals(selected.video.videoCodec, unsupported.track.videoCodec)
+        assertEquals(7680, unsupported.track.width)
+        assertEquals(3840, unsupported.track.height)
         media.getJSONArray("network").remove(0)
         assertNull(WebVideoBilibiliCapture.formats(page, media))
     }

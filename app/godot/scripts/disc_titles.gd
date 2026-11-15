@@ -23,6 +23,19 @@ var _poll_ms := 0
 var _session := 0
 var _polls := 0
 
+## VIDEO_TS.IFO is listed for its whole DVD folder, which plays as one disc.
+static func folder_index(name: String) -> bool:
+	return name.to_upper() == "VIDEO_TS.IFO"
+
+## The folder a viewer knows the disc by: the one holding VIDEO_TS, not VIDEO_TS itself.
+static func folder_title(uri: String, fallback: String) -> String:
+	var parts := uri.uri_decode().replace(":", "/").split("/", false)
+	for back in [2, 3]:
+		var at: int = parts.size() - back
+		if at < 2: break
+		if parts[at].to_upper() != "VIDEO_TS": return parts[at]
+	return fallback
+
 func reset() -> void:
 	uri = ""; titles = []; main = -1; first_view = false; playing = -1; _next = -1; _next_uri = ""; _sent = -1
 	menu_kind = ""; stereo = false; menu_session = false

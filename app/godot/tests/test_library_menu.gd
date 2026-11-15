@@ -392,6 +392,14 @@ func _run() -> void:
 	menu._local_entries = many + [room]
 	menu.refresh()
 	check(menu._entry_row(room).kind == "scene" and menu.rows.size() == 30, "A scene file stays out of the ordinary listing")
+	# A DVD folder's index is listed as the disc itself, under the name of the folder holding VIDEO_TS.
+	var disc: Dictionary = menu._entry_row({"id": "/big/Film/VIDEO_TS/VIDEO_TS.IFO", "uri": "file:///big/Film/VIDEO_TS/video_ts.ifo",
+		"title": "video_ts.ifo", "size": 12288, "container": false, "kind": "video", "can_delete": true, "can_rename": true})
+	check(disc.title == "Film" and disc.icon == "disc" and disc.kind == "video" and disc.uri.ends_with("video_ts.ifo"),
+		"A DVD folder plays from one disc row named after its folder")
+	check(not disc.can_delete and not disc.can_rename, "The disc index is never renamed or deleted on its own")
+	check(menu._entry_row({"uri": "file:///big/VTS_01_1.VOB", "title": "VTS_01_1.VOB", "container": false}).icon == "video",
+		"The folder's VOB files stay ordinary videos")
 	menu.voice_picker_mode = true; menu.scene_picker_mode = true
 	menu.refresh()
 	check(menu.rows.any(func(row): return row.get("title", "") == "room.glb") and not menu.rows.any(func(row): return row.get("title", "") == "v00"), "The scene picker lists scene files and nothing else")

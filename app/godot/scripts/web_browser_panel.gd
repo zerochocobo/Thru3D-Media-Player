@@ -62,6 +62,7 @@ func _sync_chinese_keyboard() -> void:
 const Distribution := preload("res://scripts/distribution_channel.gd")
 const I18n := preload("res://scripts/i18n.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
+const DiagnosticLog := preload("res://scripts/diagnostic_log.gd")
 const BASE := 986000
 const PASTE := BASE + 27
 const HISTORY := BASE + 28
@@ -284,6 +285,8 @@ func tick() -> void:
 		windows[id].sync_fullscreen(window_state(id))
 	sync_effects()
 	if handoff and (str(data.get("url", "")) != handoff_uri or int(data.get("tab_id", 0)) != handoff_tab or int(data.get("navigation", 0)) != handoff_navigation):
+		if handoff_context.get("bilibili", false):
+			DiagnosticLog.trail("web_beta.cancelled", "code=browser_page_changed")
 		_cancel_handoff()
 	if handoff and not str(handoff_context.get("selection", "")).is_empty() and (direct_target(data, str(handoff_context.selection)).is_empty() if handoff_context.get("direct", false) else selected_beta_target(data, str(handoff_context.selection)).is_empty()):
 		menu.web_video.result = {"error_code": "browser_page_changed"}; _handoff_failed()
@@ -295,6 +298,8 @@ func tick() -> void:
 		_handoff_failed()
 	if handoff and handoff_waiting_pause:
 		if _pause_confirmed():
+			if handoff_context.get("bilibili", false):
+				DiagnosticLog.trail("web_beta.pause_confirmed")
 			handoff_waiting_pause = false
 			handoff_start_ms = _playhead(true)
 			handoff_context.position_ms = _playhead()
@@ -322,6 +327,8 @@ func tick() -> void:
 				# Arm before choose(): menu dismissal and the main player both close.
 				playback_return.opening = true
 				_video_command("retain_page", playback_return.merged({"hide": not keep_browser}, true))
+				if handoff_context.get("bilibili", false):
+					DiagnosticLog.trail("web_beta.open_native", "id=%d" % int(menu.web_video.result.get("id", 0)))
 				handoff = false; pause_started = 0
 				menu.web_video.choose({"web_video": "play", "start_ms": handoff_start_ms, "keep_browser": keep_browser}); return
 			elif Time.get_ticks_msec() - pause_started > 5000:
@@ -347,6 +354,8 @@ func _poll_beta_button() -> void:
 	beta_button_seen[tab] = serial
 	var selection := str(data.get("beta_selection", data.get("weibo_selection", "")))
 	if not selection.is_empty() and not selected_beta_target(data, selection).is_empty(): _begin_handoff(true, selection)
+	elif data.get("bilibili_beta_available", false):
+		DiagnosticLog.trail("web_beta.click", "entry=page valid_target=false")
 
 func selected_beta_target(current: Dictionary, selection: String) -> Dictionary:
 	var candidates: Array = current.get("videos", []).filter(func(item): return (item.get("weibo_ready", false) or item.get("bilibili_ready", false) or item.get("douyin_ready", false) or item.get("tencent_ready", false) or item.get("mango_ready", false) or item.get("youku_ready", false) or item.get("iqiyi_ready", false) or item.get("niconico_ready", false) or item.get("twitch_ready", false) or item.get("tiktok_ready", false) or item.get("instagram_ready", false) or item.get("odysee_ready", false) or item.get("archive_ready", false) or item.get("naver_ready", false) or item.get("reddit_ready", false) or item.get("streamable_ready", false) or item.get("redbull_ready", false) or item.get("ted_ready", false) or item.get("dailymotion_ready", false)) and not item.get("protected", false) and str(item.get("selection", "")) == selection)
@@ -451,7 +460,11 @@ func _begin_handoff(beta: bool = false, selection: String = "") -> void:
 		# The button snapshot can be one poll behind a sidebar navigation or media change.
 		# Revalidate before pausing or disturbing an existing resolver.
 		var fresh: Variant = JSON.parse_string(menu.platform.web_browser_status())
-		if not fresh is Dictionary or not beta_site_available(fresh) or not beta_media_ready(fresh, selection): return
+		var available: bool = fresh is Dictionary and beta_site_available(fresh) and beta_media_ready(fresh, selection)
+		if data.get("bilibili_beta_available", false):
+			var entry := "toolbar" if selection.is_empty() else "page"
+			DiagnosticLog.trail("web_beta.click", "entry=%s valid_target=%s" % [entry, available])
+		if not available: return
 		if int(fresh.get("focused_window", 1)) != focused_window: return
 		for key in ["url", "tab_id", "navigation"]:
 			if fresh.get(key) != data.get(key): return
@@ -587,6 +600,10 @@ func _cancel_handoff() -> void:
 	handoff = false; handoff_waiting_pause = false; pause_started = 0; handoff_context = {}
 
 func _handoff_failed() -> void:
+	if handoff_context.get("bilibili", false):
+		var code := str(menu.web_video.result.get("error_code", ""))
+		if code.is_empty() or not code.is_valid_identifier(): code = "unknown"
+		DiagnosticLog.trail("web_beta.handoff_failed", "waiting_pause=%s code=%s" % [handoff_waiting_pause, code])
 	handoff_error = handoff_context.merged({"message": menu.web_video.error_hint()})
 	_cancel_handoff()
 	menu.web_video.result = {}
