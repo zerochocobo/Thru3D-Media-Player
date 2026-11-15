@@ -49,8 +49,21 @@ const StereoView := preload("res://scripts/stereo_view.gd")
 var viewing_eye := 0 # 0 binocular; 1/2 duplicate the logical left/right view after eye swap.
 var stereo_horizontal := 0.0
 var stereo_vertical := 0.0
-var stereo_focus := 0.0 # Test: metres to the depth whose two eye images meet; 0 keeps the shared sphere.
+## Stereo focus: each eye's sphere centred on that eye, its radius where the viewed depth's two
+## pictures meet. Off keeps the shared sphere; automatic follows the depth at the centre of the view.
+enum Focus { OFF, AUTO, MANUAL }
+var stereo_focus_mode := Focus.OFF
+var stereo_focus := 1.5 # the manual distance, metres
 const FOCUS_LIMITS := Vector2(0.3, 50.0)
+const StereoAutofocus := preload("res://scripts/stereo_autofocus.gd")
+var autofocus := StereoAutofocus.new()
+## Immersive captions follow the view, just in front of the automatic focus depth, instead of
+## resting in the video at subtitle_distance.
+var subtitle_follow_view := false
+const SubtitleFollow := preload("res://scripts/subtitle_follow.gd")
+var subtitle_follow := SubtitleFollow.new()
+## The current video's depth can be measured (while something asks for it).
+var autofocus_measures := false
 var _stereo_view_dirty := false
 var _immersive_view_dirty := false
 var _mode_user_changed := false # Late USB identity must not replace this open's manual choices.
@@ -270,16 +283,15 @@ var subtitle_distance := 5.0:
 		subtitle_distance = SubtitleDepth.distance(value)
 var subtitle_horizontal_center := Vector2.ZERO
 var subtitle_vertical_center := Vector2.ZERO
+## Following captions' offsets from the view centre, for lines and for columns.
+var subtitle_follow_horizontal_offset := SubtitleDepth.follow_default(false)
+var subtitle_follow_vertical_offset := SubtitleDepth.follow_default(true)
 var subtitle_horizontal_position: float:
 	get: return subtitle_center().x
-	set(value):
-		if subtitle_direction == 1: subtitle_vertical_center.x = SubtitleDepth.position(value)
-		else: subtitle_horizontal_center.x = SubtitleDepth.position(value)
+	set(value): _set_subtitle_center(0, value)
 var subtitle_vertical_position: float:
 	get: return subtitle_center().y
-	set(value):
-		if subtitle_direction == 1: subtitle_vertical_center.y = SubtitleDepth.position(value)
-		else: subtitle_horizontal_center.y = SubtitleDepth.position(value)
+	set(value): _set_subtitle_center(1, value)
 # Compatibility input for legacy settings and diagnostic probes only.
 var subtitle_position := SubtitleDepth.DEFAULT_POSITION:
 	set(value):
@@ -2439,13 +2451,14 @@ func _place_caption() -> void:
 		caption.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
 		caption.global_transform = Transform3D(pose.basis, anchor)
 		return
-	# Anchor in the video's coordinates, like burned-in captions. Head pose never changes it.
-	# Direction/recenter/zoom move captions with the video; roll is excluded by the independent surface.
-	var anchor_basis := SubtitleDepth.center_anchor(subtitle_center())
+	# Anchor in the video's coordinates, like burned-in captions: head pose never changes it, unless
+	# the captions follow the view. Direction/recenter/zoom move captions with the video; roll is
+	# excluded by the independent surface.
+	var anchor_basis := _subtitle_anchor()
 	caption.layers = 0 # The live text patch is drawn only by the video's shader.
 	var pose := subtitle_transform()
 	var viewer_position := view_camera.global_position if view_camera and view_camera.is_inside_tree() else pose.origin
-	projected_subtitles.update_patch(caption, material, anchor_basis, subtitle_distance, subtitle_direction == 1, subtitle_size, subtitle_style, pose, viewer_position, XRServer.world_scale)
+	projected_subtitles.update_patch(caption, material, anchor_basis, subtitle_shown_distance(), subtitle_direction == 1, subtitle_size, subtitle_style, pose, viewer_position, XRServer.world_scale)
 
 func seek_relative(delta_ms: int) -> bool:
 	if not cast_allows("seek"): return false
@@ -2742,10 +2755,7 @@ func _apply_stereo_view() -> void:
 	material.set_shader_parameter("swap_eyes", swap_eyes if stereo_sbs else false)
 	material.set_shader_parameter("viewing_eye", viewing_eye if stereo_sbs else 0)
 	material.set_shader_parameter("stereo_offset", stereo_offset_uv() if stereo_sbs else Vector2.ZERO)
-	var focus := stereo_focus_shape()
-	var units := XRServer.world_scale / maxf((panel.global_basis if panel.is_inside_tree() else panel.basis).get_scale().x, 0.0001)
-	material.set_shader_parameter("focus_scale", focus.x * units / SPHERE_RADIUS if focus.x > 0.0 else 1.0)
-	material.set_shader_parameter("focus_offset", focus.y * units)
+	_apply_stereo_focus()
 	if _hole_material:
 		# No extra full-surface pass during ordinary playback or mono viewing.
 		_hole_material.next_pass = _alignment_border if stereo_sbs and viewing_eye == 0 and stereo_offset_uv() != Vector2.ZERO else null
@@ -3389,7 +3399,9 @@ func _on_debug_command(id: int, payload: String) -> void:
 		if stereo_sbs != bool(command.enabled):
 			toggle_stereo()
 	elif command.operation == "focus":
-		set_stereo_focus(float(command.get("value", 0.0))) # metres; 0 off
+		var metres := float(command.get("value", 0.0)) # 0 off, negative automatic
+		if metres > 0.0: set_stereo_focus(metres)
+		set_stereo_focus_mode(Focus.MANUAL if metres > 0.0 else (Focus.AUTO if metres < 0.0 else Focus.OFF))
 	elif command.operation == "profile":
 		profile = str(command.profile)
 		_warm_rvm() # as set_profile: a cold profile starts its background compile
@@ -3834,6 +3846,9 @@ func layout_snapshot() -> Dictionary:
 			"source": _stream_projection.get("source", "")},
 		"portrait": portrait.snapshot() if portrait_requested() else {"requested": false, "active": false},
 		"viewing_eye": viewing_eye, "stereo_horizontal": stereo_horizontal, "stereo_vertical": stereo_vertical,
+		"stereo_focus": {"mode": stereo_focus_mode, "manual_m": stereo_focus, "shown_m": stereo_focus_shape().x, "measured_m": autofocus.distance,
+			"subtitle_follow": subtitle_follow_view, "subtitle_m": subtitle_shown_distance(), "probe": autofocus.report,
+			"follow_degrees": [rad_to_deg(subtitle_follow.centre.x), rad_to_deg(subtitle_follow.centre.y)]},
 		"spatial_video": is_spatial_video(), "spatial_metadata": spatial_metadata(), "spatial_auto_disparity": spatial_auto_disparity,
 		"top_bottom": stereo_sbs and top_bottom, "stereo_half": stereo_sbs and stereo_half, "fisheye_fov": fisheye_fov,
 		"alpha_requested": alpha_requested, "alpha_enabled": alpha_enabled, "profile": profile,
@@ -3865,11 +3880,31 @@ func layout_snapshot() -> Dictionary:
 			"frozen_frame_id": int(_binding.ticket.get("frozen_frame_id", 0)),
 			"freeze_copy_us": int(_binding.ticket.get("freeze_copy_us", 0))}, "device_validation": "pending"}
 
+## The current mode's and direction's centre: degrees in the video, or from the view centre.
 func subtitle_center() -> Vector2:
+	if subtitle_follow_view: return subtitle_follow_vertical_offset if subtitle_direction == 1 else subtitle_follow_horizontal_offset
 	return subtitle_vertical_center if subtitle_direction == 1 else subtitle_horizontal_center
 
+func _set_subtitle_center(axis: int, value: float) -> void:
+	if subtitle_follow_view:
+		if subtitle_direction == 1: subtitle_follow_vertical_offset[axis] = SubtitleDepth.follow_offset(value)
+		else: subtitle_follow_horizontal_offset[axis] = SubtitleDepth.follow_offset(value)
+	elif subtitle_direction == 1: subtitle_vertical_center[axis] = SubtitleDepth.position(value)
+	else: subtitle_horizontal_center[axis] = SubtitleDepth.position(value)
+
+func _subtitle_anchor() -> Basis:
+	var center := subtitle_center()
+	if not subtitle_follow_view: return SubtitleDepth.center_anchor(center)
+	return SubtitleDepth.view_anchor(subtitle_follow.centre + Vector2(deg_to_rad(center.x), deg_to_rad(center.y)))
+
+func _tick_subtitle_follow(delta: float) -> void:
+	if subtitle_follow_view and geometry != Geometry.Geometry.FLAT and view_camera != null and view_camera.is_inside_tree() and panel.is_inside_tree():
+		subtitle_follow.tick(_picture_direction(subtitle_transform().basis.orthonormalized().inverse() * -view_camera.global_basis.z), delta)
+	else:
+		subtitle_follow.reset()
+
 func _subtitle_anchor_direction() -> Array:
-	var anchor := SubtitleDepth.center_anchor(subtitle_center()) * Vector3.FORWARD
+	var anchor := _subtitle_anchor() * Vector3.FORWARD
 	return [anchor.x, anchor.y, anchor.z]
 
 func _can_loop() -> bool:
@@ -3927,6 +3962,8 @@ func _process(_delta: float) -> void:
 		_try_revision()
 	_present_pending()
 	pip.sync()
+	_tick_autofocus(_delta)
+	_tick_subtitle_follow(_delta)
 	_poll_subtitles()
 	_update_layer()
 	mode_transition.finish_frame()
@@ -3981,17 +4018,109 @@ func stereo_offset_uv() -> Vector2:
 		offset.x -= float(_spatial_metadata.get("horizontal_disparity", 0.0)) * (-1.0 if swap_eyes else 1.0)
 	return offset
 
-## Stereo focus (test): each eye's sphere is centred on that eye (half the runtime IPD from the shared
-## centre) with its radius at stereo_focus. Both images of that depth then land on one world point, which
-## stays put as the head moves or tilts and whatever the camera spacing. Native stereo spheres only.
-## (radius, half eye separation) in metres; zero when off.
+## Stereo focus: each eye's sphere is centred on that eye (half the runtime IPD from the shared
+## centre) with its radius at the focus distance. Both images of that depth then land on one world
+## point, which stays put as the head moves or tilts and whatever the camera spacing. Native stereo
+## spheres only. (radius, half eye separation) in metres; zero when off or not measured yet.
 func stereo_focus_shape() -> Vector2:
-	if stereo_focus <= 0.0 or not stereo_sbs or viewing_eye != 0 or geometry == Geometry.Geometry.FLAT: return Vector2.ZERO
-	return Vector2(stereo_focus, ProjectedSubtitles.runtime_ipd() * 0.5)
+	if not stereo_sbs or viewing_eye != 0 or geometry == Geometry.Geometry.FLAT: return Vector2.ZERO
+	var distance := autofocus.distance if stereo_focus_mode == Focus.AUTO else (stereo_focus if stereo_focus_mode == Focus.MANUAL else 0.0)
+	return Vector2(distance, ProjectedSubtitles.runtime_ipd() * 0.5) if distance > 0.0 else Vector2.ZERO
+
+## The line the two sphere centres lie on, in the video's own axes: a 180 camera pair is fixed
+## across the picture, a 360 pair turns with the view.
+func stereo_focus_axis() -> Vector3:
+	if geometry != Geometry.Geometry.EQUIRECT_360 or not view_camera or not view_camera.is_inside_tree() or not panel.is_inside_tree():
+		return Vector3.RIGHT
+	var across := panel.global_basis.orthonormalized().inverse() * view_camera.global_basis.x
+	across.y = 0.0
+	return across.normalized() if across.length() > 0.01 else Vector3.RIGHT
 
 func set_stereo_focus(distance: float) -> void:
-	stereo_focus = clampf(distance, FOCUS_LIMITS.x, FOCUS_LIMITS.y) if is_finite(distance) and distance > 0.0 else 0.0
-	_apply_stereo_view()
+	if is_finite(distance) and distance > 0.0: stereo_focus = clampf(distance, FOCUS_LIMITS.x, FOCUS_LIMITS.y)
+	_apply_stereo_focus()
+
+func set_stereo_focus_mode(mode: int) -> void:
+	stereo_focus_mode = clampi(mode, Focus.OFF, Focus.MANUAL) as Focus
+	_apply_stereo_focus()
+
+## The focused sphere's size as a fraction of the shared sphere; 1 when not focused.
+func _stereo_focus_scale() -> float:
+	var focus := stereo_focus_shape()
+	if focus.x <= 0.0: return 1.0
+	return focus.x * XRServer.world_scale / maxf((panel.global_basis if panel.is_inside_tree() else panel.basis).get_scale().x, 0.0001) / SPHERE_RADIUS
+
+## Zoom and position put the viewer off the sphere's centre by a fraction of its radius. A focused
+## sphere is smaller, so its centre moves towards the viewer to keep that fraction: the picture then
+## looks the same size at every focus distance, and the viewer never ends up outside it.
+## The movement in the sphere's own axes and units.
+func _stereo_focus_centre() -> Vector3:
+	return Vector3(view_horizontal, view_vertical, -view_zoom) * SPHERE_RADIUS * (_stereo_focus_scale() - 1.0)
+
+## The same movement in world space, for the compositor layer.
+func stereo_focus_shift() -> Vector3:
+	return (panel.global_basis if panel.is_inside_tree() else panel.basis) * _stereo_focus_centre()
+
+## What the picture shows along [forward] (both in the video's axes): from the viewer's place inside
+## the sphere, which zoom and position move off its centre.
+func _picture_direction(forward: Vector3) -> Vector3:
+	var seat := -Vector3(view_horizontal, view_vertical, -view_zoom)
+	var towards := forward.normalized()
+	var along := seat.dot(towards)
+	return (seat + towards * (-along + sqrt(maxf(along * along - seat.length_squared() + 1.0, 0.0)))).normalized()
+
+func _apply_stereo_focus() -> void:
+	if not material: return
+	var focus := stereo_focus_shape()
+	var units := XRServer.world_scale / maxf((panel.global_basis if panel.is_inside_tree() else panel.basis).get_scale().x, 0.0001)
+	material.set_shader_parameter("focus_scale", _stereo_focus_scale())
+	material.set_shader_parameter("focus_offset", stereo_focus_axis() * focus.y * units)
+	material.set_shader_parameter("focus_centre", _stereo_focus_centre())
+
+## Automatic focus measures while it places the picture or the captions: a native stereo sphere on
+## the compositor layer, or a fisheye frame wherever it shows (an eye-buffer equirect picture keeps
+## the shared sphere).
+func _tick_autofocus(delta: float) -> void:
+	var measured := (stereo_focus_mode == Focus.AUTO or subtitle_follow_view) and stereo_sbs and viewing_eye == 0 \
+		and view_camera != null and view_camera.is_inside_tree() and panel.is_inside_tree() and media.accepts(media.session_id)
+	var lens := _autofocus_lens() if measured and geometry == Geometry.Geometry.FISHEYE else {}
+	var frame := Vector2i.ZERO
+	var span := TAU if geometry == Geometry.Geometry.EQUIRECT_360 else PI
+	if not lens.is_empty():
+		frame = Vector2i(lens.size)
+		span = VideoLayer.fisheye_span(float(fisheye_fov)).x
+	elif measured and geometry in [Geometry.Geometry.HALF_EQUIRECT, Geometry.Geometry.EQUIRECT_360] and _layer_session and layer_rotation == 0 \
+		and not media.last_pair.is_empty() and PlatformMethods.supports(platform, "request_mpv_stereo_focus"):
+		frame = Vector2i(int(media.last_pair.width), int(media.last_pair.height))
+	else:
+		measured = false
+	autofocus_measures = measured
+	var moved := false
+	if not measured:
+		moved = autofocus.distance > 0.0
+		autofocus.reset()
+	else:
+		moved = autofocus.tick(platform, media.session_id, frame, _picture_direction(panel.global_basis.orthonormalized().inverse() * -view_camera.global_basis.z),
+			span, top_bottom, swap_eyes, stereo_offset_uv().x, ProjectedSubtitles.runtime_ipd(), delta, lens)
+	# Every frame: zoom and position move the focused sphere too.
+	if stereo_focus_mode != Focus.OFF and geometry != Geometry.Geometry.FLAT: _apply_stereo_focus()
+
+## The decoder's fisheye frame as automatic focus reads it (the lens has no layer surface to copy);
+## empty when this frame cannot be read.
+func _autofocus_lens() -> Dictionary:
+	var ticket := _binding.ticket
+	if ticket.is_empty() or _binding.layer or _binding.warped or packed_file or int(ticket.get("session_id", 0)) != media.session_id \
+		or int(ticket.get("rotation_degrees", 0)) != 0 or int(media.format.get("source_rotation_degrees", 0)) != 0 \
+		or not _binding.color_texture().is_valid() or not PlatformMethods.supports(platform, "request_lens_stereo_focus"): return {}
+	var scale: Array = ticket.get("color_uv_scale", [1.0, 1.0])
+	return {"texture": RenderingServer.texture_get_native_handle(_binding.color_texture()), "external": str(ticket.get("color_target", "")) == "external",
+		"fov": float(fisheye_fov), "half": stereo_half, "size": Vector2(int(ticket.width), int(ticket.height)), "scale": Vector2(float(scale[0]), float(scale[1]))}
+
+## Metres from the viewer to immersive captions: just in front of what the view centre shows when
+## they follow the view and it is measured, else the chosen distance.
+func subtitle_shown_distance() -> float:
+	if subtitle_follow_view and autofocus.distance > 0.0: return clampf(autofocus.distance * 0.9, FOCUS_LIMITS.x, SubtitleDepth.LIMITS.y)
+	return subtitle_distance
 
 ## Presentation the compositor layer can show exactly: plain decoder colour on a supported shape.
 ## The configuration shows on the compositor layer (independent of a reopen in progress).

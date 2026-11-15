@@ -73,9 +73,10 @@ func run() -> void:
 	check(video.stereo_horizontal == 0 and video.stereo_vertical == -3 and video.swap_eyes, "Horizontal reset preserves vertical correction and eye order")
 	click(menu, row_for(menu, "stereo_vertical").reset)
 	check(video.stereo_vertical == 0 and video._hole_material.next_pass == null, "Vertical reset removes corrected borders")
-	video.set_stereo_focus(1.2); menu.refresh_values()
+	video.set_stereo_focus_mode(2); video.set_stereo_focus(1.2); menu.refresh()
 	click(menu, row_for(menu, "stereo_focus").reset)
-	check(video.stereo_focus == 0.0, "Focus reset turns focus off")
+	check(is_equal_approx(video.stereo_focus, 1.5), "Focus reset restores the default distance")
+	video.set_stereo_focus_mode(0); menu.refresh()
 	var memory := preload("res://scripts/file_mode_memory.gd").new(); memory.load_saved()
 	check(memory.lookup(video.local_uri).get("stereo_horizontal") == 0 and memory.lookup(video.local_uri).get("stereo_vertical") == 0, "Independent alignment resets persist per file")
 	# A captured slider cannot be reset by the other hand.

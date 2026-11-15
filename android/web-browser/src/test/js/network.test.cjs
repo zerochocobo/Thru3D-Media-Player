@@ -38,6 +38,28 @@ function fixture(cookies = []) {
   return { connect, request, flush, browser, archive: vm.runInContext('Thru3DArchive',context), advance(ms) { now += ms; } };
 }
 
+test('Bilibili Live keeps only real top-level playlist requests and discards them on room change', () => {
+  const f = fixture();
+  const page = 'https://live.bilibili.com/12345';
+  const player = f.connect(1, 0, page, false);
+  const playlist = 'https://test.bilivideo.com/current.m3u8?quality=400';
+  const options = {documentUrl:page, requestHeaders:[{name:'User-Agent',value:'test Gecko'}],
+    responseHeaders:[{name:'Content-Type',value:'application/vnd.apple.mpegurl'}]};
+  f.request(playlist, {...options, documentId:'previous'});
+  f.request(playlist, {...options, documentUrl:'https://live.bilibili.com/54321'});
+  f.request(playlist, {...options, cache:true});
+  f.request('https://outside.test/playlist.m3u8', options);
+  f.flush();
+  assert.equal(player.last().length, 0);
+  f.request(playlist, options);
+  f.flush();
+  assert.equal(player.last()[0].url, playlist);
+  player.port.onMessage.fire({type:'context',page,bilibili:true,reset:true});
+  assert.equal(player.last()[0].headers['user-agent'], 'test Gecko');
+  player.port.onMessage.fire({type:'context',page:'https://live.bilibili.com/54321',bilibili:true,reset:true});
+  assert.equal(player.last().length, 0);
+});
+
 test('Twitch homepage SPA clip keeps exact original-document requests and their own headers',()=>{
   const f=fixture(),original='https://www.twitch.tv/',clip='https://www.twitch.tv/creator/clip/CurrentClip',p=f.connect(1,0,original,false);
   p.port.onMessage.fire({type:'context',page:clip,twitch:true,enabled:false,reset:true});

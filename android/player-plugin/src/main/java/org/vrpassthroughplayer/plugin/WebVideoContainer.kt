@@ -34,6 +34,67 @@ internal object WebVideoContainer {
         else if (d.size >= 4 && uint(d, 0) == 0x1a45dfa3L) webm(d) else null
     }.getOrNull()
 
+    fun liveInitialization(data: ByteArray): Info? = runCatching {
+        val top = boxes(data, 0, data.size)
+        require(top.firstOrNull()?.type == "ftyp" && top.none { it.type in setOf("moof", "mdat") })
+        mp4(data, allowAv1 = true).also { require(it.duration == 0.0 && it.video != "none" && it.audio != "none") }
+    }.getOrNull()
+
+    internal data class LiveVideoTrack(val id: Long, val defaultFlags: Long?)
+
+    fun liveVideoTrack(data: ByteArray): LiveVideoTrack? = runCatching {
+        fun children(box: Box) = boxes(data, box.from, box.end)
+        val movie = boxes(data, 0, data.size).single { it.type == "moov" }
+        val id = children(movie).filter { it.type == "trak" }.mapNotNull { track ->
+            val fields = children(track)
+            val media = children(fields.single { it.type == "mdia" })
+            val handler = media.single { it.type == "hdlr" }
+            if (String(data, handler.from + 8, 4, Charsets.US_ASCII) != "vide") return@mapNotNull null
+            val header = fields.single { it.type == "tkhd" }
+            val version = uint(data, header.from, 1)
+            require(version in 0L..1L)
+            val at = header.from + if (version == 1L) 20 else 12
+            require(at + 4 <= header.end)
+            uint(data, at).also { require(it > 0) }
+        }.single()
+        val defaults = children(movie).singleOrNull { it.type == "mvex" }?.let(::children)
+            ?.singleOrNull { it.type == "trex" && it.from + 24 <= it.end && uint(data, it.from + 4) == id }
+        LiveVideoTrack(id, defaults?.let { uint(data, it.from + 20) })
+    }.getOrNull()
+
+    fun liveStartsAtSync(data: ByteArray, track: LiveVideoTrack): Boolean = runCatching {
+        fun children(box: Box) = boxes(data, box.from, box.end)
+        val movie = boxes(data, 0, data.size).first { it.type == "moof" }
+        val video = children(movie).filter { it.type == "traf" }.map(::children).single { fields ->
+            val header = fields.single { it.type == "tfhd" }
+            header.end - header.from >= 8 && uint(data, header.from + 4) == track.id
+        }
+        val header = video.single { it.type == "tfhd" }
+        val headerFlags = uint(data, header.from + 1, 3).toInt()
+        var defaults = track.defaultFlags
+        if (headerFlags and 0x20 != 0) {
+            var at = header.from + 8
+            if (headerFlags and 0x01 != 0) at += 8
+            for (flag in listOf(0x02, 0x08, 0x10)) if (headerFlags and flag != 0) at += 4
+            require(at + 4 <= header.end)
+            defaults = uint(data, at)
+        }
+        val run = video.first { it.type == "trun" && it.from + 8 <= it.end && uint(data, it.from + 4) > 0 }
+        val flags = uint(data, run.from + 1, 3).toInt()
+        var at = run.from + 8
+        if (flags and 0x01 != 0) at += 4
+        val first = if (flags and 0x04 != 0) {
+            require(flags and 0x400 == 0 && at + 4 <= run.end)
+            uint(data, at)
+        } else if (flags and 0x400 != 0) {
+            if (flags and 0x100 != 0) at += 4
+            if (flags and 0x200 != 0) at += 4
+            require(at + 4 <= run.end)
+            uint(data, at)
+        } else defaults
+        first != null && first and 0x01010000L == 0L && first and 0x02000000L != 0L
+    }.getOrDefault(false)
+
     /** A complete, single-packet PMT is enough to identify muxed TS. Split/malformed PSI
      * simply declines discovery; no elementary-stream payload is decoded here. */
     fun transportStream(d: ByteArray): Info? = runCatching {
@@ -70,7 +131,7 @@ internal object WebVideoContainer {
         null
     }.getOrNull()
 
-    private fun mp4(d: ByteArray): Info {
+    private fun mp4(d: ByteArray, allowAv1: Boolean = false): Info {
         val top = boxes(d, 0, d.size, true)
         require(top.none { it.type == "pssh" })
         val moov = top.single { it.type == "moov" }
@@ -126,6 +187,19 @@ internal object WebVideoContainer {
                         require(hevc.end - hevc.from >= 23 && uint(d, hevc.from + 1, 1) and 31 == 1L &&
                             uint(d, hevc.from + 17, 1) and 7 == 0L && uint(d, hevc.from + 18, 1) and 7 == 0L)
                         sample.type
+                    }
+                    "av01" -> {
+                        require(allowAv1)
+                        val av1 = config.single { it.type == "av1C" }
+                        require(av1.end - av1.from >= 4 && uint(d, av1.from, 1) == 0x81L)
+                        val profileLevel = uint(d, av1.from + 1, 1).toInt()
+                        val format = uint(d, av1.from + 2, 1).toInt()
+                        require(profileLevel ushr 5 == 0 && format and 0x3c == 0x0c)
+                        val tier = if (format and 0x80 == 0) 'M' else 'H'
+                        val depth = if (format and 0x40 == 0) 8 else 10
+                        val codec = "av01.0.%02d%c.%02d".format(java.util.Locale.ROOT, profileLevel and 31, tier, depth)
+                        require(WebVideoCapabilities.av1SdrProfile(codec) != null)
+                        codec
                     }
                     // Unverified profiles/bit depth must not bypass existing SDR selection.
                     else -> error("Unverified video profile")

@@ -53,8 +53,9 @@ internal class WebBrowserNetworkPolicy(saved: String, private val save: (String)
     /** Internal adapter policy is separate from the generic sniffing entry. */
     fun bilibiliEnabled(url: String): Boolean {
         val uri = runCatching { URI(url) }.getOrNull() ?: return false
-        if (uri.scheme != "https" || uri.host != "www.bilibili.com" || uri.port != -1 || uri.rawUserInfo != null ||
-            !Regex("/(?:video/(?:BV[A-Za-z0-9]+|av[0-9]+)|bangumi/play/(?:ep|ss)[1-9][0-9]{0,19})/?").matches(uri.path.orEmpty())) return false
+        if (WebBrowserBilibiliLive.room(url) == null && (uri.scheme != "https" || uri.host != "www.bilibili.com" ||
+            uri.port != -1 || uri.rawUserInfo != null ||
+            !Regex("/(?:video/(?:BV[A-Za-z0-9]+|av[0-9]+)|bangumi/play/(?:ep|ss)[1-9][0-9]{0,19})/?").matches(uri.path.orEmpty()))) return false
         val origin = origin(url) ?: return false
         return choices.optBoolean(key(origin), true)
     }

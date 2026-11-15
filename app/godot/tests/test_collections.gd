@@ -41,6 +41,8 @@ class MigrationViewer extends Node3D:
 	var whisper_memory := preload("res://scripts/file_whisper_memory.gd").new()
 	var narration := NarrationMemory.new()
 	var listening := ListeningMemory.new()
+	var subtitle_layout_memory := preload("res://scripts/file_subtitle_layout_memory.gd").new()
+	var grade_memory := preload("res://scripts/file_photo_grade_memory.gd").new()
 
 func _legacy_recent(uri: String) -> Dictionary:
 	return {"uri":uri,"title":"Older playback","kind":"video","persisted":false,"opened":1,"opened_at":100.0,"position_ms":1234,"duration_ms":60000}
@@ -71,7 +73,7 @@ func _check_history_independence(directory: String) -> void:
 	check(store.private_lookup(a, "recent").is_empty() and store.private_lookup(legacy_uri, "recent").is_empty() and store.contains(a), "Successful import removes legacy copies without removing favorites")
 	var main := preload("res://scripts/main.gd").new(); var viewer := MigrationViewer.new(); var photo := MigrationViewer.new()
 	viewer.recent_files = reloaded
-	for memory in [viewer.mode_memory, viewer.track_memory, viewer.subtitle_timing, viewer.whisper_memory, photo.mode_memory]: memory.directory = directory.path_join(str(memory.get_instance_id()))
+	for memory in [viewer.mode_memory, viewer.track_memory, viewer.subtitle_timing, viewer.subtitle_layout_memory, viewer.whisper_memory, photo.mode_memory, photo.grade_memory]: memory.directory = directory.path_join(str(memory.get_instance_id()))
 	viewer.mode_memory.entries[Memory.key_for(a)] = {"mode":{"geometry":0},"updated":1}
 	viewer.whisper_memory.entries[Memory.key_for(a)] = {"whisper":{"level":2},"updated":1}
 	main.video = viewer; main.photo = photo; main.favorites = store

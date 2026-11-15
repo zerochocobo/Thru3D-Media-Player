@@ -71,6 +71,9 @@ func _run() -> void:
 	check(not Sites.supports_beta_url("https://www.nicovideo.jp/watch/sm9") and not Sites.supports_beta_url("https://www.nicovideo.jp.evil.test/watch/sm9"), "Niconico does not show Beta solely because a URL matches its domain")
 	check(Sites.supports_beta(Sites.FEATURED[18]) and Sites.supports_native(Sites.FEATURED[18]), "Douyin uses the verified Beta badge and playback path")
 	check(Sites.supports_beta_url("https://www.douyin.com/") and not Sites.supports_beta_url("https://www.douyin.com.evil.test/"), "Douyin Beta presentation accepts only the trusted main host")
+	var room := "https://live.bilibili.com/1977215809?from=live"
+	check(Sites.supports_beta_url(room) and Sites.beta_replaces_legacy_url(room), "Public Bilibili live rooms show the current-video toolbar action")
+	check(not Sites.supports_beta_url("https://live.bilibili.com/") and not Sites.beta_replaces_legacy_url("https://live.bilibili.com/1977215809/extra") and not Sites.supports_beta_url("https://live.bilibili.com.evil.test/1977215809"), "Bilibili live toolbar presentation is limited to an official numeric room")
 	menu._activate(Home.SITE_BASE + 18)
 	check(menu.web_browser.opened and platform.browser.url == "https://www.douyin.com/", "Douyin card opens its website")
 	menu.web_browser.close(); menu.refresh()

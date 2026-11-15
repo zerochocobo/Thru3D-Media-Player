@@ -296,7 +296,13 @@ func _within_budget(limits: Dictionary, spawn: Variant) -> Dictionary:
 		triangles += count
 		batches += parts
 		entries.append({"renderer": renderer, "box": box, "triangles": count, "batches": parts})
-	var origin: Vector3 = (spawn as Transform3D).origin if spawn != null else total.get_center()
+	# Without a spawn point the viewer ends up among the detail, not in the middle of the bounds.
+	var origin := Vector3.ZERO
+	var mass := 0.0
+	for entry in entries:
+		origin += (entry.box as AABB).get_center() * maxf(float(entry.triangles), 1.0)
+		mass += maxf(float(entry.triangles), 1.0)
+	origin = (spawn as Transform3D).origin if spawn != null else origin / mass if mass > 0.0 else total.get_center()
 	for entry in entries:
 		var box: AABB = entry.box
 		entry.distance = origin.distance_to(origin.clamp(box.position, box.end))

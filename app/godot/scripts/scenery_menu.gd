@@ -6,6 +6,7 @@ const Fields := preload("res://scripts/choice_fields.gd")
 static var SELECTED: Color:
 	get: return UiTheme.color("selected")
 const TextInput := preload("res://scripts/system_text_input.gd")
+const SceneBudget := preload("res://scripts/scene_import/scene_import_budget.gd")
 const BUILTINS := [["cinema","Grand cinema"],["private_beach","Private beach"],["belfast","Belfast sunset"],["morning","Morning sky"],
 	["night","Milky Way panorama"],["dark","Dark background"],["passthrough","Passthrough"]]
 const PREVIEWS := ["cinema","private_beach","belfast","morning","night"]
@@ -33,6 +34,9 @@ const ISSUES := 10119
 ## What the add card offers once the viewer can add 3D scenes as well as panoramas.
 const ADD_IMAGE := 10120
 const ADD_SCENE := 10121
+## The two pages of the requirements card.
+const HELP_IMAGE := 10122
+const HELP_SCENE := 10123
 const ADDING_CARD := "adding"
 var _followed := ""
 var scene_import: Node
@@ -62,6 +66,7 @@ var _top := .71
 var _bottom := -.71
 var _notice := ""
 var _help_return := ""
+var _help_scene := true
 var _issue_index := 0
 ## Turning ring on the card that is loading; it animates between refreshes.
 var _spinner: Node3D
@@ -245,7 +250,7 @@ func _draw() -> void:
 	_spinner=null
 	var height:=1.42
 	if modal.is_empty() and view=="scene": height=_scene_height()
-	elif not modal.is_empty(): height=1.10 if modal=="requirements" else .82 if modal=="issues" else .76 if modal=="delete" else .58
+	elif not modal.is_empty(): height=1.02 if modal=="requirements" else .82 if modal=="issues" else .76 if modal=="delete" else .58
 	elif view in ["manage","review"]:
 		var count: int=library.reviews.size() if view=="review" else _custom_rows(true).size()
 		height=.46+clampi(ceili(count/3.0),1,2)*.30
@@ -261,7 +266,7 @@ func _draw() -> void:
 	var title:=I18n.t("Scene")
 	if modal=="delete": title=I18n.t("Remove")
 	elif modal=="rename": title=I18n.t("Rename")
-	elif modal=="requirements": title=I18n.t("Panorama requirements")
+	elif modal=="requirements": title=I18n.t("Format requirements")
 	elif modal=="issues": title=I18n.t("Images not added")
 	elif modal=="add": title=I18n.t("Add")
 	elif view=="manage": title=I18n.t("Manage my scenes")
@@ -308,7 +313,7 @@ func _draw_add() -> void:
 	var scenes:=_scene_state()
 	var offered:=is_instance_valid(scene_import)
 	for option in [[ADD_IMAGE,"panorama","Panorama image","JPG / PNG / WebP · 360° 2:1 · VR180 1:1",-.345,not _state.get("busy",false)],
-			[ADD_SCENE,"cube","3D scene","GLB · Unity scene bundle",.345,offered and not scenes.get("busy",false) and str(scenes.get("pending","")).is_empty()]]:
+			[ADD_SCENE,"cube","3D scene","GLB · FBX · Unity scene bundle",.345,offered and not scenes.get("busy",false) and str(scenes.get("pending","")).is_empty()]]:
 		_button(option[0],"",Vector2(option[4],_top-.30),Vector2(.65,.22),option[5])
 		var node: Node3D=_buttons.back().node
 		_icon(option[1],Vector3(0,.035,.007),.085,UiTheme.color("label") if option[5] else MUTED,node)
@@ -338,18 +343,34 @@ func _paragraph(text: String,point: Vector2,width: float = 1.30) -> Label3D:
 	return label
 
 func _draw_requirements() -> void:
+	# One page per kind of thing that can be added; the scene page only where scenes can be.
+	var scenes:=is_instance_valid(scene_import)
+	var scene:=scenes and _help_scene
+	if scenes:
+		_button(HELP_IMAGE,I18n.t("Panorama image"),Vector2(.085,_top-.10),Vector2(.33,.065),true,"",not scene)
+		_button(HELP_SCENE,I18n.t("3D scene"),Vector2(.41,_top-.10),Vector2(.30,.065),true,"",scene)
+	var limits: Dictionary=SceneBudget.limits(str(_scene_state().get("tier",SceneBudget.LOW)))
 	var rows: Array=[
+		["3D model",".glb · .fbx"],
+		["Unity scene bundle",".unity3d · .assetbundle · .bundle · .ab · .vrcw · .omission"],
+		["Limits","≤%d MB · "%(int(limits.file_bytes)/1048576)+I18n.t("≤%s triangles")%I18n.t("%d0K")%(int(limits.triangles)/10000)],
+		["Textures",I18n.t("Embedded in the file")],
+		["Lights and animation",I18n.t("Not used")]] if scene else [
 		["File format","JPG / JPEG · PNG · WebP"],
 		["Per-eye projection","360° · 2:1   /   VR180 · 1:1"],
-		["Resolution limit","≤8192 px per side · ≤33.5 MP"],
-		["File size","≤256 MiB per image"]]
+		["Resolution limit",I18n.t("≤8192 px per side · ≤33.5 MP")],
+		["File size",I18n.t("≤256 MiB per image")],
+		["Example","4096 × 2048 · 8192 × 4096"]]
 	for i in rows.size():
-		var y:=_top-.27-i*.115
-		_left(I18n.t(rows[i][0]),Vector2(LEFT,y),TEXT_BODY,.30,MUTED)
-		_left(I18n.t(rows[i][1]),Vector2(-.28,y),TEXT_BODY,.95)
-	_left(I18n.t("360° examples: 4096 × 2048 / 8192 × 4096"),Vector2(LEFT,_top-.74),TEXT_BODY,1.30)
-	_paragraph(I18n.t("Use equirectangular panoramas; stretching an ordinary image does not make it a panorama."),Vector2(LEFT,_top-.82))
-	_paragraph(I18n.t("From image viewing: select 360° or VR180, then set the background in image settings."),Vector2(LEFT,_top-.90))
+		var y:=_top-.27-i*.105
+		_left(I18n.t(rows[i][0]),Vector2(LEFT,y),TEXT_BODY,.34,MUTED)
+		_left(rows[i][1],Vector2(-.28,y),TEXT_BODY,.95)
+	# What makes such a file, for someone who has never made one.
+	if scene:
+		_left(I18n.t("Exported from Blender, Maya, 3ds Max…"),Vector2(.14,_top-.27),TEXT_AUX,.53,MUTED)
+		_left(I18n.t("Far objects are left out beyond that"),Vector2(.14,_top-.27-2*.105),TEXT_AUX,.53,MUTED)
+	_rule(_top-.27-rows.size()*.105+.03)
+	_left(I18n.t("New to modelling? Let an AI drive Blender for you, then export .glb." if scene else "Stretching an ordinary image does not make it a panorama."),Vector2(LEFT,_top-.27-rows.size()*.105-.035),TEXT_AUX,1.30,MUTED)
 	_button(BACK,I18n.t("Got it"),Vector2(.47,_bottom+.09),Vector2(.40,.075))
 
 func _draw_import_failure() -> void:
@@ -363,7 +384,7 @@ func _draw_import_failure() -> void:
 		_glyph(NEXT,"next",Vector2(.12,_bottom+.23),.06,_issue_index<errors.size()-1)
 		_label("%d / %d"%[_issue_index+1,errors.size()],Vector3(0,_bottom+.23,.009),TEXT_AUX)
 	_button(BACK,I18n.t("Back"),Vector2(-.48,_bottom+.10),Vector2(.34,.075))
-	_button(HELP,I18n.t("Panorama requirements"),Vector2(-.07,_bottom+.10),Vector2(.40,.075))
+	_button(HELP,I18n.t("Format requirements"),Vector2(-.07,_bottom+.10),Vector2(.40,.075))
 	_button(ADD,I18n.t("Choose images"),Vector2(.43,_bottom+.10),Vector2(.48,.075))
 
 func _draw_cards() -> void:
@@ -378,7 +399,7 @@ func _draw_cards() -> void:
 		var custom_y:=_section(custom_rule,I18n.t("My scenes") + " · %d" % rows.size())
 		var label_y:=custom_rule-SCENE_RULE.y
 		_button(MANAGE,I18n.t("Manage"),Vector2(.52,label_y),Vector2(.30,.065))
-		_glyph(HELP,"info",Vector2(.29,label_y),.055,true,I18n.t("Panorama requirements"))
+		_glyph(HELP,"info",Vector2(.29,label_y),.055,true,I18n.t("Format requirements"))
 		var footer_rule:=_below(custom_y,1)
 		_rule(footer_rule)
 		var footer_y:=footer_rule-SCENE_FOOTER.x
@@ -411,7 +432,7 @@ func _draw_cards() -> void:
 		var pages:=maxi(1,ceili(_cards.size()/6.0)); page=clampi(page,0,pages-1)
 		if view=="review":
 			_left(I18n.t("Are these panorama images?"),Vector2(LEFT,_top-.23),TEXT_BODY,1.15,MUTED)
-			_glyph(HELP,"info",Vector2(.64,_top-.23),.055,true,I18n.t("Panorama requirements"))
+			_glyph(HELP,"info",Vector2(.64,_top-.23),.055,true,I18n.t("Format requirements"))
 			_button(APPROVE,I18n.t("Confirm adding (%d)")%selected.size(),Vector2(.43,_bottom+.12),Vector2(.47,.07),not selected.is_empty(),"",true)
 			_button(SKIP,I18n.t("Skip selected"),Vector2(-.05,_bottom+.12),Vector2(.42,.07),not selected.is_empty())
 		else:
@@ -420,7 +441,7 @@ func _draw_cards() -> void:
 				_left(I18n.t("%d scenes")%_cards.size(),Vector2(LEFT,_top-.23),TEXT_AUX,.45,MUTED)
 				_button(ADD,I18n.t("Add"),Vector2(.13,_top-.23),Vector2(.32,.065),not _state.get("busy",false))
 				_tips[ADD]=I18n.t("Panorama image")+" · "+I18n.t("3D scene")
-				_glyph(HELP,"info",Vector2(-.16,_top-.23),.055,true,I18n.t("Panorama requirements"))
+				_glyph(HELP,"info",Vector2(-.16,_top-.23),.055,true,I18n.t("Format requirements"))
 			else: _button(SELECT_ALL,I18n.t("Select all"),Vector2(.13,_top-.23),Vector2(.32,.065))
 		if view!="review": _button(BULK,I18n.t("Done" if bulk else "Select multiple"),Vector2(.51,_top-.23),Vector2(.32,.065),not _state.get("busy",false))
 		if bulk and view!="review": _danger(REMOVE,I18n.t("Remove selected"),Vector2(.47,_bottom+.12),Vector2(.40,.07),not selected.is_empty() and not _state.get("busy",false))
@@ -640,7 +661,11 @@ func _activate(target: int) -> void:
 	if target==ADD_SCENE and not is_instance_valid(scene_import): return
 	if target in [ADD_IMAGE,ADD_SCENE]:
 		modal=""; command.emit("add" if target==ADD_IMAGE else "scene_add",null); refresh(); return
-	if target==HELP: _help_return=modal; modal="requirements"; refresh(); return
+	if target==HELP:
+		# Opens on 3D scenes, except from where a panorama is being confirmed or was turned down.
+		_help_scene=modal!="issues" and view not in ["review","import_error"]
+		_help_return=modal; modal="requirements"; refresh(); return
+	if target in [HELP_IMAGE,HELP_SCENE]: _help_scene=target==HELP_SCENE; refresh(); return
 	if target==ISSUES: modal="issues"; _issue_index=0; refresh(); return
 	if target in [NEXT,PREVIOUS]:
 		if modal=="issues" or view=="import_error": _issue_index+=1 if target==NEXT else -1

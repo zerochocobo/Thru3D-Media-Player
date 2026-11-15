@@ -5,6 +5,7 @@
   const frames = new Map(), pending = new Map();
   const TTL = 1800000, MAX = 24, REQUESTS = 256;
   const filter = { urls: ["http://*/*", "https://*/*"] };
+  const liveBodies = new Map();
   const key = d => `${d.tabId}:${d.frameId}`;
   const oldest = state => ((state.ted||state.redbull||state.streamable||state.archive||state.odysee||state.dailymotionBodies) && [...state.items].find(([,r])=>r.kind==='segment')?.[0]) || state.items.keys().next().value;
   const url = (value, page = false) => {
@@ -70,6 +71,7 @@
         s.tab.id < 0 || !Number.isInteger(s.frameId) || !url(s.url, true)) return;
     const id = `${s.tab.id}:${s.frameId}`;
     const state = { key:id, port, page: s.url, parentPage:s.tab.url, documentPage: s.url, document: s.documentId, enabled: false, bilibili: false,
+      biliLiveRoom: s.frameId === 0 && typeof Thru3DBilibili !== 'undefined' ? Thru3DBilibili.liveRoom(s.url) : null,
       douyin: typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.documentPage(s.url),
       weibo: typeof Thru3DWeibo !== 'undefined' && Thru3DWeibo.documentPage(s.url),
       tencent: typeof Thru3DTencent !== 'undefined' && !!Thru3DTencent.page(s.url),
@@ -104,6 +106,7 @@
       if (frames.get(id) !== state || message?.type !== "context" || !url(message.page, true) ||
           new URL(message.page).origin !== new URL(s.url).origin) return;
       const bili = message.bilibili === true && typeof Thru3DBilibili !== 'undefined' && !!Thru3DBilibili.page(message.page);
+      const liveRoom = s.frameId === 0 && typeof Thru3DBilibili !== 'undefined' ? Thru3DBilibili.liveRoom(message.page) : null;
       const douyin = message.douyin === true && typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.documentPage(message.page);
       const weibo = message.weibo === true && typeof Thru3DWeibo !== 'undefined' && Thru3DWeibo.documentPage(message.page);
       const tencent = message.tencent === true && typeof Thru3DTencent !== 'undefined' && !!Thru3DTencent.page(message.page);
@@ -156,7 +159,9 @@
         if (!sameNiconico) niconicoResponses?.cancel(state);
         if (!sameTwitch) twitchResponses?.cancel(state,twitchDocument);
         if (!sameNaver) naverResponses?.cancel(state);
-        if (!sameBili && !sameDouyin && !sameTencent && !sameMango && !sameYouku && !sameIqiyi && !sameNiconico && !sameTwitch && !sameTikTok && !sameInstagram && !sameTed && !sameRedBull && !sameNaver && !sameReddit && !sameStreamable && !sameArchive && !sameOdysee && !sameDailymotion) state.items.clear();
+        const sameLiveRoom = liveRoom && liveRoom === state.biliLiveRoom && message.page === state.page;
+        if (!sameLiveRoom && !sameBili && !sameDouyin && !sameTencent && !sameMango && !sameYouku && !sameIqiyi && !sameNiconico && !sameTwitch && !sameTikTok && !sameInstagram && !sameTed && !sameRedBull && !sameNaver && !sameReddit && !sameStreamable && !sameArchive && !sameOdysee && !sameDailymotion) state.items.clear();
+        state.biliLiveRoom = liveRoom;
         state.bilibili = bili;
         state.douyin = douyin;
         state.weibo = weibo;
@@ -166,7 +171,7 @@
         if(message.page!==state.page||message.enabled!==true&&message.dailymotion!==true)dailymotionResponses?.cancel(state);
         state.page = message.page; state.enabled = message.enabled === true;state.dailymotion=dailymotion;
         if(sameNiconico)niconicoResponses?.observeMedia(state);
-        if (!sameBili && !sameDouyin && !sameTencent && !sameMango && !sameYouku && !sameIqiyi && !sameNiconico && !sameTwitch && !sameTikTok && !sameInstagram && !sameTed && !sameRedBull && !sameNaver && !sameReddit && !sameStreamable && !sameArchive && !sameOdysee && !sameDailymotion) for (const [request, value] of pending) if (value.state === state) pending.delete(request);
+        if (!sameLiveRoom && !sameBili && !sameDouyin && !sameTencent && !sameMango && !sameYouku && !sameIqiyi && !sameNiconico && !sameTwitch && !sameTikTok && !sameInstagram && !sameTed && !sameRedBull && !sameNaver && !sameReddit && !sameStreamable && !sameArchive && !sameOdysee && !sameDailymotion) for (const [request, value] of pending) if (value.state === state) pending.delete(request);
         publish(state);
       }
       if(state.niconico)niconicoResponses?.observeRendered(state,message.niconico_rendered);
@@ -188,6 +193,12 @@
   });
   const stateFor = d => {
     const state = frames.get(key(d));
+    if (state?.biliLiveRoom) {
+      // A room only observes playlist requests from its own top-level document.
+      return d.frameId === 0 && Thru3DBilibili.livePlaylist(d.url, true) &&
+        d.documentUrl?.split('#')[0] === state.page.split('#')[0] &&
+        (!state.document || !d.documentId || d.documentId === state.document) ? state : null;
+    }
     const sameBili = state?.bilibili && typeof Thru3DBilibili !== 'undefined' &&
       Thru3DBilibili.sameDocumentPage(d.documentUrl, state.page) &&
       (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
@@ -293,6 +304,43 @@
       state.port.disconnect(); frames.delete(id);
     }
   }, filter);
+  browser.webRequest.onBeforeRequest.addListener(d => {
+    const state = stateFor(d);
+    if (!state?.biliLiveRoom || d.method !== 'GET' || d.type !== 'xmlhttprequest' ||
+        liveBodies.size >= 32 || typeof browser.webRequest.filterResponseData !== 'function') return;
+    let stream;
+    try { stream = browser.webRequest.filterResponseData(d.requestId); } catch (_) { return; }
+    const capture = {state, page:state.page, bytes:[], size:0, request:null};
+    liveBodies.set(d.requestId, capture);
+    function finish() {
+      if (liveBodies.get(d.requestId) === capture) liveBodies.delete(d.requestId);
+      clearTimeout(capture.timer);
+    }
+    capture.timer = setTimeout(() => { finish(); try { stream.disconnect(); } catch (_) {} }, 5000);
+    stream.ondata = event => {
+      const withinBudget = (capture.size += event.data.byteLength) <= 65536;
+      if (withinBudget) capture.bytes.push(new Uint8Array(event.data).slice());
+      try { stream.write(event.data); } catch (_) { finish(); return; }
+      if (!withinBudget) { finish(); try { stream.disconnect(); } catch (_) {} }
+    };
+    stream.onerror = finish;
+    stream.onstop = () => {
+      finish();
+      try { stream.close(); } catch (_) { return; }
+      if (!capture.request || stateFor(d) !== state || state.page !== capture.page || capture.size > 65536) return;
+      try {
+        const bytes = new Uint8Array(capture.size); let offset = 0;
+        for (const part of capture.bytes) { bytes.set(part, offset); offset += part.length; }
+        const shape = Thru3DBilibili.livePlaylistBody(d.url, new TextDecoder('utf-8', {fatal:true}).decode(bytes));
+        const existing = state.items.get(d.url);
+        if (!shape || existing && existing.at > capture.request.at) return;
+        state.items.delete(d.url);
+        state.items.set(d.url, {...capture.request, kind:'hls', live_child:shape.child || '', live_leaf:shape.leaf === true});
+        while (state.items.size > MAX) state.items.delete(oldest(state));
+        publish(state);
+      } catch (_) {}
+    };
+  }, {urls:["https://*.bilivideo.com/*.m3u8*", "https://*.bilivideo.cn/*.m3u8*", "https://*.smtcdns.net/*.m3u8*"], types:["xmlhttprequest"]}, ["blocking"]);
   browser.webRequest.onSendHeaders.addListener(d => {
     d=transportRequest(d);
     const state = stateFor(d);
@@ -325,6 +373,16 @@
     const mime = header(d.responseHeaders, "content-type").split(";")[0].trim().toLowerCase();
     const type = kind(u, mime, d, state.bilibili) || (state.niconico&&niconicoResponses?.resource(state,d.url)?"segment":"") ||
       (dailymotionResponses?.resource(state,d.url)?"hls":"");
+    if (state.biliLiveRoom) {
+      const body = liveBodies.get(d.requestId);
+      if (request?.state !== state || !request.sent || request.url !== d.url || !Object.keys(request.headers).length) return;
+      if (body?.state === state) {
+        if (d.statusCode === 200) body.request = {url:d.url, original_url:request.original,
+          mime, headers:request.headers, at:Date.now(), cookies:[]};
+        return;
+      }
+      if (type !== 'hls') return;
+    }
     if (!type || type === "segment" && !(state.tencent || state.iqiyi || state.niconico || state.ted || state.redbull || state.naver || state.reddit || state.streamable || state.archive || state.odysee || state.dailymotion)) return;
     if(state.niconico&&type!=="hls"&&!niconicoResponses?.resource(state,d.url))return;
     // Bilibili's paused cover can load a cached alternate audio URL without any
@@ -336,7 +394,7 @@
     const safe = request?.state === state && request.url === d.url ? request.headers : {};
     // Plex Web sends its token in a request header. With generic capture disabled,
     // retain only a successful, authenticated library request from this exact frame.
-    if (!(state.enabled || state.bilibili || state.douyin || state.weibo || state.tencent || state.mango || state.youku || state.iqiyi || state.niconico || state.twitch || state.tiktok || state.instagram || state.ted || state.redbull || state.naver || state.reddit || state.streamable || state.archive || state.odysee || state.dailymotion) &&
+    if (!(state.biliLiveRoom || state.enabled || state.bilibili || state.douyin || state.weibo || state.tencent || state.mango || state.youku || state.iqiyi || state.niconico || state.twitch || state.tiktok || state.instagram || state.ted || state.redbull || state.naver || state.reddit || state.streamable || state.archive || state.odysee || state.dailymotion) &&
         !(typeof Thru3DPlex !== 'undefined' && Thru3DPlex.source(d.url, state.page, safe))) return;
     const c = { url: d.url, kind: type, mime, headers: safe, at: Date.now(), cookies: [],
       original_url: request?.state === state ? request.original : d.url,
@@ -375,7 +433,8 @@
       state.items.delete(oldest(state));
     // Range traffic often repeats several times a second. Report changed credentials/resources,
     // not every segment; a periodic refresh still keeps a long-playing resource eligible.
-    if (!previous || c.at - previous.reported > 30000 || c.original_url !== previous.original_url || JSON.stringify(safe) !== JSON.stringify(previous.headers)) {
+    if (!previous || c.at - previous.reported > (state.biliLiveRoom ? 1000 : 30000) ||
+        c.original_url !== previous.original_url || JSON.stringify(safe) !== JSON.stringify(previous.headers)) {
       c.reported = c.at;
       if (!state.timer) state.timer = setTimeout(() => { state.timer = null; publish(state); }, 100);
     } else c.reported = previous.reported;

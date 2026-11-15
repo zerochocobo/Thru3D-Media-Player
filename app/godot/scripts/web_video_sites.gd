@@ -44,20 +44,21 @@ const BETA_ICON := "play" # Same triangle as the page's Play Beta action.
 # Only Chinese sites retain a URL-only presentation fallback. Foreign Beta
 # experiments remain inside the webpage instead of advertising an entire domain.
 static var _beta_site := RegEx.create_from_string("(?i)^https://(?:(?:www\\.)?bilibili\\.com|(?:www\\.)?weibo\\.com|v\\.qq\\.com|(?:www\\.|w\\.)?mgtv\\.com|(?:www\\.|v\\.)?youku\\.com|www\\.iqiyi\\.com|www\\.douyin\\.com)(?::443)?(?:[/?#]|$)")
+static var _bilibili_live_room := RegEx.create_from_string("^https://live\\.bilibili\\.com(?::443)?/[1-9][0-9]{0,19}/?(?:[?#]|$)")
 
 static func supports_beta(site: Dictionary) -> bool:
 	return str(site.get("name", "")) in BETA_PLAYBACK
 
 ## Presentation only: the native current-video checks still decide whether Beta is enabled.
 static func supports_beta_url(url: String) -> bool:
-	return _beta_site.search(url) != null
+	return _beta_site.search(url) != null or _bilibili_live_room.search(url) != null
 
 # Only these Chinese sites replace the legacy action. Adding a foreign Beta
 # adapter must leave its existing manual player action available.
 static var _beta_replaces_legacy := RegEx.create_from_string("(?i)^https://(?:(?:www\\.)?bilibili\\.com|(?:www\\.)?weibo\\.com|v\\.qq\\.com|(?:www\\.|w\\.)?mgtv\\.com|(?:www\\.|v\\.)?youku\\.com|www\\.iqiyi\\.com|www\\.douyin\\.com)(?::443)?(?:[/?#]|$)")
 
 static func beta_replaces_legacy_url(url: String) -> bool:
-	return _beta_replaces_legacy.search(url) != null
+	return _beta_replaces_legacy.search(url) != null or _bilibili_live_room.search(url) != null
 
 static func supports_native(site: Dictionary) -> bool:
 	return str(site.get("name", "")) in NATIVE_PLAYBACK

@@ -36,6 +36,11 @@ internal interface StreamSource : Closeable {
 /** Optional capability: ordinary video, ISO and subtitle readers keep their existing ABI. */
 internal interface BoundedStreamReader : StreamSource.Reader { fun setRangeEnd(endInclusive: Long) }
 
+/** A changing playlist supplies one immutable, request-scoped view for HTTP Range and body. */
+internal interface StreamSnapshotSource : StreamSource {
+    fun snapshot(): StreamSource
+}
+
 /** Loopback-only HTTP/1.1 server that lets MPV/FFmpeg read network files with seeks
  * (Range requests). Paths are unguessable tokens; nothing listens beyond 127.0.0.1. */
 internal class LocalStreamServer : Closeable {
@@ -207,7 +212,9 @@ internal class LocalStreamServer : Closeable {
             val output = client.getOutputStream()
             if (parts.size < 3 || parts[0] !in setOf("GET", "HEAD")) return respond(output, 405, "Method Not Allowed")
             val token = parts[1].trimStart('/').substringBefore('/')
-            val source = sources[token] ?: return respond(output, 404, "Not Found")
+            val registered = sources[token] ?: return respond(output, 404, "Not Found")
+            val source = try { (registered as? StreamSnapshotSource)?.snapshot() ?: registered }
+                catch (_: Exception) { return respond(output, 502, "Bad Gateway") }
             val meter = meters[token]
             val range = parseRange(headers["range"], source.size) ?: return respond(output, 416, "Range Not Satisfiable",
                 "Content-Range: bytes */${source.size}\r\n")

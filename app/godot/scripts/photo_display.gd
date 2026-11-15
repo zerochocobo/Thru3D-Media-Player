@@ -160,6 +160,10 @@ var _inspect_line: MeshInstance3D
 var _inspect_dot: MeshInstance3D
 var _inspect_pointer_material: StandardMaterial3D
 var mode_memory := ModeMemory.new("user://photo_settings")
+const ColorGrade := preload("res://scripts/color_grade.gd")
+## The shown image's own grade: shader, magnifier, spatial scene and panorama tiles; the layer reads it as a linear scale/bias.
+var color_grade := ColorGrade.new()
+var grade_memory := preload("res://scripts/file_photo_grade_memory.gd").new("user://photo_settings")
 var panorama_tiles := preload("res://scripts/panorama_tiles.gd").new()
 
 const DEFAULT_CURVE := 25.4
@@ -272,6 +276,9 @@ func set_screen_scale(value: float) -> void:
 
 func _screen_dimensions(aspect: float) -> Vector2:
 	if slideshow.locked(): return slideshow.frame_size
+	return natural_screen_size(aspect)
+
+func natural_screen_size(aspect: float) -> Vector2:
 	var width := minf(IMMERSIVE_SIZE.x, IMMERSIVE_SIZE.y * aspect)
 	return Vector2(width, width / aspect)
 
@@ -355,6 +362,7 @@ func _ready() -> void:
 	_placeholder.visible = false
 	add_child(_placeholder)
 	mode_memory.load_saved()
+	grade_memory.load_saved()
 	_detail = MeshInstance3D.new()
 	var quad := QuadMesh.new()
 	quad.size = Vector2(0.8, 0.5)
@@ -668,10 +676,8 @@ func _refresh_rotated_depth() -> void:
 
 func select_image(target: int, direction: int = 0) -> bool:
 	if target < 0 or target >= queue.size(): return false
-	if autoplay.advancing:
-		if not slideshow.begin(autoplay.effect): slideshow.clear(true)
-	else:
-		slideshow.clear(true)
+	# Manual switches use the chosen transition too; while autoplay runs they keep its window.
+	if not slideshow.begin(autoplay.effect, not autoplay.enabled): slideshow.clear(true)
 	if spatial_requested: set_spatial(false, true)
 	if portrait_requested and target == index: return false
 	if auto_portrait:
@@ -1179,8 +1185,8 @@ func _process(delta: float) -> void:
 		_transition_time += delta
 		_update_transition()
 	slideshow.tick(delta)
-	# Stopping autoplay returns the window to the picture's own size and rotation.
-	if slideshow.locked() and not autoplay.enabled and not slideshow.busy(): slideshow.clear(true)
+	# A finished manual switch, or stopping autoplay, returns the window to the picture's own size and rotation.
+	if slideshow.locked() and (slideshow.manual or not autoplay.enabled) and not slideshow.busy(): slideshow.clear(true)
 	if _reveal_seconds > 0:
 		_reveal_seconds = maxf(0, _reveal_seconds - delta)
 		var progress := 1.0 - _reveal_seconds / REVEAL_SECONDS
@@ -1649,6 +1655,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	pending_index = -1
 	local_uri = str(queue[index].uri)
 	display_name = str(queue[index].get("title", local_uri.get_file()))
+	restore_color_grade()
 	_metadata = result.info
 	animation.activate()
 	panorama_tiles.configure(_metadata,platform)
@@ -2531,7 +2538,38 @@ func snapshot() -> Dictionary:
 		"spatial_metadata": spatial_metadata(), "spatial_fov_available": spatial_fov_scale() > 0.0,
 		"stereo_strategy":_display_depth_data.get("strategy", "inverse_shader"), "stereo_ready":_stereo_texture != null,
 		"render_strength":_display_depth_data.get("strength", depth_strength),
-		"source_size": "%d × %d" % [int(shown_size.x), int(shown_size.y)], "error": error, "screen_curve": screen_curve}
+		"source_size": "%d × %d" % [int(shown_size.x), int(shown_size.y)], "error": error, "screen_curve": screen_curve,
+		"color_grade": color_grade.snapshot(), "grade_values": color_grade.values(), "grade_on_layer": video_layer != null and video_layer.color_scale_bias,
+		"layer_available": _layer_possible(geometry)}
+
+## The image's saved grade, or Original for one never graded.
+func restore_color_grade() -> void:
+	color_grade.restore(grade_memory.lookup(local_uri) if not local_uri.is_empty() else {})
+	_apply_color_grade()
+
+func _apply_color_grade() -> void:
+	for target in [material, _detail_material]: color_grade.apply(target)
+	if is_instance_valid(_spatial):
+		for surface in _spatial.surfaces: color_grade.apply(surface.material_override)
+	panorama_tiles.apply_color_grade(color_grade)
+
+## grade_preset / grade_reset / grade_reset_page or one grade value; saved by save_color_grade().
+func adjust_color_grade(key: String, value: Variant) -> bool:
+	if _texture == null or local_uri.is_empty(): return false
+	match key:
+		"grade_preset": color_grade.select(str(value))
+		"grade_reset": color_grade.reset_custom()
+		"grade_reset_page": if not color_grade.reset_page(int(value)): return false
+		_:
+			if not ColorGrade.DEFAULTS.has(key) or typeof(value) not in [TYPE_INT, TYPE_FLOAT] or not is_finite(float(value)): return false
+			color_grade.adjust(key, value)
+	_apply_color_grade()
+	changed.emit()
+	return true
+
+func save_color_grade() -> void:
+	if local_uri.is_empty() or not grade_memory.remember(local_uri, color_grade.snapshot()): return
+	grade_memory.save()
 
 func can_background() -> bool:
 	return background_issue().is_empty()
@@ -2632,6 +2670,7 @@ func _start_spatial(data: Dictionary) -> void:
 
 func _spatial_completed() -> void:
 	if not spatial_requested: return
+	_apply_color_grade()
 	if not _spatial.error.is_empty():
 		var failure: String=_spatial.error
 		set_spatial(false, true); spatial_error=failure
@@ -2689,6 +2728,7 @@ func release_storage(volume: Dictionary) -> bool:
 func _select_gallery_item(target: int) -> void:
 	index = target; pending_index = -1; error = ""
 	local_uri = str(queue[target].uri); display_name = str(queue[target].get("title", local_uri.get_file()))
+	restore_color_grade()
 	_metadata = queue[target].get("photo_info", gallery.previews.metadata(local_uri)).duplicate()
 	var mode := _resolved_mode(target, _metadata)
 	geometry = int(mode.geometry); stereo_sbs = bool(mode.stereo_sbs)
@@ -2779,6 +2819,7 @@ func close_image(notify: bool = true, next_online_uri: String = "") -> void:
 	gallery.clear()
 	if Methods.supports(platform, "panorama_original_view"): platform.panorama_original_view(next_online_uri)
 	local_uri = ""; display_name = ""; error = ""; index = -1; pending_index = -1
+	restore_color_grade()
 	if restore_archive_layout:
 		queue.clear()
 		gallery.set_mode(_archive_previous_layout, "close_container")
@@ -2949,7 +2990,7 @@ func _layer_eligible(preparing: bool = false) -> bool:
 		and not _rotation_preview and not (geometry == 0 and screen_curve > 0.0 and absf(sin(_curve_rotation())) > 0.00001) \
 		and not gallery.overview() and ((_presentation_pending and preparing and _presentation_effects_ready()) or \
 		(not _presentation_pending and not _transition_active and _reveal_seconds == 0 and not placeholder_visible())) \
-		and _layer_possible(geometry)
+		and _layer_possible(geometry) and video_layer.grades(color_grade)
 
 ## A spatial photo's disparity as the layer's per-eye UV shift: the photo shader's own shift of each
 ## source eye, in the video's alignment convention (the left eye moves by -offset / 2).

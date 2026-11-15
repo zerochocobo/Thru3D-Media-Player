@@ -10,9 +10,10 @@ internal object WebBrowserMediaPolicy {
         candidates.singleOrNull { selection.isNotEmpty() && selection.length <= 512 &&
             it.optString("capture_identity") == selection && !it.optBoolean("protected") &&
             (WebBrowserDirectFile.resource(it) != null || it.optBoolean("weibo_enabled") && it.optBoolean("weibo_ready") && WebBrowserWeibo.metadata(it, it.optString("frame")) != null ||
-                it.optBoolean("bilibili_enabled") && it.optBoolean("bilibili_ready") && it.optJSONObject("bilibili")?.let { data ->
+                it.optBoolean("bilibili_enabled") && it.optBoolean("bilibili_ready") && (it.optJSONObject("bilibili")?.let { data ->
                     data.optString("page") == it.optString("frame") && Regex("[1-9][0-9]{0,19}").matches(data.optString("cid"))
-                } == true || it.optBoolean("tencent_enabled") && it.optBoolean("tencent_ready") && WebBrowserTencent.metadata(it,it.optString("frame")) != null ||
+                } == true || WebBrowserBilibiliLive.metadata(it, it.optString("frame")) != null) ||
+                it.optBoolean("tencent_enabled") && it.optBoolean("tencent_ready") && WebBrowserTencent.metadata(it,it.optString("frame")) != null ||
                 it.optBoolean("mango_enabled") && it.optBoolean("mango_ready") && WebBrowserMango.metadata(it,it.optString("frame")) != null ||
                 it.optBoolean("niconico_enabled") && it.optBoolean("niconico_ready") && WebBrowserNiconico.metadata(it,it.optString("frame")) != null ||
                 it.optBoolean("twitch_enabled") && it.optBoolean("twitch_ready") && WebBrowserTwitch.metadata(it,it.optString("frame")) != null ||

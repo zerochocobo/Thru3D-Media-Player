@@ -21,3 +21,7 @@ Distributed builds include beach cinema, loungers/free movement, sun/moon and da
 My scenes lists panoramas and compatible imported GLB and Unity scene bundles in Debug and Release. Supported scenes can be explored with free movement and flying. The importer budgets geometry and textures, can compress eligible textures to ETC2 and can use the playing screen as a light source. Supply scene bundles and scenery assets separately.
 
 从 0.17.9 起，Debug 与 Release 均可在「我的场景」管理全景、导入兼容的 GLB 或 Unity 场景包，并在支持的 3D 场景中移动和飞行。场景包和场景资源需另行准备。
+
+## Additional scene formats in 0.17.11
+
+Experimental scene import accepts supported FBX files with embedded textures and compatible Unity .ab bundles. The scene picker remembers its last directory. Scenes without a spawn marker can use the widest qualifying floor for the initial position.

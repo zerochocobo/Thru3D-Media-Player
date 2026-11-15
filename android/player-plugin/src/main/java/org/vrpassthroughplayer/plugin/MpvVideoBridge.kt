@@ -2001,6 +2001,12 @@ internal class MpvVideoBridge(
         if (!active(session) || !session.host.layer) return 0
         return LayerThumbnail.request(session.host.layerSurface, width, height, rotation, crop, outWidth, outHeight)
     }
+    /** Automatic stereo focus of a layer session (see StereoFocusProbe); false when nothing was started. */
+    fun requestStereoFocus(id: Int, width: Int, height: Int, params: FloatArray): Boolean {
+        val session = sessions[id] ?: return false
+        if (!active(session) || !session.host.layer) return false
+        return runCatching { StereoFocusProbe.request(session.host.layerSurface, width, height, params) }.getOrDefault(false)
+    }
     fun requestLayerSnapshot(id: Int, outWidth: Int, outHeight: Int): Int {
         val session = sessions[id] ?: return 0
         if (!active(session) || !session.host.layer) return 0

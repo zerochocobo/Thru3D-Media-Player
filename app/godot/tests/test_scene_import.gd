@@ -73,6 +73,13 @@ func _fixture(path: String, markers: bool, texture_size: int = 2048) -> void:
 		"Fixture %s exports" % path.get_file())
 	scene.free()
 
+func _export(scene: Node3D, path: String) -> void:
+	for node in scene.get_children(): node.owner = scene
+	var document := GLTFDocument.new()
+	var state := GLTFState.new()
+	_check(document.append_from_scene(scene, state) == OK and document.write_to_filesystem(state, path) == OK, "Fixture %s exports" % path.get_file())
+	scene.free()
+
 func _bytes(path: String, bytes: PackedByteArray) -> void:
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	file.store_buffer(bytes)
@@ -139,9 +146,45 @@ func _run() -> void:
 	_check(open.has("root") and open.info.layout.source == "fallback", "Unmarked scene falls back to geometry")
 	if open.has("root"):
 		var spawn: Transform3D = open.info.layout.spawn
-		_check(absf(spawn.origin.y) < 0.01 and absf(spawn.origin.z + 20.0) < 1.0, "Fallback stands on the floor, not on the plinth (y %.3f)" % spawn.origin.y)
+		_check(absf(spawn.origin.y) < 0.01 and absf(spawn.origin.x) < 15.0 and spawn.origin.z > -50.0 and spawn.origin.z < 10.0, "Fallback stands on the floor, not on the plinth or a tower (%s)" % spawn.origin)
+		_check(absf(spawn.origin.x - 8.0) > 1.2 or absf(fposmod(spawn.origin.z + 5.0 + 4.0, 8.0) - 4.0) > 1.2, "Fallback starts beside the towers, not inside one")
 		_check(open.info.layout.has("screen") and open.info.layout.screen_width >= 4.0, "Fallback proposes a screen position")
 		open.root.free()
+
+	# A room off to one side of a sky dome, with one stray object far away: the bounds say nothing
+	# about where the place is.
+	var room := Node3D.new()
+	room.add_child(_box("Ground", Vector3(40, -0.5, 0), Vector3(12, 1, 12), _texture(64, 1)))
+	for index in 4: room.add_child(_box("Column%d" % index, Vector3(36 + (index % 2) * 8, 2, -4 + (index / 2) * 8), Vector3(1, 4, 1), _texture(64, 2), 12))
+	room.add_child(_box("Table", Vector3(40, 0.4, 0), Vector3(2, 0.8, 2), _texture(64, 3), 4))
+	var dome := _box("Sky", Vector3.ZERO, Vector3.ONE, _texture(64, 4))
+	var sphere := SphereMesh.new()
+	sphere.radius = 400.0
+	sphere.height = 800.0
+	sphere.material = dome.mesh.material
+	dome.mesh = sphere
+	room.add_child(dome)
+	room.add_child(_box("Stray", Vector3(-600, 50, 300), Vector3(1, 1, 1), _texture(64, 5)))
+	var plaza := fixtures.path_join("plaza.glb")
+	var statue := fixtures.path_join("statue.glb")
+	_export(room, plaza)
+	var object := Node3D.new()
+	object.add_child(_box("Base", Vector3(0, 0.1, 0), Vector3(2, 0.2, 2), _texture(64, 1)))
+	object.add_child(_box("Figure", Vector3(0, 1.2, 0), Vector3(0.6, 2, 0.6), _texture(64, 2), 12))
+	_export(object, statue)
+	var placed := loader.load_scene(plaza, Budget.LOW, {"use_cache": false})
+	_check(placed.has("root") and placed.info.layout.source == "fallback", "A scene inside a sky dome is still stood in")
+	if placed.has("root"):
+		var spot: Vector3 = (placed.info.layout.spawn as Transform3D).origin
+		_check(absf(spot.y) < 0.01 and absf(spot.x - 40.0) < 5.0 and absf(spot.z) < 5.0, "The viewer starts on the room's floor, not under the middle of the dome (%s)" % spot)
+		_check(absf(spot.x - 40.0) > 1.0 or absf(spot.z) > 1.0, "The starting point is beside the table, not on or under it")
+		_check((placed.info.layout.screen as Transform3D).origin.distance_to(spot) < 16.0, "The screen is proposed near the viewer")
+		placed.root.free()
+	var viewed := loader.load_scene(statue, Budget.LOW, {"use_cache": false})
+	_check(viewed.has("root") and viewed.info.layout.source == "outside", "A single object is looked at from outside")
+	if viewed.has("root"):
+		_check((viewed.info.layout.spawn as Transform3D).origin.length() < 12.0, "The outside view stays close to the object")
+		viewed.root.free()
 
 	var tight := Budget.limits(Budget.LOW).duplicate()
 	tight.triangles = 9000
@@ -255,6 +298,56 @@ func _run() -> void:
 		Loader.texture_encoder = Callable()
 	else:
 		print("Scene import: native tool not built; texture compression not checked")
+
+	# FBX: a floor slab in metres, six metres ahead, written out as a text file.
+	var slab := fixtures.path_join("slab.fbx")
+	_bytes(slab, """; FBX 7.4.0 project file
+FBXHeaderExtension:  {
+	FBXHeaderVersion: 1003
+	FBXVersion: 7400
+}
+GlobalSettings:  {
+	Version: 1000
+	Properties70:  {
+		P: "UpAxis", "int", "Integer", "",1
+		P: "UpAxisSign", "int", "Integer", "",1
+		P: "FrontAxis", "int", "Integer", "",2
+		P: "FrontAxisSign", "int", "Integer", "",1
+		P: "CoordAxis", "int", "Integer", "",0
+		P: "CoordAxisSign", "int", "Integer", "",1
+		P: "UnitScaleFactor", "double", "Number", "",100
+	}
+}
+Objects:  {
+	Geometry: 1000, "Geometry::Slab", "Mesh" {
+		Vertices: *12 {
+			a: -4,0,-4,4,0,-4,4,0,4,-4,0,4
+		}
+		PolygonVertexIndex: *4 {
+			a: 0,3,2,-2
+		}
+	}
+	Model: 2000, "Model::Slab", "Mesh" {
+		Version: 232
+		Properties70:  {
+			P: "Lcl Translation", "Lcl Translation", "", "A",0,0,-6
+		}
+	}
+}
+Connections:  {
+	C: "OO",2000,0
+	C: "OO",1000,2000
+}
+""".to_utf8_buffer())
+	var fbx := loader.load_scene(slab, Budget.LOW, {"use_cache": false})
+	_check(fbx.has("root") and fbx.info.source == "fbx" and fbx.info.stats.triangles == 2, "An FBX scene loads")
+	if fbx.has("root"):
+		var box: AABB = fbx.info.stats.bounds
+		_check(box.position.is_equal_approx(Vector3(-4, 0, -10)) and box.size.distance_to(Vector3(8, 0, 8)) < 0.001, "FBX geometry arrives in metres where it was placed (%s)" % box)
+		fbx.root.free()
+	var fake := fixtures.path_join("fake.fbx")
+	_bytes(fake, "not a scene".to_utf8_buffer())
+	_check(loader.load_scene(fake, Budget.LOW, {"use_cache": false}).get("error", "") == "Unsupported scene format", "A file that only carries the FBX name is refused before the engine reads it")
 
 	loader.finished.connect(_threaded)
 	loader.start(marked, Budget.HIGH, options)

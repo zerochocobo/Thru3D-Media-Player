@@ -39,6 +39,11 @@ func run() -> void:
 	box(view, -0.6, -0.5, visuals._material)  # current hand material
 	box(view, 0.6, -0.5, old)                 # pre-fix opaque hand material
 	box(view, 0.0, -0.7, seat)                # opaque scene geometry in front of the menu
+	# A runtime/PICO controller model after its materials are prepared.
+	var runtime := StandardMaterial3D.new(); runtime.albedo_color = Color(0.4, 0.4, 0.4)
+	var controller := MeshInstance3D.new(); controller.mesh = BoxMesh.new(); controller.mesh.size = Vector3.ONE * 0.2
+	controller.mesh.surface_set_material(0, runtime); controller.position = Vector3(-0.3, 0, -0.5); view.add_child(controller)
+	visuals._prepare_meshes(controller, false)
 	for i in 4:
 		await process_frame
 		await RenderingServer.frame_post_draw
@@ -46,6 +51,7 @@ func run() -> void:
 	image.save_png(output.path_join("overlay-hole.png"))
 	var at := func(x: float) -> float: return image.get_pixel(int(640 + x / 1.2 * 640), 400).a
 	check(at.call(-0.6) > 0.99, "Hand model stays solid in front of an overlay menu hole")
+	check(at.call(-0.3) > 0.99, "Runtime controller model stays solid in front of an overlay menu hole")
 	check(at.call(0.6) < 0.01, "Control: the old opaque hand material is cut out by the hole")
 	check(at.call(0.0) < 0.01, "Scene geometry still cannot hide an overlay menu")
 	check(at.call(-1.0) < 0.01, "Hole clears the eye buffer where nothing is in front")

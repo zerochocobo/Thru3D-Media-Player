@@ -2,7 +2,7 @@ extends RefCounted
 ## Imported scenes stored as native Godot scenes so a second open skips glTF parsing.
 ## The key samples the file's content, so the same model from another share reuses the entry.
 ## 2: Unity surfaces read the screen light from global uniforms. 3: no imported lights on any tier.
-const VERSION := 4
+const VERSION := 5
 const ROOT := "user://scene_import"
 const META := "scene_import"
 const SAMPLE_BYTES := 1024 * 1024

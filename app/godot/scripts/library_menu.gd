@@ -569,6 +569,7 @@ func begin_scene_picker() -> void:
 	if audio_import_mode or subtitle_picker_mode or image_picker_mode or voice_picker_mode: return
 	_capture_file_picker_context()
 	voice_picker_mode = true; scene_picker_mode = true; voice_manager.opened = false
+	_open_picker_location(SCENE_PICKER_SCOPE)
 	_start_file_picker()
 
 func begin_voice_picker() -> void:
@@ -579,6 +580,7 @@ func begin_voice_picker() -> void:
 
 func finish_voice_picker(uri: String = "", title: String = "", bytes: int = -1) -> void:
 	if scene_picker_mode:
+		if not uri.is_empty(): _remember_picker_location(SCENE_PICKER_SCOPE)
 		_restore_audio_import_context()
 		if uri.is_empty(): scene_picker_cancelled.emit()
 		else: scene_file_selected.emit(uri, title, bytes)
@@ -608,9 +610,14 @@ func begin_image_picker() -> void:
 	if subtitle_picker_mode or audio_import_mode or image_picker_mode or voice_picker_mode: return
 	_capture_file_picker_context()
 	image_picker_mode = true
+	_open_picker_location(ImagePickerLocation.SCOPE)
+	_start_file_picker()
+
+## Opens a picker in the folder its last pick came from.
+func _open_picker_location(scope: String) -> void:
 	_image_picker_dlna_retry.clear()
-	var saved := browse_memory.lookup(ImagePickerLocation.SCOPE, false)
-	if saved.is_empty(): saved = browse_memory.lookup(ImagePickerLocation.SCOPE, true)
+	var saved := browse_memory.lookup(scope, false)
+	if saved.is_empty(): saved = browse_memory.lookup(scope, true)
 	var location := ImagePickerLocation.clean(saved.get("picker_location"))
 	if not location.is_empty():
 		section = {"local": Section.LOCAL, "smb": Section.SMB, "dlna": Section.DLNA, "cloud": Section.CLOUD}[location.source]
@@ -624,19 +631,22 @@ func begin_image_picker() -> void:
 	# Reload the saved route, not cached rows from the underlying video browser.
 	_local_entries = []; _smb_entries = []; _dlna_entries = []; _cloud_entries = []
 	_position_to_restore = {}; _layout_anchor = {}; _return_uri = ""; _restore_folder_key = ""
-	_start_file_picker()
 
 func begin_background_picker() -> void:
 	begin_image_picker()
 	if image_picker_mode: background_picker_mode = true; refresh()
 
 const ImagePickerLocation := preload("res://scripts/image_picker_location.gd")
+const SCENE_PICKER_SCOPE := "scene-picker:last-location"
 
 func _image_picker_dlna_matches() -> bool:
 	return image_picker_mode and section == Section.DLNA and _image_picker_dlna_retry.get("server", "!") == _dlna_server \
 		and _image_picker_dlna_retry.get("object", "!") == (str(_dlna_stack.back().id) if not _dlna_stack.is_empty() else "0")
 
 func _remember_image_picker_location() -> void:
+	_remember_picker_location(ImagePickerLocation.SCOPE)
+
+func _remember_picker_location(scope: String) -> void:
 	var location := {}
 	match section:
 		Section.LOCAL: location = {"source": "local", "folders": _local_stack}
@@ -645,7 +655,7 @@ func _remember_image_picker_location() -> void:
 		Section.CLOUD: location = {"source": "cloud", "folders": _cloud_stack}
 	location = ImagePickerLocation.clean(location)
 	if not location.is_empty():
-		browse_memory.remember(ImagePickerLocation.SCOPE, section != Section.LOCAL, {"picker_location": location}, _browse_revision)
+		browse_memory.remember(scope, section != Section.LOCAL, {"picker_location": location}, _browse_revision)
 		browse_memory.flush()
 
 func begin_subtitle_picker(location: Dictionary = {}, filename: String = "") -> void:
@@ -4068,13 +4078,19 @@ func _subtitle_group_rows(settings: Dictionary, group: String) -> Array[Dictiona
 	style_row.title = I18n.t("Subtitle color style"); result.append(style_row)
 	var line_row := SubtitleStyle.line_row(settings.get("subtitle_line", 0))
 	line_row.title = I18n.t("Subtitle display"); result.append(line_row)
+	var follow: bool = settings.get("subtitle_follow_view", false)
+	var mode := SubtitleDepth.mode_row(follow)
+	mode.title = I18n.t("Subtitle mode"); result.append(mode)
 	for key in ["subtitle_distance", "subtitle_direction", "subtitle_horizontal_position", "subtitle_vertical_position"]:
+		if key == "subtitle_distance" and follow: continue
 		if key == "subtitle_direction":
 			var row := SubtitleDepth.direction_row(int(settings.get(key, 0)))
 			row.title = I18n.t("Subtitle direction"); result.append(row)
 		else:
-			var row := SubtitleDepth.slider_row(key, float(settings.get(key, SubtitleDepth.DEFAULT if key == "subtitle_distance" else SubtitleDepth.DEFAULT_POSITION)))
-			row.title = I18n.t("Subtitle distance" if key == "subtitle_distance" else ("Horizontal position" if key == "subtitle_horizontal_position" else "Vertical position"))
+			var value := float(settings.get(key, SubtitleDepth.DEFAULT if key == "subtitle_distance" else SubtitleDepth.DEFAULT_POSITION))
+			var row := SubtitleDepth.follow_row(key, value, int(settings.get("subtitle_direction", 0)) == 1) if follow and key != "subtitle_distance" else SubtitleDepth.slider_row(key, value)
+			var axis := "Horizontal" if key == "subtitle_horizontal_position" else "Vertical"
+			row.title = I18n.t("Subtitle distance" if key == "subtitle_distance" else axis + (" offset" if follow else " position"))
 			result.append(row)
 	return result
 

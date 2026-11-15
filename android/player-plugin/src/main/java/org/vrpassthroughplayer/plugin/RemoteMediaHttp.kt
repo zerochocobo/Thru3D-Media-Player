@@ -10,12 +10,14 @@ internal class RemoteMediaHttp : Closeable {
     private val live = ConcurrentHashMap.newKeySet<HttpURLConnection>()
     @Volatile private var closed = false
 
-    fun open(uri: URI, range: String, headers: Map<String, String>): HttpURLConnection {
+    fun open(uri: URI, range: String, headers: Map<String, String>, sameOriginOnly: Boolean = false,
+             quickProbe: Boolean = false): HttpURLConnection {
         var target = uri
         var redirects = 0
         var resends = 0
         while (redirects < 6) {
             mediaRequire(target.scheme in setOf("http", "https") && !target.host.isNullOrEmpty() && target.rawUserInfo == null, "Invalid remote media address")
+            mediaRequire(!sameOriginOnly || sameOrigin(uri, target), "Remote media origin changed")
             mediaRequire(!closed && !Thread.currentThread().isInterrupted, "Request cancelled")
             val c = target.toURL().openConnection() as HttpURLConnection
             synchronized(this) {
@@ -23,7 +25,8 @@ internal class RemoteMediaHttp : Closeable {
                 live.add(c)
             }
             try {
-                c.connectTimeout = 10000; c.readTimeout = 15000
+                c.connectTimeout = if (quickProbe) 1200 else 10000
+                c.readTimeout = if (quickProbe) 1200 else 15000
                 c.instanceFollowRedirects = false; c.useCaches = false
                 headers.forEach { (name, value) ->
                     mediaRequire(name.matches(Regex("[A-Za-z0-9-]{1,128}")) && value.length <= 8192 && value.none { it == '\r' || it == '\n' || it == '\u0000' }, "Invalid remote media headers")
@@ -34,6 +37,7 @@ internal class RemoteMediaHttp : Closeable {
                 if (range.isNotEmpty()) c.setRequestProperty("Range", range)
                 val status = c.responseCode
                 if (status in setOf(301, 302, 303, 307, 308)) {
+                    mediaRequire(!quickProbe, "Live startup fragment redirected")
                     target = target.resolve(c.getHeaderField("Location") ?: throw MediaServerFailure("Invalid remote media response"))
                     release(c); redirects++
                 } else {
@@ -46,7 +50,7 @@ internal class RemoteMediaHttp : Closeable {
                 // Some headset network paths cut connections in short bursts (Quest 3, 2026-10-29:
                 // 1 of 10 Twitch CDN requests lost its TLS handshake, failing the whole handoff).
                 // A request that never got a response is sent again a little later.
-                if (error !is MediaServerFailure && connectionCut(error) && resends < 2 && !closed) {
+                if (!quickProbe && error !is MediaServerFailure && connectionCut(error) && resends < 2 && !closed) {
                     Thread.sleep(1500L * ++resends)
                     continue
                 }

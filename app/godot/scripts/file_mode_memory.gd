@@ -107,7 +107,7 @@ func _read_bank(path: String) -> Dictionary:
 		return {}
 	var payload: Variant = _decode(encoded)
 	if not payload is Dictionary or payload.get("sequence") != serial \
-		or not payload.get("entries") is Dictionary or payload.entries.size() > LIMIT:
+		or not payload.get("entries") is Dictionary or payload.entries.size() > _limit():
 		return {}
 	var result: Dictionary = {}
 	for key in payload.entries:
@@ -156,7 +156,7 @@ func remember(uri: String, mode: Dictionary) -> bool:
 	if lookup(uri) == mode:
 		return true
 	entries[key] = {_value_field(): _normalize_value(mode), "updated": sequence + 1, "network": not Privacy.is_local(uri)}
-	while entries.size() > LIMIT:
+	while entries.size() > _limit():
 		var oldest := str(entries.keys()[0])
 		for candidate in entries:
 			if int(entries[candidate].updated) < int(entries[oldest].updated):
@@ -169,6 +169,8 @@ func entry_key(uri: String) -> String:
 	return key_for(str(identity_aliases.get(uri, uri)))
 
 func _max_bytes() -> int: return MAX_BYTES
+
+func _limit() -> int: return LIMIT
 
 func register_usb_identity(uri: String, identity: String) -> bool:
 	if not uri.begins_with("usb://") or not identity.begins_with("usb://stable/") or identity.length() > 8192: return false

@@ -100,6 +100,9 @@ $inputs = @(
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoTsDimensions.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoStreams.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoHls.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoLiveHls.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoLivePlaylist.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoBilibiliLive.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/LocalStreamServer.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/HttpRangeStreamSource.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoRequestHeaders.kt',
@@ -108,6 +111,7 @@ $inputs = @(
     'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserDouyin.kt',
     'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserCaptureDiagnostics.kt',
     'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserNetworkMedia.kt',
+    'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserBilibiliLive.kt',
     'android/player-plugin/src/test/java/org/vrpassthroughplayer/plugin/WebVideoDesktopProbe.kt',
     'android/player-plugin/src/test/java/org/vrpassthroughplayer/plugin/WebVideoCnDesktopProbe.kt')
 # Include the renderer's scheduling helper only while it participates in the

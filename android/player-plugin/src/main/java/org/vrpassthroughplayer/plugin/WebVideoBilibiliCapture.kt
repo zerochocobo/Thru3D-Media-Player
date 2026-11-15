@@ -8,6 +8,18 @@ import kotlin.math.abs
 /** Accept only a full UGC part or whole PGC episode and the pair actually requested by Gecko.
  * API URLs confer no authority to copy webpage cookies onto a CDN or a backup URL. */
 internal object WebVideoBilibiliCapture {
+    internal fun trackSize(media: JSONObject): Pair<Int, Int> {
+        val display = media.optInt("width") to media.optInt("height")
+        require(display.first in 1..8192 && display.second in 1..8192)
+        if (!media.has("bilibili_frame_width") && !media.has("bilibili_frame_height")) return display
+        fun dimension(key: String): Int {
+            val number = (media.opt(key) as? Number)?.toDouble() ?: error("Missing Bilibili frame dimension")
+            require(number >= 1 && number <= 8192 && number == number.toInt().toDouble())
+            return number.toInt()
+        }
+        return dimension("bilibili_frame_width") to dimension("bilibili_frame_height")
+    }
+
     /** A restored Gecko document can report a paused video before decoded dimensions and
      * both request observations arrive. Wait for those observations, never start the page,
      * replay its API or carry a pair over from the previous native playback. */
@@ -83,12 +95,13 @@ internal object WebVideoBilibiliCapture {
         val observed = all.filter { it.optString("kind") == "file" && it.optString("url") in declared }
         val result = JSONObject().put("observed", all.size).put("current_part_observed", observed.size)
             .put("api_quality", data.optInt("quality"))
+        val size = runCatching { trackSize(media) }.getOrNull()
         for (key in listOf("video", "audio")) {
             val tracks = data.optJSONArray(key) ?: JSONArray()
             var exact = 0; var path = 0; var dimensions = 0
             for (i in 0 until tracks.length()) {
                 val track = tracks.getJSONObject(i)
-                if (track.optInt("width") == media.optInt("width") && track.optInt("height") == media.optInt("height")) dimensions++
+                if (size != null && track.optInt("width") == size.first && track.optInt("height") == size.second) dimensions++
                 val urls = track.getJSONArray("urls")
                 val allowed = (0 until urls.length()).map { URI(urls.getString(it)) }
                 for (request in observed) {
@@ -119,6 +132,8 @@ internal object WebVideoBilibiliCapture {
         for (expected in listOf(data.getDouble("expected_duration"), media.getDouble("duration")))
             require(expected.isFinite() && expected > 0 && abs(duration - expected) <= maxOf(2.0, duration * .01))
         val quality = data.getInt("quality"); require(quality > 0 && quality !in setOf(125, 126))
+        val selectedQuality = media.optInt("bilibili_quality"); require(selectedQuality in 0..999)
+        val (frameWidth, frameHeight) = trackSize(media)
         val candidates = WebBrowserNetworkMedia.candidates(media)
         val observed = (0 until candidates.length()).map { candidates.getJSONObject(it) }
             .filter { it.optString("kind") == "file" &&
@@ -128,6 +143,10 @@ internal object WebVideoBilibiliCapture {
             val matches = (0 until tracks.length()).flatMap { index ->
                 val t = tracks.getJSONObject(index)
                 val urls = t.getJSONArray("urls"); require(urls.length() in 1..9)
+                // During a quality change, completed requests from the outgoing
+                // representation can arrive after the first frame of the new one.
+                if (video && (selectedQuality != 0 && t.optInt("id") != selectedQuality ||
+                    t.optInt("width") != frameWidth || t.optInt("height") != frameHeight)) return@flatMap emptyList()
                 val allowed = (0 until urls.length()).map { urls.getString(it) }.toSet()
                 observed.filter { it.getString("url") in allowed }.map { t to it }
             }
@@ -139,10 +158,7 @@ internal object WebVideoBilibiliCapture {
             require(codec.length <= 100 && (if (video) Regex("(avc1|hev1|hvc1|av01)\\..+") else Regex("mp4a\\..+")).matches(codec))
             val id = t.getInt("id"); require(id > 0 && (!video || id !in setOf(125, 126)))
             val width = t.getInt("width"); val height = t.getInt("height"); val fps = t.getDouble("fps")
-            if (video) {
-                require(width in 1..8192 && height in 1..8192 && fps.isFinite() && fps > 0 && fps <= 240)
-                require(media.optInt("width") == width && media.optInt("height") == height)
-            }
+            if (video) require(fps.isFinite() && fps > 0 && fps <= 240)
             val headers = request.getJSONObject("headers")
             return JSONObject().put("format_id", "bilibili-$cid-$id-$codec").put("url", uri.toString())
                 .put("protocol", "https").put("ext", if (video) "mp4" else "m4a")

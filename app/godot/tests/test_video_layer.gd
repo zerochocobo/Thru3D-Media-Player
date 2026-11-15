@@ -17,8 +17,11 @@ class FakeVideo extends "res://scripts/media_surface.gd":
 	var focus := Vector2.ZERO
 	func stereo_offset_uv() -> Vector2:
 		return offset
+	var focus_axis := Vector3.RIGHT
 	func stereo_focus_shape() -> Vector2:
 		return focus
+	func stereo_focus_axis() -> Vector3:
+		return focus_axis
 
 func _check(condition: bool, message: String) -> void:
 	checks += 1
@@ -103,6 +106,11 @@ func _run() -> void:
 	_check(left_shift.is_equal_approx(Vector3(-0.032, 0, 0)) and right_shift.is_equal_approx(Vector3(0.032, 0, 0)),
 		"Focus: each eye's sphere is centred on that eye")
 	_check(_rect(_layer(values, 0)) == _rect(_layer(unfocused, 0)) and _near(_layer(values, 0)[14], PI), "Focus keeps the eye picture")
+	video.focus_axis = Vector3.FORWARD
+	values = layer.layer_values(video, origin)
+	var focus_turned := Vector3(_layer(values, 1)[2], _layer(values, 1)[3], _layer(values, 1)[4]) - Vector3(_layer(unfocused, 1)[2], _layer(unfocused, 1)[3], _layer(unfocused, 1)[4])
+	_check(_near(focus_turned.length(), 0.032) and absf(focus_turned.dot(right_shift)) < 0.0001, "Focus: the sphere centres follow the video's eye axis")
+	video.focus_axis = Vector3.RIGHT
 	values = layer.layer_values(video, origin, VideoLayer.PICTURE, Vector2(S, S), 1, Vector2.ZERO, Vector4(0, 0, 1, 1), VideoLayer.OPAQUE, true)
 	_check(_near(_layer(values, 0)[13], video.SPHERE_RADIUS), "Focus never applies to a processed picture")
 	video.focus = Vector2.ZERO

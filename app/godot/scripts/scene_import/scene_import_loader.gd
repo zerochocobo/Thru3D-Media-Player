@@ -1,5 +1,5 @@
 extends RefCounted
-## User-supplied scenes (glTF/GLB, Unity scene bundles) as viewing environments. Self-contained: nothing here is
+## User-supplied scenes (glTF/GLB, FBX, Unity scene bundles) as viewing environments. Self-contained: nothing here is
 ## referenced by the built-in cinema or beach paths.
 const Budget := preload("res://scripts/scene_import/scene_import_budget.gd")
 const Audit := preload("res://scripts/scene_import/scene_import_audit.gd")
@@ -80,7 +80,7 @@ func load_scene(path: String, tier: String, options: Dictionary = {}) -> Diction
 		if cached: return {"root": cached, "info": cached.get_meta(Cache.META), "cached": true}
 	# Each source ends as the same thing: a detached tree plus what was done to fit the tier.
 	_report("Unpacking scene" if unity else "Reading model")
-	var source := Unity.new().read(path, limits, cache_dir.path_join("work")) if unity else _read_gltf(path, limits)
+	var source := Unity.new().read(path, limits, cache_dir.path_join("work")) if unity else _read_model(path, limits)
 	if source.has("error"): return {"error": source.error}
 	_report("Preparing scene")
 	var root: Node3D = source.root
@@ -102,7 +102,7 @@ func load_scene(path: String, tier: String, options: Dictionary = {}) -> Diction
 	for name in ["triangles", "batches", "texture_bytes"]:
 		if int(stats[name]) > int(limits[name]): over.append(name)
 	var info := {"version": Cache.VERSION, "tier": tier, "name": path.get_file(), "stats": stats,
-		"layout": layout, "actions": actions, "over_budget": over, "source": "unity" if unity else "gltf",
+		"layout": layout, "actions": actions, "over_budget": over, "source": "unity" if unity else "fbx" if _fbx(path) else "gltf",
 		"sky": source.get("sky"), "warnings": source.get("warnings", [])}
 	root.set_meta(Cache.META, info)
 	if use_cache:
@@ -111,14 +111,23 @@ func load_scene(path: String, tier: String, options: Dictionary = {}) -> Diction
 			"batches": stats.batches, "texture_bytes": stats.texture_bytes, "over_budget": over}, cache_dir)
 	return {"root": root, "info": info, "cached": false}
 
-func _read_gltf(path: String, limits: Dictionary) -> Dictionary:
-	var document := GLTFDocument.new()
-	var state := GLTFState.new()
+static func _fbx(path: String) -> bool:
+	return path.get_extension().to_lower() == "fbx"
+
+## glTF and FBX come through the engine's two readers and leave as the same tree.
+func _read_model(path: String, limits: Dictionary) -> Dictionary:
+	var fbx := _fbx(path)
+	var document: GLTFDocument = FBXDocument.new() if fbx else GLTFDocument.new()
+	var state: GLTFState = FBXState.new() if fbx else GLTFState.new()
 	state.handle_binary_image = GLTFState.HANDLE_BINARY_EMBED_AS_UNCOMPRESSED
 	var result := document.append_from_file(path, state)
 	if result != OK: return {"error": "Model could not be loaded (%s)" % error_string(result)}
 	var root := document.generate_scene(state) as Node3D
 	if root == null: return {"error": "Model contains no 3D scene"}
+	# FBX has no header to count from: its size is only known once it is read.
+	if fbx and int(Audit.audit(root).triangles) > MAX_STORED_TRIANGLES:
+		root.free()
+		return {"error": "Scene is too detailed for this headset"}
 	var actions := {"lights_removed": _strip(root, int(limits.lights)), "meshes_culled": 0}
 	var items := Audit.drawables(root)
 	# With no light kept, surface detail maps (normal, roughness, metal...) cannot show: drop them.
@@ -205,11 +214,15 @@ static func _over(stats: Dictionary, limits: Dictionary) -> bool:
 ## Cheap structural checks before the engine parses anything.
 func _preflight(path: String, limits: Dictionary) -> String:
 	var extension := path.get_extension().to_lower()
-	if extension != "glb" and extension != "gltf": return "Unsupported scene format"
+	if extension not in ["glb", "gltf", "fbx"]: return "Unsupported scene format"
 	var file := FileAccess.open(path, FileAccess.READ)
 	if file == null: return "Model unavailable"
 	var size := file.get_length()
 	if size > int(limits.file_bytes): return "Model file too large"
+	if extension == "fbx":
+		# Binary files open with a fixed signature, text ones name their header section early on.
+		var head := file.get_buffer(mini(size, 4096)).get_string_from_ascii()
+		return "" if head.begins_with("Kaydara FBX Binary") or head.contains("FBXHeaderExtension") else "Unsupported scene format"
 	var text := ""
 	if extension == "glb":
 		if size < 20: return "Invalid GLB header"

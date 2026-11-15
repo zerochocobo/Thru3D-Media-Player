@@ -79,3 +79,7 @@ Short trigger taps tolerate more ray travel. Browser windows reopen in front of 
 Free rectangle selection reshapes the focused floating window around the selected page region. Focus video uses the active page's video geometry. In frameless mode, pointing at the window edge reveals its resize handles. Quest 3 checks covered both Bilibili Beta entries for selected 8K and 4K streams, including native seeking and paused return to the original document. Coverage is limited to the tested paths.
 
 The free-region change includes a contribution by [@ghanshyamv1](https://github.com/ghanshyamv1). The page-structure video focus implementation was inspired by [PR #10](https://github.com/zerochocobo/Thru3D-Media-Player/pull/10).
+
+## Bilibili playback in 0.17.11
+
+Compatible live streams support Play Beta and quality switching in the built-in player. Compatible on-demand videos maintain the selected quality when handing off the current video. Quest 3 verification covered selected live and 8K and 4K on-demand paths. PICO playback validation remains pending.

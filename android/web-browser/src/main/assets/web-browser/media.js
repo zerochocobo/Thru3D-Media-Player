@@ -26,7 +26,8 @@
     const age = Date.now() - saved.at;
     if (age < 0 || age > 30000 || saved.page !== location.href || !saved.video.isConnected ||
         saved.video.currentSrc !== saved.source || mediaEpoch.get(saved.video)?.id !== saved.epoch ||
-        bilibiliOwner?.video !== saved.video || biliKey(bilibiliOwner.data) !== saved.key) {
+        (saved.live ? Thru3DBilibili.liveRoom(saved.page) !== saved.room || encrypted.has(saved.video) ||
+          !!saved.video.mediaKeys : bilibiliOwner?.video !== saved.video || biliKey(bilibiliOwner.data) !== saved.key)) {
       bilibiliReturnPause = null; return false;
     }
     return video === saved.video;
@@ -710,10 +711,136 @@
   };
   let bilibiliEnabled = false, bilibiliData = [];
   let bilibiliButton = null, bilibiliChoice = null, bilibiliClick = 0;
+  let biliLiveSelection = null, biliLiveRevision = 0, biliLiveQualityChange = null;
+  const biliLiveTarget = (video, epoch) => {
+    const declaration = Thru3DBilibili.liveDeclaration(document, video, location.href);
+    if (!declaration) return null;
+    const source = video.currentSrc, width = video.videoWidth, height = video.videoHeight;
+    const {room, page, quality, url, stream} = declaration;
+    const change = biliLiveQualityChange;
+    if (change?.page === page) {
+      if (height !== change.height || quality === change.previousQuality && url === change.previousUrl &&
+          source === change.previousSource) return null;
+    }
+    const previous = biliLiveSelection;
+    const sameSource = previous?.video === video && previous.source === source && previous.epoch === epoch &&
+      previous.page === page && previous.url === url;
+    if (!sameSource || previous.quality !== quality || previous.stream !== stream ||
+        previous.width !== width || previous.height !== height) {
+      const reusedUrl = sameSource && previous.quality !== quality;
+      const switchAt = reusedUrl ? (change?.page === page ? change.at : 0) : (sameSource ? previous.switchAt : 0);
+      const after = reusedUrl ? switchAt || Date.now() : (sameSource ? previous.after : 0);
+      biliLiveSelection = {video, source, epoch, page, quality, url, stream, width, height, after, switchAt, revision:++biliLiveRevision};
+    }
+    const {after, switchAt} = biliLiveSelection;
+    const observed = item => item.kind === 'hls' && item.at >= after &&
+      Date.now() - item.at >= 0 && Date.now() - item.at < 1800000 && Object.keys(item.headers || {}).length;
+    const captured = address => network.find(item => item.url === address && observed(item));
+    const declaredQualities = switchAt ? new URL(url).searchParams.getAll('qn') : [];
+    const root = !declaredQualities.length || declaredQualities.length === 1 && declaredQualities[0] === String(quality) ?
+      captured(url) : null;
+    // Follow only the unique CDN child named by the exact received master. The
+    // child must itself be a verified media playlist with its own request headers.
+    const child = root?.live_child && captured(root.live_child);
+    // A seamless switch can change streamName and the active signed rendition
+    // while the SDK still reports the original playurl.
+    const renditions = !root && switchAt ? network.filter(item => observed(item) && item.live_leaf === true &&
+      !item.live_child && Thru3DBilibili.liveRendition(item.url, stream, quality)) : [];
+    const rendition = renditions.length === 1 ? renditions[0] : null;
+    const request = root?.live_child ? (child?.live_leaf === true ? child : null) : root || rendition;
+    if (request && change?.page === page) biliLiveQualityChange = null;
+    if (request && biliLiveSelection.chosen !== request.url) {
+      if (biliLiveSelection.chosen) biliLiveSelection.revision = ++biliLiveRevision;
+      biliLiveSelection.chosen = request.url;
+    }
+    const revision = biliLiveSelection.revision;
+    return {video, source, epoch, key:'live:' + room + ':' + quality + ':' + revision,
+      live:{room, page, quality, revision, url:request?.url || url,
+        ...(root?.live_child && request ? {master:url} : {}),
+        ...(rendition ? {stream,switch_at:switchAt} : {})},
+      masterRequests:root?.live_child && request ? [root] : [], request, ready:!!request};
+  };
+  const bilibiliSelections = new WeakMap();
+  const bilibiliFrames = new WeakMap();
+  const clearBilibiliFrame = video => {
+    const state = bilibiliFrames.get(video);
+    if (state?.pending) video.cancelVideoFrameCallback?.(state.handle);
+    bilibiliFrames.delete(video);
+  };
   const biliKey = data => [data.id,data.cid,data.part,data.ep || ''].join(':');
+  const bilibiliManualQuality = new WeakMap();
+  const bilibiliQuality = video => {
+    const player = video.closest?.('.bpx-player-container');
+    const choice = player && bilibiliManualQuality.get(player);
+    return choice?.page === location.href ? choice.quality : 0;
+  };
+  addEventListener('click', event => {
+    if (!bilibiliEnabled || !event.isTrusted) return;
+    if (Thru3DBilibili.liveRoom(location.href)) {
+      const option = event.target?.closest?.('#live-player .quality-wrap .list-it');
+      const video = option && document.querySelector('#live-player video');
+      const label = option?.textContent.trim() || '';
+      const height = Number(/^([1-9][0-9]{2,3})P(?:\s|$)/i.exec(label)?.[1]);
+      if (video && height && !option.classList.contains('selected')) {
+        const selected = option.closest('.quality-wrap')?.querySelector('.list-it.selected')?.textContent.trim();
+        if (selected === '自动（' + label + '）') return;
+        const declaration = Thru3DBilibili.liveDeclaration(document, video, location.href);
+        // SDK quality and URL can lag the trusted menu click by several
+        // seconds, including when selecting a tier on the paused return page.
+        bilibiliChoice = null;
+        biliLiveQualityChange = {page:location.href,height,at:Date.now(),previousQuality:declaration?.quality,
+          previousUrl:declaration?.url,previousSource:video.currentSrc};
+        send();
+      } else if (option && !height && label.startsWith('自动')) {
+        biliLiveQualityChange = null;
+        changed();
+      }
+      return;
+    }
+    const item = event.target?.closest?.('.bpx-player-ctrl-quality-menu-item[data-value]');
+    const player = item?.closest('.bpx-player-container');
+    const value = item?.getAttribute('data-value');
+    if (player && /^[0-9]{1,3}$/.test(value)) {
+      // The menu can be lazily mounted by hovering over the video. Only the
+      // selection itself is a request to wait for a different representation.
+      bilibiliManualQuality.set(player, {page:location.href,quality:Number(value)});
+      for (const video of videos.keys()) if (video.closest?.('.bpx-player-container') === player) clearBilibiliFrame(video);
+      changed();
+    }
+  }, true);
+  const bilibiliFrame = (video, data, epoch, quality, needed) => {
+    if (typeof video.requestVideoFrameCallback !== 'function' || !video.currentSrc || !video.videoWidth || !video.videoHeight) return null;
+    const key = biliKey(data), source = video.currentSrc, page = location.href;
+    const width = video.videoWidth, height = video.videoHeight;
+    let state = bilibiliFrames.get(video);
+    if (state && (state.key !== key || state.source !== source || state.page !== page || state.epoch !== epoch ||
+        state.quality !== quality || state.width !== width || state.height !== height)) {
+      clearBilibiliFrame(video); state = null;
+    }
+    if (!needed && !state) return null;
+    if (!state) {
+      state = {key,source,page,epoch,quality,width,height,pending:false,size:null};
+      bilibiliFrames.set(video,state);
+    }
+    if (!state.pending && !suspended && (!video.paused || !state.size)) {
+      state.pending = true;
+      state.handle = video.requestVideoFrameCallback((_, frame) => {
+        state.pending = false;
+        if (closed || suspended || bilibiliFrames.get(video) !== state || location.href !== page || video.currentSrc !== source ||
+            mediaEpoch.get(video)?.id !== epoch || bilibiliQuality(video) !== quality ||
+            video.videoWidth !== width || video.videoHeight !== height || !video.isConnected ||
+            encrypted.has(video) || video.mediaKeys) return;
+        if (![frame.width,frame.height].every(value => Number.isInteger(value) && value > 0 && value <= 8192)) return;
+        const changedSize = state.size?.width !== frame.width || state.size?.height !== frame.height;
+        state.size = {width:frame.width,height:frame.height};
+        if (changedSize) changed();
+      });
+    }
+    return state.size;
+  };
   const syncBilibiliButton = target => {
     if (typeof Thru3DPlayButton === 'undefined') return;
-    const box = target?.video.closest?.('.bpx-player-video-area, .bilibili-player-video') || target?.video.parentElement;
+    const box = target?.video.closest?.('#live-player, .bpx-player-video-area, .bilibili-player-video') || target?.video.parentElement;
     if (!bilibiliEnabled || !target?.video.isConnected || !box) {
       bilibiliButton?.dispose();bilibiliButton=null;return;
     }
@@ -723,8 +850,26 @@
       bilibiliButton?.dispose();
       const control = Thru3DPlayButton.create(document,box,'bilibili',()=>{
         const current = bilibiliButton?.target;
-        if (closed || suspended || pauseLease || !current?.ready || bilibiliOwner?.video !== current.video ||
-            current.video.currentSrc !== current.source || mediaEpoch.get(current.video)?.id !== current.epoch) return;
+        if (closed || suspended || pauseLease || !current?.ready) return;
+        if (current.live) {
+          if (!current.video.isConnected || encrypted.has(current.video) || current.video.mediaKeys ||
+              mediaEpoch.get(current.video)?.id !== current.epoch ||
+              current.video.currentSrc !== current.source) return;
+          const latest = biliLiveTarget(current.video, current.epoch);
+          if (!latest?.ready || latest.key !== current.key) {
+            bilibiliChoice = null;
+            changed();
+            return;
+          }
+          bilibiliChoice = {...latest,at:Date.now(),request:++bilibiliClick};changed();
+          return;
+        }
+        if (bilibiliOwner?.video !== current.video ||
+            current.video.currentSrc !== current.source || mediaEpoch.get(current.video)?.id !== current.epoch ||
+            bilibiliQuality(current.video) !== current.quality || current.video.videoWidth !== current.width ||
+            current.video.videoHeight !== current.height) return;
+        const frame = bilibiliFrames.get(current.video)?.size;
+        if ((frame?.width || current.width) !== current.trackWidth || (frame?.height || current.height) !== current.trackHeight) return;
         bilibiliChoice = {...current,at:Date.now(),request:++bilibiliClick};changed();
       });
       control.host.dataset.thru3dBilibili='beta';
@@ -887,6 +1032,8 @@
       networkPage = location.href; network = []; mangoChoice=null;mangoData=[];mangoCapture={};weiboChoice = null;tencentChoice=null;tencentData=[];tencentCapture={};tencentShape=[];tencentEnvelopes=[];
       youkuChoice=null;youkuData=[];youkuCapture={};niconicoChoice=null;niconicoData=[];niconicoCapture={};twitchChoice=null;twitchData=[];twitchCapture={};tiktokChoice=null;tiktokCapture={};instagramChoice=null;instagramCapture={};tedChoice=null;tedCapture={};redbullChoice=null;redbullCapture={};streamableChoice=null;streamableCapture={};redditChoice=null;redditCapture={};naverChoice=null;naverCapture={};archiveChoice=null;archiveCapture={};odyseeChoice=null;odyseeCapture={};
       bilibiliData = []; bilibiliInitial = null;
+      biliLiveSelection = null;
+      biliLiveQualityChange = null;
       networkContext(true);
     }
     if (bilibiliEnabled && typeof Thru3DBilibili !== 'undefined' &&
@@ -895,6 +1042,7 @@
       bilibiliInitial = Thru3DBilibili.initial(document, location.href);
     }
     const items = [];
+    const biliRoom = bilibiliEnabled && typeof Thru3DBilibili !== 'undefined' && Thru3DBilibili.liveRoom(location.href);
     const pageTencent=tencentEnabled?Thru3DTencent.pageState(document.defaultView?.wrappedJSObject,tencentEnvelopes,location.href):{status:0,data:null,shape:[]};
     // A matched current page result supersedes older/prefetched responses, even
     // when its protected or unsupported payload correctly leaves no ready target.
@@ -1020,12 +1168,43 @@
           seen.add(c.url);return true;
         }).slice(0,24);
       }
-      const biliReady = !!biliMatched && Thru3DBilibili.ready(biliMatched, requests, video.videoWidth, video.videoHeight);
+      const biliQuality = biliMatched ? bilibiliQuality(video) : 0;
+      const displayReady = !!biliMatched && Thru3DBilibili.ready(biliMatched, requests, video.videoWidth, video.videoHeight, biliQuality);
+      // Gecko's intrinsic size includes pixel aspect. Match the current
+      // representation against the presented frame's media pixels when observed.
+      const frame = biliMatched && bilibiliFrame(video, biliMatched, epoch.id, biliQuality, !displayReady);
+      const trackWidth = frame?.width || video.videoWidth, trackHeight = frame?.height || video.videoHeight;
+      const selectedReady = !!biliMatched && (frame ? Thru3DBilibili.ready(biliMatched, requests, trackWidth, trackHeight, biliQuality) : displayReady);
+      let effectiveBiliQuality = biliQuality;
+      if (biliMatched && biliQuality) {
+        const key = biliKey(biliMatched);
+        const previous = bilibiliSelections.get(video);
+        const settled = previous?.page === location.href && previous.key === key && previous.quality === biliQuality &&
+          previous.source === currentSource && previous.epoch === epoch.id;
+        if (selectedReady) bilibiliSelections.set(video, {page:location.href,key,quality:biliQuality,source:currentSource,epoch:epoch.id});
+        else if (!settled) bilibiliSelections.delete(video);
+        // Once this choice actually rendered, the player can adapt to a lower
+        // representation while retaining the chosen menu label. Same-size
+        // tiers still require evidence for the explicitly chosen tier.
+        if (!selectedReady && settled && !biliMatched.video.some(t => t.id === biliQuality &&
+            t.width === trackWidth && t.height === trackHeight)) effectiveBiliQuality = 0;
+      } else bilibiliSelections.delete(video);
+      const biliReady = selectedReady || !!biliMatched && effectiveBiliQuality !== biliQuality &&
+        Thru3DBilibili.ready(biliMatched, requests, trackWidth, trackHeight);
       if (biliReady) bilibiliCurrent = bilibiliOwner = {video, page:location.href, cid:biliCid, source:currentSource, epoch:epoch.id,
         data:biliMatched,requests:requests.filter(c=>Number.isFinite(c.at))};
-      if (biliMatched) bilibiliTarget={video,source:currentSource,epoch:epoch.id,key:biliKey(biliMatched),ready:biliReady};
+      if (biliMatched) bilibiliTarget={video,source:currentSource,epoch:epoch.id,key:biliKey(biliMatched),quality:biliQuality,
+        width:video.videoWidth,height:video.videoHeight,trackWidth,trackHeight,ready:biliReady};
       const biliClicked = biliReady && bilibiliChoice?.video === video && bilibiliChoice.key === biliKey(biliMatched) &&
-        bilibiliChoice.source === currentSource && bilibiliChoice.epoch === epoch.id && Date.now() - bilibiliChoice.at < 15000;
+        bilibiliChoice.source === currentSource && bilibiliChoice.epoch === epoch.id && bilibiliChoice.quality === biliQuality &&
+        bilibiliChoice.width === video.videoWidth && bilibiliChoice.height === video.videoHeight &&
+        bilibiliChoice.trackWidth === trackWidth && bilibiliChoice.trackHeight === trackHeight &&
+        Date.now() - bilibiliChoice.at < 15000;
+      const biliLive = biliRoom && !protectedMedia ? biliLiveTarget(video, epoch.id) : null;
+      if (biliLive) bilibiliTarget = biliLive;
+      const biliLiveClicked = biliLive?.ready && bilibiliChoice?.video === video &&
+        bilibiliChoice.key === biliLive.key && bilibiliChoice.source === currentSource &&
+        bilibiliChoice.epoch === epoch.id && Date.now() - bilibiliChoice.at < 15000;
       const douyin=douyinEnabled&&!protectedMedia&&typeof Thru3DDouyinCurrent!=='undefined'?Thru3DDouyinCurrent.capture(video,location.href,requests):null;
       const douyinReady=!!douyin;
       if(douyin)douyinTargets.push({video,source:currentSource,epoch:epoch.id,key:douyin.id+':'+douyin.revision,page:douyin.page,owner:douyin.id,active:douyinOwner?.active===true});
@@ -1103,11 +1282,17 @@
         server_headers: !protectedMedia && resource?.plex ? resource.headers : undefined,
         server_play: serverPlay,
         protected: protectedMedia, frame: location.href, agent: navigator.userAgent,
-        network: requests, network_epoch: epoch.id, blob: currentSource.startsWith('blob:'),
+        network: biliRoom ? (biliLive?.request ? [biliLive.request, ...biliLive.masterRequests] : []) : requests,
+        network_epoch: epoch.id, blob: currentSource.startsWith('blob:'),
         bilibili: biliMatched,
-        bilibili_source: biliMatched ? currentSource : "",
-        bilibili_ready: biliReady,
-        bilibili_request: biliClicked ? bilibiliChoice.request : 0,
+        ...(biliLive?.ready ? {bilibili_live:biliLive.live} : {}),
+        bilibili_selected_quality: biliQuality,
+        bilibili_quality: effectiveBiliQuality,
+        ...(frame && (trackWidth !== video.videoWidth || trackHeight !== video.videoHeight) ?
+          {bilibili_frame_width:trackWidth,bilibili_frame_height:trackHeight} : {}),
+        bilibili_source: biliMatched || biliLive?.ready ? currentSource : "",
+        bilibili_ready: biliReady || !!biliLive?.ready,
+        bilibili_request: biliClicked || biliLiveClicked ? bilibiliChoice.request : 0,
         mango,mango_ready:!!mango,mango_request:mangoClicked?mangoChoice.request:0,
         youku,youku_ready:!!youku,youku_request:youkuClicked?youkuChoice.request:0,
         twitch,twitch_ready:!!twitch,twitch_request:twitchClicked?twitchChoice.request:0,
@@ -1226,6 +1411,7 @@
       mediaEpoch.set(video, { id: nextId, since: Date.now() - 3000, loaded: !!video.currentSrc || video.readyState > 0 });
       serverState.set(video, { started: typeof performance !== 'undefined' ? performance.now() : 0, intent: false, key: '' });
       video.addEventListener('loadstart', () => {
+        clearBilibiliFrame(video);
         const epoch = mediaEpoch.get(video);
         if (epoch.loaded) { epoch.since = Date.now(); epoch.id = ++nextId; videos.set(video, nextId); }
         epoch.loaded = true;
@@ -1243,6 +1429,7 @@
       video.addEventListener('pause', () => { if (!suspended) { serverState.get(video).intent = false; changed(); } });
       video.addEventListener('ended', () => { serverState.get(video).intent = false; changed(); });
       video.addEventListener("encrypted", () => { encrypted.add(video); changed(); });
+      for (const event of ['emptied','resize']) video.addEventListener(event, () => clearBilibiliFrame(video));
       for (const event of ["loadedmetadata", "resize", "durationchange", "play", "playing", "seeked", "pause", "emptied", "ended", "timeupdate"])
         video.addEventListener(event, changed);
       video.addEventListener("play", () => { if (suspended||keepDirectReturnPaused(video)||keepBilibiliReturnPaused(video)||keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)||keepTikTokReturnPaused(video)||keepInstagramReturnPaused(video)||keepTedReturnPaused(video)||keepRedBullReturnPaused(video)||keepStreamableReturnPaused(video)||keepRedditReturnPaused(video)||keepNaverReturnPaused(video)||keepArchiveReturnPaused(video)||keepOdyseeReturnPaused(video)||keepDailymotionReturnPaused(video)) video.pause(); else holdPaused(video); });
@@ -1356,6 +1543,26 @@
       if (weibo !== weiboEnabled) { weiboEnabled = weibo; weiboChoice = null; network = []; networkContext(true); changed(); }
       if (enabled !== networkEnabled) { networkEnabled = enabled; network = []; networkContext(true); changed(); }
       else networkContext();
+    } else if (message?.action === "restore_bilibili_live") {
+      const video = [...videos.keys()].find(v => String(videos.get(v)) === message.id);
+      const expected = biliLiveSelection;
+      if (!bilibiliEnabled || !video?.isConnected || !expected || expected.video !== video ||
+          expected.revision !== message.revision || expected.epoch !== message.epoch ||
+          mediaEpoch.get(video)?.id !== message.epoch || expected.page !== message.page ||
+          location.href !== message.page || Thru3DBilibili.liveRoom(message.page) !== message.room ||
+          expected.source !== message.source || video.currentSrc !== message.source ||
+          encrypted.has(video) || video.mediaKeys) return;
+      suspended = false;
+      bilibiliReturnPause = message.play === true ? null : {...expected, live:true, room:message.room, at:Date.now()};
+      if (message.play !== true) video.pause();
+      // A native live-edge clock cannot be applied to the room's MSE timeline.
+      if (video.seekable.length && video.currentTime < video.seekable.start(0)) {
+        try { video.currentTime = video.seekable.start(0); } catch (_) {}
+      }
+      if (message.play === true && video.paused) {
+        try { Promise.resolve(video.play()).catch(() => {}); } catch (_) {}
+      }
+      send();
     } else if (message?.action === "restore_bilibili") {
       // Re-evaluate the current part/episode, not a retained API response alone.
       send();

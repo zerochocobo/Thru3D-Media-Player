@@ -12,6 +12,7 @@ uniform vec2 generated_size = vec2(1.0);
 #include "res://shaders/video_coordinates.gdshaderinc"
 #include "res://shaders/sharpness.gdshaderinc"
 #include "res://shaders/photo_slideshow.gdshaderinc"
+#include "res://shaders/color_grade.gdshaderinc"
 uniform vec2 crop_center = vec2(0.5);
 uniform vec2 crop_aspect = vec2(1.0);
 uniform vec2 crop_skew = vec2(0.0);
@@ -109,7 +110,7 @@ void fragment() {
 			photo_color(shown + vec2(step_uv.x, 0.0)).rgb,
 			photo_color(shown - vec2(step_uv.x, 0.0)).rgb);
 	}
-	ALBEDO = outside ? vec3(0.0) : color.rgb;
+	ALBEDO = outside ? vec3(0.0) : color_grade(color.rgb);
 	ALPHA = outside ? (video_geometry == 0 ? 0.0 : 1.0) : color.a;
 	if (video_geometry == 0 && any(greaterThan(edge_feather, vec2(0.0)))) {
 		// Surface UV is per eye, independent of packed SBS/TB and depth reprojection.

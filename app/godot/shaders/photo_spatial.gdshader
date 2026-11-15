@@ -4,6 +4,7 @@ uniform sampler2D image_texture : source_color, filter_linear_mipmap_anisotropic
 uniform vec2 portal_size = vec2(1.0);
 uniform vec3 reference_eye = vec3(0.0, 0.0, 3.0);
 uniform vec3 display_scale = vec3(1.0);
+#include "res://shaders/color_grade.gdshaderinc"
 varying vec3 local_position;
 varying vec3 local_eye;
 void vertex() {
@@ -26,6 +27,6 @@ void fragment() {
 	vec4 color = texture(image_texture, UV);
 	// Feather on the fixed portal plane, rather than on a moving depth-texture contour.
 	float edge = smoothstep(0.0, 0.004, distance_to_edge);
-	ALBEDO = color.rgb;
+	ALBEDO = color_grade(color.rgb);
 	ALPHA = color.a * edge;
 }

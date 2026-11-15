@@ -3473,6 +3473,8 @@ func _relocate_file_records(old_uri: String, new_uri: String, title: String, siz
 	if not video.narration.memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	photo.mode_memory.relocate(old_uri, new_uri)
 	if not photo.mode_memory.save(): recent_menu.file_actions.rename.migration_failed = true
+	photo.grade_memory.relocate(old_uri, new_uri)
+	if not photo.grade_memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	if not video.bookmark_store.relocate(old_uri, new_uri, title, size): recent_menu.file_actions.rename.migration_failed = true
 	LibraryMenu.Thumbnails.relocate(old_uri, new_uri)
 	for item in video_queue:
@@ -3749,6 +3751,9 @@ func _on_photo_adjustment(key: String, value: Variant) -> void:
 				photo.comic.preferences.save(settings); settings.save(settings_path); photo_menu.refresh()
 		return
 	if key == "bar_transparency": _set_bar_transparency(float(value)); return
+	if key.begins_with("grade_") or photo.ColorGrade.DEFAULTS.has(key):
+		if photo_active: photo.adjust_color_grade(key, value)
+		return
 	if not photo_active or not is_finite(float(value)): return
 	_menu_touched_ms = Time.get_ticks_msec()
 	match key:
@@ -3780,6 +3785,7 @@ func _save_photo_adjustments() -> void:
 	settings.set_value("photo_screen", "magnification", photo.inspect_magnification)
 	settings.set_value("photo_screen", "edge_feather_strength", photo.edge_feather_strength)
 	photo.save_layout_settings(settings)
+	photo.save_color_grade()
 	_gallery_save_after = 0
 	_gallery_saved_state = "%d/%s/%s" % [photo.gallery.mode, str(photo.gallery._scales), str(photo.gallery._distances)]
 	settings.save(settings_path)
@@ -4493,6 +4499,11 @@ func _close_current_media(restore_browser: bool = true) -> void:
 func _restore_subtitle_settings() -> void:
 	video.subtitle_auto_load = bool(settings.get_value("subtitles", "auto_load", true))
 	video.subtitle_distance = float(settings.get_value("subtitles", "distance", 5.0))
+	video.subtitle_follow_view = bool(settings.get_value("subtitles", "follow_view", false))
+	video.subtitle_follow_horizontal_offset = video.SubtitleDepth.restore_follow(settings, false)
+	video.subtitle_follow_vertical_offset = video.SubtitleDepth.restore_follow(settings, true)
+	video.set_stereo_focus(float(settings.get_value("video", "stereo_focus_distance", video.stereo_focus)))
+	video.set_stereo_focus_mode(int(settings.get_value("video", "stereo_focus_mode", 0)))
 	video.subtitle_position = video.SubtitleDepth.restore_position(settings)
 	video.subtitle_horizontal_center = video.SubtitleDepth.restore_center(settings, false)
 	video.subtitle_vertical_center = video.SubtitleDepth.restore_center(settings, true)
@@ -4600,7 +4611,7 @@ func _library_settings() -> Dictionary:
 		"depth_position_default": video.depth_position,
 		"video_auto_3d": video.default_auto_depth,
 		"depth_text_protection": false,
-		"subtitle_distance": video.subtitle_distance,
+		"subtitle_distance": video.subtitle_distance, "subtitle_follow_view": video.subtitle_follow_view,
 		"subtitle_position": video.subtitle_position,
 		"subtitle_horizontal_position": video.subtitle_horizontal_position,
 		"subtitle_vertical_position": video.subtitle_vertical_position,
@@ -4961,6 +4972,14 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			video.subtitle_line = video.SubtitleStyle.normalize_line(value)
 			settings.set_value("subtitles", "line", video.subtitle_line)
 			settings.save(settings_path)
+		"subtitle_follow_view":
+			video.subtitle_follow_view = int(value) != 0
+			settings.set_value("subtitles", "follow_view", video.subtitle_follow_view)
+			settings.save(settings_path)
+		"stereo_focus_mode":
+			video.set_stereo_focus_mode(int(value))
+			settings.set_value("video", "stereo_focus_mode", video.stereo_focus_mode)
+			settings.save(settings_path)
 		"subtitle_direction":
 			video.subtitle_direction = int(value)
 			settings.set_value("subtitles", "direction", video.subtitle_direction)
@@ -5154,7 +5173,7 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		"subtitle_delay", "secondary_subtitle_delay":
 			if value is Dictionary and not video.commit_subtitle_delay(float(value.value), str(value.source_uri), str(value.get("subtitle_key", "__current__"))):
 				if is_instance_valid(player_menu): player_menu.refresh()
-		"alpha_keep_background", "alpha_mask_blend", "seek_mode", "hdr_to_sdr", "depth_render", "video_auto_3d", "depth_text_protection", "subtitle_distance", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line": _on_setting_changed(key, value)
+		"alpha_keep_background", "alpha_mask_blend", "seek_mode", "hdr_to_sdr", "depth_render", "video_auto_3d", "depth_text_protection", "subtitle_distance", "subtitle_follow_view", "stereo_focus_mode", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line": _on_setting_changed(key, value)
 		"viewing_eye": video.set_viewing_eye(int(value))
 		"spatial_auto_disparity": video.set_spatial_auto_disparity(bool(value))
 		"spatial_match_fov":
@@ -5310,7 +5329,7 @@ func _menu_state() -> Dictionary:
 		"playing": video.requested_play, "playback_state": video.media.state, "loading_caption": _video_loading_caption(),
 		"alpha_requested": video.alpha_wanted(), "alpha_enabled": video.alpha_enabled,
 		"loop": video.loop_enabled, "playback_mode": playback_mode, "stereo": video.stereo_sbs, "swap_eyes": video.swap_eyes,
-		"viewing_eye": video.viewing_eye, "stereo_horizontal": video.stereo_horizontal, "stereo_vertical": video.stereo_vertical, "stereo_focus": video.stereo_focus,
+		"viewing_eye": video.viewing_eye, "stereo_horizontal": video.stereo_horizontal, "stereo_vertical": video.stereo_vertical, "stereo_focus": video.stereo_focus, "stereo_focus_mode": video.stereo_focus_mode,
 		"view_horizontal": video.view_horizontal * 100.0, "view_vertical": video.view_vertical * 100.0, "view_zoom": video.view_zoom * 100.0,
 		"immersive_adjustment_gauges": bool(settings.get_value("ui", "immersive_adjustment_gauges", true)),
 		"top_bottom": video.stereo_sbs and video.top_bottom, "stereo_half": video.stereo_sbs and video.stereo_half, "fisheye_fov": video.fisheye_fov,
@@ -5370,7 +5389,8 @@ func _menu_state() -> Dictionary:
 		"subtitle_style": video.subtitle_style,
 		"subtitle_pgs_tint": video.subtitle_pgs_tint,
 		"subtitle_line": video.subtitle_line,
-		"subtitle_distance": video.subtitle_distance, "color_grade": video.color_grade.snapshot(),
+		"subtitle_distance": video.subtitle_distance, "subtitle_follow_view": video.subtitle_follow_view,
+		"subtitle_distance_measured": video.subtitle_follow_view and video.autofocus_measures, "color_grade": video.color_grade.snapshot(),
 		"subtitle_position": video.subtitle_position,
 		"subtitle_horizontal_position": video.subtitle_horizontal_position,
 		"subtitle_vertical_position": video.subtitle_vertical_position,
@@ -6736,7 +6756,10 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 		if not photo_active: video.set_stereo_alignment(key, float(value))
 		return
 	if key == "stereo_focus":
-		if not photo_active: video.set_stereo_focus(float(value))
+		if photo_active: return
+		video.set_stereo_focus(float(value))
+		settings.set_value("video", "stereo_focus_distance", video.stereo_focus)
+		settings.save(settings_path)
 		return
 	elif key in ImmersiveAdjustments.KEYS:
 		if not photo_active: video.set_immersive_adjustment(key, float(value) / 100.0)
@@ -6827,6 +6850,7 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 
 func _save_subtitle_centers() -> void:
 	video.SubtitleDepth.save_centers(settings, video.subtitle_horizontal_center, video.subtitle_vertical_center)
+	video.SubtitleDepth.save_follow(settings, video.subtitle_follow_horizontal_offset, video.subtitle_follow_vertical_offset)
 
 func _save_playback_adjustments() -> void:
 	video.commit_stereo_view()
@@ -7566,18 +7590,18 @@ func _migrate_protected_favorites() -> void:
 		var key := Video.ModeMemory.key_for(uri)
 		var success := true
 		var has_public_data := false
-		for memory in [video.mode_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
+		for memory in [video.mode_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory, photo.grade_memory]:
 			var memory_key: String = memory.entry_key(uri)
 			if memory.entries.has(memory_key):
 				has_public_data = true
 				success = favorites.private_remember(uri, memory.directory.get_file() + "/" + memory._value_field(), memory.entries[memory_key].get(memory._value_field(), {})) and success
 		if success and has_public_data: keys.append(key); ThumbnailCache.forget(uri)
 		if success and has_public_data:
-			for memory in [video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory]:
+			for memory in [video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.grade_memory]:
 				var memory_key: String = memory.entry_key(uri)
 				if not keys.has(memory_key): keys.append(memory_key)
 	if not keys.is_empty():
-		for memory in [video.mode_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
+		for memory in [video.mode_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory, photo.grade_memory]:
 			if not memory.purge_keys(keys):
 				favorites.last_error = "Privacy cleanup failed"
 				if recent_menu: recent_menu.status = favorites.last_error
@@ -7620,7 +7644,7 @@ func _clear_file_settings(network_only: bool) -> void:
 	video.commit_stereo_view()
 	if not network_only or not Privacy.is_local(video.local_uri): video.discard_file_settings()
 	for memory in [video.mode_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.audio_timing,
-			video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
+			video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory, photo.grade_memory]:
 		var keys: Array = memory.entries.keys()
 		if network_only:
 			keys = keys.filter(func(key): return memory.entries[key].get("network", false))
@@ -7629,6 +7653,7 @@ func _clear_file_settings(network_only: bool) -> void:
 	if PlatformMethods.supports(platform_plugin, "clear_listening_cache") and not platform_plugin.clear_listening_cache(network_only):
 		_privacy_cleanup_failed(); return
 	if favorites and not favorites.clear_private_records(network_only, true): _privacy_cleanup_failed()
+	if photo_active: photo.restore_color_grade()
 
 func _privacy_cleanup_failed() -> void:
 	if recent_menu: recent_menu.status = I18n.t("Privacy cleanup failed")

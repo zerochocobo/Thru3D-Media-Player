@@ -151,6 +151,53 @@ class WebVideoBilibiliCaptureTest {
             assertNull(WebVideoBilibiliCapture.formats(page, media))
         }
     }
+
+    @Test fun anamorphicTrackRequiresExactPresentedSizeAndQuality() {
+        val media = fixture().put("width", 960).put("height", 720).put("bilibili_quality", 64)
+        val track = media.getJSONObject("bilibili").getJSONArray("video").getJSONObject(0)
+        track.put("id", 64).put("width", 1280).put("height", 720)
+        assertNull(WebVideoBilibiliCapture.formats(page, media))
+        media.put("bilibili_frame_width", 1280)
+        assertNull(WebVideoBilibiliCapture.formats(page, media))
+        media.put("bilibili_frame_height", 720)
+        assertEquals(1280, WebVideoBilibiliCapture.formats(page, media)!!.getJSONArray("formats").getJSONObject(0).getInt("width"))
+        for (width in listOf(1281, 1280.25, 8193, "1280")) {
+            val invalid = JSONObject(media.toString()).put("bilibili_frame_width", width)
+            assertNull(WebVideoBilibiliCapture.formats(page, invalid))
+        }
+        media.put("bilibili_quality", 80)
+        assertNull(WebVideoBilibiliCapture.formats(page, media))
+    }
+
+    @Test fun outgoingQualityFinishingLastDoesNotOverrideTheDecodedQuality() {
+        val media = fixture()
+        val tracks = media.getJSONObject("bilibili").getJSONArray("video")
+        tracks.put(JSONObject(tracks.getJSONObject(0).toString()).put("id", 120)
+            .put("width", 3840).put("height", 2160).put("urls", JSONArray().put(url(120))))
+        val requests = media.getJSONArray("network")
+        requests.put(JSONObject(requests.getJSONObject(0).toString()).put("url", url(120)).put("at", 2000))
+        fun selectedUrl() = WebVideoBilibiliCapture.formats(page, media)
+            ?.getJSONArray("formats")?.getJSONObject(0)?.getString("url")
+        assertEquals(url(80), selectedUrl())
+        media.put("width", 3840).put("height", 2160)
+        requests.getJSONObject(0).put("at", 3000)
+        assertEquals(url(120), selectedUrl())
+        requests.remove(2)
+        assertNull(selectedUrl())
+    }
+
+    @Test fun explicitQualityDistinguishesTwoTiersWithIdenticalDimensions() {
+        val media = fixture().put("bilibili_quality", 112)
+        val tracks = media.getJSONObject("bilibili").getJSONArray("video")
+        tracks.put(JSONObject(tracks.getJSONObject(0).toString()).put("id", 112)
+            .put("urls", JSONArray().put(url(112))))
+        assertNull(WebVideoBilibiliCapture.formats(page, media))
+        val requests = media.getJSONArray("network")
+        requests.put(JSONObject(requests.getJSONObject(0).toString()).put("url", url(112)).put("at", 500))
+        val formats = WebVideoBilibiliCapture.formats(page, media)!!.getJSONArray("formats")
+        assertEquals(url(112), formats.getJSONObject(0).getString("url"))
+        assertEquals(url(30280), formats.getJSONObject(1).getString("url"))
+    }
     @Test fun encryptedDisabledAndCorruptPayloadsRemainInBrowser() {
         assertNull(WebVideoBilibiliCapture.formats(page, fixture().put("protected", true)))
         assertNull(WebVideoBilibiliCapture.formats(page, fixture().put("bilibili_enabled", false)))

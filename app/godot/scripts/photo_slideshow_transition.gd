@@ -1,6 +1,8 @@
 extends RefCounted
-## Autoplay-only fixed window. Selection/IO/conversion keep their existing request ownership.
+## Fixed window for in-place transitions. Selection/IO/conversion keep their existing request ownership.
 ## The outgoing material is retained until the new picture is ready; one shader mixes RGBA.
+## Autoplay keeps the first picture's window and fits each picture into it. A manual switch holds a
+## window covering both pictures at their own sizes only while it lasts, so releasing it moves nothing.
 const FADE_SECONDS := 0.45
 ## Sweeping reveals need longer than a uniform mix to read as movement rather than a flicker.
 const SECONDS := {"fade": FADE_SECONDS, "wipe": 0.6, "depth": 0.8}
@@ -16,20 +18,27 @@ var fading := false
 var elapsed := 0.0
 var effect := "slide"
 var outgoing: MeshInstance3D
+var manual := false
+var _manual_base := Vector2.ZERO
 
 func _init(owner: Node3D) -> void: photo = owner
 
 func locked() -> bool: return frame_size != Vector2.ZERO
 func busy() -> bool: return waiting or fading
 
-func begin(value: String) -> bool:
+func begin(value: String, by_hand: bool = false) -> bool:
 	if value == "slide" or photo.geometry != 0 or photo.gallery.overview() or photo.gallery.focus >= 0 \
 		or photo.auto_portrait or photo.portrait_requested or photo.spatial_requested or photo.spatial_preferred \
 		or photo.animation.available() or photo._texture == null or not photo.panel.visible: return false
+	# A picture still on its way has nothing finished to copy; the switch falls back to the slide.
+	if waiting: return false
 	finish()
 	if not locked():
 		frame_size = photo._screen_base
 		frame_rotation = photo.screen_rotation
+		manual = by_hand; _manual_base = frame_size
+	# A switch before the last window was released starts from the picture's own size inside it.
+	elif manual: _manual_base = fitted_size
 	# Full GPU cache hits are reused. The existing departing path bounds uncached stereo copies.
 	outgoing = photo._surface_copy(photo.panel)
 	outgoing.material_override.set_shader_parameter("slideshow_mix", 1.0)
@@ -45,13 +54,22 @@ func update_mapping(aspect: float) -> void:
 	mapping = IDENTITY
 	if locked() and aspect > 0:
 		var angle := deg_to_rad(photo.screen_rotation - frame_rotation)
-		var c := cos(angle); var s := sin(angle)
-		var bounds := Vector2(absf(c) * aspect + absf(s), absf(s) * aspect + absf(c))
-		var fit := minf(frame_size.x / bounds.x, frame_size.y / bounds.y)
+		var fit: float
+		if manual:
+			var own: Vector2 = photo.natural_screen_size(aspect)
+			frame_size = _manual_base.max(own); fit = own.y
+		else:
+			var bounds := Vector2(absf(cos(angle)) * aspect + absf(sin(angle)), absf(sin(angle)) * aspect + absf(cos(angle)))
+			fit = minf(frame_size.x / bounds.x, frame_size.y / bounds.y)
 		fitted_size = Vector2(aspect, 1.0) * fit
-		mapping = Vector4(c * frame_size.x / (aspect * fit), s * frame_size.y / (aspect * fit),
-			-s * frame_size.x / fit, c * frame_size.y / fit)
+		mapping = _map(aspect, angle, fit)
 	if photo.material: photo.material.set_shader_parameter("slideshow_mapping", mapping)
+
+## Frame UV to photo UV for a picture of [aspect] at height [fit], turned by [angle] in the frame.
+func _map(aspect: float, angle: float, fit: float) -> Vector4:
+	var c := cos(angle); var s := sin(angle)
+	return Vector4(c * frame_size.x / (aspect * fit), s * frame_size.y / (aspect * fit),
+		-s * frame_size.x / fit, c * frame_size.y / fit)
 
 func content_size() -> Vector2:
 	return fitted_size * photo.screen_scale if locked() and fitted_size != Vector2.ZERO else photo._flat.size
@@ -81,6 +99,8 @@ func present() -> void:
 	target.set_shader_parameter("slideshow_old_disparity", float(old.get_shader_parameter("spatial_disparity")) if bool(old.get_shader_parameter("native_stereo")) and stereo and not bool(old.get_shader_parameter("top_bottom")) else 0.0)
 	for key in ["slideshow_mapping", "edge_feather", "depth_texture", "depth_rect", "depth_strength", "depth_convergence", "sharpness", "comic_overlay_enabled", "comic_overlay_texture"]:
 		target.set_shader_parameter("slideshow_old_" + key.trim_prefix("slideshow_"), old.get_shader_parameter(key))
+	# The outgoing picture filled its own panel; the shared window keeps it at that size.
+	if manual: target.set_shader_parameter("slideshow_old_mapping", _map(_manual_base.x / _manual_base.y, 0.0, _manual_base.y))
 	target.set_shader_parameter("slideshow_style", STYLES.get(effect, 0))
 	# The incoming map orders its own reveal; a picture without one borrows the outgoing map, else crossfades.
 	var depth_source := 0
@@ -111,6 +131,7 @@ func finish() -> void:
 func clear(reflow: bool = false) -> void:
 	var was_locked := locked()
 	finish(); frame_size = Vector2.ZERO; fitted_size = Vector2.ZERO; mapping = IDENTITY
+	manual = false; _manual_base = Vector2.ZERO
 	if photo.material: photo.material.set_shader_parameter("slideshow_mapping", IDENTITY)
 	if was_locked and reflow and photo.material: photo._apply_geometry()
 

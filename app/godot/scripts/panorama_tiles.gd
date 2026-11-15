@@ -147,7 +147,11 @@ func _install(cell: Vector2i, image: Image, report: Dictionary) -> void:
 	magnifier.set_shader_parameter("core_rect",Vector4(core.position.x,core.position.y,core.size.x,core.size.y))
 	magnifier.set_shader_parameter("decoded_rect",Vector4(rect.position.x,rect.position.y,rect.size.x,rect.size.y))
 	detail.material_override=magnifier; photo._detail.add_child(detail); details[cell]=detail
+	photo.color_grade.apply(material); photo.color_grade.apply(magnifier)
 	_update_materials()
+func apply_color_grade(grade: RefCounted) -> void:
+	for tile in tiles.values(): grade.apply(tile.material_override)
+	for detail in details.values(): grade.apply(detail.material_override)
 func _update_materials() -> void:
 	for tile in tiles.values():
 		tile.material_override.set_shader_parameter("opacity",photo.material.get_shader_parameter("presentation_opacity"))

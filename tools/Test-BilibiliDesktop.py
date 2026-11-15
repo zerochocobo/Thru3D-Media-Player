@@ -41,7 +41,7 @@ def extension(target, endpoint):
                 'browser_specific_settings': {'gecko': {'id': 'capture-test@thru3d.local'}},
                 'permissions': ['webRequest', 'webRequestBlocking', 'cookies', 'https://*/*', 'http://127.0.0.1/*'],
                 'background': {'scripts': ['bridge.js', 'bilibili.js', 'bilibili-response.js', 'network.js', 'shape.js']},
-                'content_scripts': [{'matches': ['https://www.bilibili.com/video/*', 'https://www.bilibili.com/bangumi/play/*'],
+                'content_scripts': [{'matches': ['https://www.bilibili.com/video/*', 'https://www.bilibili.com/bangumi/play/*', 'https://live.bilibili.com/*'],
                                      'js': ['bilibili.js', 'play-button.js', 'direct-return.js', 'media.js'], 'run_at': 'document_start'}]}
     (target / 'manifest.json').write_text(json.dumps(manifest), encoding='utf8')
     return hashes

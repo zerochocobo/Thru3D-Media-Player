@@ -742,6 +742,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val network = if (networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled || youkuEnabled || iqiyiEnabled || niconicoEnabled || twitchEnabled || tiktokEnabled || instagramEnabled || tedEnabled || redbullEnabled || naverEnabled || redditEnabled || streamableEnabled || archiveEnabled || odyseeEnabled || dailymotionEnabled) WebBrowserNetworkMedia.candidates(item,includeSegments=tencentEnabled || iqiyiEnabled || niconicoEnabled || tedEnabled || redbullEnabled || naverEnabled || redditEnabled || streamableEnabled || archiveEnabled || odyseeEnabled || dailymotionEnabled) else JSONArray()
                             val bilibili = item.optJSONObject("bilibili")?.takeIf { bilibiliEnabled &&
                                 !item.optBoolean("protected") && it.toString().length <= 96 * 1024 && it.optString("page") == tab.url }
+                            val biliLive = if (bilibiliEnabled && port.sender.isTopLevel && item.optString("frame") == port.sender.url)
+                                WebBrowserBilibiliLive.metadata(item, tab.url, network) else null
                             val serverHeaders = item.optJSONObject("server_headers")?.let { data ->
                                 data.keys().asSequence().take(4).associateWith { data.optString(it) }
                             }.orEmpty()
@@ -764,7 +766,9 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val odysee=if(odyseeEnabled)WebBrowserOdysee.metadata(item,tab.url) else null
                             val dailymotion=if(dailymotionEnabled && item.optString("frame")==port.sender.url)WebBrowserDailymotion.metadata(item,tab.url) else null
                             val iqiyi = if(iqiyiEnabled) WebBrowserIqiyi.metadata(item,tab.url) else null
-                            val biliIdentity = bilibili?.let { "${it.optString("id")}:${it.optString("cid")}:${it.optInt("part")}:${it.optString("ep")}" }.orEmpty()
+                            val biliIdentity = bilibili?.let {
+                                "${it.optString("id")}:${it.optString("cid")}:${it.optInt("part")}:${it.optString("ep")}:${item.optInt("bilibili_selected_quality")}"
+                            } ?: biliLive?.let { "live:${it.optString("room")}:${it.optInt("quality")}:${it.optInt("revision")}" }.orEmpty()
                             var captureIdentity = "${tab.id}:${tab.navigation}:${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}:${tab.bilibiliProbe}:${tab.douyinCaptureEnabled}:${weibo?.optString("page").orEmpty()}:$biliIdentity" +
                                 (tencent?.let { ":tencent:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
                                 (mango?.let { ":mango:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
@@ -797,7 +801,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                 .put("id", id).put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play"))
                                 .put("server_play", server && item.optBoolean("server_play"))
                                 .put("server_media", server)
-                                .put("bilibili_ready", bilibili != null && item.optBoolean("bilibili_ready"))
+                                .put("bilibili_ready", (bilibili != null || biliLive != null) && item.optBoolean("bilibili_ready"))
                                 .put("douyin_ready", douyin != null && item.optBoolean("douyin_ready")).put("douyin_page",douyin?.optString("page").orEmpty())
                                 .put("weibo_ready", weibo != null && item.optBoolean("weibo_ready"))
                                 .put("weibo_selected", weibo != null && item.optBoolean("weibo_selected"))
@@ -825,14 +829,14 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                 .put("mango_capture", if (mangoEnabled) WebBrowserMango.captureDiagnostics(data)
                                     .put("frame_matches", item.optString("frame") == tab.url).put("binding_valid", mango != null) else null)
                                 .put("mango_page",mango?.let { "https://www.mgtv.com/b/${it.optString("id")}.html" }.orEmpty())
-                                .put("selection", if (weibo != null || bilibili != null || tencent != null || mango != null || youku != null || iqiyi != null || douyin != null || niconico != null || twitch != null || tiktok != null || instagram != null || ted != null || redbull != null || naver != null || reddit != null || streamable != null || archive != null || odysee != null || dailymotion != null || direct) captureIdentity else "")
+                                .put("selection", if (weibo != null || bilibili != null || biliLive != null || tencent != null || mango != null || youku != null || iqiyi != null || douyin != null || niconico != null || twitch != null || tiktok != null || instagram != null || ted != null || redbull != null || naver != null || reddit != null || streamable != null || archive != null || odysee != null || dailymotion != null || direct) captureIdentity else "")
                                 .put("network_media", networkEnabled && (network.length() > 0 || !item.optBoolean("protected") && WebBrowserNetworkMedia.address(item.optString("source")) != null))
                                 .put("media_epoch", "${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}")
                                 .put("protected", item.optBoolean("protected"))
                                 .put("height", item.optInt("height").coerceIn(0, 32768))
                                 .put("playing", item.optBoolean("playing"))
                                 .put("time", item.optDouble("time", 0.0).takeIf { it.isFinite() && it >= 0 } ?: 0.0)
-                                .put("beta_time",instagram?.optDouble("start_seconds",item.optDouble("time",0.0)) ?: tiktok?.optDouble("start_seconds",item.optDouble("time",0.0)) ?: (item.optDouble("time",0.0).takeIf{it.isFinite()&&it>=0} ?: 0.0)))
+                                .put("beta_time",if (biliLive != null) 0.0 else instagram?.optDouble("start_seconds",item.optDouble("time",0.0)) ?: tiktok?.optDouble("start_seconds",item.optDouble("time",0.0)) ?: (item.optDouble("time",0.0).takeIf{it.isFinite()&&it>=0} ?: 0.0)))
                             val source = item.optString("source")
                             if (item.optString("frame").length <= 8192 && item.optString("agent").length <= 2048 &&
                                 (source.isEmpty() || (source.length <= 16384 && (source.startsWith("https://") || source.startsWith("http://"))) || item.optBoolean("protected"))) {
@@ -840,6 +844,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                     .put("network", network)
                                     .put("network_enabled", networkEnabled).put("direct_allowed", directAllowed)
                                     .put("bilibili_enabled", bilibiliEnabled).put("bilibili", bilibili)
+                                    .put("bilibili_live", biliLive)
                                     .put("douyin_enabled", douyinEnabled).put("douyin", douyin).put("douyin_source",if(douyin!=null)item.optString("douyin_source") else "")
                                     .put("weibo_enabled", weiboEnabled).put("weibo", weibo)
                                     .put("tencent_enabled",tencentEnabled).put("tencent",tencent)
@@ -871,7 +876,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                     tab.betaRequest = tab.weiboRequest; tab.betaSelection = captureIdentity
                                 }
                                 val biliClick = item.optLong("bilibili_request")
-                                if (bilibili != null && item.optBoolean("bilibili_ready") && biliClick > (tab.bilibiliClicks[port] ?: 0) &&
+                                if ((bilibili != null || biliLive != null) && item.optBoolean("bilibili_ready") && biliClick > (tab.bilibiliClicks[port] ?: 0) &&
                                     biliClick in 1..Int.MAX_VALUE.toLong() && active && current() === tab && tab.pauseToken == 0L) {
                                     tab.bilibiliClicks[port] = biliClick
                                     tab.betaRequest = ++nextBetaRequest; tab.betaSelection = captureIdentity
@@ -1521,6 +1526,14 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 for ((port, list) in tab.sources) for (index in 0 until list.length()) {
                     val item = list.getJSONObject(index)
                     if (WebBrowserMediaPolicy.selectedCandidate(listOf(item), request.optString("selection")) == null) continue
+                    val live = WebBrowserBilibiliLive.metadata(item, tab.url)
+                    if (live != null) {
+                        port.postMessage(JSONObject().put("action", "restore_bilibili_live").put("id", item.optString("id"))
+                            .put("epoch", item.optLong("network_epoch")).put("source", item.optString("bilibili_source"))
+                            .put("page", live.getString("page")).put("room", live.getString("room"))
+                            .put("revision", live.getInt("revision")).put("play", request.optBoolean("play")))
+                        continue
+                    }
                     val data = item.optJSONObject("bilibili") ?: continue
                     port.postMessage(JSONObject().put("action", "restore_bilibili").put("id", item.optString("id"))
                         .put("epoch", item.optLong("network_epoch")).put("source", item.optString("bilibili_source"))

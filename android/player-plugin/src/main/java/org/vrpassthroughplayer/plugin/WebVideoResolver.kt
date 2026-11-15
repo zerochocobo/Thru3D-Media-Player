@@ -69,6 +69,20 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                         ?: throw ExtractionFailure(reason)
                 } else currentMedia()
                 if (media?.optBoolean("protected") == true) throw ExtractionFailure("protected_content")
+                if (publicPage?.site == "bilibili_live") {
+                    if (!bilibiliBeta || directFile || selection.isEmpty()) throw ExtractionFailure("browser_playback_required")
+                    attempt.stage = "browser_capture"
+                    val descriptor = media?.let { WebVideoBilibiliLive.descriptor(url, it, selection) }
+                        ?: throw ExtractionFailure("browser_stream_changed")
+                    val latest = currentMedia()?.let { WebVideoBilibiliLive.descriptor(url, it, selection) }
+                    if (latest?.video?.url != descriptor.video.url) throw ExtractionFailure("browser_stream_changed")
+                    synchronized(this) {
+                        if (closed || active !== attempt || attempt.cancelled.get()) return@submit
+                        ready(descriptor)
+                        state = descriptor.publicJson().put("id", id).put("state", "ready").put("resolution_route", "browser_bilibili_live")
+                    }
+                    return@submit
+                }
                 if (directFile) {
                     attempt.stage = "browser_capture"
                     if (selection.isEmpty() || media == null || media.optString("capture_identity") != selection)

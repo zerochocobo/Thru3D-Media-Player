@@ -8,8 +8,8 @@ const DEFAULTS := {"temperature": 6500.0, "tint": 0.0, "exposure": 0.0, "contras
 const PAGES := [["temperature", "tint", "exposure", "contrast", "gamma", "saturation"],
 	["red_gain", "green_gain", "blue_gain"],
 	["red_gamma", "green_gamma", "blue_gamma", "red_offset", "green_offset", "blue_offset"]]
-const NAMES := {"temperature": "Temperature", "tint": "Tint", "exposure": "Exposure", "contrast": "Contrast",
-	"gamma": "Gamma", "saturation": "Saturation", "red_gain": "Red gain", "green_gain": "Green gain", "blue_gain": "Blue gain",
+const NAMES := {"temperature": "Temperature", "tint": "Tint", "exposure": "Exposure (brightness)", "contrast": "Contrast",
+	"gamma": "Gamma (shadow lift)", "saturation": "Saturation", "red_gain": "Red gain", "green_gain": "Green gain", "blue_gain": "Blue gain",
 	"red_gamma": "Red gamma", "green_gamma": "Green gamma", "blue_gamma": "Blue gamma",
 	"red_offset": "Red offset", "green_offset": "Green offset", "blue_offset": "Blue offset"}
 var preset := "Original"
@@ -25,6 +25,23 @@ static func limits(key: String) -> Vector3:
 		"saturation": return Vector3(0, 2, 0.01)
 		"red_gain", "green_gain", "blue_gain": return Vector3(0, 2, 0.01)
 	return Vector3(-0.2, 0.2, 0.005)
+
+## Gamma sliders run the way people expect: right brightens (or adds that colour). They show and move
+## 1 / gamma evenly; the grade keeps the gamma exponent itself.
+const INVERTED := ["gamma", "red_gamma", "green_gamma", "blue_gamma"]
+
+static func shown(key: String, value: float) -> float:
+	return 1.0 / value if key in INVERTED and value > 0.0 else value
+
+static func slider_fraction(key: String, value: float) -> float:
+	var span := limits(key)
+	if key in INVERTED: return clampf((shown(key, value) - 1.0 / span.y) / (1.0 / span.x - 1.0 / span.y), 0.0, 1.0)
+	return clampf((value - span.x) / (span.y - span.x), 0.0, 1.0)
+
+static func slider_value(key: String, fraction: float) -> float:
+	var span := limits(key)
+	if key in INVERTED: return clean(key, 1.0 / lerpf(1.0 / span.y, 1.0 / span.x, clampf(fraction, 0.0, 1.0)))
+	return clean(key, lerpf(span.x, span.y, clampf(fraction, 0.0, 1.0)))
 
 static func clean(key: String, value: Variant) -> float:
 	var number := float(value) if value is float or value is int else float(DEFAULTS[key])

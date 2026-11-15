@@ -82,7 +82,7 @@ test('document-start observer retains only public part mapping when SSR script r
 });
 const event = () => { const listeners = []; return { listeners, addListener(fn, filter, flags) { listeners.push({ fn, filter, flags }); },
   fire(d) { listeners.forEach(({ fn }) => fn(d)); } }; };
-function fixture() {
+function fixture(documentPage = page) {
   const streams = new Map(), timers = new Map(); let seq = 0;
   const webRequest = Object.fromEntries(['onBeforeRequest', 'onHeadersReceived', 'onSendHeaders', 'onBeforeRedirect', 'onErrorOccurred', 'onCompleted'].map(k => [k, event()]));
   webRequest.filterResponseData = id => {
@@ -92,11 +92,11 @@ function fixture() {
   const browser = { runtime: { id: 'fixture', onConnect: event() }, webRequest, cookies: { getAll: async () => [] } };
   const c = vm.createContext({ browser, URL, TextDecoder, Uint8Array, Date, setTimeout(fn) { timers.set(++seq, fn); return seq; }, clearTimeout(id) { timers.delete(id); } });
   for (const name of ['bilibili.js', 'bilibili-response.js', 'network.js']) vm.runInContext(fs.readFileSync(path.join(root, name), 'utf8'), c);
-  const messages = [], port = { name: 'thru3d_network', sender: { id: 'fixture', tab: { id: 1 }, frameId: 0, url: page, documentId: 'doc' },
+  const messages = [], port = { name: 'thru3d_network', sender: { id: 'fixture', tab: { id: 1 }, frameId: 0, url: documentPage, documentId: 'doc' },
     onMessage: event(), onDisconnect: event(), postMessage(m) { messages.push(m); }, disconnect() { this.onDisconnect.fire(); } };
   browser.runtime.onConnect.fire(port);
   const update = (url = page, enabled = true) => port.onMessage.fire({ type: 'context', page: url, enabled: false, bilibili: enabled, reset: true });
-  update();
+  update(documentPage);
   const begin = (cid = '12345', extra = {}) => {
     const d = { requestId: String(++seq), url: `https://api.bilibili.com/x/player/wbi/playurl?bvid=BV1234567890&cid=${cid}`, method: 'GET',
       tabId: 1, frameId: 0, documentId: 'doc', documentUrl: page, type: 'xmlhttprequest', ...extra };
@@ -111,12 +111,36 @@ function fixture() {
   };
   return { webRequest, port, streams, timers, messages, update, begin, finish, last: () => messages.at(-1) };
 }
-test('only five explicit API patterns block; split UTF-8 response is forwarded unchanged before normalization', () => {
+test('only explicit Bilibili API and live CDN patterns use response filters', () => {
   const f = fixture(), capture = f.begin();
   const blocking = f.webRequest.onBeforeRequest.listeners.filter(l => l.flags?.includes('blocking'));
-  assert.equal(blocking.length, 1); assert.equal(blocking[0].filter.urls.length, 5);
-  assert.ok(blocking[0].filter.urls.every(u => /^https:\/\/api\.bilibili\.com\/(?:(?:x\/player\/(?:wbi\/)?|pgc\/player\/web\/v2\/)playurl|ogv\/player\/playview|x\/web-interface\/wbi\/view\/detail)\*$/.test(u)));
+  assert.equal(blocking.length, 2);
+  const api = blocking.find(l => l.filter.urls.length === 5);
+  assert.ok(api.filter.urls.every(u => /^https:\/\/api\.bilibili\.com\/(?:(?:x\/player\/(?:wbi\/)?|pgc\/player\/web\/v2\/)playurl|ogv\/player\/playview|x\/web-interface\/wbi\/view\/detail)\*$/.test(u)));
+  assert.deepEqual(Array.from(blocking.find(l => l !== api).filter.urls),
+    ['https://*.bilivideo.com/*.m3u8*', 'https://*.bilivideo.cn/*.m3u8*', 'https://*.smtcdns.net/*.m3u8*']);
   f.finish(capture.stream); assert.equal(f.last().bilibili[0].cid, '12345'); assert.equal(f.timers.size, 0);
+});
+
+test('live MIME fallback observes a real master, forwards bytes unchanged, and rejects HTML and encrypted HLS', () => {
+  const room = 'https://live.bilibili.com/12345', f = fixture(room);
+  const url = 'https://test.bilivideo.com/master.m3u8?token=synthetic';
+  function receive(requestId, body) {
+    const d = {requestId, url, documentUrl:room, tabId:1, frameId:0, documentId:'doc', method:'GET', type:'xmlhttprequest'};
+    f.webRequest.onBeforeRequest.fire(d);
+    f.webRequest.onSendHeaders.fire({...d, requestHeaders:[{name:'User-Agent',value:'fixture'}]});
+    f.webRequest.onHeadersReceived.fire({...d,statusCode:200,responseHeaders:[{name:'Content-Type',value:'text/html'}]});
+    const stream = f.streams.get(requestId);
+    const bytes=Uint8Array.from(Buffer.from(body));
+    stream.ondata({data:bytes.buffer}); stream.onstop();
+    assert.equal(Buffer.concat(stream.written).toString(),body);
+  }
+  receive('html','<html>Not HLS</html>');
+  receive('encrypted','#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="key"\n#EXT-X-STREAM-INF:BANDWIDTH=100\nchild.m3u8');
+  assert.equal(f.last().candidates.length,0);
+  receive('master','#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-STREAM-INF:BANDWIDTH=100\nhttps://child.smtcdns.net/child.m3u8?quality=400');
+  assert.equal(f.last().candidates[0].live_child,'https://child.smtcdns.net/child.m3u8?quality=400');
+  assert.equal(f.last().candidates[0].headers['user-agent'],'fixture');
 });
 test('next-part response can start before pushState and finish after it, without reusing first-part metadata', () => {
   const f = fixture(); f.finish(f.begin().stream);

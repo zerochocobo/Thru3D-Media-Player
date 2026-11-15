@@ -45,7 +45,7 @@ func run() -> void:
 			for button in menu._buttons:
 				if menu.choices.targets.get(button.target,{}).get("key")=="autoplay_effect":
 					if button.rect.position.y<menu._backdrop.position.y-half.y or button.rect.end.x>half.x:failures.append("Effect dropdown outside settings "+language)
-					if button.rect.end.y>=slider.node.position.y:failures.append("Effect dropdown is not below interval "+language)
+					if button.rect.position.y<=slider.node.position.y:failures.append("Effect dropdown is not above interval "+language)
 				if menu.choices.targets.get(button.target,{}).get("key")!="autoplay_interval":continue
 				if button.rect.position.y<menu._backdrop.position.y-half.y or button.rect.end.x>half.x:failures.append("Slider outside settings "+language)
 			await capture("settings-%s-%d"%[language,interval])

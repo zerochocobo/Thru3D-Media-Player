@@ -10,6 +10,7 @@ uniform vec3 detail_forward = vec3(0.0, 0.0, -1.0);
 uniform vec3 detail_right = vec3(1.0, 0.0, 0.0);
 uniform vec3 detail_up = vec3(0.0, 1.0, 0.0);
 uniform float content_zoom = 1.0;
+#include "res://shaders/color_grade.gdshaderinc"
 void fragment() {
     vec2 uv = UV;
     if (detail_projection) {
@@ -20,6 +21,6 @@ void fragment() {
         uv = (pixel - decoded_rect.xy) / decoded_rect.zw;
     }
     vec4 color = texture(tile_texture, uv);
-    ALBEDO = color.rgb;
+    ALBEDO = color_grade(color.rgb);
     ALPHA = color.a * opacity;
 }

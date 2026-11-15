@@ -1163,6 +1163,17 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_pipMainSamples(JNIEnv* env,
  * its place in the frame (layout 0 mono, 1 side by side, 2 top-bottom); one view spans span.x radians
  * across and span.y high. Same lens mapping as video_coordinates.gdshaderinc (equidistant, padded
  * circle, or the whole eye rectangle for half-width stereo); outside the lens is black. */
+/** Frame point p of the direction (longitude, latitude) as source eye [eye] sees it. */
+const char* const kFisheyeLens =
+        "  vec3 d = vec3(cos(latitude) * sin(longitude), sin(latitude), -cos(latitude) * cos(longitude));\n"
+        "  float radial = acos(clamp(-d.z, -1.0, 1.0)) / radians(fov * 0.5);\n"
+        "  if (radial > 1.0) { result = vec4(0.0, 0.0, 0.0, 1.0); return; }\n"
+        "  float transverse = length(d.xy);\n"
+        "  vec2 axis = transverse > 0.000001 ? vec2(d.x, -d.y) / transverse : vec2(0.0);\n"
+        "  vec2 eye_size = vec2(source_size.x * (frame_layout == 1 ? 0.5 : 1.0), source_size.y * (frame_layout == 2 ? 0.5 : 1.0));\n"
+        "  vec2 p = half_eyes == 1 ? vec2(0.5) + 0.5 * radial * axis : vec2(0.5) + 0.5 * radial * axis * min(eye_size.x, eye_size.y) / eye_size;\n"
+        "  p = clamp(p, vec2(0.5) / eye_size, vec2(1.0) - vec2(0.5) / eye_size);\n"
+        "  if (frame_layout == 1) { p.x = (p.x + eye) * 0.5; } else if (frame_layout == 2) { p.y = (p.y + eye) * 0.5; }\n";
 GLuint fisheye_programs[2] = {0, 0};
 GLuint fisheye_sampler = 0;
 /** Debug only: the next remap reads its picture back, every [step]th pixel, as RGBA8 rows top-first. */
@@ -1187,16 +1198,7 @@ GLuint fisheye_program(bool external) {
         "  float eye = 0.0; vec2 local = uv;\n"
         "  if (frame_layout == 1) { eye = step(0.5, uv.x); local.x = uv.x * 2.0 - eye; }\n"
         "  else if (frame_layout == 2) { eye = step(0.5, uv.y); local.y = uv.y * 2.0 - eye; }\n"
-        "  float longitude = (local.x - 0.5) * span.x; float latitude = (0.5 - local.y) * span.y;\n"
-        "  vec3 d = vec3(cos(latitude) * sin(longitude), sin(latitude), -cos(latitude) * cos(longitude));\n"
-        "  float radial = acos(clamp(-d.z, -1.0, 1.0)) / radians(fov * 0.5);\n"
-        "  if (radial > 1.0) { result = vec4(0.0, 0.0, 0.0, 1.0); return; }\n"
-        "  float transverse = length(d.xy);\n"
-        "  vec2 axis = transverse > 0.000001 ? vec2(d.x, -d.y) / transverse : vec2(0.0);\n"
-        "  vec2 eye_size = vec2(source_size.x * (frame_layout == 1 ? 0.5 : 1.0), source_size.y * (frame_layout == 2 ? 0.5 : 1.0));\n"
-        "  vec2 p = half_eyes == 1 ? vec2(0.5) + 0.5 * radial * axis : vec2(0.5) + 0.5 * radial * axis * min(eye_size.x, eye_size.y) / eye_size;\n"
-        "  p = clamp(p, vec2(0.5) / eye_size, vec2(1.0) - vec2(0.5) / eye_size);\n"
-        "  if (frame_layout == 1) { p.x = (p.x + eye) * 0.5; } else if (frame_layout == 2) { p.y = (p.y + eye) * 0.5; }\n"
+        "  float longitude = (local.x - 0.5) * span.x; float latitude = (0.5 - local.y) * span.y;\n" + kFisheyeLens +
         "  vec3 c = texture(source, p * uv_scale).rgb;\n"
         "  result = vec4(raw_output == 1 ? c : to_linear(c), 1.0);\n"
         "}\n";
@@ -1292,6 +1294,147 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_remapFisheye(JNIEnv* env, j
     if (status != GL_FRAMEBUFFER_COMPLETE || error != GL_NO_ERROR)
         log(ANDROID_LOG_WARN, "remapFisheye framebuffer status " + std::to_string(status) + " GL error " + std::to_string(error));
     return status == GL_FRAMEBUFFER_COMPLETE && error == GL_NO_ERROR ? JNI_TRUE : JNI_FALSE;
+}
+
+/** Automatic stereo focus of a fisheye frame (StereoFocusProbe): the two shown eyes' pictures around the
+ * view centre, remapped to equirect side by side into a small image of their brightness. It is read
+ * into a buffer the GPU fills on its own time, so no frame waits for it. */
+struct LensProbe { GLuint programs[2] = {0, 0}, texture = 0, buffer = 0; GLsync fence = nullptr; int width = 0, height = 0; } lens_probe;
+GLuint lens_probe_program(bool external) {
+    GLuint& program = lens_probe.programs[external ? 1 : 0];
+    if (program && glIsProgram(program)) return program;
+    static const char* vertex = "#version 300 es\n"
+        "void main() { vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n";
+    const std::string fragment = std::string("#version 300 es\n") +
+        (external ? "#extension GL_OES_EGL_image_external_essl3 : require\n" : "") +
+        "precision highp float;\n" +
+        (external ? "uniform samplerExternalOES source;\n" : "uniform sampler2D source;\n") +
+        "uniform vec2 target; uniform vec2 source_size; uniform vec2 gaze; uniform vec2 reach; uniform vec2 uv_scale;\n"
+        "uniform float fov; uniform int frame_layout; uniform int half_eyes; uniform int swap_eyes;\n"
+        "out vec4 result;\n"
+        "void main() {\n"
+        "  vec2 uv = gl_FragCoord.xy / target; // row 0 is the top; the shown left eye fills the left half\n"
+        "  float shown = step(0.5, uv.x); vec2 local = vec2(uv.x * 2.0 - shown, uv.y);\n"
+        "  float eye = swap_eyes == 1 ? 1.0 - shown : shown;\n"
+        "  float longitude = gaze.x + (local.x - 0.5) * 2.0 * reach.x; float latitude = gaze.y + (0.5 - local.y) * 2.0 * reach.y;\n" + kFisheyeLens +
+        "  result = vec4(vec3(dot(texture(source, p * uv_scale).rgb, vec3(0.299, 0.587, 0.114))), 1.0);\n"
+        "}\n";
+    const GLuint vs = compile(GL_VERTEX_SHADER, vertex), fs = compile(GL_FRAGMENT_SHADER, fragment.c_str());
+    if (!vs || !fs) { if (vs) glDeleteShader(vs); if (fs) glDeleteShader(fs); return 0; }
+    program = glCreateProgram();
+    glAttachShader(program, vs); glAttachShader(program, fs); glLinkProgram(program);
+    glDeleteShader(vs); glDeleteShader(fs);
+    GLint ok = 0; glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    if (!ok) { log(ANDROID_LOG_WARN, "lens probe program does not link"); glDeleteProgram(program); program = 0; }
+    return program;
+}
+
+/** Draws the probe of the fisheye frame [texture] and starts its readback, replacing an unread one.
+ * params: layout (1 side by side, 2 top-bottom), half_eyes, fov degrees, source width, source height,
+ * UV scale x, UV scale y, view centre longitude, latitude, half a patch across, down (radians), swap. */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_probeFisheye(JNIEnv* env, jclass, jint texture, jboolean external, jfloatArray params, jint width, jint height) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!params || env->GetArrayLength(params) < 12 || width <= 0 || height <= 0 || width > 2048 || height > 2048
+        || texture <= 0 || !glIsTexture(static_cast<GLuint>(texture))) return JNI_FALSE;
+    float v[12] = {};
+    env->GetFloatArrayRegion(params, 0, 12, v);
+    const GLenum kind = external == JNI_TRUE ? GL_TEXTURE_EXTERNAL_OES : GL_TEXTURE_2D;
+    LensProbe& probe = lens_probe;
+    while (glGetError() != GL_NO_ERROR) {}
+    GLenum status = GL_FRAMEBUFFER_COMPLETE;
+    {
+        DrawState saved;
+        GLint previous_external = 0, previous_read = 0, previous_pack = 0;
+        glActiveTexture(GL_TEXTURE0);
+        if (kind == GL_TEXTURE_EXTERNAL_OES) glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &previous_external);
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previous_read); glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previous_pack);
+        const GLuint program = lens_probe_program(kind == GL_TEXTURE_EXTERNAL_OES);
+        if (!program) return JNI_FALSE;
+        if (!fisheye_sampler || !glIsSampler(fisheye_sampler)) {
+            glGenSamplers(1, &fisheye_sampler);
+            glSamplerParameteri(fisheye_sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glSamplerParameteri(fisheye_sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glSamplerParameteri(fisheye_sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glSamplerParameteri(fisheye_sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+        if (probe.fence) { glDeleteSync(probe.fence); probe.fence = nullptr; }
+        const size_t bytes = static_cast<size_t>(width) * height * 4;
+        if (!probe.texture || !glIsTexture(probe.texture) || !probe.buffer || !glIsBuffer(probe.buffer) || probe.width != width || probe.height != height) {
+            if (probe.texture && glIsTexture(probe.texture)) glDeleteTextures(1, &probe.texture);
+            if (probe.buffer && glIsBuffer(probe.buffer)) glDeleteBuffers(1, &probe.buffer);
+            glGenTextures(1, &probe.texture);
+            glBindTexture(GL_TEXTURE_2D, probe.texture);
+            glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, width, height);
+            glGenBuffers(1, &probe.buffer);
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, probe.buffer);
+            glBufferData(GL_PIXEL_PACK_BUFFER, static_cast<GLsizeiptr>(bytes), nullptr, GL_STREAM_READ);
+            probe.width = width; probe.height = height;
+        }
+        GLuint framebuffer = 0;
+        glGenFramebuffers(1, &framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, probe.texture, 0);
+        status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (status == GL_FRAMEBUFFER_COMPLETE) {
+            glDisable(GL_BLEND); glDisable(GL_SCISSOR_TEST); glDisable(GL_DEPTH_TEST);
+            glDisable(GL_CULL_FACE); glDisable(GL_STENCIL_TEST); glDisable(GL_DITHER);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            glViewport(0, 0, width, height);
+            glUseProgram(program);
+            glBindVertexArray(0);
+            glBindTexture(kind, static_cast<GLuint>(texture)); glBindSampler(0, fisheye_sampler);
+            glUniform1i(glGetUniformLocation(program, "source"), 0);
+            glUniform2f(glGetUniformLocation(program, "target"), static_cast<float>(width), static_cast<float>(height));
+            glUniform1i(glGetUniformLocation(program, "frame_layout"), static_cast<int>(v[0]));
+            glUniform1i(glGetUniformLocation(program, "half_eyes"), static_cast<int>(v[1]));
+            glUniform1f(glGetUniformLocation(program, "fov"), v[2]);
+            glUniform2f(glGetUniformLocation(program, "source_size"), v[3], v[4]);
+            glUniform2f(glGetUniformLocation(program, "uv_scale"), v[5], v[6]);
+            glUniform2f(glGetUniformLocation(program, "gaze"), v[7], v[8]);
+            glUniform2f(glGetUniformLocation(program, "reach"), v[9], v[10]);
+            glUniform1i(glGetUniformLocation(program, "swap_eyes"), v[11] > 0.5f ? 1 : 0);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, probe.buffer);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            probe.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        }
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, static_cast<GLuint>(previous_pack));
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previous_read));
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &framebuffer);
+        if (kind == GL_TEXTURE_EXTERNAL_OES) glBindTexture(GL_TEXTURE_EXTERNAL_OES, static_cast<GLuint>(previous_external));
+    }
+    const GLenum error = glGetError();
+    if (status != GL_FRAMEBUFFER_COMPLETE || error != GL_NO_ERROR || !probe.fence) {
+        log(ANDROID_LOG_WARN, "probeFisheye framebuffer status " + std::to_string(status) + " GL error " + std::to_string(error));
+        if (probe.fence) { glDeleteSync(probe.fence); probe.fence = nullptr; }
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
+}
+/** The probe's RGBA8 rows, top first, once the GPU has written them; empty until then. */
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_takeFisheyeProbe(JNIEnv* env, jclass) {
+    std::lock_guard<std::mutex> lock(mutex);
+    LensProbe& probe = lens_probe;
+    if (!probe.fence || !glIsBuffer(probe.buffer)) return env->NewByteArray(0);
+    const GLenum waited = glClientWaitSync(probe.fence, GL_SYNC_FLUSH_COMMANDS_BIT, 0);
+    if (waited == GL_TIMEOUT_EXPIRED) return env->NewByteArray(0);
+    glDeleteSync(probe.fence); probe.fence = nullptr;
+    if (waited != GL_ALREADY_SIGNALED && waited != GL_CONDITION_SATISFIED) return env->NewByteArray(0);
+    const jsize bytes = static_cast<jsize>(probe.width * probe.height * 4);
+    jbyteArray result = nullptr;
+    GLint previous_pack = 0; glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previous_pack);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, probe.buffer);
+    if (const void* pixels = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes, GL_MAP_READ_BIT)) {
+        result = env->NewByteArray(bytes);
+        env->SetByteArrayRegion(result, 0, bytes, static_cast<const jbyte*>(pixels));
+        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, static_cast<GLuint>(previous_pack));
+    return result ? result : env->NewByteArray(0);
 }
 
 /** Debug only: arms a readback of the next fisheye remap (every [step]th pixel). */

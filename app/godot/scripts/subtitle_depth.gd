@@ -6,6 +6,8 @@ const DEFAULT := 5.0
 const LIMITS := Vector2(0.1, 5.0)
 const DEFAULT_POSITION := 0.0
 const POSITION_LIMITS := Vector2(-60.0, 60.0)
+# Captions that follow the view sit this far from its centre, within sight.
+const FOLLOW_LIMITS := Vector2(-30.0, 30.0)
 
 static func position(value: float) -> float:
 	return clampf(value, POSITION_LIMITS.x, POSITION_LIMITS.y) if is_finite(value) else DEFAULT_POSITION
@@ -20,6 +22,30 @@ static func anchor(value: float, vertical: bool = false) -> Basis:
 # Yaw then pitch keeps the text upright along the local meridian.
 static func center_anchor(center: Vector2) -> Basis:
 	return Basis(Vector3.UP, -elevation(center.x)) * Basis(Vector3.RIGHT, elevation(center.y))
+
+# (yaw right, pitch up) in radians, the whole way round.
+static func view_anchor(angles: Vector2) -> Basis:
+	return Basis(Vector3.UP, -angles.x) * Basis(Vector3.RIGHT, clampf(angles.y, -deg_to_rad(80.0), deg_to_rad(80.0)))
+
+# Lines below the view centre, columns to its right.
+static func follow_default(vertical: bool) -> Vector2:
+	return Vector2(20, 0) if vertical else Vector2(0, -15)
+
+static func follow_offset(value: float, fallback: float = 0.0) -> float:
+	return clampf(value, FOLLOW_LIMITS.x, FOLLOW_LIMITS.y) if is_finite(value) else fallback
+
+static func restore_follow(settings: ConfigFile, vertical: bool) -> Vector2:
+	var offset := follow_default(vertical)
+	var prefix := "follow_vertical_" if vertical else "follow_horizontal_"
+	for axis in 2:
+		var value: Variant = settings.get_value("subtitles", prefix + ("x_degrees" if axis == 0 else "y_degrees"), offset[axis])
+		if value is float or value is int: offset[axis] = follow_offset(float(value), offset[axis])
+	return offset
+
+static func save_follow(settings: ConfigFile, horizontal: Vector2, vertical: Vector2) -> void:
+	for entry in [["follow_horizontal_", horizontal], ["follow_vertical_", vertical]]:
+		settings.set_value("subtitles", entry[0] + "x_degrees", follow_offset(entry[1].x))
+		settings.set_value("subtitles", entry[0] + "y_degrees", follow_offset(entry[1].y))
 
 static func restore_center(settings: ConfigFile, vertical: bool) -> Vector2:
 	var legacy := restore_position(settings)
@@ -38,6 +64,21 @@ static func save_centers(settings: ConfigFile, horizontal: Vector2, vertical: Ve
 static func direction_row(value: int) -> Dictionary:
 	return {"key": "subtitle_direction", "value": clampi(value, 0, 1), "choices": [
 		{"value": 0, "label": "Horizontal"}, {"value": 1, "label": "Vertical"}]}
+
+## Following captions keep to the view, just in front of what its centre shows (native stereo
+## pictures); fixed ones rest in the video at the chosen distance.
+static func mode_row(follow: bool) -> Dictionary:
+	return {"key": "subtitle_follow_view", "value": 1 if follow else 0, "choices": [
+		{"value": 0, "label": "Fixed position", "hint": "Subtitles stay in one place in the video. Set their distance to match the scene."},
+		{"value": 1, "label": "Follow view", "hint": "Subtitles follow where you look, at the distance of the scene there."}]}
+
+## A following caption's offset from the view centre.
+static func follow_row(key: String, value: float, vertical: bool) -> Dictionary:
+	var row := slider_row(key, value)
+	row.value = follow_offset(value)
+	row.span = Vector3(FOLLOW_LIMITS.x, FOLLOW_LIMITS.y, 1)
+	row.reset_value = follow_default(vertical)[0 if key == "subtitle_horizontal_position" else 1]
+	return row
 
 static func restore_position(settings: ConfigFile) -> float:
 	if settings.has_section_key("subtitles", "elevation_degrees"):

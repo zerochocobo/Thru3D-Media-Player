@@ -281,11 +281,14 @@ func set_filter(supersampling_mode: int, sharpening_mode: int) -> void:
 	supersampling = clampi(supersampling_mode, 0, 2); sharpening = clampi(sharpening_mode, 0, 2)
 	for slot in slots + bands: _apply_filter(slot.layer)
 
-## Opaque scenery (no passthrough beneath the layers) clears the projection alpha under menu
-## coverage instead of scaling it; see opaque_scene in the hole shaders.
+## Opaque scenery (nothing beneath the layers: no passthrough, video layer or browser underlay)
+## clears the projection alpha under menu coverage instead of scaling it; see opaque_scene in the
+## hole shaders. A video layer beneath would otherwise add onto the eye-buffer bar backdrop and
+## glow through it (Quest 3, 2026-11-15).
 var _opaque_scene := false
 func _sync_opaque_scene() -> void:
-	var opaque: bool = display != null and display.get("applied_passthrough") == false
+	var opaque: bool = display != null and display.get("applied_passthrough") == false \
+		and display.get("video_layer") == false and display.get("browser_layer") == false
 	if opaque == _opaque_scene: return
 	_opaque_scene = opaque
 	for slot in slots + bands: slot.hole.material_override.set_shader_parameter("opaque_scene", opaque)

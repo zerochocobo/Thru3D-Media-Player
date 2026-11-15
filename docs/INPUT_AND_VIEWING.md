@@ -31,3 +31,7 @@ Viewing-hand lock is session-only with guarded recovery and separate gesture own
 ## 0.17.9 video controls
 
 HDR to SDR can be enabled or disabled globally. The initial setting is Off on Meta and On on other runtimes. Supported immersive stereo video also offers a manual focus distance in the stereo viewing panel. For flat video and the beach screen, hold Grip and move the stick horizontally to resize the screen.
+
+## Stereo focus, captions and photo grading in 0.17.11
+
+Supported immersive stereo video offers automatic focus. Captions can stay fixed or follow the view with a movement threshold. Photo color settings can be saved for individual images and follow the per-file settings privacy preference.

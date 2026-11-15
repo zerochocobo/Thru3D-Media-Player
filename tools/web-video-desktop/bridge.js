@@ -32,6 +32,8 @@ function summarize(item) {
     api_video: tracks('video').includes(value), api_audio: tracks('audio').includes(value)});
   return {page_path: new URL(item.frame).pathname, part: Number(new URL(item.frame).searchParams.get('p') || 1), width: item.width, height: item.height, duration: item.duration, playing: item.playing,
     id:item.id,epoch:item.network_epoch,cid:data?.cid,ready:item.bilibili_ready,beta_click:item.bilibili_request || 0,
+    ...(item.bilibili_live ? {live:{room:item.bilibili_live.room,quality:item.bilibili_live.quality,revision:item.bilibili_live.revision,
+      matched_requested_playlist:(item.network || []).some(request=>request.kind==='hls' && request.url===item.bilibili_live.url)}} : {}),
     time: item.time, binding: item.bilibili_binding, response_status: item.bilibili_status,
     api_count: item.bilibili_api_count, view_count: item.bilibili_view_count, metadata: !!data, api_events: apiEvents, normalized_shapes: normalizedShapes,
     video_representations: data?.video.length || 0, audio_representations: data?.audio.length || 0,
@@ -55,7 +57,7 @@ browser.runtime.onConnect.addListener(port => {
   port.onMessage.addListener(message => {
     if (!Array.isArray(message.videos)) return;
     for (const item of message.videos) {
-      if (!/^https:\/\/www\.bilibili\.com\/(?:video|bangumi\/play)\//.test(item.frame || '')) continue;
+      if (!Thru3DBilibili.page(item.frame) && !Thru3DBilibili.liveRoom(item.frame)) continue;
       fetch(endpoint, {method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({...summarize(item), document_sequence: sequence})}).catch(() => {});
     }

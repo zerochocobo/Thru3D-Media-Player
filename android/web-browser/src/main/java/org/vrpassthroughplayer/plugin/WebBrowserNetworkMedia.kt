@@ -40,6 +40,10 @@ object WebBrowserNetworkMedia {
                     source.optString("request_url").takeIf { value -> value.length<=16384 && runCatching {
                         URI(value);address(value.substringBefore('#'))==uri
                     }.getOrDefault(false) }?.let{target.put("request_url",it)}
+                    if (kind == "hls" && WebBrowserBilibiliLive.room(item.optString("frame")) != null) {
+                        address(source.optString("live_child"))?.let { target.put("live_child", it.toString()) }
+                        if (source.optBoolean("live_leaf")) target.put("live_leaf", true)
+                    }
                 })
         }
         return result

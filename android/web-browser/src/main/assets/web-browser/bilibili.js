@@ -134,10 +134,10 @@ const Thru3DBilibili = (() => {
   };
   // Scheduling hint only: wait for both observed tracks before pausing a loading
   // player. Native validation still checks the complete pair after the pause.
-  const ready = (data, requests, width, height) => {
+  const ready = (data, requests, width, height, quality = 0) => {
     if (!data || width <= 0 || height <= 0) return false;
     const urls = new Set(requests.filter(r => r.kind === 'file').map(r => r.url));
-    return data.video.some(t => t.width === width && t.height === height && t.urls.some(u => urls.has(u))) &&
+    return data.video.some(t => (!quality || t.id === quality) && t.width === width && t.height === height && t.urls.some(u => urls.has(u))) &&
       data.audio.some(t => t.urls.some(u => urls.has(u)));
   };
   const episode = (document, value) => {
@@ -235,5 +235,70 @@ const Thru3DBilibili = (() => {
     initialStatus = 'mapped';
     return { identity, data };
   };
-  return { page, sameDocumentPage, view, viewIdentity, mediaCid, address, normalize, normalizePgc, merge, ready, episode, initial, initialStatus: () => initialStatus };
+  const liveRoom = value => {
+    try {
+      const u = new URL(value);
+      if (u.origin !== 'https://live.bilibili.com' || u.username || u.password) return null;
+      return /^\/([1-9][0-9]{0,19})\/?$/.exec(u.pathname)?.[1] || null;
+    } catch (_) { return null; }
+  };
+  const livePlaylist = (value, child = false) => {
+    if (typeof value !== 'string' || !value || value.length > 16384) return false;
+    try {
+      const u = new URL(value);
+      return u.protocol === 'https:' && !u.port && !u.username && !u.password && !u.hash &&
+        (/(?:^|\.)bilivideo\.(?:com|cn)$/.test(u.hostname) ||
+          child && /\.smtcdns\.net$/.test(u.hostname)) && /\.m3u8$/i.test(u.pathname);
+    } catch (_) { return false; }
+  };
+  const liveRendition = (value, stream, quality) => {
+    if (!livePlaylist(value) || typeof stream !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(stream)) return false;
+    const address = new URL(value);
+    const qualities = address.searchParams.getAll('qn');
+    return address.pathname.split('/').includes(stream) && qualities.length === 1 && qualities[0] === String(quality);
+  };
+  const livePlaylistBody = (value, text) => {
+    if (!livePlaylist(value, true) || typeof text !== 'string' || text.length > 65536) return null;
+    const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    if (lines[0] !== '#EXTM3U' || lines.length > 256 ||
+        lines.some(line => /^#EXT-X-(?:KEY|SESSION-KEY|ENDLIST|DISCONTINUITY|BYTERANGE)(?::|$)/.test(line))) return null;
+    const variants = lines.filter(line => line.startsWith('#EXT-X-STREAM-INF:'));
+    if (!variants.length) {
+      return lines.some(line => /^#EXT-X-MEDIA-SEQUENCE:[0-9]+$/.test(line)) &&
+        lines.some(line => line.startsWith('#EXT-X-MAP:')) &&
+        lines.some(line => line.startsWith('#EXTINF:')) ? {leaf:true} : null;
+    }
+    const addresses = lines.filter(line => !line.startsWith('#'));
+    if (variants.length !== 1 || addresses.length !== 1 ||
+        lines.indexOf(addresses[0]) !== lines.indexOf(variants[0]) + 1 ||
+        lines.some(line => /^#EXT-X-(?:MEDIA|I-FRAME-STREAM-INF|DEFINE)(?::|$)/.test(line))) return null;
+    try {
+      const base = new URL(value), child = new URL(addresses[0], base);
+      return child.href !== base.href && livePlaylist(child.href, true) ? {child:child.href} : null;
+    } catch (_) { return null; }
+  };
+  const liveDeclaration = (document, video, href) => {
+    const room = liveRoom(href);
+    if (!room || !video?.isConnected || video.ended || video.mediaKeys || video.duration !== Infinity ||
+        !video.currentSrc?.startsWith('blob:https://live.bilibili.com/') || !video.videoWidth || !video.videoHeight ||
+        document.querySelector('#live-player video') !== video) return null;
+    try {
+      if (!(video.getVideoPlaybackQuality().totalVideoFrames > 0)) return null;
+      const view = document.defaultView?.wrappedJSObject;
+      const response = view?.__NEPTUNE_IS_MY_WAIFU__?.roomInitRes;
+      const data = response?.data, player = view?.livePlayer;
+      if (response?.code !== 0 || data?.encrypted !== false || data.is_locked !== false ||
+          data.is_hidden !== false || data.live_status !== 1 ||
+          ![data.room_id, data.short_id].some(id => String(id) === room) ||
+          player?.getVideoEl() !== (video.wrappedJSObject || video)) return null;
+      const info = player.getPlayerInfo(), quality = Number(info?.quality);
+      if (info?.liveStatus !== 1 || info.hdrType !== 0 || info.eotf !== 0 ||
+          !Number.isSafeInteger(quality) || quality < 1 || quality > 100000 || !livePlaylist(info.playurl)) return null;
+      const stream = typeof info.streamName === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(info.streamName) ?
+        info.streamName : '';
+      return {room, quality, url:info.playurl, page:href, stream};
+    } catch (_) { return null; }
+  };
+  return { page, sameDocumentPage, view, viewIdentity, mediaCid, address, normalize, normalizePgc, merge, ready, episode, initial, initialStatus: () => initialStatus,
+    liveRoom, livePlaylist, liveRendition, livePlaylistBody, liveDeclaration };
 })();

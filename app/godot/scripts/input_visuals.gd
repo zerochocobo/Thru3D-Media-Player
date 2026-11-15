@@ -223,12 +223,22 @@ func _prepare_meshes(node: Node, replace_material: bool) -> void:
 		if replace_material:
 			node.material_override = _material
 		elif node.mesh:
+			# Runtime and PICO controller models share the hands' ordered slot; an opaque
+			# material would draw first and be cut out by a cinema/beach overlay menu hole.
 			for surface in node.mesh.get_surface_count():
 				var material: Material = node.get_active_material(surface)
 				if material is BaseMaterial3D:
-					material = material.duplicate()
-					material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-					node.set_surface_override_material(surface, material)
+					var source := material as BaseMaterial3D
+					material = ShaderMaterial.new()
+					material.shader = PicoModel.MATERIAL_SHADER
+					material.set_shader_parameter("albedo", source.albedo_color)
+					material.set_shader_parameter("albedo_texture", source.albedo_texture)
+					material.set_shader_parameter("studio_light", false)
+					material.set_shader_parameter("vertex_color", source.vertex_color_use_as_albedo)
+				elif not (material is ShaderMaterial and material.shader == PicoModel.MATERIAL_SHADER):
+					continue
+				material.render_priority = MODEL_PRIORITY
+				node.set_surface_override_material(surface, material)
 	for child in node.get_children(): _prepare_meshes(child, replace_material)
 
 func _controller_model(left: bool) -> Node3D:

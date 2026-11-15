@@ -16,6 +16,7 @@ internal data class WebVideoPage(val site: String, val id: String, val url: Stri
             val uri = URI(if (text.startsWith("https://") || text.startsWith("http://")) text else links.singleOrNull() ?: text)
             require(uri.scheme in setOf("https", "http") && uri.rawUserInfo == null && uri.port in setOf(-1, 80, 443)) { "Invalid video page" }
             val host = uri.host?.lowercase(Locale.ROOT) ?: error("Invalid video page")
+            WebBrowserBilibiliLive.room(uri.toString())?.let { return WebVideoPage("bilibili_live", it, "https://live.bilibili.com/$it") }
             val query = uri.rawQuery.orEmpty().split('&').filter { it.isNotEmpty() }.associate {
                 URLDecoder.decode(it.substringBefore('='), "UTF-8") to URLDecoder.decode(it.substringAfter('=', ""), "UTF-8")
             }
@@ -132,7 +133,7 @@ internal class WebVideoTrack(
     val hasVideo get() = videoCodec.isNotBlank() && videoCodec != "none"
     val hasAudio get() = audioCodec.isNotBlank() && audioCodec != "none"
     init {
-        require(transport in setOf("file", "hls"))
+        require(transport in setOf("file", "hls", "live_hls"))
         require(browserManifest == null || transport == "hls" && browserHeaders != null &&
             browserManifest.startsWith("#EXTM3U") && browserManifest.toByteArray(Charsets.UTF_8).size <=
                 (if(browserIqiyi!=null) 1024*1024 else 160*1024)) { "Invalid observed manifest" }
@@ -157,6 +158,7 @@ internal class WebVideoDescriptor(val page: WebVideoPage, val title: String, val
         require(video.hasVideo && (video.hasAudio || audio?.hasAudio == true || silent)) { "Video or audio stream missing" }
         require(audio == null || !audio.hasVideo) { "Invalid separate audio track" }
         require(title.length <= 1024 && durationSeconds.isFinite() && durationSeconds >= 0) { "Invalid video metadata" }
+        require(video.transport != "live_hls" || page.site == "bilibili_live" && audio == null && durationSeconds == 0.0)
     }
     fun publicJson(): JSONObject = JSONObject().put("uri", page.url).put("site", page.site).put("media_id", page.id)
         .put("title", title).put("duration", durationSeconds).put("width", video.width).put("height", video.height)

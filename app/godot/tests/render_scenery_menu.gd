@@ -41,6 +41,16 @@ func _run() -> void:
 	I18n.use("en"); menu.refresh()
 	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
 	save_frame(viewport,camera,menu,output.path_join("requirements-en.png"))
+	# Where 3D scenes can be added the card has a second page for them.
+	menu.scene_import=Node.new(); menu.navigate_back(); menu._activate(menu.HELP)
+	for language in ["en","zh","ja"]:
+		I18n.use(language); menu.refresh()
+		await create_timer(.15).timeout; await RenderingServer.frame_post_draw
+		save_frame(viewport,camera,menu,output.path_join("requirements-scene-%s.png"%language))
+	menu._activate(menu.HELP_IMAGE)
+	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
+	save_frame(viewport,camera,menu,output.path_join("requirements-tabs.png"))
+	menu.scene_import.free(); menu.scene_import=null
 	I18n.use("zh"); menu.navigate_back()
 	menu.view="scene"
 	menu.session_controls_provider=func(): return {"cinema_visible":true,"cinema_lights":"auto","cinema_moving":false,"passthrough_visible":true}

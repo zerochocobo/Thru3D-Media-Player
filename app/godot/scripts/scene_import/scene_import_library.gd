@@ -7,7 +7,7 @@ signal added(id: String, fresh: bool)
 const Cache := preload("res://scripts/scene_import/scene_import_cache.gd")
 const Budget := preload("res://scripts/scene_import/scene_import_budget.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
-const EXTENSIONS := ["glb", "unity3d", "assetbundle", "bundle", "vrcw", "omission"]
+const EXTENSIONS := ["glb", "fbx", "unity3d", "assetbundle", "bundle", "ab", "vrcw", "omission"]
 const MAX_ENTRIES := 64
 const MAX_BYTES := 768 * 1024 * 1024
 var directory := "user://scene_import"

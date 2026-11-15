@@ -4,12 +4,14 @@ import java.io.Closeable
 
 /** Each track has an independent authenticated Range reader and unguessable local lease.
  * No signed upstream URL reaches mpv logs, Godot preferences, or the media history. */
-internal class WebVideoStreams(private val server: () -> LocalStreamServer) : Closeable {
-    internal class Lease(val page: String, val video: String, val audio: String?, val manifests: List<WebVideoHls> = emptyList())
+internal class WebVideoStreams(private val server: () -> LocalStreamServer,
+    private val acceptsLive: (WebVideoTrack) -> Boolean) : Closeable {
+    constructor(server: () -> LocalStreamServer) : this(server, WebVideoCapabilities(maxHeight = 2160)::accepts)
+    internal class Lease(val page: String, val video: String, val audio: String?, val manifests: List<Closeable> = emptyList())
     private val descriptors = LinkedHashMap<String, WebVideoDescriptor>()
     private val leases = LinkedHashMap<String, Lease>()
     private val current = HashMap<String, Lease>()
-    private val preparing = java.util.concurrent.ConcurrentHashMap.newKeySet<WebVideoHls>()
+    private val preparing = java.util.concurrent.ConcurrentHashMap.newKeySet<Closeable>()
     private var closed = false
 
     @Synchronized fun remember(descriptor: WebVideoDescriptor) {
@@ -19,6 +21,10 @@ internal class WebVideoStreams(private val server: () -> LocalStreamServer) : Cl
         while (descriptors.size > 16) descriptors.remove(descriptors.keys.first())
     }
     @Synchronized fun descriptor(page: String): WebVideoDescriptor? = descriptors[page]
+    fun liveSyncStart(video: String): Boolean {
+        val live = synchronized(this) { leases[video]?.manifests?.filterIsInstance<WebVideoLiveHls>()?.singleOrNull() }
+        return live?.startsAtSync() == true
+    }
     @Synchronized fun audio(page: String): List<SidecarAudio.Track> {
         val lease = current[page] ?: error("Video handoff is not ready")
         return lease.audio?.let { listOf(SidecarAudio.Track(it, "Original audio", requiredPrimary = true)) } ?: emptyList()
@@ -29,14 +35,24 @@ internal class WebVideoStreams(private val server: () -> LocalStreamServer) : Cl
         synchronized(this) { check(!closed) { "Video session closed" } }
         val local = server()
         val published = ArrayList<String>()
-        val manifests = ArrayList<WebVideoHls>()
+        val manifests = ArrayList<Closeable>()
+        fun <T : Closeable> register(manifest: T): T = synchronized(this) {
+            check(!closed)
+            manifests.add(manifest)
+            preparing.add(manifest)
+            manifest
+        }
         fun publish(track: WebVideoTrack, label: String): String {
             if (track.transport == "hls") {
-                val hls = synchronized(this) {
-                    check(!closed)
-                    WebVideoHls(local).also { manifests.add(it); preparing.add(it) }
+                return register(WebVideoHls(local)).prepare(track)
+            }
+            if (track.transport == "live_hls") {
+                val contextHeaders = track.headers.filterKeys {
+                    it in setOf("user-agent", "referer", "origin", "accept", "accept-language")
                 }
-                return hls.prepare(track)
+                return register(WebVideoLiveHls(local, track.url, track.headers,
+                    { uri -> if (uri == track.url) track.headers else contextHeaders },
+                    validateInitialization = { WebVideoBilibiliLive.checkInitialization(track, it, acceptsLive) })).prepare()
             }
             // Deliberately fail an expired lease. Refresh must first prove byte identity; silently
             // reusing old cached bytes for a different representation can corrupt playback.
@@ -58,7 +74,7 @@ internal class WebVideoStreams(private val server: () -> LocalStreamServer) : Cl
                 leases[video] = lease; current[lease.page] = lease
             }
             return video
-        } catch (e: Exception) { published.forEach(local::revoke); manifests.forEach(WebVideoHls::close); throw e }
+        } catch (e: Exception) { published.forEach(local::revoke); manifests.forEach(Closeable::close); throw e }
         finally { manifests.forEach(preparing::remove) }
     }
 
@@ -68,7 +84,7 @@ internal class WebVideoStreams(private val server: () -> LocalStreamServer) : Cl
         } ?: return
         val local = server()
         local.revoke(lease.video); lease.audio?.let(local::revoke)
-        lease.manifests.forEach(WebVideoHls::close)
+        lease.manifests.forEach(Closeable::close)
     }
 
     override fun close() {
@@ -76,7 +92,7 @@ internal class WebVideoStreams(private val server: () -> LocalStreamServer) : Cl
             closed = true; descriptors.clear(); current.clear()
             leases.values.toList().also { leases.clear() }
         }
-        preparing.toList().forEach(WebVideoHls::close); preparing.clear()
-        if (active.isNotEmpty()) server().let { local -> active.forEach { local.revoke(it.video); it.audio?.let(local::revoke); it.manifests.forEach(WebVideoHls::close) } }
+        preparing.toList().forEach(Closeable::close); preparing.clear()
+        if (active.isNotEmpty()) server().let { local -> active.forEach { local.revoke(it.video); it.audio?.let(local::revoke); it.manifests.forEach(Closeable::close) } }
     }
 }

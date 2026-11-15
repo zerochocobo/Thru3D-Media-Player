@@ -34,6 +34,9 @@ internal object VideoLayerNative {
     /** Production shader: active 1..7 selects guttered PiP rows; 8 processes the full main frame. */
     @JvmStatic external fun renderPip(slot: Int, color: Int, external: Boolean, mask: Int, active: Int, eyes: Int,
                                       common: FloatArray, windows: FloatArray): Boolean
+    /** Automatic stereo focus of a fisheye frame (params: see video_layer.cpp); the pixels follow later. */
+    @JvmStatic external fun probeFisheye(texture: Int, external: Boolean, params: FloatArray, width: Int, height: Int): Boolean
+    @JvmStatic external fun takeFisheyeProbe(): ByteArray
     @JvmStatic external fun requestFisheyeReadback(step: Int)
     @JvmStatic external fun takeFisheyeReadback(): ByteArray
     @JvmStatic external fun copyBand(slot: Int, texture: Int, y: Int, rows: Int): Boolean

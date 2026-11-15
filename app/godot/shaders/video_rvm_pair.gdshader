@@ -16,7 +16,9 @@ uniform vec4 model_content_rect = vec4(0.0, 0.0, 1.0, 1.0);
 // fraction between nearest and farthest, depth_convergence the near value left on the screen plane.
 // Stereo focus (test): each eye's sphere moves onto that eye (model units) and scales to the focused depth.
 uniform float focus_scale = 1.0;
-uniform float focus_offset = 0.0;
+uniform vec3 focus_offset = vec3(0.0);
+// Keeps the viewer's place inside the scaled sphere (zoom and position move the sphere off the viewer).
+uniform vec3 focus_centre = vec3(0.0);
 uniform bool depth_enabled = false;
 uniform float depth_shift = 0.035;
 uniform float depth_convergence = 0.35;
@@ -127,7 +129,7 @@ float packed_mask(vec2 full_uv, int eye) {
 void vertex() {
 	eye_index = int(VIEW_INDEX);
 	media_direction = VERTEX;
-	VERTEX = VERTEX * focus_scale + vec3(eye_index == 0 ? -focus_offset : focus_offset, 0.0, 0.0);
+	VERTEX = VERTEX * focus_scale + focus_centre + (eye_index == 0 ? -focus_offset : focus_offset);
 	subtitle_patch_position = vec3(0.0);
 	subtitle_patch_eye = vec3(0.0);
 	if (subtitle_enabled && !separate_subtitles) {

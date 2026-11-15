@@ -8,6 +8,59 @@ import java.util.concurrent.TimeUnit
 
 /** Private stdin only. Exercises current HLS discovery and the real production loopback lease. */
 object WebVideoCnDesktopProbe {
+    private fun liveProbe(input: JSONObject): JSONObject {
+        val result = JSONObject().put("passed", false)
+        var stage = "identity"
+        try {
+            val url = java.net.URI(input.getString("url"))
+            check(url.scheme == "https" && url.rawUserInfo == null && url.fragment == null &&
+                url.host.matches(Regex("(?:[A-Za-z0-9-]+\\.)+bilivideo\\.(?:com|cn)")))
+            val context = mapOf("user-agent" to input.getString("agent"), "referer" to "https://live.bilibili.com/",
+                "origin" to "https://live.bilibili.com")
+            LocalStreamServer().use { server ->
+                var dimensions: WebVideoContainer.Info? = null
+                WebVideoLiveHls(server, url, context, { context }, validateInitialization = { init ->
+                    stage = "initialization"
+                    val labels = setOf("ftyp", "styp", "moov", "moof", "free", "mdat", "hvcC", "avcC", "av1C",
+                        "colr", "mp4a", "av01", "hvc1", "hev1", "avc1", "enca", "encv", "sinf", "pssh", "nclx", "nclc")
+                    val shape = init.toString(Charsets.ISO_8859_1)
+                    result.put("init_bytes", init.size).put("init_tags", JSONArray(labels.filter { shape.contains(it) }.sorted()))
+                        .put("init_first_box", shape.takeIf { it.length >= 8 }?.substring(4,8)?.takeIf { it in labels })
+                    val data = WebVideoContainer.liveInitialization(init) ?: error("Live init unavailable")
+                    result.put("init_video", data.video).put("init_audio", data.audio)
+                        .put("init_width", data.width).put("init_height", data.height)
+                    check(data.video != "none" && data.audio != "none" && data.width > 0 && data.height > 0)
+                    dimensions = data
+                }).use { live ->
+                    stage = "lease"
+                    val local = live.prepare()
+                    val video = requireNotNull(dimensions)
+                    result.put("video_codec", video.video).put("audio_codec", video.audio)
+                        .put("width", video.width).put("height", video.height)
+                    stage = "decode"
+                    val probe = run(listOf("ffmpeg", "-hide_banner", "-v", "error", "-progress", "pipe:1", "-nostats",
+                        "-i", local, "-t", "12", "-map", "0:v:0", "-map", "0:a:0", "-f", "framecrc", "pipe:1"), 256 * 1024)
+                    val summary = probe.bytes.toString(Charsets.UTF_8)
+                    val frames = Regex("(?m)^0,").findAll(summary).count()
+                    val audioFrames = Regex("(?m)^1,").findAll(summary).count()
+                    val elapsedUs = Regex("(?m)^out_time_us=(\\d+)$").findAll(summary).lastOrNull()?.groupValues?.get(1)?.toLong() ?: 0
+                    val (refreshes, sequenceAdvance) = live.progress()
+                    result.put("decode_exit", probe.code).put("frames", frames).put("audio_frames", audioFrames).put("elapsed_us", elapsedUs)
+                        .put("playlist_refreshes", refreshes).put("media_sequence_advance", sequenceAdvance)
+                        .put("playlist_refresh_error", live.refreshError())
+                        .put("decode_diagnostics", probe.diagnostics)
+                        .put("passed", probe.code == 0 && frames >= 120 && audioFrames >= 100 && elapsedUs >= 11_000_000 && sequenceAdvance > 0)
+                    live.close()
+                    result.put("lease_revoked", !server.hasSource(local))
+                }
+            }
+        } catch (error: Exception) {
+            result.put("stage", stage).put("error_type", error.javaClass.simpleName)
+                .put("category", error.message?.takeIf { it in setOf("Live init unavailable", "Live rendition changed", "Unsupported live init", "Unsupported live playlist directive") })
+        }
+        return result
+    }
+
     /** Local failed-file diagnosis only. Fixed box names, lengths and errors;
      * no addresses, headers, response text or file bytes leave this process. */
     private fun archiveHeaderShape(uri: java.net.URI,headers: Map<String,String>,prefix: ByteArray,check: () -> Unit): JSONObject {
@@ -48,11 +101,68 @@ object WebVideoCnDesktopProbe {
         return result
     }
     private data class Output(val code: Int, val bytes: ByteArray, val diagnostics: JSONObject)
-    private fun run(arguments: List<String>, limit: Int = 65536): Output {
+
+    private fun liveStartShape(local: String): JSONArray {
+        val source = java.net.URI(local)
+        val lines = source.toURL().openStream().bufferedReader().use { it.readLines() }
+        val result = JSONArray()
+        val init = lines.firstOrNull { it.startsWith("#EXT-X-MAP:") }?.substringAfter("URI=\"")?.substringBefore('"')
+            ?: return result
+        fun localBytes(url: String, limit: Int): ByteArray {
+            val uri = java.net.URI(url)
+            require(uri.host == source.host && uri.port == source.port)
+            return uri.toURL().openStream().use { it.readNBytes(limit + 1).also { data -> require(data.size <= limit) } }
+        }
+        val initialization = localBytes(init, 2 * 1024 * 1024)
+        for (fragment in lines.filter { it.startsWith("http://") }.takeLast(5)) {
+            // Pipe the two fMP4 boxes in memory. No segment or signed URL is saved.
+            val segment = localBytes(fragment, 16 * 1024 * 1024)
+            val sync = WebVideoContainer.liveVideoTrack(initialization)?.let {
+                WebVideoContainer.liveStartsAtSync(segment, it)
+            }
+            val worker = ProcessBuilder("ffprobe", "-v", "error", "-f", "mov", "-select_streams", "v:0",
+                "-show_entries", "packet=flags", "-of", "csv=p=0", "pipe:0")
+                .redirectError(File(if (File.separatorChar == '\\') "NUL" else "/dev/null")).start()
+            try {
+                worker.outputStream.use { sink -> sink.write(initialization); sink.write(segment) }
+                val packets = worker.inputStream.bufferedReader().use { it.readLines() }
+                require(worker.waitFor(3, TimeUnit.SECONDS))
+                result.put(JSONObject().put("video_packets", packets.size)
+                    .put("first_sync_packet", packets.indexOfFirst { 'K' in it })
+                    .put("container_starts_at_sync", sync))
+            } finally { worker.destroyForcibly() }
+        }
+        return result
+    }
+
+    private fun run(arguments: List<String>, limit: Int = 65536, traceLiveFrames: Boolean = false): Output {
         val process = ProcessBuilder(arguments).start()
         val reader = Executors.newFixedThreadPool(2)
         val output = reader.submit<ByteArray> { process.inputStream.use { it.readNBytes(limit + 1) } }
+        val trace = JSONObject()
         val errors = reader.submit<ByteArray> { process.errorStream.use { input ->
+            if (traceLiveFrames) {
+                var lastFrame: Double? = null
+                val errorsByMediaTime = JSONArray()
+                val frameBuckets = sortedMapOf<Int, Int>()
+                val frameTime = Regex("pts_time:([0-9.]+)")
+                val prefix = StringBuilder()
+                input.bufferedReader().forEachLine { line ->
+                    if ("showinfo" in line) {
+                        frameTime.find(line)?.groupValues?.get(1)?.toDoubleOrNull()?.let { time ->
+                            lastFrame = time
+                            val bucket = time.toInt() / 5
+                            frameBuckets[bucket] = (frameBuckets[bucket] ?: 0) + 1
+                        }
+                    } else if ("invalid data" in line.lowercase() || "missing reference" in line.lowercase()) {
+                        if (errorsByMediaTime.length() < 64) errorsByMediaTime.put(lastFrame ?: JSONObject.NULL)
+                        if (prefix.length < 65536) prefix.appendLine(line.take(1024))
+                    }
+                }
+                trace.put("decoder_error_after_frame_seconds", errorsByMediaTime)
+                    .put("decoded_frames_by_five_seconds", JSONObject(frameBuckets.mapKeys { (key, _) -> (key * 5).toString() }))
+                return@submit prefix.toString().toByteArray(Charsets.UTF_8)
+            }
             val prefix = java.io.ByteArrayOutputStream();val buffer = ByteArray(8192)
             while (true) { val n = input.read(buffer);if (n < 0) break;if (prefix.size() < 65536) prefix.write(buffer,0,minOf(n,65536-prefix.size())) }
             prefix.toByteArray()
@@ -65,10 +175,73 @@ object WebVideoCnDesktopProbe {
             // can contain signed child URLs, so it never enters a report or log.
             val status = Regex("(?:http error|server returned)[: ]+([0-9]{3})").findAll(error).map { it.groupValues[1].toInt() }.distinct().toList()
             val flags = listOf("invalid data","input/output error","could not seek","end of file","failed to open segment","error when loading first segment","unable to seek").filter { it in error }
-            Output(process.exitValue(),bytes,JSONObject().put("http_status",org.json.JSONArray(status)).put("categories",org.json.JSONArray(flags)))
+            val shapes = JSONObject()
+            for (category in flags + listOf("error submitting packet", "missing reference", "failed to decode", "obu", "invalid obu", "no sequence header")) {
+                val count = error.lineSequence().count { category in it }
+                if (count > 0) shapes.put(category, count)
+            }
+            Output(process.exitValue(),bytes,JSONObject().put("http_status",org.json.JSONArray(status))
+                .put("categories",org.json.JSONArray(flags)).put("error_counts", shapes)
+                .apply { if (traceLiveFrames) put("frame_trace", trace) })
         } finally { process.destroyForcibly(); reader.shutdownNow() }
     }
     @JvmStatic fun main(args: Array<String>) {
+        if (args.firstOrNull() == "--bilibili-live-beta") {
+            val result = JSONObject().put("passed", false)
+            var stage = "capture"
+            try {
+                val bytes = System.`in`.readNBytes(128 * 1024 + 1)
+                require(bytes.size <= 128 * 1024)
+                val media = JSONObject(bytes.toString(Charsets.UTF_8))
+                val duration = if (args.size == 2) args[1].toInt().also { require(it in 12..30) } else 12
+                require(media.optInt("bilibili_request") > 0)
+                val selection = "desktop-clicked-live"
+                media.put("bilibili_enabled", true).put("capture_identity", selection)
+                val descriptor = WebVideoBilibiliLive.descriptor(media.getString("frame"), media, selection)
+                    ?: error("Live capture invalid")
+                stage = "lease"
+                LocalStreamServer().use { server ->
+                    var video: WebVideoTrack? = null
+                    WebVideoStreams({ server }, { video = it; true }).use { streams ->
+                        val local = streams.prepare(descriptor)
+                        val verifiedSyncStart = streams.liveSyncStart(local)
+                        val track = requireNotNull(video)
+                        stage = "decode"
+                        val decoded = run(listOf("ffmpeg", "-hide_banner", "-v", "info", "-progress", "pipe:1", "-nostats",
+                            "-i", local, "-t", duration.toString(), "-map", "0:v:0", "-map", "0:a:0", "-vf", "showinfo",
+                            "-f", "framecrc", "pipe:1"),
+                            512 * 1024, traceLiveFrames = true)
+                        val summary = decoded.bytes.toString(Charsets.UTF_8)
+                        val frames = Regex("(?m)^0,").findAll(summary).count()
+                        val audio = Regex("(?m)^1,").findAll(summary).count()
+                        val elapsed = Regex("(?m)^out_time_us=(\\d+)$").findAll(summary)
+                            .lastOrNull()?.groupValues?.get(1)?.toLong() ?: 0
+                        val segmentShape = runCatching { liveStartShape(local) }.getOrNull()
+                        streams.release(local)
+                        val revoked = !server.hasSource(local)
+                        result.put("room", descriptor.page.id).put("width", track.width).put("height", track.height)
+                            .put("target_seconds", duration)
+                            .put("verified_sync_start", verifiedSyncStart)
+                            .put("video_codec", track.videoCodec).put("audio_codec", track.audioCodec)
+                            .put("frames", frames).put("audio_frames", audio).put("elapsed_us", elapsed)
+                            .put("diagnostics", decoded.diagnostics).put("lease_revoked", revoked)
+                            .put("ending_window_packet_shape", segmentShape)
+                            .put("passed", decoded.code == 0 && frames >= duration * 10 && audio >= duration * 8 &&
+                                elapsed >= (duration - 1) * 1_000_000L && revoked)
+                    }
+                }
+            } catch (error: Exception) {
+                result.put("stage", stage).put("error_type", error.javaClass.simpleName)
+            }
+            println(result)
+            return
+        }
+        if (args.contentEquals(arrayOf("--bilibili-live-research"))) {
+            val bytes = System.`in`.readNBytes(16 * 1024 + 1)
+            require(bytes.size <= 16 * 1024)
+            println(liveProbe(JSONObject(bytes.toString(Charsets.UTF_8))))
+            return
+        }
         val result = JSONObject().put("passed",false).put("scope","production browser capture and bounded local decoding; no Android/UI claim")
         var stage = "input"
         try {
@@ -126,7 +299,12 @@ object WebVideoCnDesktopProbe {
             if (youku) media.put("youku_enabled",true).put("capture_identity","desktop-selected")
             if (mango) media.put("mango_enabled",true).put("capture_identity","desktop-selected")
             if (tencent) media.put("tencent_enabled",true).put("capture_identity","desktop-selected")
-            val page = if (douyin) WebVideoDouyinCapture.selectedPage(media) ?: error("Douyin rendered identity unavailable")
+            val page = if (bilibili) {
+                val source = WebVideoPage.parse(media.getString("frame"))
+                if (source.id.matches(Regex("(?:ep|ss)[1-9][0-9]{0,19}:1"))) {
+                    WebVideoBilibiliCapture.episodePage(source, media) ?: error("Bilibili episode identity unavailable")
+                } else source
+            } else if (douyin) WebVideoDouyinCapture.selectedPage(media) ?: error("Douyin rendered identity unavailable")
                 else if (weibo) WebVideoWeiboCapture.page(media.getString("frame"),media) ?: error("Weibo identity unavailable")
                 else if (iqiyi) WebVideoIqiyiCapture.page(media.getString("frame"),media) ?: error("iQIYI identity unavailable")
                 else if(twitch)WebVideoTwitchCapture.page(media.getString("frame"),media) ?: error("Twitch identity unavailable")
@@ -271,9 +449,10 @@ object WebVideoCnDesktopProbe {
                 result.put("av1_sdr_profile", profile)
                 check(profile != null)
             }
+            val targetSize = if (bilibili) WebVideoBilibiliCapture.trackSize(media) else media.optInt("width") to media.optInt("height")
             result.put("site",page.site).put("width",selected.video.width).put("height",selected.video.height)
                 .put("video_codec",selected.video.videoCodec).put("audio_codec",selected.audio?.audioCodec ?: selected.video.audioCodec)
-                .put("transport",selected.video.transport).put("current_size",selected.video.width==media.optInt("width") && selected.video.height==media.optInt("height"))
+                .put("transport",selected.video.transport).put("current_size",selected.video.width==targetSize.first && selected.video.height==targetSize.second)
             check(result.getBoolean("current_size") && (bilibili || douyin || weibo || tencent || twitch || naver || reddit || streamable || archive || odysee || tiktok || instagram || selected.video.transport=="hls"))
             stage="lease"
             LocalStreamServer().use { server -> WebVideoStreams { server }.use { streams ->
@@ -293,7 +472,8 @@ object WebVideoCnDesktopProbe {
                 check(numerator<=0xffffffffL && denominator<=0xffffffffL && numerator<=denominator*16 && denominator<=numerator*16)
                 val displayWidth=video.getInt("width").toLong()*numerator/denominator
                 result.put("decoded_display_width",displayWidth)
-                check((if(archive)displayWidth==media.optInt("width").toLong() else video.getInt("width")==media.optInt("width")) && video.getInt("height")==media.optInt("height"))
+                check((if(archive)displayWidth==targetSize.first.toLong() else video.getInt("width")==targetSize.first) && video.getInt("height")==targetSize.second)
+                if (bilibili && targetSize.first != media.optInt("width")) check(displayWidth == media.optInt("width").toLong())
                 val redditGif=reddit && media.getJSONObject("reddit").optString("binding")=="rendered_gif" && media.getJSONObject("reddit").opt("declared_gif")==true
                 val explicitSilent=selected.silent && (instagram && media.getJSONObject("instagram").get("has_audio")==false || redditGif)
                 if(reddit)result.put("reddit_gif_file",redditGif)

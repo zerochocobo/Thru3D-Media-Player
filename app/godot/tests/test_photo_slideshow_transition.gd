@@ -69,8 +69,34 @@ func behavior_checks() -> void:
 			var values := layer.layer_values(photo, origin, VideoLayer.PICTURE, Vector2(200,320))
 			check(values.size() >= 15 and is_equal_approx(values[13],size.x*0.390625) and is_equal_approx(values[14],size.y), "Native layer uses the same contained picture size")
 			photo.navigate(1)
-			check(not photo.slideshow.locked() and photo._transition_active and photo.placeholder_visible(), "Manual navigation retains its original slide and releases the fixed frame")
+			check(photo.slideshow.locked() and not photo.slideshow.manual and photo.slideshow.waiting and not photo._transition_active, "Manual navigation while autoplay runs keeps its window and transition")
 			photo.free()
+	# Without autoplay, a manual switch holds a window around both pictures at their own sizes and
+	# releases it when the transition ends: nothing moves or resizes at either end.
+	for effect in ["cut", "fade", "wipe", "depth"]:
+		var manual := make_photo()
+		manual.autoplay.set_effect(effect)
+		var own_old: Vector2 = manual._screen_base
+		check(manual.navigate(1) and manual.slideshow.waiting and manual.slideshow.manual and not manual._transition_active, "Manual %s switch waits on the current picture" % effect)
+		accept(manual, Vector2i(200,320))
+		var own_new: Vector2 = manual.natural_screen_size(200.0 / 320.0)
+		var frame := own_old.max(own_new)
+		check(manual.slideshow.frame_size.is_equal_approx(frame) and manual._flat.size.is_equal_approx(frame * manual.screen_scale), "Manual %s window covers both pictures" % effect)
+		check(manual.layer_content_scale().is_equal_approx(own_new / frame), "Manual %s shows the new picture at its own size" % effect)
+		if effect != "cut":
+			var old_mapping: Vector4 = manual.material.get_shader_parameter("slideshow_old_mapping")
+			check(Vector2(1.0 / old_mapping.x, 1.0 / old_mapping.w).is_equal_approx(own_old / frame), "Manual %s keeps the old picture at its own size" % effect)
+			check(manual.slideshow.fading, "Manual %s blends" % effect)
+			manual.slideshow.tick(10)
+		var pose: Transform3D = manual.panel.transform
+		var shown: Vector2 = manual.slideshow.content_size()
+		manual._process(0.0)
+		check(not manual.slideshow.locked() and manual.layer_content_scale() == Vector2.ONE and manual._flat.size.is_equal_approx(shown) and manual.panel.transform.is_equal_approx(pose), "Manual %s releases its window without moving or resizing the picture" % effect)
+		manual.free()
+	var sliding := make_photo()
+	sliding.navigate(1)
+	check(not sliding.slideshow.locked() and sliding._transition_active and sliding.placeholder_visible(), "Manual slide keeps its original movement")
+	sliding.free()
 	for effect in ["wipe", "depth"]:
 		var swept := make_photo()
 		advance(swept, effect); accept(swept, Vector2i(320,200))
@@ -195,6 +221,24 @@ func render_checks() -> void:
 	photo.slideshow.tick(photo.slideshow.FADE_SECONDS)
 	var after := await pixels("fade-after")
 	check(after.get_pixel(480,320).b > .9 and after.get_pixel(300,320).g > .9, "Portrait has blue content and transparent side margins")
+	photo.free()
+	# A manual landscape-to-portrait fade: each picture keeps its own size, so the first frame is the
+	# old picture exactly and releasing the shared window afterwards changes no pixel.
+	photo = make_photo()
+	var manual_before := await pixels("manual-before")
+	photo.autoplay.set_effect("fade"); photo.navigate(1)
+	accept(photo,Vector2i(200,320))
+	var manual_start := await pixels("manual-start")
+	check(manual_before.get_data() == manual_start.get_data(), "Manual fade starts with exactly the old picture at its own size")
+	photo.slideshow.tick(photo.slideshow.FADE_SECONDS * 0.5)
+	var manual_half := await pixels("manual-middle")
+	var mixed := manual_half.get_pixel(480,320); var edge := manual_half.get_pixel(300,320)
+	check(mixed.r > .35 and mixed.b > .35 and edge.r > .2 and edge.b < .05, "Manual fade mixes inside the portrait and fades the landscape edge alone")
+	photo.slideshow.tick(photo.slideshow.FADE_SECONDS)
+	var manual_end := await pixels("manual-end")
+	photo._process(0.0)
+	var manual_released := await pixels("manual-released")
+	check(not photo.slideshow.locked() and manual_end.get_data() == manual_released.get_data(), "Releasing the manual window changes no pixel")
 	photo.free()
 	# Old/new native stereo layout and eye swap are sampled independently in one blend.
 	photo = make_photo();photo.stereo_sbs = true;photo._size = Vector2(640,200)

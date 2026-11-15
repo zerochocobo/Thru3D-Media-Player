@@ -23,6 +23,7 @@ func run() -> void:
 				for id in count: platform.browser.tab_list.append({"id":id+1,"window":1,"title":"A long tab title 哔哩哔哩","url":platform.browser.url})
 				platform.browser.bilibili_beta_available = beta
 				platform.browser.videos[0].bilibili_ready = beta
+				platform.browser.videos[0].selection = "bili:toolbar" if beta else ""
 				platform.browser.network_capture_available = not beta
 				browser.next_poll=0; browser.tick()
 				var host: Node3D = browser.windows[1]
@@ -47,6 +48,9 @@ func run() -> void:
 								var origin: Vector3 = button.node.global_transform * Vector3(point.x,point.y,0.2)
 								var hit: Dictionary = host.local_hit(origin,-host.global_basis.z.normalized())
 								check(int(hit.get("target",-1)) == button.target, "Ray reaches expanded target and never neighboring actions: %s" % button.target)
+	browser.open("https://live.bilibili.com/1977215809")
+	platform.browser.bilibili_beta_available = true
+	platform.browser.videos[0].selection = "bili:live:toolbar"
 	var host: Node3D = browser.windows[1]
 	platform.browser.editing = false; browser.next_poll = 0; browser.tick()
 	for mode in ["floating", "cinema"]:

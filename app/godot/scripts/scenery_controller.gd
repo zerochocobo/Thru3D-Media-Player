@@ -294,7 +294,7 @@ func _begin_scene_import() -> void:
 	if use_native_dialogs:
 		if not _scene_dialog:
 			_scene_dialog=FileDialog.new(); _scene_dialog.use_native_dialog=true; _scene_dialog.access=FileDialog.ACCESS_FILESYSTEM
-			_scene_dialog.file_mode=FileDialog.FILE_MODE_OPEN_FILE; _scene_dialog.filters=PackedStringArray(["*.glb,*.unity3d,*.assetbundle,*.bundle,*.vrcw,*.omission;Scene"])
+			_scene_dialog.file_mode=FileDialog.FILE_MODE_OPEN_FILE; _scene_dialog.filters=PackedStringArray(["*.glb,*.fbx,*.unity3d,*.assetbundle,*.bundle,*.ab,*.vrcw,*.omission;Scene"])
 			_scene_dialog.file_selected.connect(func(path): app.scene_import.add(str(path),str(path).get_file(),FileAccess.get_size(str(path))); menu.show_added_scene())
 			add_child(_scene_dialog)
 		_scene_dialog.popup_centered_ratio(.75); return

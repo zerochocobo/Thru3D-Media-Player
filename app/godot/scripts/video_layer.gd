@@ -409,7 +409,7 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 			lower = (0.5 - (pano.y + pano.w)) * PI
 			pose.basis = pose.basis * Basis(Vector3.UP, -(pano.x + pano.z * 0.5 - 0.5) * TAU)
 		shape = PackedFloat32Array([surface.SPHERE_RADIUS * scale.x, span, upper, lower])
-	# Stereo focus (test): (radius, half eye separation) in metres for native stereo spheres; zero when off.
+	# Stereo focus: (radius, half eye separation) in metres for native stereo spheres; zero when off.
 	var focus: Vector2 = surface.stereo_focus_shape() * XRServer.world_scale \
 		if type == 2 and sbs and not processed and surface.has_method("stereo_focus_shape") else Vector2.ZERO
 	for eye in ([0] if not sbs else [1, 2]):
@@ -440,7 +440,10 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 		var eye_shape: PackedFloat32Array = aligned.shape
 		if focus.x > 0.0:
 			# Each eye's sphere centred on that eye with its radius at the focused depth.
-			eye_pose.origin += pose.basis.x * (focus.y if eye == 2 else -focus.y)
+			var across: Vector3 = surface.stereo_focus_axis() if surface.has_method("stereo_focus_axis") else Vector3.RIGHT
+			eye_pose.origin += pose.basis * across * (focus.y if eye == 2 else -focus.y)
+			# Zoom and position keep their fraction of the smaller sphere.
+			if surface.has_method("stereo_focus_shift"): eye_pose.origin += origin.global_transform.affine_inverse().basis * surface.stereo_focus_shift()
 			eye_shape[0] = focus.x
 		var quat := eye_pose.basis.get_rotation_quaternion()
 		var values := PackedFloat32Array([float(type), float(eye), eye_pose.origin.x, eye_pose.origin.y, eye_pose.origin.z, quat.x, quat.y, quat.z, quat.w])

@@ -102,6 +102,10 @@ const PHOTO_SCENERY_LIGHT := 986021
 const PHOTO_SCENERY_IMPORT := 986022
 const PHOTO_SCENERY_BACK := 986023
 const PHOTO_MAGAZINE_ORDER := 986050
+const PHOTO_COLOR := 986070
+const PHOTO_GRADE_PRESET := 986071
+const PHOTO_GRADE_PAGE := 986075
+const PHOTO_GRADE_RESET := 986078
 const SCENERIES := ["belfast", "morning", "night", "dark", "passthrough", "custom", "global_custom"]
 const SCENERY_NAMES := ["Belfast sunset", "Morning sky", "Milky Way panorama", "Dark background", "Passthrough", "Custom panorama", "Global custom panorama"]
 const LAYOUT_ORDER := [0, 4, 1, 2, 3]
@@ -236,6 +240,14 @@ func refresh_values() -> void:
 		_state = latest
 		if not _state.get("has_image", false) or int(_state.get("geometry", 0)) != 0 or _state.get("portrait_requested", false):
 			_finish_adjustment(); _adjustment = ""; _draw()
+		else:
+			_refresh_adjustments(); _update_highlights()
+		return
+	if _adjustment == "color_grade":
+		var image_changed: bool = latest.get("source_uri", "") != _state.get("source_uri", "") or latest.get("has_image", false) != _state.get("has_image", false)
+		_state = latest
+		if image_changed:
+			_finish_adjustment(); _draw()
 		else:
 			_refresh_adjustments(); _update_highlights()
 		return
@@ -461,6 +473,8 @@ func _draw_adjustments() -> void:
 		_draw_translation_settings(); return
 	if _adjustment == "comic_voice":
 		_draw_comic_settings(); return
+	if _adjustment == "color_grade":
+		_draw_color_grade(); return
 	if _adjustment != "photo_view":
 		super._draw_adjustments()
 		return
@@ -502,6 +516,52 @@ func _draw_adjustments() -> void:
 	_place_device_status(Vector2(0, (-0.485 if spatial else -0.385) - extra))
 	_refresh_adjustments()
 
+## The video grading page in the photo panel's own frame; values belong to the image on show.
+func _draw_color_grade() -> void:
+	var keys: Array = Grade.PAGES[_grade_page]
+	var height := 0.47 + keys.size() * 0.09
+	var top := 0.25
+	_set_backdrop(Vector2(1.55, height), Vector2(0, top + 0.07 - height / 2))
+	_button(PHOTO_ADJUST_BACK, "", Vector2(-0.66, top), Vector2(0.09, 0.065), true, "up")
+	_button(CLOSE, "", Vector2(0.66, top), Vector2(0.09, 0.065), true, "close")
+	_label(I18n.t("Color grading"), Vector3(0, top, 0.004), TEXT_PAGE_TITLE).font = ui_bold_font()
+	var enabled: bool = _grade_target_ready()
+	var preset_width := 1.40 / Grade.PRESETS.size()
+	for i in Grade.PRESETS.size():
+		_button(PHOTO_GRADE_PRESET + i, I18n.t(Grade.PRESETS[i]), Vector2(-0.70 + (i + 0.5) * preset_width, top - 0.11), Vector2(preset_width - 0.02, 0.065), enabled)
+		set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
+		_preset_buttons[Grade.PRESETS[i]] = _buttons.back()
+	for i in 3:
+		_button(PHOTO_GRADE_PAGE + i, I18n.t(["Basic", "RGB gain", "RGB gamma / offset"][i]), Vector2(-0.4733 + i * 0.4733, top - 0.195), Vector2(0.4533, 0.06))
+		set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
+		if i == _grade_page: _buttons.back().base_color = SELECTED
+	for i in keys.size():
+		_adjustment_row(450 + i, keys[i], Grade.NAMES[keys[i]], Grade.limits(keys[i]), top - 0.29 - i * 0.09)
+	var bottom := top - 0.29 - keys.size() * 0.09 - 0.005
+	_button(GRADE_PAGE_RESET, I18n.t("Reset page"), Vector2(-0.25, bottom), Vector2(0.46, 0.06), _grade_page_needs_reset())
+	set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
+	_button(PHOTO_GRADE_RESET, I18n.t("Reset custom"), Vector2(0.25, bottom), Vector2(0.46, 0.06), enabled)
+	set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
+	_place_device_status(Vector2(0, bottom - 0.11))
+	_refresh_adjustments()
+
+func _grade_target_ready() -> bool:
+	return _state.get("has_image", false)
+
+func _activate_color_grade(target: int) -> void:
+	_finish_adjustment()
+	if target == CLOSE: dismiss(); return
+	if target == PHOTO_ADJUST_BACK: _adjustment = ""
+	elif target >= PHOTO_GRADE_PAGE and target < PHOTO_GRADE_PAGE + 3: _grade_page = target - PHOTO_GRADE_PAGE
+	elif not _grade_target_ready(): return
+	elif target >= PHOTO_GRADE_PRESET and target < PHOTO_GRADE_PRESET + Grade.PRESETS.size():
+		adjustment_requested.emit("grade_preset", Grade.PRESETS[target - PHOTO_GRADE_PRESET]); adjustment_committed.emit()
+	elif target == PHOTO_GRADE_RESET:
+		adjustment_requested.emit("grade_reset", true); adjustment_committed.emit()
+	elif target == GRADE_PAGE_RESET and _grade_page_needs_reset():
+		adjustment_requested.emit("grade_reset_page", _grade_page); adjustment_committed.emit()
+	refresh()
+
 func _refresh_adjustments() -> void:
 	if _adjustment in ["comic_voice", "comic_translation"]: return
 	if _adjustment != "photo_view":
@@ -538,7 +598,8 @@ func _photo_background_button(target: int, caption: String, centre: Vector2, siz
 func _draw_panel() -> void:
 	var position_available: bool = _state.get("has_image", false) and int(_state.get("geometry", 0)) == 0 and not _state.get("native_stereo", false) and not _state.get("portrait_requested", false) and not _state.get("stereo", false)
 	var extra := 0.14 if position_available else 0.0
-	_set_backdrop(Vector2(1.16, 1.205 + extra), Vector2(0, -0.3275 - extra / 2))
+	const GRADE_ROW := 0.11
+	_set_backdrop(Vector2(1.16, 1.205 + extra + GRADE_ROW), Vector2(0, -0.3275 - (extra + GRADE_ROW) / 2))
 	_button(10, "", Vector2(-0.48, 0.2), Vector2(0.085, 0.065), true, "up")
 	_label(I18n.t("Images"), Vector3(0, 0.2, 0.004), 21)
 	_button(PHOTO_STRENGTH, I18n.t("3D depth") + "  " + _depth_caption(), Vector2(-0.26, 0.035), Vector2(0.49, 0.105), _can_depth(), "depth")
@@ -547,6 +608,9 @@ func _draw_panel() -> void:
 		var title := _label(I18n.t(DepthPosition.TITLE), Vector3(-0.50, -0.09, 0.004), TEXT_BODY)
 		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		_draw_depth_position_field(Vector2(0.18, -0.09), 0.66)
+	_button(PHOTO_COLOR, I18n.t("Color grading") + "  " + I18n.t(str(_state.get("color_grade", {}).get("preset", "Original"))), Vector2(0, -0.10 - extra), Vector2(1.01, 0.08), _state.get("has_image", false), "light")
+	_tips[PHOTO_COLOR] = I18n.t("Saved for this image only")
+	extra += GRADE_ROW
 	_photo_background_button(PHOTO_BACKGROUND, "Set as image background", Vector2(-0.26, -0.10 - extra), Vector2(0.49, 0.08))
 	_photo_background_button(PHOTO_GLOBAL_BACKGROUND, "Set global background", Vector2(0.26, -0.10 - extra), Vector2(0.49, 0.08), true)
 	_keep_background_row(-0.20 - extra)
@@ -565,17 +629,21 @@ func _draw_panel() -> void:
 		_button(target, I18n.t("On" if enabled else "Off"), Vector2(0.08 if enabled else 0.36, -0.515 - extra), Vector2(0.25, 0.075))
 		if vertical == enabled: _buttons.back().base_color = SELECTED
 		_tips[target] = I18n.t("Image perpendicular to ground" if enabled else "Image plane perpendicular to view")
-	var interval_label := _label(I18n.t("Autoplay interval"), Vector3(-0.50, -0.635 - extra, 0.004), TEXT_BODY)
-	interval_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	choices.field(null, {"key":"autoplay_interval", "value":_state.get("autoplay_interval", 5.0), "slider":true,
-		"span":Vector3(3,30,1), "unit":"s", "decimals":0, "reset_value":5.0}, Vector2(0.18,-0.635-extra), 0.66, 0.055)
-	var effect_label := _label(I18n.t("Autoplay transition"), Vector3(-0.50, -0.745 - extra, 0.004), TEXT_BODY)
+	var effect_label := _label(I18n.t("Image transition"), Vector3(-0.50, -0.635 - extra, 0.004), TEXT_BODY)
 	effect_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	var labels := {"cut": "Cut", "fade": "Crossfade", "wipe": "Soft wipe", "depth": "Depth dissolve", "slide": "Slide"}
 	# The list opens upward when the panel's lower edge leaves no room below the field.
 	choices.bounds = Vector2(-0.92 - extra, 0.25)
+	var effects: Array = []
+	for effect in Photo.autoplay_effects():
+		effects.append({"value":effect, "label":labels[effect]})
+		if effect == "depth": effects.back().hint = "Near areas appear first; images without 3D depth crossfade"
 	choices.field(null, {"key":"autoplay_effect", "value":_state.get("autoplay_effect", "slide"), "dropdown":true,
-		"choices":Photo.autoplay_effects().map(func(effect): return {"value":effect, "label":labels[effect]})}, Vector2(0.18,-0.745-extra), 0.66, 0.065)
+		"hint":"Used for manual switching and autoplay", "choices":effects}, Vector2(0.18,-0.635-extra), 0.66, 0.065)
+	var interval_label := _label(I18n.t("Autoplay interval"), Vector3(-0.50, -0.745 - extra, 0.004), TEXT_BODY)
+	interval_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	choices.field(null, {"key":"autoplay_interval", "value":_state.get("autoplay_interval", 5.0), "slider":true,
+		"span":Vector3(3,30,1), "unit":"s", "decimals":0, "reset_value":5.0}, Vector2(0.18,-0.745-extra), 0.66, 0.055)
 	_status = _label(_photo_status(), Vector3(0, -0.855 - extra, 0.004), 15)
 	_status.modulate = MUTED
 	_place_device_status(Vector2(0, -0.965 - extra))
@@ -754,6 +822,12 @@ func _activate(target: int) -> void:
 	if _activate_footer(target): return
 	if _activate_slider_reset(target): return
 	if _activate_depth_off(target): return
+	if _adjustment == "color_grade":
+		_activate_color_grade(target); return
+	if target == PHOTO_COLOR:
+		if not _state.get("has_image", false): return
+		_close_depth_slider(); _mode_open = false; _gallery_open = false
+		_grade_page = 0; _adjustment = "color_grade"; refresh(); return
 	if _adjustment == "photo_curve":
 		_finish_adjustment()
 		if target == CLOSE: dismiss(); return

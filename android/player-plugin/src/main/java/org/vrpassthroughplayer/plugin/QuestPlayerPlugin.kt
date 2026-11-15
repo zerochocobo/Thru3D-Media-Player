@@ -983,6 +983,11 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         if (closed.get()) 0 else mpv.requestLayerSnapshot(id, outWidth, outHeight)
     @UsedByGodot fun cancel_mpv_layer_snapshot(request: Int) { LayerThumbnail.cancel(request) }
     @UsedByGodot fun take_mpv_layer_thumbnail(request: Int): ByteArray = LayerThumbnail.pixels(request)
+    @UsedByGodot fun request_mpv_stereo_focus(id: Int, width: Int, height: Int, params: FloatArray): Boolean =
+        !closed.get() && mpv.requestStereoFocus(id, width, height, params)
+    @UsedByGodot fun request_lens_stereo_focus(texture: Int, external: Boolean, params: FloatArray): Boolean =
+        !closed.get() && runCatching { StereoFocusProbe.requestLens(texture, external, params) }.getOrDefault(false)
+    @UsedByGodot fun mpv_stereo_focus_result(): FloatArray = runCatching { StereoFocusProbe.result() }.getOrDefault(FloatArray(6))
     @UsedByGodot fun close_mpv_video(id: Int) { mpv.close(id) }
     @UsedByGodot fun request_mpv_pixel_mask(request: Int, id: Int, token: Long): Boolean =
         !closed.get() && mpv.requestPixelMask(request, id, token)

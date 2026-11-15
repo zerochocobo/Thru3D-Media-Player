@@ -170,7 +170,10 @@ const VR_GAUGES_OFF := 615
 const SPATIAL_DISPARITY := 487
 const SPATIAL_FOV := 488
 const STEREO_FOCUS := 489
-const FOCUS_MAX := 5.0 # metres at the slider's right end; its left end is off
+const FOCUS_SPAN := Vector3(0.3, 5.0, 0.05) # metres, the manual focus slider
+const FOCUS_DEFAULT := 1.5
+const STEREO_FOCUS_MODE := 630 # + off, automatic, manual
+const FOCUS_MODES := ["Off", "Auto", "Manual"]
 ## Settings is a popup above the bar like subtitles: its own tab, tile and close targets keep the
 ## bar's controls (100+) usable while it is open.
 const SCREEN_SETTINGS := 473
@@ -1114,11 +1117,17 @@ func _subtitle_controls() -> Array:
 		if secondary: sync.key = "secondary_subtitle_delay"
 		rows.append({"title": "Subtitle sync", "field": sync})
 	if _immersive_subtitles():
+		var follow: bool = _state.get("subtitle_follow_view", false)
+		rows.append({"title": "Subtitle mode", "field": SubtitleDepth.mode_row(follow)})
 		rows.append({"title": "Subtitle direction", "field": SubtitleDepth.direction_row(int(_state.get("subtitle_direction", 0)))})
 		for axis in ["horizontal", "vertical"]:
 			var key: String = "subtitle_" + axis + "_position"
-			rows.append({"title": "Horizontal position" if axis == "horizontal" else "Vertical position", "field": SubtitleDepth.slider_row(key, float(_state.get(key, 0.0)))})
-		rows.append({"title": "Distance", "field": SubtitleDepth.slider_row("subtitle_distance", float(_state.get("subtitle_distance", 5.0)))})
+			var value := float(_state.get(key, 0.0))
+			rows.append({"title": axis.capitalize() + (" offset" if follow else " position"),
+				"field": SubtitleDepth.follow_row(key, value, int(_state.get("subtitle_direction", 0)) == 1) if follow else SubtitleDepth.slider_row(key, value)})
+		# A picture whose depth cannot be measured keeps following captions at the chosen distance.
+		if not follow or not _state.get("subtitle_distance_measured", false):
+			rows.append({"title": "Distance", "field": SubtitleDepth.slider_row("subtitle_distance", float(_state.get("subtitle_distance", 5.0)))})
 	elif not _state.get("subtitle_below_screen", false):
 		rows.append({"title": "Vertical position", "field": {"key": "subtitle_flat_position", "value": _state.get("subtitle_flat_position", 0.0), "slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 0.0}})
 	rows.append({"title": "Subtitle size", "field": SubtitleStyle.size_row(float(_state.get("subtitle_size", 100.0)))})
@@ -1978,7 +1987,7 @@ func _base_bar_key() -> String:
 		_state.get("dual_subtitles_available", false), _state.get("dual_subtitles_enabled", false), _state.get("subtitle_edit_secondary", false), _state.get("secondary_subtitle_track", 0), _state.get("secondary_subtitle_delay", 0.0),
 		_state.get("source_uri", ""), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1), _state.get("audio_delay", 0.0), _state.get("audio_timing_key", ""),
 		_state.get("subtitle_browse_available", false), _state.get("subtitle_files_available", false), _state.get("subtitle_files_revision", 0), _state.get("subtitle_files_state", "idle"), _state.get("subtitle_file_loading", ""), _state.get("subtitle_file_error", ""), _state.get("subtitle_timing_key", ""),
-		_state.get("subtitle_distance", SubtitleDepth.DEFAULT), _state.get("subtitle_position", SubtitleDepth.DEFAULT_POSITION), _state.get("subtitle_horizontal_position", 0.0), _state.get("subtitle_vertical_position", 0.0), _state.get("subtitle_direction", 0), _state.get("subtitle_size", 100), _state.get("subtitle_transparency", 0.0), _state.get("subtitle_style", SubtitleStyle.DEFAULT), _state.get("subtitle_pgs_tint", SubtitleStyle.PGS_DEFAULT), _state.get("subtitle_line", 0), _state.get("subtitle_flat_position", 0), _state.get("subtitle_auto_load", true), _state.get("subtitle_delay", 0.0),
+		_state.get("subtitle_distance", SubtitleDepth.DEFAULT), _state.get("subtitle_follow_view", false), _state.get("subtitle_distance_measured", false), _state.get("subtitle_direction", 0), _state.get("subtitle_position", SubtitleDepth.DEFAULT_POSITION), _state.get("subtitle_horizontal_position", 0.0), _state.get("subtitle_vertical_position", 0.0), _state.get("subtitle_direction", 0), _state.get("subtitle_size", 100), _state.get("subtitle_transparency", 0.0), _state.get("subtitle_style", SubtitleStyle.DEFAULT), _state.get("subtitle_pgs_tint", SubtitleStyle.PGS_DEFAULT), _state.get("subtitle_line", 0), _state.get("subtitle_flat_position", 0), _state.get("subtitle_auto_load", true), _state.get("subtitle_delay", 0.0),
 		_state.get("narration_configurable", false), _state.get("narration_available", false), _state.get("narration_enabled", false), _state.get("narration_source", -1), _state.get("narration_sources", []), _state.get("narration_language", "auto"), _state.get("narration_resolved_language", ""), _state.get("narration_voice", ""), _state.get("narration_status", "off"), _state.get("narration_preview_busy", false), _state.get("narration_missing", 0), _state.get("narration_timing", "continuous"), _state.get("narration_delay", 0), _state.get("narration_progress", -1), _state.get("narration_profile", ""), _state.get("narration_voice_origin", "default"), _state.get("narration_line", 0), _state.get("narration_hide_subtitles", true), _state.get("narration_miss_reason", ""), _state.get("narration_language_required", false), _state.get("narration_preview_progress", -1)])
 
 func _seek_at(x: float) -> int:
@@ -2313,7 +2322,7 @@ func _settings_key() -> String:
 	return str([_state.get("cast", {})]) + str([_state.get("source_uri", ""), _state.get("has_video", false),
 		_state.get("portrait_requested", false), _state.get("flat_passthrough_requested", false), _state.get("portrait_auto", true), _state.get("portrait_enhanced", false),
 		_state.get("playback_mode", "single"), _state.get("seek_mode", "speed"), _state.get("hdr_to_sdr", HdrToSdr.ON), _state.get("depth_render", "stretch"), _state.get("depth_text_protection", true), _state.get("stereo", false), _state.get("geometry", 0),
-		_state.get("show_status_info", true), _state.get("show_fps", false), _state.get("alpha_keep_background", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
+		_state.get("show_status_info", true), _state.get("show_fps", false), _state.get("alpha_keep_background", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false), _state.get("stereo_focus_mode", 0), _state.get("subtitle_follow_view", false),
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
 		_state.get("immersive_adjustment_gauges", true), _state.get("video_auto_3d", false),
 		_state.get("screen_edit_locked", false), _state.get("screen_default_locked", false), _state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("screen_scene_curve", true), _state.get("cinema_lights", "auto"),
@@ -3155,7 +3164,9 @@ func _draw_stereo_view() -> void:
 	_settings_drawn = _settings_key()
 	var mode := int(_state.get("viewing_eye", 0))
 	var spatial: bool = _state.get("spatial_video", false) and _state.get("spatial_metadata", {}).has("horizontal_disparity")
-	var focus := 0.09 if int(_state.get("geometry", 0)) != 0 else 0.0 # immersive spheres only
+	# Immersive spheres only: the focus choice, and the distance slider while it is manual.
+	var focus_mode := int(_state.get("stereo_focus_mode", 0))
+	var focus := 0.0 if int(_state.get("geometry", 0)) == 0 else (0.25 if focus_mode == 2 else 0.16)
 	var top := _settings_frame((0.70 if spatial else 0.62) + focus if mode == 0 else 0.40)
 	_settings_heading("Stereo viewing", top)
 	for i in StereoView.MODES.size():
@@ -3172,8 +3183,17 @@ func _draw_stereo_view() -> void:
 		_adjustment_row(ALIGNMENT_VERTICAL, "stereo_vertical", "Vertical alignment", StereoView.VERTICAL, top - 0.45)
 		_slider_tick(ALIGNMENT_VERTICAL, 0.0, "0", top - 0.45)
 		if focus > 0.0:
-			_adjustment_row(STEREO_FOCUS, "stereo_focus", "Focus distance", Vector3(0.0, FOCUS_MAX, 0.05), top - 0.54)
-			_tips[STEREO_FOCUS] = I18n.t("Things at this distance stay steady as your head moves. Off keeps the original view.")
+			var heading := _label(I18n.t("Stereo focus"), Vector3(-0.50, top - 0.53, 0.004), TEXT_BODY)
+			heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+			heading.modulate = MUTED
+			for i in FOCUS_MODES.size():
+				_button(STEREO_FOCUS_MODE + i, I18n.t(FOCUS_MODES[i]), Vector2(-0.335 + i * 0.335, top - 0.61), Vector2(0.32, 0.06), _enabled("stereo_view"))
+				set_label_size(_buttons.back().node.get_child(0), 18)
+				if focus_mode == i: _buttons.back().base_color = SELECTED
+			_tips[STEREO_FOCUS_MODE + 1] = I18n.t("Whatever you look at stays steady as your head moves.")
+			if focus_mode == 2:
+				_adjustment_row(STEREO_FOCUS, "stereo_focus", "Focus distance", FOCUS_SPAN, top - 0.70)
+				_tips[STEREO_FOCUS] = I18n.t("Things at this distance stay steady as your head moves.")
 		_button(ALIGNMENT_RESET, I18n.t("Reset alignment"), Vector2(0, top - 0.545 - focus), Vector2(0.36, 0.055), _enabled("stereo_view"))
 		set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
 		if spatial:
@@ -3238,7 +3258,7 @@ func _adjustment_default(key: String) -> Variant:
 		"screen_curve": 0.0,
 		"view_horizontal": 0.0, "view_vertical": 0.0, "view_zoom": 0.0,
 		"screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0,
-		"stereo_horizontal": 0.0, "stereo_vertical": 0.0, "stereo_focus": 0.0}.get(key)
+		"stereo_horizontal": 0.0, "stereo_vertical": 0.0, "stereo_focus": FOCUS_DEFAULT}.get(key)
 
 func _activate_slider_reset(target: int) -> bool:
 	for button in _buttons:
@@ -3261,9 +3281,13 @@ func _activate_depth_off(target: int) -> bool:
 		refresh()
 	return true
 
+## The grade has something to apply to: the video, or in the photo menu the image on show.
+func _grade_target_ready() -> bool:
+	return _state.get("has_video", false)
+
 func _grade_page_needs_reset() -> bool:
 	var values: Dictionary = _state.get("grade_values", Grade.DEFAULTS)
-	return _state.get("has_video", false) and Grade.PAGES[_grade_page].any(func(key): return not is_equal_approx(float(values.get(key, Grade.DEFAULTS[key])), Grade.DEFAULTS[key]))
+	return _grade_target_ready() and Grade.PAGES[_grade_page].any(func(key): return not is_equal_approx(float(values.get(key, Grade.DEFAULTS[key])), Grade.DEFAULTS[key]))
 
 func _refresh_slider_resets() -> void:
 	for row in _adjust_rows.values():
@@ -3306,7 +3330,7 @@ func _refresh_adjustments() -> void:
 		var position: bool = row.key == "subtitle_position"
 		var defaults := {"screen_curve": 0.0, "screen_scale": 100.0, "cinema_picture_size": 100.0, "screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0, "stereo_horizontal": 0.0, "stereo_vertical": 0.0}
 		defaults["bar_transparency"] = 14.0
-		defaults["stereo_focus"] = 0.0
+		defaults["stereo_focus"] = FOCUS_DEFAULT
 		defaults[DepthPosition.KEY] = 0.0
 		for key in Surface.ImmersiveAdjustments.KEYS: defaults[key] = 0.0
 		defaults["portrait_scale"] = 100.0
@@ -3324,9 +3348,10 @@ func _refresh_adjustments() -> void:
 		var fraction := clampf((value - row.span.x) / (row.span.y - row.span.x), 0, 1)
 		if row.key == "subtitle_distance": fraction = SubtitleDepth.slider_fraction(value)
 		if row.key == "video_aspect_factor": fraction = VideoAspect.slider_fraction(value)
+		if row.key in Grade.INVERTED: fraction = Grade.slider_fraction(row.key, value)
 		if _adjustment == "screen" and row.key in ["screen_distance", "screen_scale"]: fraction = ScreenPresets.slider_fraction(value, row.span)
 		if row.key in ["portrait_distance", "portrait_scale"]: fraction = ScreenPresets.slider_fraction(value, row.span)
-		row.label.text = "%.1f m" % value if distance else ("%+.0f°" % value if position else ("%d K" % value if row.key == "temperature" else ("%+.2f EV" % value if row.key == "exposure" else "%.3f" % value)))
+		row.label.text = "%.1f m" % value if distance else ("%+.0f°" % value if position else ("%d K" % value if row.key == "temperature" else ("%+.2f EV" % value if row.key == "exposure" else "%.3f" % Grade.shown(row.key, value))))
 		if row.key == "screen_distance" and value < 10: row.label.text = "%.2f m" % value
 		if row.key == "portrait_distance" and value < 10: row.label.text = "%.2f m" % value
 		if row.key in ["screen_scale", "cinema_picture_size", "portrait_scale"]: row.label.text = "%d%%" % roundi(value)
@@ -3338,7 +3363,7 @@ func _refresh_adjustments() -> void:
 		elif row.key == "alpha_fps": row.label.text = "%d FPS" % roundi(value)
 		elif row.key in ["alpha_feather", "alpha_shrink", "bar_transparency"]: row.label.text = "%d%%" % roundi(value)
 		elif row.key in ["stereo_horizontal", "stereo_vertical"]: row.label.text = "%+.2f%%" % value if value != 0 else "0.00%"
-		elif row.key == "stereo_focus": row.label.text = "%.2f m" % value if value > 0 else I18n.t("Off")
+		elif row.key == "stereo_focus": row.label.text = "%.2f m" % value
 		elif row.key in Surface.ImmersiveAdjustments.KEYS: row.label.text = "%+.1f%%" % value if value != 0 else "0.0%"
 		row.fill.visible = fraction > 0
 		row.fill.mesh.size.x = maxf(0.001, fraction * row.width)
@@ -3367,11 +3392,11 @@ func _set_adjustment_at(x: float) -> void:
 	var value := clampf(snappedf(lerpf(row.span.x, row.span.y, clampf((x - row.left) / row.width, 0, 1)), row.span.z), row.span.x, row.span.y)
 	if row.key == "subtitle_distance": value = SubtitleDepth.slider_distance((x - row.left) / row.width)
 	if row.key == "video_aspect_factor": value = VideoAspect.slider_value((x - row.left) / row.width)
+	if row.key in Grade.INVERTED: value = Grade.slider_value(row.key, (x - row.left) / row.width)
 	if _adjustment in ["screen", "photo_view"] and row.key in ["screen_distance", "screen_scale"]: value = ScreenPresets.slider_value((x - row.left) / row.width, row.span)
 	if row.key in ["portrait_distance", "portrait_scale"]: value = ScreenPresets.slider_value((x - row.left) / row.width, row.span)
 	if row.key == "screen_rotation" and absf(value) <= 1: value = 0.0
 	if row.key == "playback_speed" and absf(value - 1.0) < 0.03: value = 1.0
-	if row.key == "stereo_focus" and value < 0.3: value = 0.0 # the nearest focus; below it is off
 	adjustment_requested.emit(row.key, value)
 	refresh_values()
 
@@ -3395,6 +3420,8 @@ func _activate_adjustment(target: int) -> void:
 			action_requested.emit("eyes")
 		elif target == ALIGNMENT_RESET:
 			adjustment_requested.emit("stereo_reset", true)
+		elif target >= STEREO_FOCUS_MODE and target < STEREO_FOCUS_MODE + FOCUS_MODES.size():
+			setting_requested.emit("stereo_focus_mode", target - STEREO_FOCUS_MODE)
 		elif target == SPATIAL_DISPARITY and _state.get("spatial_video", false):
 			setting_requested.emit("spatial_auto_disparity", not _state.get("spatial_auto_disparity", true))
 	elif _adjustment == "screen" and target >= SCREEN_PRESET and target < SCREEN_PRESET + ScreenPresets.ITEMS.size() and _state.get("screen_cinema", false) and _state.get("has_video", false) and int(_state.get("geometry", 0)) == 0:

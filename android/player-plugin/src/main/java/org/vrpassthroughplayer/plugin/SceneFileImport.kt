@@ -99,8 +99,8 @@ internal class SceneFileImport(
     override fun close() { closed = true; connection?.disconnect(); worker.shutdownNow() }
 
     companion object {
-        /** glTF binary, and the names Unity scene bundles travel under. */
-        val extensions = setOf("glb", "unity3d", "assetbundle", "bundle", "vrcw", "omission")
+        /** glTF binary, FBX, and the names Unity scene bundles travel under. */
+        val extensions = setOf("glb", "fbx", "unity3d", "assetbundle", "bundle", "ab", "vrcw", "omission")
         const val MAX_BYTES = 768L * 1024 * 1024
         private const val RESERVE_BYTES = 512L * 1024 * 1024
         private const val CANCELLED = "SCENE_CANCELLED"

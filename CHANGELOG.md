@@ -4,6 +4,14 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.17.11 — 2026-11-15
+
+- Add Play Beta for compatible Bilibili live streams, with quality switching in the built-in player. Improve quality selection for supported Bilibili on-demand videos. The recorded playback checks cover selected Quest 3 paths.
+- Add automatic focus for supported immersive stereo video and fixed-position or view-following subtitles. Keep the viewer's place when combining stereo focus with immersive zoom.
+- Adjust and save color settings per photo. Manual photo switching now uses the selected transition. Photo and video grading share brightness and shadow-lift controls.
+- Expand experimental 3D scene import to supported FBX files with embedded textures and compatible .ab bundles. Remember the picker directory and improve the default starting point in scenes without a spawn marker.
+- Fix controller models being obscured by the main menu in the cinema and improve the appearance of translucent controls over video and browser layers.
+
 ## 0.17.10 — 2026-11-14
 
 - Select a free rectangle in browser focus mode or use Focus video to frame the video detected on the page. The free-region implementation includes a contribution from @ghanshyamv1. The Focus video feature was inspired by their proposal and implemented using page structure. See [PR #10](https://github.com/zerochocobo/Thru3D-Media-Player/pull/10).

@@ -62,6 +62,21 @@ func _run() -> void:
 	var hand_material: ShaderMaterial = visuals._material
 	check(hand_material.render_priority > 25 and hand_material.render_priority < 28, "Hand models draw after menu holes and before the wrist watch")
 	check("depth_draw_always" in hand_material.shader.code and "ALPHA=1.0" in hand_material.shader.code, "Ordered hand pass stays solid and keeps writing depth")
+	var runtime_model := MeshInstance3D.new(); runtime_model.mesh = BoxMesh.new()
+	var runtime_source := StandardMaterial3D.new(); runtime_source.albedo_color = Color(0.3, 0.4, 0.5)
+	runtime_source.vertex_color_use_as_albedo = true
+	runtime_model.mesh.surface_set_material(0, runtime_source)
+	var pico_surface := MeshInstance3D.new(); pico_surface.mesh = BoxMesh.new()
+	var pico_material := ShaderMaterial.new(); pico_material.shader = visuals.PicoModel.MATERIAL_SHADER
+	pico_surface.set_surface_override_material(0, pico_material); runtime_model.add_child(pico_surface)
+	visuals._prepare_meshes(runtime_model, false)
+	var runtime_material := runtime_model.get_active_material(0) as ShaderMaterial
+	check(runtime_material != null and runtime_material.render_priority == visuals.MODEL_PRIORITY, "Runtime controller model draws in the hands' ordered slot")
+	check(runtime_material != null and runtime_material.get_shader_parameter("albedo") == runtime_source.albedo_color and runtime_material.get_shader_parameter("vertex_color") == true and runtime_material.get_shader_parameter("studio_light") == false, "Runtime controller keeps its flat source colours")
+	check(pico_surface.get_active_material(0).render_priority == visuals.MODEL_PRIORITY, "PICO controller model draws in the hands' ordered slot")
+	var controller_code: String = visuals.PicoModel.MATERIAL_SHADER.code
+	check("depth_draw_always" in controller_code and "ALPHA = 1.0" in controller_code, "Ordered controller pass stays solid and keeps writing depth")
+	runtime_model.free()
 	check(visuals.snapshot().right_hand.controller_hidden_reason == "optical_hand", "Diagnostic explains hand ownership")
 	visuals.update_visibility(true, {"left_hand": 1.0, "right_hand": 1.0}, false)
 	check(not visuals.hands.left_hand.controller_gate.visible and not visuals.hands.right_hand.hand_gate.visible, "Hidden panels suppress both controller and optical-hand models without disabling tracking")

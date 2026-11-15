@@ -506,12 +506,17 @@ func _run() -> void:
 	menu._set_adjustment_at(Menu.SLIDER_LEFT + 0.6 * Menu.SLIDER_WIDTH)
 	check(is_equal_approx(video.stereo_horizontal, 2.0) and not menu.allows_playback_sticks(), "Expanded alignment slider reaches production controller and blocks playback sticks")
 	check(click(menu, Menu.ALIGNMENT_RESET) and video.stereo_horizontal == 0.0 and video.stereo_vertical == 0.0, "Alignment reset reaches production controller")
-	check(menu._adjust_rows.has(Menu.STEREO_FOCUS), "Immersive stereo offers the focus distance slider")
+	check(video.stereo_focus_mode == 0 and not menu._adjust_rows.has(Menu.STEREO_FOCUS), "Focus starts off, without a distance slider")
+	check(click(menu, Menu.STEREO_FOCUS_MODE + 2) and video.stereo_focus_mode == 2 and menu._adjust_rows.has(Menu.STEREO_FOCUS), "Manual focus offers the distance slider")
 	menu._adjust_target = Menu.STEREO_FOCUS
-	menu._set_adjustment_at(Menu.SLIDER_LEFT + 0.3 * Menu.SLIDER_WIDTH)
-	check(is_equal_approx(video.stereo_focus, 1.5) and is_equal_approx(video.stereo_focus_shape().x, 1.5), "Focus slider reaches the production controller")
-	menu._set_adjustment_at(Menu.SLIDER_LEFT + 0.04 * Menu.SLIDER_WIDTH)
-	check(video.stereo_focus == 0.0 and video.stereo_focus_shape() == Vector2.ZERO, "Below the nearest focus the slider turns focus off")
+	menu._set_adjustment_at(Menu.SLIDER_LEFT + 0.5 * Menu.SLIDER_WIDTH)
+	check(is_equal_approx(video.stereo_focus, 2.65) and is_equal_approx(video.stereo_focus_shape().x, 2.65), "Focus slider reaches the production controller")
+	check(click(menu, Menu.STEREO_FOCUS_MODE + 1) and video.stereo_focus_mode == 1 and not menu._adjust_rows.has(Menu.STEREO_FOCUS)
+		and video.stereo_focus_shape() == Vector2.ZERO, "Automatic focus hides the slider and keeps the shared sphere until measured")
+	video.autofocus.distance = 0.8
+	check(is_equal_approx(video.stereo_focus_shape().x, 0.8), "Automatic focus shows the measured distance")
+	video.autofocus.reset()
+	check(click(menu, Menu.STEREO_FOCUS_MODE) and video.stereo_focus_mode == 0 and video.stereo_focus_shape() == Vector2.ZERO, "Focus off keeps the shared sphere")
 	check(click(menu, 400) and click(menu, Menu.MODE) and menu.section == 0 and menu._mode_open, "Eye settings give way to the mode popup")
 	check(click(menu, Menu.MODE_PROJECTION + 1) and video.geometry == 1, "Projection tile sets actual video geometry")
 	check(click(menu, 108), "Recenter routed through preview-safe Main")
@@ -519,12 +524,40 @@ func _run() -> void:
 	check(click(menu, 110) and menu._subtitle_open and not menu._subtitle_detail_group().is_empty(),
 		"VR CC popup opens its relevant detail pane")
 	if not menu._subtitle_appearance_open: click(menu, Menu.SUBTITLE_APPEARANCE)
-	check(menu._subtitle_open and menu.choices.sliders.size() == 5,
+	check(menu._subtitle_open and menu.choices.sliders.size() == 6,
 		"Appearance provides distance, angle, size and styles")
 	check(choose_setting(menu, "subtitle_vertical_position", -60) and video.subtitle_vertical_position == -60 and main.settings.get_value("subtitles", "horizontal_center_y_degrees") == -60 and menu._subtitle_open,
 		"CC angle applies and persists while keeping the popup open")
 	check(choose_setting(menu, "subtitle_distance", 2.0) and is_equal_approx(video.subtitle_distance, 2.0) and menu._subtitle_open,
 		"CC distance slider applies without closing subtitle controls")
+	check(choose_setting(menu, "subtitle_follow_view", 1) and video.subtitle_follow_view and main.settings.get_value("subtitles", "follow_view") == true
+		and main._library_settings().subtitle_follow_view and menu._subtitle_open,
+		"Following captions persist and are shared with global settings")
+	check(video.subtitle_vertical_position == -15 and video.subtitle_horizontal_center.y == -60, "Following captions keep their own offset below the view centre")
+	check(choose_setting(menu, "subtitle_vertical_position", -20) and video.subtitle_follow_horizontal_offset.y == -20 and video.subtitle_horizontal_center.y == -60
+		and main.settings.get_value("subtitles", "follow_horizontal_y_degrees") == -20, "A following offset applies and persists apart from the fixed position")
+	check(menu.choices.sliders.size() == 6, "An unmeasured picture keeps the distance slider for following captions")
+	video.autofocus_measures = true; menu.refresh()
+	check(menu.choices.sliders.size() == 5, "Measured following captions hide the distance slider")
+	video.autofocus.distance = 1.0
+	check(is_equal_approx(video.subtitle_shown_distance(), 0.9), "Following captions sit just in front of the measured depth")
+	video.autofocus.reset()
+	check(is_equal_approx(video.subtitle_shown_distance(), 2.0), "Unmeasured following captions keep the chosen distance")
+	video.subtitle_follow.centre = Vector2(deg_to_rad(90), 0)
+	check((video._subtitle_anchor() * Vector3.FORWARD).is_equal_approx(Vector3(cos(deg_to_rad(-20)), sin(deg_to_rad(-20)), 0)), "Following captions are placed from the view centre")
+	# Zoom moves the sphere off the viewer: a focused sphere keeps that fraction of its own radius.
+	var focus_state := [video.stereo_focus_mode, video.stereo_focus, video.view_zoom, video.stereo_sbs, video.geometry, video.viewing_eye]
+	video.stereo_sbs = true; video.viewing_eye = 0; video.geometry = video.Geometry.Geometry.HALF_EQUIRECT; video.view_zoom = 0.4
+	video.stereo_focus_mode = video.Focus.MANUAL; video.stereo_focus = 0.5
+	check(is_equal_approx(video._stereo_focus_scale(), 0.5 / video.SPHERE_RADIUS) and video._stereo_focus_centre().is_equal_approx(Vector3(0, 0, -0.4 * (0.5 - video.SPHERE_RADIUS))),
+		"A focused sphere moves with zoom so the viewer keeps the same place inside it")
+	check(video._picture_direction(Vector3.FORWARD).is_equal_approx(Vector3.FORWARD) and video._picture_direction(Vector3.RIGHT).z > 0.3,
+		"The view centre of a zoomed picture is found from the viewer's place in the sphere")
+	video.stereo_focus_mode = video.Focus.OFF
+	check(video._stereo_focus_centre().is_zero_approx(), "An unfocused sphere stays where zoom put it")
+	video.stereo_focus_mode = focus_state[0]; video.stereo_focus = focus_state[1]; video.view_zoom = focus_state[2]; video.stereo_sbs = focus_state[3]; video.geometry = focus_state[4]; video.viewing_eye = focus_state[5]
+	check(choose_setting(menu, "subtitle_follow_view", 0) and not video.subtitle_follow_view and menu.choices.sliders.size() == 6 and video.subtitle_vertical_position == -60,
+		"Fixed captions return to their place and distance slider")
 	check(choose_setting(menu, "subtitle_direction", 1) and video.subtitle_direction == 1
 		and main.settings.get_value("subtitles", "direction") == 1 and main._library_settings().subtitle_direction == 1 and menu._subtitle_open,
 		"Vertical direction persists and is shared with global settings")

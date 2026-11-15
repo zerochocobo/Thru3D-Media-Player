@@ -14,8 +14,21 @@ function fixture(count = 1, blob = true, options = {}) {
     events: {}, closest() { return null; }, addEventListener(name, f) { (this.events[name] ||= []).push(f); },
     emit(name) { (this.events[name] || []).forEach(f => f()); }, pause() { this.paused = true; },
     play() { this.playCalls = (this.playCalls || 0) + 1; if (!options.deferPlay) { this.paused = false; this.emit('play'); } return Promise.resolve(); } }));
-  const document = { nodeType: 9, querySelector: () => options.canonical ? {href: options.canonical} : null, querySelectorAll(s) { return s === 'video' ? videos : s === '*'?options.customHosts||[]:s === 'rbup-video-tv-streaming'?options.shadowHosts||[]:s === 'script:not([src])' ? options.scripts || [] : []; }, fullscreenElement: options.fullscreen === false ? null : videos[0] };
+  const document = { nodeType: 9, querySelector: selector => selector === '#live-player video' && options.biliLive ? videos[0] :
+    options.canonical ? {href: options.canonical} : null, querySelectorAll(s) { return s === 'video' ? videos : s === '*'?options.customHosts||[]:s === 'rbup-video-tv-streaming'?options.shadowHosts||[]:s === 'script:not([src])' ? options.scripts || [] : []; }, fullscreenElement: options.fullscreen === false ? null : videos[0] };
   if(options.siteState)document.defaultView={wrappedJSObject:options.siteState};
+  if (options.biliLive) {
+    const video = videos[0];
+    video.duration = Infinity;
+    video.currentSrc = 'blob:https://live.bilibili.com/current';
+    video.seekable = {length: 0};
+    video.getVideoPlaybackQuality = () => ({totalVideoFrames: 100});
+    document.defaultView = {wrappedJSObject: {
+      __NEPTUNE_IS_MY_WAIFU__: {roomInitRes:{code:0,data:{
+        room_id:12345,encrypted:false,is_locked:false,is_hidden:false,live_status:1}}},
+      livePlayer: {getVideoEl:()=>video,getPlayerInfo:()=>options.biliLive},
+    }};
+  }
   if(options.tencent||options.niconico||options.tiktok||options.dailymotion){document.body={append(node){node.parentElement=this;}};document.createElement=()=>({style:{},dataset:{},remove(){this.parentElement=null;}});}
   const location = { href: options.page || 'https://page.test/watch' }, clock = {now:Date.now()};
   const context = vm.createContext({ document, location, navigator: { userAgent: 'Fixture' }, URL, Date:class extends Date {static now(){return clock.now;}},
@@ -78,6 +91,104 @@ function fixture(count = 1, blob = true, options = {}) {
     resources(entries) { resourceObservers.forEach(f=>f({getEntries:()=>entries})); },
     emit(name,value={}) { (events[name] || []).forEach(f=>f(value)); } };
 }
+
+test('Bilibili Live binds the declared rendition, retires the old click after a tier change and keeps the paused room clock', () => {
+  const page = 'https://live.bilibili.com/12345';
+  const cdn = 'https://test.bilivideo.com/live.m3u8';
+  const info = {playurl:cdn+'?first=1',quality:400,hdrType:0,eotf:0,liveStatus:1};
+  const f = fixture(1, true, {page, biliLive:info, playButtons:true, fullscreen:false});
+  const v = f.videos[0];
+  const request = url => ({url,kind:'hls',at:f.clock.now,headers:{'user-agent':'fixture'}});
+  const network = (...candidates) => { f.network.onMessage.fire({type:'network',page,candidates}); f.flush(); };
+  network(request(cdn+'?other=1'));
+  assert.equal(f.report()[0].bilibili_ready, false);
+  f.native.onMessage.fire({action:'network_policy',bilibili:true});
+  const child = 'https://child.smtcdns.net/live.m3u8?child=1';
+  const master = {...request(info.playurl),live_child:child,headers:{'user-agent':'master'}};
+  network(master, request(cdn+'?other=1'));
+  assert.equal(f.report()[0].bilibili_ready, false);
+  network(master, request(child));
+  assert.equal(f.report()[0].bilibili_ready, false);
+  network(master, {...request(child),live_leaf:true}, request(cdn+'?other=1'));
+  assert.equal(f.report()[0].network.length, 2);
+  assert.equal(f.report()[0].network[0].url, child);
+  assert.equal(f.report()[0].network[0].headers['user-agent'],'fixture');
+  assert.equal(f.report()[0].bilibili_live.quality, 400);
+  const old = f.playButtons.at(-1);
+  old.click(); f.flush();
+  assert.equal(f.report()[0].bilibili_request, 1);
+  const option = {textContent:'720P 超清', classList:{contains:()=>false}, closest:()=>null};
+  f.emit('click',{isTrusted:true,target:{closest:()=>option}});
+  assert.equal(f.report()[0].bilibili_ready, false);
+  assert.equal(f.report()[0].bilibili_request, 0);
+  info.quality = 250; info.playurl = cdn+'?second=1';
+  old.click(); f.flush();
+  assert.equal(f.report()[0].bilibili_request, 0);
+  network(request(info.playurl));
+  assert.equal(f.report()[0].bilibili_ready, false);
+  v.videoWidth = 1280; v.videoHeight = 720; v.emit('resize'); f.flush();
+  f.playButtons.at(-1).click(); f.flush();
+  const current = f.report()[0];
+  assert.equal(current.bilibili_live.quality, 250);
+  assert.equal(current.bilibili_request, 2);
+  f.native.onMessage.fire({action:'pause_media',token:42,playing_ids:[String(current.id)]});
+  f.native.onMessage.fire({action:'suspend',keep_pause:true,pause_token:42});
+  f.native.onMessage.fire({action:'resume'});
+  f.native.onMessage.fire({action:'release_pause_media',token:42});
+  f.native.onMessage.fire({action:'restore_bilibili_live',id:String(current.id),epoch:current.network_epoch,
+    revision:current.bilibili_live.revision,source:v.currentSrc,room:'12345',page,time:9000});
+  v.play(); f.flush();
+  assert.equal(v.paused, true);
+  assert.equal(v.currentTime, 3);
+});
+
+test('Bilibili Live binds a seamless switch to its newly observed stream and tier when the SDK keeps the initial URL', () => {
+  const page = 'https://live.bilibili.com/12345';
+  const initial = 'https://first.bilivideo.com/live/live_hd/index.m3u8?qn=400';
+  const current = 'https://second.bilivideo.com/live/live_sd/index.m3u8?qn=250&sign=current';
+  const info = {playurl:initial,streamName:'live_hd',quality:400,hdrType:0,eotf:0,liveStatus:1};
+  const f = fixture(1, true, {page,biliLive:info,playButtons:true,fullscreen:false});
+  const v = f.videos[0];
+  v.videoWidth = 1920;
+  v.videoHeight = 1080;
+  f.native.onMessage.fire({action:'network_policy',bilibili:true});
+  const observe = (url, at=f.clock.now) => ({url,at,kind:'hls',live_leaf:true,headers:{'user-agent':'fixture'}});
+  const network = (...candidates) => { f.network.onMessage.fire({type:'network',page,candidates}); f.flush(); };
+  const old = observe(initial);
+  const prefetched = observe(current+'-prefetch');
+  network(old,prefetched);
+  const previous = f.report()[0];
+  f.clock.now += 10;
+  const switchAt = f.clock.now;
+  const option = {textContent:'720P 超清',classList:{contains:()=>false},closest:()=>null};
+  f.emit('click',{isTrusted:true,target:{closest:()=>option}});
+  info.quality = 250;
+  info.streamName = 'live_sd';
+  f.clock.now += 10;
+  const request = observe(current);
+  network(old,prefetched,request);
+  assert.equal(f.report()[0].bilibili_ready,false,'The decoded frame is still 1080P');
+  f.clock.now += 10;
+  v.videoWidth = 1280;
+  v.videoHeight = 720;
+  v.emit('resize');
+  const wrongStream = observe(current.replace('live_sd/','live_sd_other/'));
+  const wrongTier = observe(current.replace('qn=250','qn=400'));
+  network(prefetched,observe(initial),wrongStream,wrongTier,{...request,live_leaf:false});
+  assert.equal(f.report()[0].bilibili_ready,false);
+  network(prefetched,wrongStream,request,observe(current+'-another'));
+  assert.equal(f.report()[0].bilibili_ready,false,'Ambiguous matching renditions remain unready');
+  network(prefetched,observe(initial),wrongStream,wrongTier,request);
+  f.playButtons.at(-1).click();
+  f.flush();
+  const selected = f.report()[0];
+  assert.equal(selected.id,previous.id);
+  assert.equal(selected.network_epoch,previous.network_epoch);
+  assert.equal(selected.bilibili_live.url,current);
+  assert.equal(selected.bilibili_live.stream,'live_sd');
+  assert.equal(selected.bilibili_live.switch_at,switchAt);
+  assert.equal(selected.bilibili_request,1);
+});
 
 test('direct file return seeks only its original live element and media epoch',()=>{
   const f=fixture(1,false),video=f.videos[0],current=f.report()[0];
@@ -652,9 +763,9 @@ test('sidebar replacement uses observed detail identity instead of stale inline 
   send({...response,id:'av2'}); assert.equal(f.report()[0].bilibili.cid,'456');
 });
 const pageBili = 'https://www.bilibili.com/video/BV1234567890/';
-function returnBiliFixture() {
+function returnBiliFixture(options = {}) {
   const state={cid:123,videoData:{bvid:'BV1234567890',aid:1,pages:[{page:1,cid:123,duration:100}]}};
-  const f=fixture(1,true,{page:pageBili,scripts:[{textContent:'window.__INITIAL_STATE__='+JSON.stringify(state)+';'}]});
+  const f=fixture(1,true,{...options,page:pageBili,scripts:[{textContent:'window.__INITIAL_STATE__='+JSON.stringify(state)+';'}]});
   f.native.onMessage.fire({action:'network_policy',bilibili:true});f.flush();
   const data={id:'BV1234567890',page:pageBili,part:1,cid:'123',duration:100,
     video:[{width:3840,height:2160,urls:['https://cdn.test/video.m4s']}],audio:[{urls:['https://cdn.test/audio.m4s']}]};
@@ -680,4 +791,62 @@ test('Bilibili return rejects changed part, episode, document, source, element, 
   for(const change of [v=>v.currentSrc='blob:new',v=>v.emit('loadstart'),v=>v.emit('encrypted'),v=>v.mediaKeys={},v=>v.isConnected=false]){
     const {f,video,command}=returnBiliFixture();change(video);f.native.onMessage.fire(command);assert.equal(video.currentTime,3);
   }
+});
+
+test('Bilibili waits for the chosen quality and follows later adaptive dimensions',()=>{
+  const {f,video}=returnBiliFixture({playButtons:true});
+  let menuValue='120';
+  const player={querySelectorAll:()=>[{getAttribute:()=>menuValue}]};
+  const choose=value=>{
+    const item={getAttribute:()=>value,closest:()=>player};
+    f.emit('click',{isTrusted:true,target:{closest:()=>item}});
+  };
+  video.closest=selector=>selector==='.bpx-player-container'?player:null;
+  const record={id:'BV1234567890',page:pageBili,part:1,cid:'123',duration:100,
+    video:[{id:120,width:3840,height:2160,urls:['https://cdn.test/video.m4s']},
+      {id:80,width:1920,height:1080,urls:['https://cdn.test/video1080.m4s']}],audio:[{urls:['https://cdn.test/audio.m4s']}]};
+  f.network.onMessage.fire({type:'network',page:pageBili,bilibili:[record],
+    candidates:['video','video1080','audio'].map(x=>({url:'https://cdn.test/'+x+'.m4s',kind:'file',at:Date.now()}))});
+  f.flush();assert(f.report()[0].bilibili_ready);
+  const button=f.playButtons.at(-1);
+  // A menu item appears as soon as the pointer enters the player. A lazy
+  // default selection does not retire the valid Beta action.
+  menuValue='112';button.click();f.flush();assert.equal(f.report()[0].bilibili_request,1);
+  choose('80');button.click();video.emit('timeupdate');f.flush();
+  assert.equal(f.report()[0].bilibili_quality,80);assert.equal(f.report()[0].bilibili_ready,false);
+  assert.equal(f.report()[0].bilibili_request,0);
+  video.videoWidth=1920;video.videoHeight=1080;video.emit('resize');f.flush();
+  assert(f.report()[0].bilibili_ready);
+  video.videoWidth=3840;video.videoHeight=2160;video.emit('resize');f.flush();
+  assert.equal(f.report()[0].bilibili_selected_quality,80);
+  assert.equal(f.report()[0].bilibili_quality,0);assert(f.report()[0].bilibili_ready);
+  choose('0');video.emit('timeupdate');f.flush();
+  assert.equal(f.report()[0].bilibili_quality,0);assert(f.report()[0].bilibili_ready);
+});
+
+test('Bilibili accepts presented pixels for anamorphic video without reusing frames after a switch',()=>{
+  const {f,video}=returnBiliFixture({playButtons:true});
+  const pending=[];
+  video.requestVideoFrameCallback=callback=>pending.push(callback);
+  const player={};
+  video.closest=selector=>selector==='.bpx-player-container'?player:null;
+  const record={id:'BV1234567890',page:pageBili,part:1,cid:'123',duration:100,
+    video:[{id:64,width:1280,height:720,urls:['https://cdn.test/video.m4s']},
+      {id:80,width:1440,height:720,urls:['https://cdn.test/next.m4s']}],audio:[{urls:['https://cdn.test/audio.m4s']}]};
+  const capture=()=>f.network.onMessage.fire({type:'network',page:pageBili,bilibili:[record],
+    candidates:['video','next','audio'].map(name=>({url:`https://cdn.test/${name}.m4s`,kind:'file',at:Date.now()}))});
+  const frame=(width,height)=>{pending.shift()(0,{width,height});f.flush();};
+  video.videoWidth=960;video.videoHeight=720;video.emit('resize');capture();f.flush();
+  assert.equal(f.report()[0].bilibili_ready,false);
+  frame(1280,720);
+  assert.equal(f.report()[0].width,960);assert.equal(f.report()[0].bilibili_frame_width,1280);
+  assert.equal(f.report()[0].bilibili_ready,true);
+  const item={getAttribute:()=> '80',closest:()=>player};
+  f.emit('click',{isTrusted:true,target:{closest:()=>item}});f.flush();
+  frame(1280,720);assert.equal(f.report()[0].bilibili_ready,false);
+  frame(1440,720);assert.equal(f.report()[0].bilibili_frame_width,1440);
+  assert.equal(f.report()[0].bilibili_ready,true);
+  video.currentSrc='blob:replacement';video.emit('loadstart');f.flush();
+  frame(1440,720);assert.equal(f.report()[0].bilibili_ready,false);
+  assert.equal(f.report()[0].bilibili_frame_width,undefined);
 });
