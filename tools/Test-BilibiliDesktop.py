@@ -41,7 +41,7 @@ def extension(target, endpoint):
                 'browser_specific_settings': {'gecko': {'id': 'capture-test@thru3d.local'}},
                 'permissions': ['webRequest', 'webRequestBlocking', 'cookies', 'https://*/*', 'http://127.0.0.1/*'],
                 'background': {'scripts': ['bridge.js', 'bilibili.js', 'bilibili-response.js', 'network.js', 'shape.js']},
-                'content_scripts': [{'matches': ['https://www.bilibili.com/video/*', 'https://www.bilibili.com/bangumi/play/*', 'https://live.bilibili.com/*'],
+                'content_scripts': [{'matches': ['https://www.bilibili.com/video/*', 'https://www.bilibili.com/bangumi/play/*', 'https://www.bilibili.com/list/*', 'https://www.bilibili.com/medialist/play/*', 'https://live.bilibili.com/*'],
                                      'js': ['bilibili.js', 'play-button.js', 'direct-return.js', 'media.js'], 'run_at': 'document_start'}]}
     (target / 'manifest.json').write_text(json.dumps(manifest), encoding='utf8')
     return hashes
@@ -57,9 +57,11 @@ def main():
     parser.add_argument('--single', action='store_true', help='Test first load and reload without selecting a second part')
     parser.add_argument('--buttons', action='store_true', help='Click the large in-player Beta button at every checkpoint')
     parser.add_argument('--recommendations', type=int, choices=[0, 1, 2], default=0, help='Click visible sidebar recommendations without reloading')
+    parser.add_argument('--playlist-next', action='store_true', help='Select a real next playlist card, then reopen its current URL')
+    parser.add_argument('--favorites', action='store_true', help='Follow the signed-in favorites link and its Play all button')
     args = parser.parse_args()
     parsed = urllib.parse.urlparse(args.url)
-    if parsed.scheme != 'https' or parsed.netloc != 'www.bilibili.com' or not re.fullmatch(r'/(?:video/(BV[A-Za-z0-9]+|av[0-9]+)|bangumi/play/(?:ss|ep)[1-9][0-9]*)/?', parsed.path):
+    if parsed.scheme != 'https' or parsed.netloc != 'www.bilibili.com' or not re.fullmatch(r'/(?:video/(BV[A-Za-z0-9]+|av[0-9]+)|bangumi/play/(?:ss|ep)[1-9][0-9]*|list/(?:watchlater|ml[1-9][0-9]*|[1-9][0-9]*)|medialist/play/[1-9][0-9]*)/?', parsed.path):
         parser.error('Use an HTTPS www.bilibili.com video or episode URL')
     if not 1 <= args.seconds <= 60: parser.error('--seconds must be 1..60')
     if args.profile:
@@ -75,7 +77,7 @@ def main():
         def log_message(self, *unused): pass
         def do_POST(self):
             length = int(self.headers.get('Content-Length', '0'))
-            if self.path != '/' + token or not 0 < length < 32768:
+            if self.path != '/' + token or not 0 < length < 256 * 1024:
                 self.send_error(400); return
             body = json.loads(self.rfile.read(length))
             reports.append(body)
@@ -108,14 +110,16 @@ def main():
     evidence = {'source_sha256': hashes, 'scope': 'anonymous desktop Firefox; no Android acceptance', 'stages': [], 'button_stages': []}
     if args.profile:
         evidence['scope'] = 'private desktop Firefox profile in place; no saved screenshots or page text; no Android acceptance'
-    def checkpoint(name, part, expected_path=None):
+    def checkpoint(name, part, expected_path=None, previous_cid=None):
         started = time.monotonic()
         while time.monotonic() - started < max(20, args.seconds):
-            if reports and (expected_path is None or reports[-1].get('page_path') == expected_path) and reports[-1].get('part') == part and reports[-1].get('captured_video', 0) > 0 and reports[-1].get('captured_audio', 0) > 0:
+            if reports and (expected_path is None or reports[-1].get('page_path') == expected_path) and reports[-1].get('part') == part and reports[-1].get('ready') and reports[-1].get('cid') != previous_cid and reports[-1].get('captured_video', 0) > 0 and reports[-1].get('captured_audio', 0) > 0:
                 break
             time.sleep(.25)
         evidence['stages'].append({'name': name, 'wait_seconds': round(time.monotonic() - started, 2),
                                    'latest': reports[-1] if reports else None})
+        if previous_cid and (not reports or reports[-1].get('cid') == previous_cid):
+            raise RuntimeError('Playlist did not bind a different current video')
         if args.buttons:
             current = reports[-1] if reports else {}
             target = script("""const h=document.querySelector('[data-thru3d-bilibili=beta]');if(!h||h.hidden)return null;
@@ -152,9 +156,24 @@ def main():
         command('/window/rect', {'width': 1500, 'height': 1100})
         command('/url', {'url': args.url})
         time.sleep(args.seconds)
+        if args.favorites:
+            favorite = script("return [...document.querySelectorAll('a[href]')].find(a=>a.href.includes('/favlist'))?.href || null;")
+            if not favorite: raise RuntimeError('Actual favorites link missing')
+            command('/url', {'url': favorite}); time.sleep(args.seconds)
+            target = script("const e=document.querySelector('.playall-btn');if(!e)return null;e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};")
+            if not target: raise RuntimeError('Actual favorites Play all control missing')
+            before = call('GET', '/session/' + session + '/window/handles')
+            command('/actions', {'actions':[{'type':'pointer','id':'favorite','parameters':{'pointerType':'mouse'},'actions':[
+                {'type':'pointerMove','duration':100,**target},{'type':'pointerDown','button':0},{'type':'pointerUp','button':0}]}]})
+            time.sleep(3)
+            handles = call('GET', '/session/' + session + '/window/handles')
+            added = [h for h in handles if h not in before]
+            if added: command('/window', {'handle': added[-1]})
+            time.sleep(args.seconds)
         script("document.querySelector('video')?.play().catch(()=>{}); return true;")
         time.sleep(3)
-        checkpoint('initial', int(urllib.parse.parse_qs(parsed.query).get('p', ['1'])[0]))
+        initial_part = int(script("return new URL(location.href).searchParams.get('p') || '1';")) if args.playlist_next or args.favorites else int(urllib.parse.parse_qs(parsed.query).get('p', ['1'])[0])
+        checkpoint('initial', initial_part)
         # Public DOM inventory lets subsequent probes use observed elements, not guessed controls.
         if not args.profile:
             evidence['parts'] = script("return [...document.querySelectorAll('a[href*=\"?p=\"]')].slice(0,25).map(a=>({text:a.textContent.trim().slice(0,60),part:new URL(a.href).searchParams.get('p')}));")
@@ -165,8 +184,21 @@ def main():
             clicked_pgc = script("const a=[...document.querySelectorAll('button[class*=PlayerEpisodePanel_episodeRow__]')].find(e=>!e.className.includes('episodeRowActive')); if(a)a.click();return !!a;")
             if clicked_pgc:
                 time.sleep(6); checkpoint('pgc_selected', 1)
-        clicked = False if args.single or args.recommendations else script("const a=[...document.querySelectorAll('a[href*=\"?p=\"]')].find(a=>new URL(a.href).searchParams.get('p')==='2') || document.querySelectorAll('.video-pod__item')[1]; if(a){a.click();return true} return false;")
-        if args.recommendations:
+        clicked = False if args.single or args.recommendations or args.playlist_next else script("const a=[...document.querySelectorAll('a[href*=\"?p=\"]')].find(a=>new URL(a.href).searchParams.get('p')==='2') || document.querySelectorAll('.video-pod__item')[1]; if(a){a.click();return true} return false;")
+        if args.playlist_next:
+            previous = reports[-1].get('cid')
+            target = script("const e=[...document.querySelectorAll('.singlep-list-item-inner')].find(e=>!e.classList.contains('siglep-active'));if(!e)return null;e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};")
+            if not target: raise RuntimeError('Actual next playlist card missing')
+            command('/actions', {'actions':[{'type':'pointer','id':'playlist','parameters':{'pointerType':'mouse'},'actions':[
+                {'type':'pointerMove','duration':100,**target},{'type':'pointerDown','button':0},{'type':'pointerUp','button':0}]}]})
+            time.sleep(3)
+            part = int(script("return new URL(location.href).searchParams.get('p') || '1';"))
+            checkpoint('playlist_next', part, previous_cid=previous)
+            current_url = script('return location.href;')
+            reports.clear(); command('/url', {'url':'about:blank'}); command('/url', {'url':current_url}); time.sleep(3)
+            script("document.querySelector('video')?.play().catch(()=>{}); return true;")
+            checkpoint('bookmark_reopen', part)
+        elif args.recommendations:
             for index in range(args.recommendations):
                 reports.clear()
                 target = script("const a=[...document.querySelectorAll('a.video-awesome-img')].find(a=>a.getBoundingClientRect().width>0&&new URL(a.href).pathname!==location.pathname); if(!a)return null; a.scrollIntoView({block:'center'});const r=a.getBoundingClientRect();return {path:new URL(a.href).pathname,x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};")
@@ -186,12 +218,15 @@ def main():
             script("document.querySelector('video')?.play().catch(()=>{}); return true;")
             checkpoint('reload', int(urllib.parse.parse_qs(parsed.query).get('p', ['1'])[0]))
         evidence['reports_received'] = len(reports)
-        evidence['passed'] = len(evidence['stages']) == (1 + args.recommendations if args.recommendations else 2 if args.single else 3) and all(
+        evidence['passed'] = len(evidence['stages']) == (3 if args.playlist_next else 1 + args.recommendations if args.recommendations else 2 if args.single else 3) and all(
             stage['latest'] and stage['latest'].get('binding') == 'matched' and
             stage['latest'].get('captured_video', 0) > 0 and stage['latest'].get('captured_audio', 0) > 0
             for stage in evidence['stages'])
         if args.recommendations:
             evidence['passed'] = evidence['passed'] and len({stage['latest'].get('document_sequence') for stage in evidence['stages'] if stage['latest']}) == 1
+        if args.playlist_next and len(evidence['stages']) == 3:
+            first, next_video, reopened = [s['latest'] for s in evidence['stages']]
+            evidence['passed'] = evidence['passed'] and first['cid'] != next_video['cid'] == reopened['cid'] and first['document_sequence'] == next_video['document_sequence'] != reopened['document_sequence']
         if args.buttons: evidence['passed'] = evidence['passed'] and all(s['passed'] for s in evidence['button_stages'])
         (run / 'summary.json').write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding='utf8')
         print(json.dumps({'browser_version': evidence['browser_version'], 'passed': evidence['passed'],
@@ -200,6 +235,11 @@ def main():
         print('Report:', run / 'summary.json')
         if not evidence['passed']: raise SystemExit(1)
     finally:
+        if 'passed' not in evidence:
+            evidence['passed'] = False
+            evidence['last_reports'] = reports[-3:]
+            (run / 'summary.json').write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding='utf8')
+            print('Incomplete probe report:', run / 'summary.json')
         if session:
             try: call('DELETE', '/session/' + session)
             except Exception: pass

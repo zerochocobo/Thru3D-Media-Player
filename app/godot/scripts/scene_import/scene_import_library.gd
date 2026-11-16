@@ -19,6 +19,7 @@ var adding := ""
 var _request := 0
 var _connected: Object
 var _thread: Thread
+var _origin := ""
 
 static func supported(title: String) -> bool:
 	return title.get_extension().to_lower() in EXTENSIONS
@@ -49,6 +50,7 @@ func load_catalog() -> void:
 			"added": int(entry.get("added", 0)), "summary": entry.get("summary", {}) if entry.get("summary") is Dictionary else {}}
 		if _entry_valid(entry.get("entry")): entries[str(id)]["entry"] = entry.entry
 		if entry.get("backdrop") is String and not str(entry.backdrop).is_empty(): entries[str(id)]["backdrop"] = str(entry.backdrop).left(64)
+		if entry.get("origin") is String and not str(entry.origin).is_empty(): entries[str(id)]["origin"] = str(entry.origin).left(64)
 
 static func _entry_valid(value: Variant) -> bool:
 	return value is Array and value.size() in [4, 5] and value.all(func(number: Variant) -> bool: return (number is float or number is int) and is_finite(number))
@@ -148,6 +150,29 @@ func add(uri: String, title: String, bytes: int = -1) -> bool:
 	changed.emit()
 	return true
 
+## Takes a file the app itself brought in (a gallery download, already whole and checked) by
+## moving it into the library. `origin` names the gallery scene, so its card knows it is here.
+func adopt(path: String, title: String, origin: String) -> bool:
+	if busy or entries.size() >= MAX_ENTRIES:
+		error = "" if busy else "Scene library is full"
+		return false
+	error = ""
+	adding = title
+	_origin = origin
+	# A first scene of all may come from the gallery: the folder picked files land in is not there yet.
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(_sources()))
+	_finish({"state": "ready", "path": path, "bytes": FileAccess.get_size(path)})
+	_origin = ""
+	return error.is_empty()
+
+## Gallery scene -> the library entry holding it.
+func origins() -> Dictionary:
+	var found := {}
+	for id in entries:
+		var origin := str(entries[id].get("origin", ""))
+		if not origin.is_empty(): found[origin] = id
+	return found
+
 func cancel() -> void:
 	if _request > 0 and Methods.supports(platform, "cancel_scene_file_import"): platform.cancel_scene_file_import(_request)
 	if _request > 0:
@@ -200,6 +225,9 @@ func _finish(result: Dictionary) -> void:
 		# The same file again: keep the first copy.
 		DirAccess.remove_absolute(saved)
 		landed = id
+		if not _origin.is_empty() and not entries[id].has("origin"):
+			entries[id]["origin"] = _origin
+			save_catalog()
 	else:
 		var file := "%s.%s" % [id, saved.get_extension().to_lower()]
 		if DirAccess.rename_absolute(saved, ProjectSettings.globalize_path(_sources().path_join(file))) != OK:
@@ -207,6 +235,7 @@ func _finish(result: Dictionary) -> void:
 			error = "Could not save scene"
 		else:
 			entries[id] = {"title": adding.get_basename().left(160), "name": adding.left(255), "file": file, "bytes": int(result.get("bytes", 0)), "added": int(Time.get_unix_time_from_system()), "summary": {}}
+			if not _origin.is_empty(): entries[id]["origin"] = _origin
 			if not save_catalog():
 				DirAccess.remove_absolute(ProjectSettings.globalize_path(_sources().path_join(file)))
 				entries.erase(id)

@@ -3,7 +3,11 @@ extends RefCounted
 const I18n := preload("res://scripts/i18n.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
 const BASE := 987000
-enum Action { BACK, MANAGE, ADD, SEARCH, CLEAR, ALL, EDIT, DELETE, CANCEL, CONFIRM, TITLE, URL, SAVE, PASTE, WIFI, START, STOP, SECURE }
+enum Action { BACK, MANAGE, ADD, SEARCH, CLEAR, ALL, EDIT, DELETE, CANCEL, CONFIRM, TITLE, URL, SAVE, PASTE, WIFI, START, STOP, SECURE, VIEW }
+const PREVIEW_SIZE := Vector2(0.3, 0.225)
+const PREVIEW_PITCH := 0.245
+var preview_mode := true
+var _previews := {}
 var _browser: WeakRef
 var browser: RefCounted:
 	get: return _browser.get_ref()
@@ -17,7 +21,58 @@ var pending := 0
 var error := ""
 var require_code := false
 
-func _init(owner: RefCounted) -> void: _browser = weakref(owner)
+func _init(owner: RefCounted) -> void:
+	_browser = weakref(owner)
+	var preferences := ConfigFile.new()
+	if preferences.load("user://web_bookmarks.cfg") == OK:
+		preview_mode = bool(preferences.get_value("view", "preview", true))
+func grid() -> bool: return browser.list_mode == "bookmarks" and preview_mode
+func toggle_view() -> void:
+	preview_mode = not preview_mode
+	var preferences := ConfigFile.new()
+	preferences.set_value("view", "preview", preview_mode)
+	preferences.save("user://web_bookmarks.cfg")
+	menu().scroll = 0; menu().refresh(); browser.refresh_windows()
+func preview(entry: Dictionary) -> Texture2D:
+	var path := str(entry.get("preview_path", ""))
+	if path.is_empty(): return null
+	if _previews.has(path):
+		var cached: Texture2D = _previews[path]
+		_previews.erase(path); _previews[path] = cached
+		return cached
+	if not FileAccess.file_exists(path): return null
+	var image := Image.load_from_file(path)
+	if image == null or image.is_empty(): return null
+	image.generate_mipmaps()
+	var texture := ImageTexture.create_from_image(image)
+	_previews[path] = texture
+	while _previews.size() > 32: _previews.erase(_previews.keys()[0])
+	return texture
+func draw_preview(host: Node, parent: Node3D, entry: Dictionary, size: Vector2, center: Vector2) -> void:
+	var texture := preview(entry)
+	if texture:
+		# Fit the captured viewport without stretching or cropping the user's selection.
+		var scale := minf(size.x / texture.get_width(), size.y / texture.get_height())
+		var area: MeshInstance3D = host._quad(Vector2(texture.get_width(), texture.get_height()) * scale, Vector3(center.x, center.y, 0.006), Color.WHITE, 12)
+		var material: StandardMaterial3D = host._material(Color.WHITE, 13)
+		material.albedo_texture = texture; area.material_override = material
+		parent.add_child(area)
+	else: host._icon("globe", Vector3(center.x, center.y, 0.007), minf(size.x, size.y) * 0.48, host.MUTED, parent)
+func tile(target: int, row: Dictionary, center: Vector2) -> void:
+	var host := menu()
+	host._button(target, "", center, PREVIEW_SIZE, bool(row.get("enabled", true)), "", false, host._list)
+	var button: Dictionary = host._buttons.back()
+	var node: MeshInstance3D = button.node
+	if row.get("selected", false):
+		button.base_color = host.SELECTED
+		node.material_override.set_shader_parameter("surface_color", host.SELECTED)
+	draw_preview(host, node, row, Vector2(0.28, 0.157), Vector2(0, 0.023))
+	var label: Label3D = host._label(host._fit_title(str(row.title), "", 0.27, 17), Vector3(0, -0.081, 0.008), 17, node)
+	label.render_priority = 14
+	if managing and row.has("url"):
+		var marker: MeshInstance3D = host._icon("check" if row.get("selected", false) else "checkbox", Vector3(-0.12, 0.085, 0.012), 0.03, host.ACCENT, node)
+		marker.material_override.render_priority = 15
+	host._tips[target] = str(row.get("tip", row.title))
 func menu() -> Node: return browser.menu
 func active() -> bool:
 	return menu().visible and menu().section == menu().Section.WEB and not browser.opened and not browser.list_mode.is_empty()
@@ -34,6 +89,9 @@ func entries() -> Array:
 	if query.is_empty(): return result
 	return result.filter(func(entry): return (str(entry.get("title", "")) + " " + str(entry.url)).to_lower().contains(query.to_lower()))
 func accept(snapshot: Dictionary) -> void:
+	var preview_paths: Array = snapshot.get("bookmarks", []).map(func(entry): return str(entry.get("preview_path", "")))
+	for path in _previews.keys():
+		if path not in preview_paths: _previews.erase(path)
 	var existing: Array = snapshot.get(browser.list_mode, []).map(func(entry): return str(entry.url))
 	for url in selection.keys():
 		if url not in existing: selection.erase(url)
@@ -53,7 +111,8 @@ func rows() -> Array:
 		var url := str(entry.url)
 		result.append({"title": str(entry.get("title", "")) if not str(entry.get("title", "")).is_empty() else url,
 			"detail": display_address(url), "tip": url, "icon": ("check" if selection.has(url) else "checkbox") if managing else "globe",
-			"selected": managing and selection.has(url), "web_browser": "select" if managing else "visit", "url": url})
+			"selected": managing and selection.has(url), "web_browser": "select" if managing else "visit", "url": url,
+			"preview_path": str(entry.get("preview_path", ""))})
 	if result.is_empty(): result.append({"title": I18n.t("No items"), "enabled": false})
 	return result
 static func display_address(url: String) -> String:
@@ -76,6 +135,9 @@ func draw_header() -> void:
 	if not active(): return
 	_button(Action.BACK, "", -0.52, 0.46, 0.085, true, "previous")
 	_button(Action.SEARCH, "", 0.43, 0.46, 0.085, true, "search")
+	if browser.list_mode == "bookmarks":
+		_button(Action.VIEW, "", 0.32, 0.46, 0.085, true, "list" if preview_mode else "grid")
+		menu()._tips[BASE + Action.VIEW] = I18n.t("List view" if preview_mode else "Icon view")
 	menu()._tips[BASE + Action.SEARCH] = query if not query.is_empty() else I18n.t("Search")
 	if not managing:
 		var bookmarks: bool = browser.list_mode == "bookmarks"
@@ -110,6 +172,7 @@ func action(target: int) -> bool:
 	# Modal buttons cannot be reached through stale list targets.
 	if not modal.is_empty() and kind not in [Action.CANCEL, Action.CONFIRM, Action.TITLE, Action.URL, Action.SAVE, Action.PASTE, Action.START, Action.STOP, Action.SECURE]: return true
 	match kind:
+		Action.VIEW: toggle_view()
 		Action.WIFI:
 			modal = "wifi"; error = ""; menu().refresh()
 		Action.START:

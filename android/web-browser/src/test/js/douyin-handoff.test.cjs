@@ -13,7 +13,7 @@ function fixture(){
  const body={append(o){o.parentElement=this}},document={nodeType:9,body,querySelectorAll:s=>s==='video'?[video]:[],createElement:()=>({dataset:{},style:{},remove(){this.removed=true}})};
  const context={URL,document,location:{href:'https://www.douyin.com/'},navigator:{userAgent:'fixture'},setTimeout(fn){timers.push(fn)},
    addEventListener(n,f){(events[n]??=[]).push(f)},performance:{now:()=>0,getEntriesByType:()=>[]},MutationObserver:class{observe(){}disconnect(){}},
-   Thru3DPlayButton:{visible:()=>true,create(doc,overlay,site,clicked){const host={dataset:{},isConnected:true,hidden:false};buttons.push({host,clicked});return {host,enabled(){},dispose(){host.isConnected=false}}}},
+   Thru3DPlayButton:{visible:()=>true,create(doc,overlay,site,clicked){const host={dataset:{},isConnected:true,hidden:false};buttons.push({host,clicked});return {host,interactive:()=>host.isConnected&&!host.hidden,enabled(){},dispose(){host.isConnected=false}}}},
    browser:{runtime:{connect(){const p={onMessage:signal(),onDisconnect:signal(),postMessage(){}};ports.push(p);return p},
      connectNative(){const p={onMessage:signal(),onDisconnect:signal(),messages:[],postMessage(m){this.messages.push(m)}};ports.push(p);return p}}}};
  vm.createContext(context);for(const name of ['douyin.js','douyin-current.js','direct-return.js','media.js'])vm.runInContext(fs.readFileSync(path.join(root,name),'utf8'),context);

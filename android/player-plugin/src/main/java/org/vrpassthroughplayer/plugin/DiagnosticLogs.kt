@@ -7,34 +7,42 @@ import android.os.Environment
 import android.provider.MediaStore
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URL
 import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.zip.GZIPOutputStream
 import kotlin.concurrent.thread
 
 /**
  * The diagnostic log a user can hand over: this app's own logcat (no permission is needed for its own
  * process), with media names, accounts and URL parameters masked. Saved to Download/Thru3D/logs or
- * served for a while on the headset's Wi-Fi address, since a headset has no share target to a phone.
+ * served for a while on the headset's Wi-Fi address, since a headset has no share target to a phone,
+ * or sent to the developer's write-only inbox (cloud/log-upload) when the user chooses to upload it.
  */
 internal object DiagnosticLogs {
     private const val SHARE_MS = 10 * 60 * 1000L
     private const val PORT = 8790
+    private const val UPLOAD_URL = ""
+    /** The inbox refuses more (cloud/log-upload MAX_BYTES). */
+    private const val UPLOAD_MAX_BYTES = 4 * 1024 * 1024
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "DiagnosticLogs").apply { isDaemon = true } }
     @Volatile private var server: ServerSocket? = null
     @Volatile private var shareUntil = 0L
 
-    /** [action]: "save", "share", "stop" or "recent"; [header] goes on top of the log (versions, settings);
+    /** [action]: "save", "share", "upload", "stop" or "recent"; [header] goes on top of the log (versions, settings);
      * [full] keeps every line, otherwise periodic lines are thinned ([condense]).
-     * Reports {"action", "ok", "path"|"url"+"expires_ms"|"lines", "error"} through [report]. */
+     * Reports {"action", "ok", "path"|"url"+"expires_ms"|"code"|"lines", "error"} through [report]. */
     fun request(context: Context, action: String, header: String, full: Boolean, report: (JSONObject) -> Unit) {
         val app = context.applicationContext
         worker.execute {
@@ -43,6 +51,7 @@ internal object DiagnosticLogs {
                 when (action) {
                     "save" -> result.put("path", save(app, compose(app, header, full), fileName()))
                     "share" -> result.put("url", share(compose(app, header, full))).put("expires_ms", shareUntil)
+                    "upload" -> result.put("code", upload(UPLOAD_URL, compose(app, header, full), installation(app).lineSequence().first(), reportCategory(header)))
                     "stop" -> stop()
                     "recent" -> result.put("lines", JSONArray(recent()))
                     else -> error("Unknown log action")
@@ -198,6 +207,40 @@ internal object DiagnosticLogs {
         val folder = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Thru3D/logs").apply { mkdirs() }
         File(folder, name).writeText(text)
         return Environment.DIRECTORY_DOWNLOADS + "/Thru3D/logs/" + name
+    }
+
+    /** The problem type the user chose for an upload: the header's `Report: {"category", "note"}` line.
+     * The note stays in the log text only. */
+    internal fun reportCategory(header: String): String = header.lineSequence().firstOrNull { it.startsWith("Report: ") }
+        ?.let { runCatching { JSONObject(it.removePrefix("Report: ")).optString("category") }.getOrNull() }
+        ?.takeIf { Regex("[a-z_]{1,32}").matches(it) }.orEmpty()
+
+    /** Sends the masked log, gzipped, to the inbox at [endpoint]; the code the user quotes when reporting
+     * a problem. Fails with the inbox's reason ("rate_limited", "quota", "too_large", ...) or "http_<status>". */
+    internal fun upload(endpoint: String, text: String, app: String, category: String = ""): String {
+        check(endpoint.isNotBlank()) { "upload_unconfigured" }
+        val body = ByteArrayOutputStream().also { bytes -> GZIPOutputStream(bytes).use { it.write(text.toByteArray()) } }.toByteArray()
+        if (body.size > UPLOAD_MAX_BYTES) error("too_large")
+        val connection = URL(endpoint).openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 30_000
+            connection.doOutput = true
+            connection.setFixedLengthStreamingMode(body.size)
+            connection.setRequestProperty("Content-Type", "application/gzip")
+            connection.setRequestProperty("X-Thru3D-App", app.removePrefix("App: ").filter { it.code in 32..126 })
+            if (category.isNotEmpty()) connection.setRequestProperty("X-Thru3D-Category", category)
+            connection.outputStream.use { it.write(body) }
+            val status = connection.responseCode
+            val reply = runCatching {
+                JSONObject((if (status in 200..299) connection.inputStream else connection.errorStream).bufferedReader().use { it.readText() })
+            }.getOrNull()
+            if (status !in 200..299) error(reply?.optString("error")?.takeIf { it.isNotEmpty() } ?: "http_$status")
+            return reply?.optString("code")?.takeIf { Regex("[A-Z0-9]{6,12}").matches(it) } ?: error("bad_reply")
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun wifiAddress(): String = NetworkInterface.getNetworkInterfaces().toList()

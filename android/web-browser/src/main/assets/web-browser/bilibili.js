@@ -5,11 +5,15 @@ const Thru3DBilibili = (() => {
   const page = value => {
     try {
       const u = new URL(value), pgc = /^\/bangumi\/play\/((?:ep|ss)[1-9][0-9]{0,19})\/?$/.exec(u.pathname)?.[1];
-      const id = pgc || /^\/video\/(BV[A-Za-z0-9]+|av[0-9]+)\/?$/.exec(u.pathname)?.[1];
+      const playlist = /^\/(?:list\/(?:watchlater|ml[1-9][0-9]{0,19}|[1-9][0-9]{0,19})|medialist\/play\/[1-9][0-9]{0,19})\/?$/.test(u.pathname);
+      if (['bvid', 'oid', 'p'].some(k => u.searchParams.getAll(k).length > 1)) return null;
+      const bvid = u.searchParams.get('bvid'), oid = u.searchParams.get('oid');
+      if (playlist && (bvid !== null && !/^BV[A-Za-z0-9]{10}$/.test(bvid) || oid !== null && !/^[1-9][0-9]{0,19}$/.test(oid))) return null;
+      const id = pgc || /^\/video\/(BV[A-Za-z0-9]+|av[0-9]+)\/?$/.exec(u.pathname)?.[1] || (playlist ? bvid || (oid ? 'av' + oid : '') : null);
       const part = Number(u.searchParams.get('p') || 1);
       if (u.protocol !== 'https:' || u.hostname !== 'www.bilibili.com' || u.port || u.username || u.password ||
-          !id || !Number.isSafeInteger(part) || part < 1 || part > 10000) return null;
-      return { id, part: pgc ? 1 : part, ...(pgc ? { pgc: true } : {}) };
+          id === null || id === undefined || !Number.isSafeInteger(part) || part < 1 || part > 10000) return null;
+      return { id, part: pgc ? 1 : part, ...(pgc ? { pgc: true } : {}), ...(playlist ? {playlist:true} : {}) };
     } catch (_) { return null; }
   };
   const sameDocumentPage = (a, b) => {

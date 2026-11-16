@@ -1,0 +1,866 @@
+{
+ "version": 1,
+ "scenes": [
+  {
+   "slug": "abandoned_building_room",
+   "title": "Abandoned Hall",
+   "title_zh": "废弃大厅",
+   "title_zh_hant": "廢棄大廳",
+   "title_ja": "廃墟のホール",
+   "work": "Abandoned Building Room",
+   "author": "jimbogies",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/abandoned-building-room-3b075930ce9040ddaf76238c44f9d51a",
+   "tiers": {
+    "low": {
+     "file": "abandoned_building_room.low.d4966fe250a1.glb",
+     "bytes": 1680916,
+     "sha256": "d4966fe250a1183f654d5685b3cb5cf36dc12997980f0c40b2cc7430a223c74e"
+    },
+    "high": {
+     "file": "abandoned_building_room.high.e7fe5310546b.glb",
+     "bytes": 1680920,
+     "sha256": "e7fe5310546b7ce5709aedcc3e55dc9ffe77b3456f1e032d1d2e889de8fa0d03"
+    }
+   },
+   "preset": {
+    "entry": [
+     4.2225,
+     0.0,
+     -6.7109,
+     2.3147
+    ],
+    "posture": "stand",
+    "backdrop": ""
+   }
+  },
+  {
+   "slug": "b_room",
+   "title": "Break Room",
+   "title_zh": "休息间",
+   "title_zh_hant": "休息室",
+   "title_ja": "休憩室",
+   "work": "B_ROOM",
+   "author": "Jac_Pretorius",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/b-room-1ab686fd47e440f49031930cc14b5e71",
+   "tiers": {
+    "low": {
+     "file": "b_room.low.1a7a177766bb.glb",
+     "bytes": 821124,
+     "sha256": "1a7a177766bb3ea9a0108c6d6ca7b0efc4f378daf3fa39fd8834a9214d00e3ec"
+    },
+    "high": {
+     "file": "b_room.high.7e55bed7e179.glb",
+     "bytes": 821128,
+     "sha256": "7e55bed7e179fe401fde0e27df308bd5a1894bc01bb3f30f47e9f76820818483"
+    }
+   },
+   "preset": {
+    "entry": [
+     -5.0424,
+     7.621,
+     11.016,
+     2.8192
+    ],
+    "posture": "stand",
+    "backdrop": "morning"
+   }
+  },
+  {
+   "slug": "backrooms_vr",
+   "title": "Backrooms",
+   "title_zh": "后室",
+   "title_zh_hant": "後室",
+   "title_ja": "バックルーム",
+   "work": "Backrooms VR",
+   "author": "VTX, after carlcapu9",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/backrooms-vr-1a5c397f0a43408fa38b09ea5c041149",
+   "tiers": {
+    "low": {
+     "file": "backrooms_vr.low.2e8ea4d4be54.glb",
+     "bytes": 4048736,
+     "sha256": "2e8ea4d4be54a41211ce0df827afd3b11e6b64d82868c39a87590b06bfaf6f42"
+    },
+    "high": {
+     "file": "backrooms_vr.high.d396b590c06e.glb",
+     "bytes": 7027228,
+     "sha256": "d396b590c06e5ec202ec91632b1c5184affe5a5dc321e9068ac00b7028eaf214"
+    }
+   },
+   "preset": {
+    "entry": [
+     -24.9588,
+     -0.1176,
+     2.0512,
+     -2.2783
+    ],
+    "posture": "stand",
+    "backdrop": ""
+   }
+  },
+  {
+   "slug": "bar_diorama",
+   "title": "Billiard Bar",
+   "title_zh": "台球酒吧",
+   "title_zh_hant": "撞球酒吧",
+   "title_ja": "ビリヤードバー",
+   "work": "Bar Diorama",
+   "author": "Ethica",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/bar-diorama-1762fb3868a34e9988cf0b34d5384bb6",
+   "tiers": {
+    "low": {
+     "file": "bar_diorama.low.7b77e2b772ab.glb",
+     "bytes": 2681976,
+     "sha256": "7b77e2b772abbe64ad254895337a3c19034283d7facde3afc207eb035bb128aa"
+    },
+    "high": {
+     "file": "bar_diorama.high.6507ad83a11a.glb",
+     "bytes": 2681976,
+     "sha256": "6507ad83a11ace1b5d0574047ddb6dda4d65af7871ddc2ba153d16f269c09896"
+    }
+   },
+   "preset": {
+    "entry": [
+     0.3654,
+     -0.5964,
+     -0.5765,
+     0.3032
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "bathhouse",
+   "title": "Bathhouse",
+   "title_zh": "浴场",
+   "title_zh_hant": "浴場",
+   "title_ja": "大浴場",
+   "work": "Bathhouse",
+   "author": "dylanheyes",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/bathhouse-aca612273c874155afddeb15a6574b12",
+   "tiers": {
+    "low": {
+     "file": "bathhouse.low.9639a271c21e.glb",
+     "bytes": 7061624,
+     "sha256": "9639a271c21e257ae622da76a65591cbb9b1f90cb3e6e44289abf6a51e7b389a"
+    },
+    "high": {
+     "file": "bathhouse.high.b8ecab970b76.glb",
+     "bytes": 7259520,
+     "sha256": "b8ecab970b760037695646b8a703eba1e5dbd53edc09b1d8a6ccfa9f08934fa4"
+    }
+   },
+   "preset": {
+    "entry": [
+     -6.2006,
+     -5.5928,
+     -2.3178,
+     -1.9116
+    ],
+    "posture": "stand",
+    "backdrop": ""
+   }
+  },
+  {
+   "slug": "bedroom",
+   "title": "Modern Bedroom",
+   "title_zh": "现代卧室",
+   "title_zh_hant": "現代臥室",
+   "title_ja": "モダンな寝室",
+   "work": "Bedroom",
+   "author": "Kiem Truong",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/bedroom-9918cac4e57640f0bd149fc3f614b505",
+   "tiers": {
+    "low": {
+     "file": "bedroom.low.f157508e6f9b.glb",
+     "bytes": 21855352,
+     "sha256": "f157508e6f9b69d22cc252bfadabf9bbc1bc0b740e6b9f0af6eade38b0baa6f7"
+    },
+    "high": {
+     "file": "bedroom.high.fd5533e80c37.glb",
+     "bytes": 47366036,
+     "sha256": "fd5533e80c374bf5a39fd6387d10cce00ee1b5318d15e4d45129682ba0c11040"
+    }
+   },
+   "preset": {
+    "entry": [
+     1.6783,
+     0.0101,
+     -0.3086,
+     -1.8067
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "eloiza_e_ze_newton",
+   "title": "Study Bedroom",
+   "title_zh": "书桌卧室",
+   "title_zh_hant": "書桌臥室",
+   "title_ja": "書斎つき寝室",
+   "work": "Eloiza E Ze Newton",
+   "author": "SrMonteiro",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/eloiza-e-ze-newton-45dc277dcb934dbd8d6ca2de38bafa57",
+   "tiers": {
+    "low": {
+     "file": "eloiza_e_ze_newton.low.f8c0b56fdd55.glb",
+     "bytes": 11261440,
+     "sha256": "f8c0b56fdd5584d3912a5a14fd043e47ed8a058250a82f47873671dbd0506e89"
+    },
+    "high": {
+     "file": "eloiza_e_ze_newton.high.1700c6ecea9b.glb",
+     "bytes": 14828176,
+     "sha256": "1700c6ecea9b8f843922fe07f6186c3a127e25dce6cc3101722f7450a97b161a"
+    }
+   },
+   "preset": {
+    "entry": [
+     -0.1116,
+     0.0111,
+     -0.0417,
+     -2.3964
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "environment_final",
+   "title": "Edwardian Museum",
+   "title_zh": "爱德华式展厅",
+   "title_zh_hant": "愛德華式展廳",
+   "title_ja": "エドワード朝の展示室",
+   "work": "Environment model 01",
+   "author": "Kat_Cheese",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/environment-model-01-9a2001e9d1c245248f16e1832298ce70",
+   "tiers": {
+    "low": {
+     "file": "environment_final.low.625c7adc838d.glb",
+     "bytes": 7145628,
+     "sha256": "625c7adc838d06b8b5bad7aeb062dd33c50dd3a685e61d05755bbcd3b00e65e6"
+    },
+    "high": {
+     "file": "environment_final.high.18be8086edb1.glb",
+     "bytes": 7934688,
+     "sha256": "18be8086edb177f59b52deee2fafc5d061dfb2157b97aeca07191dffe7162f8a"
+    }
+   },
+   "preset": {
+    "entry": [
+     -3.9313,
+     0.0,
+     -10.6716,
+     -0.4765
+    ],
+    "posture": "stand",
+    "backdrop": "morning"
+   }
+  },
+  {
+   "slug": "indoor_basketball_court",
+   "title": "Basketball Arena",
+   "title_zh": "篮球馆",
+   "title_zh_hant": "籃球館",
+   "title_ja": "バスケットボールアリーナ",
+   "work": "Indoor Basketball Court",
+   "author": "nguyennghiakk",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/indoor-basketball-court-943a9bc962974d02aa34592084687c3c",
+   "tiers": {
+    "low": {
+     "file": "indoor_basketball_court.low.c4c72d86c0eb.glb",
+     "bytes": 14552428,
+     "sha256": "c4c72d86c0ebd77230870a07cee6e01017ca4f8a91dc428bbaf3ae260ee6d88e"
+    },
+    "high": {
+     "file": "indoor_basketball_court.high.7b874104b90c.glb",
+     "bytes": 35285432,
+     "sha256": "7b874104b90c3cd4e91101755f6608fdf4ff3626419a031b4bdc007f0bea5af2"
+    }
+   },
+   "preset": {
+    "entry": [
+     -5.6128,
+     0.4562,
+     0.9265,
+     -0.5763
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "library",
+   "title": "Grand Library",
+   "title_zh": "图书馆",
+   "title_zh_hant": "圖書館",
+   "title_ja": "図書館",
+   "work": "library",
+   "author": "Pasha",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/library-7fc61f0d65ee49d0b2904e85d1fa520e",
+   "tiers": {
+    "low": {
+     "file": "library.low.7899a4448b05.glb",
+     "bytes": 19622292,
+     "sha256": "7899a4448b05ae2cd799375a78d3f9a3b28263d2e2f24769f7dc63c18ae094f7"
+    },
+    "high": {
+     "file": "library.high.e22e67ad7d9d.glb",
+     "bytes": 19622292,
+     "sha256": "e22e67ad7d9dff6806ef1ee31afebd27a18e3486b50cdeb8810e0ec5bff6e725"
+    }
+   },
+   "preset": {
+    "entry": [
+     -1.6534,
+     7.5019,
+     -3.1038,
+     -0.0572
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "luiz_ieda_salao_cafe",
+   "title": "Café",
+   "title_zh": "咖啡厅",
+   "title_zh_hant": "咖啡廳",
+   "title_ja": "カフェ",
+   "work": "Luiz IEDA - Salao Cafe",
+   "author": "SrMonteiro",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/luiz-ieda-salao-cafe-f938dc27646f4cfea40fc6f3c31d5524",
+   "tiers": {
+    "low": {
+     "file": "luiz_ieda_salao_cafe.low.307c7c518b19.glb",
+     "bytes": 10911992,
+     "sha256": "307c7c518b19fc40998ffb058ed99f86588eb4c2fd33c303ae4882f66f87f70d"
+    },
+    "high": {
+     "file": "luiz_ieda_salao_cafe.high.9982cded298f.glb",
+     "bytes": 11817364,
+     "sha256": "9982cded298ffb6822fb317e291f0e9e8a315c92c3fea394a1a82eb57ddf2f44"
+    }
+   },
+   "preset": {
+    "entry": [
+     -3.2429,
+     0.002,
+     -2.3726,
+     -1.9476
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "modern_bathroom",
+   "title": "Modern Bathroom",
+   "title_zh": "现代浴室",
+   "title_zh_hant": "現代浴室",
+   "title_ja": "モダンなバスルーム",
+   "work": "Modern Bathroom",
+   "author": "dylanheyes",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/modern-bathroom-9ba7e0a094694335bd8f4656611c0676",
+   "tiers": {
+    "low": {
+     "file": "modern_bathroom.low.17d78cb6092f.glb",
+     "bytes": 8286276,
+     "sha256": "17d78cb6092fc169566f17e8e105941697a206cd0fa1711883184c5761898a8d"
+    },
+    "high": {
+     "file": "modern_bathroom.high.c83da4b47bf4.glb",
+     "bytes": 8286280,
+     "sha256": "c83da4b47bf488554fecb9247d19ddd0f3ea8d49290377cc90a4ecce04be5bf4"
+    }
+   },
+   "preset": {
+    "entry": [
+     -0.0429,
+     -1.2984,
+     0.1893,
+     -0.5059
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "modular_classroom_preview",
+   "title": "Classroom",
+   "title_zh": "教室",
+   "title_zh_hant": "教室",
+   "title_ja": "教室",
+   "work": "Modular Classroom Preview",
+   "author": "lazarys",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/modular-classroom-preview-3ecfa670dbd946ec80b49d7df74ab453",
+   "tiers": {
+    "low": {
+     "file": "modular_classroom_preview.low.844410e01b27.glb",
+     "bytes": 9232724,
+     "sha256": "844410e01b27d59f90389a0a7e922e1210f1d01fba4dfb4899ce7de31764508e"
+    },
+    "high": {
+     "file": "modular_classroom_preview.high.68fca9605495.glb",
+     "bytes": 11683844,
+     "sha256": "68fca96054955c54b63f19040ca21f7d609eba60911264d7f3b2f942501aea70"
+    }
+   },
+   "preset": {
+    "entry": [
+     -5.5898,
+     0.1712,
+     1.6083,
+     -1.2583
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "night_club_lorem_ipsum_map",
+   "title": "Night Club",
+   "title_zh": "夜店",
+   "title_zh_hant": "夜店",
+   "title_ja": "ナイトクラブ",
+   "work": "Night Club Lorem Ipsum_ Map",
+   "author": "Gh4xt3r",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/night-club-lorem-ipsum--map-95cb645b886849149ff8a8a9609f421e",
+   "tiers": {
+    "low": {
+     "file": "night_club_lorem_ipsum_map.low.9c7c3c7fc86a.glb",
+     "bytes": 1557916,
+     "sha256": "9c7c3c7fc86a4b9d3781006472b43fa20005a101a74159cbf21d3eb5d62b8189"
+    },
+    "high": {
+     "file": "night_club_lorem_ipsum_map.high.b5d87cf4be59.glb",
+     "bytes": 1557916,
+     "sha256": "b5d87cf4be593b2cf6703612c08282e7f2319ee658f83b239a4b5e58343c5967"
+    }
+   },
+   "preset": {
+    "entry": [
+     -0.0941,
+     -0.0001,
+     6.3767,
+     -0.1743
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "pool",
+   "title": "Indoor Pool",
+   "title_zh": "室内泳池",
+   "title_zh_hant": "室內泳池",
+   "title_ja": "屋内プール",
+   "work": "pool",
+   "author": "Arbin4444",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/pool-1711ea3b6e884ff8acb0ff0d0bded17f",
+   "tiers": {
+    "low": {
+     "file": "pool.low.f3a9e2af7b40.glb",
+     "bytes": 9423588,
+     "sha256": "f3a9e2af7b40730a2397fea2dd07108053cbd070690ab3da7fc31024c0900ff2"
+    },
+    "high": {
+     "file": "pool.high.1e0311025197.glb",
+     "bytes": 10519568,
+     "sha256": "1e0311025197eb0d6ddec356fb1359d5e1c82053b800b17235e0cdc157b9bfda"
+    }
+   },
+   "preset": {
+    "entry": [
+     -14.3558,
+     0.0,
+     -6.0788,
+     -2.3032
+    ],
+    "posture": "stand",
+    "backdrop": ""
+   }
+  },
+  {
+   "slug": "private_detectives_office",
+   "title": "Detective's Office",
+   "title_zh": "侦探事务所",
+   "title_zh_hant": "偵探事務所",
+   "title_ja": "探偵事務所",
+   "work": "Private Detective’s Office",
+   "author": "Zeps3D",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/private-detectives-office-2afb913100ac4ca4bb4708fe8183c5b8",
+   "tiers": {
+    "low": {
+     "file": "private_detectives_office.low.7c683e1432ee.glb",
+     "bytes": 11993700,
+     "sha256": "7c683e1432eedf475f18808f231ed94102574417f030d8e6d8a885960c0d7839"
+    },
+    "high": {
+     "file": "private_detectives_office.high.d8581f11d101.glb",
+     "bytes": 14414956,
+     "sha256": "d8581f11d1016a342048f3574f155aee6e2580c7c67014b613c3fa37428bbdb5"
+    }
+   },
+   "preset": {
+    "posture": "stand",
+    "backdrop": ""
+   }
+  },
+  {
+   "slug": "pub_interior",
+   "title": "Pub",
+   "title_zh": "小酒馆",
+   "title_zh_hant": "小酒館",
+   "title_ja": "パブ",
+   "work": "Pub interior",
+   "author": "Kidney_02",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/pub-interior-a6534141c33343b382dd23d519c3de73",
+   "tiers": {
+    "low": {
+     "file": "pub_interior.low.c5720a464bf4.glb",
+     "bytes": 6118576,
+     "sha256": "c5720a464bf45b9779ffa1b57df428b42f3f84783db837d8172f97321327aea2"
+    },
+    "high": {
+     "file": "pub_interior.high.f8b40c4c88bb.glb",
+     "bytes": 6118576,
+     "sha256": "f8b40c4c88bb7481efcee5434d7febac481996490ed583b4949369b5fba8e997"
+    }
+   },
+   "preset": {
+    "entry": [
+     3.3982,
+     0.6,
+     3.9302,
+     -0.2754
+    ],
+    "posture": "stand",
+    "backdrop": "morning"
+   }
+  },
+  {
+   "slug": "resto_ni_teo",
+   "title": "Diner",
+   "title_zh": "小餐馆",
+   "title_zh_hant": "小餐館",
+   "title_ja": "ダイナー",
+   "work": "Resto ni Teo",
+   "author": "LowPolyBoy",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/resto-ni-teo-2c587738161e43708b4d99210c57c9cc",
+   "tiers": {
+    "low": {
+     "file": "resto_ni_teo.low.c2b81e6fe68c.glb",
+     "bytes": 7999192,
+     "sha256": "c2b81e6fe68cbee473b3296e8c3df39cd8a987b804c4bdb9a1a162c9f1ff96e2"
+    },
+    "high": {
+     "file": "resto_ni_teo.high.96fa74b2d742.glb",
+     "bytes": 7999196,
+     "sha256": "96fa74b2d742a4f8fe1dc770d92704998133ea282aa7092c0b7bd2a447df0433"
+    }
+   },
+   "preset": {
+    "entry": [
+     2.4814,
+     0.0,
+     0.853,
+     2.3108
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "sitting_room_with_baked_textures",
+   "title": "Sitting Room",
+   "title_zh": "起居室",
+   "title_zh_hant": "起居室",
+   "title_ja": "居間",
+   "work": "Sitting Room with Baked Textures",
+   "author": "jimbogies",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/sitting-room-with-baked-textures-61fdbbef86b9496d80644492a84c916f",
+   "tiers": {
+    "low": {
+     "file": "sitting_room_with_baked_textures.low.b657702f8c14.glb",
+     "bytes": 611464,
+     "sha256": "b657702f8c14709a730605b5887cafb5c1b21599e9be986a778e4760a61d0dc6"
+    },
+    "high": {
+     "file": "sitting_room_with_baked_textures.high.03da91fe5c22.glb",
+     "bytes": 1112604,
+     "sha256": "03da91fe5c22a3f86cdd4ef4e4c283d41fc0a8227bec734115850cab51393396"
+    }
+   },
+   "preset": {
+    "entry": [
+     -0.0483,
+     -0.0,
+     0.1917,
+     -0.2212
+    ],
+    "posture": "stand",
+    "backdrop": "morning"
+   }
+  },
+  {
+   "slug": "small_modern_kitchen",
+   "title": "Modern Kitchen",
+   "title_zh": "现代厨房",
+   "title_zh_hant": "現代廚房",
+   "title_ja": "モダンなキッチン",
+   "work": "Small Modern Kitchen",
+   "author": "dylanheyes",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/small-modern-kitchen-2cc658a96e304a6d9db1813233ed90d1",
+   "tiers": {
+    "low": {
+     "file": "small_modern_kitchen.low.0874fd82d507.glb",
+     "bytes": 7210900,
+     "sha256": "0874fd82d5079534686567910da7650631e7ca03ae67b17b9aebf5067ccbd8f9"
+    },
+    "high": {
+     "file": "small_modern_kitchen.high.39565773a199.glb",
+     "bytes": 8446872,
+     "sha256": "39565773a199d39cd8fc01e828d998c0521411d520162de015d8a23ef6b926fa"
+    }
+   },
+   "preset": {
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "station",
+   "title": "Station Hall",
+   "title_zh": "车站大厅",
+   "title_zh_hant": "車站大廳",
+   "title_ja": "駅のホール",
+   "work": "Station",
+   "author": "NGUYENNGHIAKK",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/station-d933750b1fb443c3bb84e06be15a30fc",
+   "tiers": {
+    "low": {
+     "file": "station.low.128807241553.glb",
+     "bytes": 8236748,
+     "sha256": "128807241553aa3bc7353a81a7981965a0ebf25800a54a06602fa423eb3f0b01"
+    },
+    "high": {
+     "file": "station.high.d1c1aca9cabb.glb",
+     "bytes": 8236748,
+     "sha256": "d1c1aca9cabb77908e240f529a5d5e1f239dc52727b7bbe730e31dcae09007e2"
+    }
+   },
+   "preset": {
+    "entry": [
+     -2.4229,
+     0.0006,
+     -7.8991,
+     2.25
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "studio_room",
+   "title": "Studio",
+   "title_zh": "工作室",
+   "title_zh_hant": "工作室",
+   "title_ja": "スタジオ",
+   "work": "Studio Room",
+   "author": "jimbogies",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/studio-room-c02efe2e7a10404895c2b49e3ca1d11a",
+   "tiers": {
+    "low": {
+     "file": "studio_room.low.6adca993f11e.glb",
+     "bytes": 89004,
+     "sha256": "6adca993f11e0193c2892675807a58789435845c32a1d14786a13658c6e79223"
+    },
+    "high": {
+     "file": "studio_room.high.87c68d57b4be.glb",
+     "bytes": 227792,
+     "sha256": "87c68d57b4beab60f5b6eea3b862a8192a56a7ec0bde561ce88e8cad174263ec"
+    }
+   },
+   "preset": {
+    "entry": [
+     0.3092,
+     0.0,
+     0.5886,
+     -0.8208
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "the_grange_dining_room",
+   "title": "Manor Dining Room",
+   "title_zh": "庄园餐厅",
+   "title_zh_hant": "莊園餐廳",
+   "title_ja": "邸宅のダイニング",
+   "work": "The Grange Dining Room",
+   "author": "artfletch",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/the-grange-dining-room-c8d7eead749a4bda987a392eef95b532",
+   "tiers": {
+    "low": {
+     "file": "the_grange_dining_room.low.4783e8189265.glb",
+     "bytes": 2304572,
+     "sha256": "4783e8189265487cbbd09910871d5ce21ac25dd9aecb8535ad9e165f8b8862bb"
+    },
+    "high": {
+     "file": "the_grange_dining_room.high.c2a806ceab66.glb",
+     "bytes": 2906076,
+     "sha256": "c2a806ceab66be6a1549f030bb4566ec4c77c8be22bbebf7567229d726549478"
+    }
+   },
+   "preset": {
+    "posture": "stand",
+    "backdrop": ""
+   }
+  },
+  {
+   "slug": "throne_room",
+   "title": "Throne Room",
+   "title_zh": "王座厅",
+   "title_zh_hant": "王座廳",
+   "title_ja": "玉座の間",
+   "work": "Throne Room",
+   "author": "Uğur Yakışık",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/throne-room-247c37e6a9694ae891398911876f0c14",
+   "tiers": {
+    "low": {
+     "file": "throne_room.low.5567d8a3b7c5.glb",
+     "bytes": 10748580,
+     "sha256": "5567d8a3b7c564fef17d548a8e1aa22bc1c1086b61c1885e6103d4c1744105d4"
+    },
+    "high": {
+     "file": "throne_room.high.39fa1d76d875.glb",
+     "bytes": 10748580,
+     "sha256": "39fa1d76d87576ed8cec5fbe4cbfb5eba39191cb73f70788566cdb33e8cd465b"
+    }
+   },
+   "preset": {
+    "entry": [
+     -0.2488,
+     5.1816,
+     8.8247,
+     -3.0832
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "tropical_island",
+   "title": "Tropical Island",
+   "title_zh": "热带小岛",
+   "title_zh_hant": "熱帶小島",
+   "title_ja": "南の島",
+   "work": "Tropical Island",
+   "author": "Elin",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/tropical-island-f91862f8c38b481aa19edccac851eefb",
+   "tiers": {
+    "low": {
+     "file": "tropical_island.low.90b59f795032.glb",
+     "bytes": 4636548,
+     "sha256": "90b59f7950322dc6ecf113c9c0c506f22075be79205366c787f3be4a8e91bc4c"
+    },
+    "high": {
+     "file": "tropical_island.high.a8e5fbf9f04d.glb",
+     "bytes": 4636548,
+     "sha256": "a8e5fbf9f04dd870661af41979b262837c2d397f1ddc0c376c0d9cf0526c24fe"
+    }
+   },
+   "preset": {
+    "posture": "stand",
+    "backdrop": ""
+   }
+  },
+  {
+   "slug": "venue_stage_for_great_events",
+   "title": "Event Stage",
+   "title_zh": "活动舞台",
+   "title_zh_hant": "活動舞台",
+   "title_ja": "イベントステージ",
+   "work": "venue_stage_for_great_events",
+   "author": "tech.service.allwe",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/venue-stage-for-great-events-8c99d2545a8b40e7b1ff7a957f2d9377",
+   "tiers": {
+    "low": {
+     "file": "venue_stage_for_great_events.low.95c2ae2b4823.glb",
+     "bytes": 11703680,
+     "sha256": "95c2ae2b48230cc020b22d8c737901b541a6106062e46f5cc327868193e55b6f"
+    },
+    "high": {
+     "file": "venue_stage_for_great_events.high.7f570de66b9e.glb",
+     "bytes": 21968456,
+     "sha256": "7f570de66b9ecd0bc633cbb9576de93df448d6d20a15bd4386982780b4c27110"
+    }
+   },
+   "preset": {
+    "entry": [
+     0.5077,
+     -0.0059,
+     12.9299,
+     -0.004
+    ],
+    "posture": "stand",
+    "backdrop": "night"
+   }
+  },
+  {
+   "slug": "vr_theater",
+   "title": "Round Theatre",
+   "title_zh": "环形剧场",
+   "title_zh_hant": "環形劇場",
+   "title_ja": "円形劇場",
+   "work": "VR theater",
+   "author": "Salim",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/vr-theater-a5e63c0b2cc240949b5adcaf07d4d105",
+   "tiers": {
+    "low": {
+     "file": "vr_theater.low.0dcae83aabaa.glb",
+     "bytes": 287384,
+     "sha256": "0dcae83aabaa4c68cbbedbf2a5c5447e8d6f4d7bab6b5ef80493a7376f0a5260"
+    },
+    "high": {
+     "file": "vr_theater.high.20b8b8c243b3.glb",
+     "bytes": 740544,
+     "sha256": "20b8b8c243b3588d634dff4ed6166cea952630ab3d8fdae74a0bb7a1b75d9f13"
+    }
+   },
+   "preset": {
+    "posture": "stand",
+    "backdrop": ""
+   }
+  }
+ ]
+}

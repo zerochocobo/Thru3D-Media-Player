@@ -5,9 +5,9 @@ const Fixture := preload("res://tests/test_web_browser_panel.gd")
 class Platform extends Fixture.Platform:
 	var accept_resolve := true
 	var paused_playing := false
-	func web_video_resolve_beta(url: String) -> int:
+	func web_video_resolve_selected(url: String, selection: String) -> int:
 		if not accept_resolve: return 0
-		return super.web_video_resolve_beta(url)
+		return super.web_video_resolve_selected(url, selection)
 	func web_browser_command(value: String) -> void:
 		super.web_browser_command(value)
 		var command: Dictionary = JSON.parse_string(value)
@@ -35,7 +35,7 @@ func start(playing: bool = true, ready: bool = true) -> void:
 	platform.browser.merge({"url": "https://www.bilibili.com/video/BV11rHV6MENj/", "tab_id": 4,
 		"navigation": 10, "focused_window": 1, "active": true, "playing": playing,
 		"bilibili_beta_available": true, "videos": [{"id": "1", "width": 1920, "height": 1080,
-			"playing": playing, "bilibili_ready": ready, "time": 20.0}]}, true)
+			"playing": playing, "bilibili_ready": ready, "selection": "current", "time": 20.0}]}, true)
 	menu.web_browser.open(); poll()
 	menu.web_browser.action(menu.web_browser.BASE + 18)
 func paused() -> void:
@@ -96,7 +96,7 @@ func run() -> void:
 	menu.web_browser.action(menu.web_browser.BASE + 18)
 	check(menu.web_browser.handoff_waiting_pause, "A ready video starts on an explicit click")
 	platform.browser.videos[0].bilibili_ready = false; poll()
-	check(beta_enabled(), "Cancel stays enabled if readiness is lost during handoff")
+	check(not menu.web_browser.handoff and menu.web_video.pending == 0 and not beta_enabled(), "Losing the bound Bilibili target cancels safely without resolving stale media")
 	menu.web_browser.action(menu.web_browser.BASE + 18)
 	check(not menu.web_browser.handoff and not beta_enabled(), "After cancel an unready page returns to disabled Beta")
 	start(false, false)
@@ -115,7 +115,7 @@ func run() -> void:
 	menu.web_browser.action(menu.web_browser.BASE + 18)
 	check(not menu.web_browser.handoff and platform.browser_commands.size() == commands,
 		"A stale click cannot start on a newer navigation even when its pair is ready")
-	poll(); platform.browser.url = "https://www.bilibili.com/video/BV1r9n86gENW/"
+	poll(); commands = platform.browser_commands.size(); platform.browser.url = "https://www.bilibili.com/video/BV1r9n86gENW/"
 	menu.web_browser.action(menu.web_browser.BASE + 18)
 	check(not menu.web_browser.handoff and platform.browser_commands.size() == commands,
 		"A sidebar URL change between polls rejects the previous video's button")
@@ -172,7 +172,7 @@ func run() -> void:
 	check(menu.web_browser.input_host()._buttons.any(func(b): return b.target == menu.web_browser.BASE + 18 and b.node.visible),
 		"Known Bilibili video keeps its visible Beta action when native capability and media temporarily vanish")
 	check(not beta_enabled(), "Visible Beta does not imply permission to resolve missing media")
-	platform.browser.videos = [{"id":"new", "bilibili_ready":true}]; poll()
+	platform.browser.videos = [{"id":"new", "bilibili_ready":true, "selection":"new"}]; poll()
 	commands = platform.browser_commands.size(); menu.web_browser.action(menu.web_browser.BASE + 18)
 	check(not beta_enabled() and platform.browser_commands.size() == commands, "Stale ready media cannot bypass the native eligibility gate")
 	platform.browser.bilibili_beta_available = true; poll()

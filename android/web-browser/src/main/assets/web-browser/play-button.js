@@ -1,6 +1,13 @@
 /* One accessible, ray-friendly webpage action shared by the verified site adapters. */
 const Thru3DPlayButton = (() => {
   'use strict';
+  let presentationVisible = true;
+  const controls = new Set();
+  const allowed = doc => presentationVisible && !doc.fullscreenElement;
+  const setPresentationVisible = value => {
+    presentationVisible = value === true;
+    for (const sync of controls) sync();
+  };
   const visible = element => {
     const r = element.getBoundingClientRect();
     return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
@@ -17,16 +24,24 @@ const Thru3DPlayButton = (() => {
     root.append(style,button);
     const position = getComputedStyle(box).position;
     if (position === 'static') box.style.position = 'relative';
-    button.addEventListener('pointerdown',e=>{if(e.isTrusted)e.stopPropagation();});
+    // Site adapters own host.hidden/readiness. A separate display gate survives their
+    // updates and newly created buttons without clearing any capture/selection state.
+    const sync = () => {
+      if (allowed(doc)) host.style.removeProperty('display');
+      else host.style.setProperty('display','none','important');
+    };
+    const interactive = () => allowed(doc) && !host.hidden && !button.disabled && host.isConnected && visible(box);
+    controls.add(sync); doc.addEventListener('fullscreenchange',sync,true); sync();
+    button.addEventListener('pointerdown',e=>{if(e.isTrusted && interactive())e.stopPropagation();});
     button.addEventListener('click',e=>{
-      if (!e.isTrusted || button.disabled || !host.isConnected || !visible(box)) return;
+      if (!e.isTrusted || !interactive()) return;
       e.preventDefault();e.stopPropagation();clicked();
     });
     box.append(host);
-    return {host,button,label,
+    return {host,button,label,interactive,
       enabled(value,reason='') {button.disabled=!value;button.title=reason || label;},
-      dispose() {host.remove();if(position==='static' && box.style.position==='relative')box.style.position='';}
+      dispose() {controls.delete(sync);doc.removeEventListener('fullscreenchange',sync,true);host.remove();if(position==='static' && box.style.position==='relative')box.style.position='';}
     };
   };
-  return {create,visible};
+  return {create,visible,setPresentationVisible};
 })();

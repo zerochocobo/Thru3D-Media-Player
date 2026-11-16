@@ -17,8 +17,13 @@ func _run() -> void:
 	menu._activate(Menu.NAV_BASE + Menu.Section.WEB)
 	var browser: RefCounted = menu.web_browser
 	var library: RefCounted = browser.library
+	library.preview_mode = true
 	browser.choose({"web_browser": "bookmarks"}); browser.tick()
 	check(menu.rows.size() == 2 and library.title() == "Bookmarks", "Bookmarks have their own heading and entries")
+	check(menu._grid() and menu._cols() == 4 and menu._lines() == 3, "Bookmark previews use a compact twelve-card viewport")
+	library.preview_mode = false; menu.refresh()
+	check(not menu._grid(), "List mode remains available for bookmarks")
+	library.preview_mode = true; menu.refresh()
 	check(menu._buttons.any(func(b): return b.target == Library.BASE + Library.Action.MANAGE and b.enabled), "Manage is reachable in list header")
 	menu._activate(Library.BASE + Library.Action.MANAGE)
 	menu._activate(Menu.ROW_BASE)

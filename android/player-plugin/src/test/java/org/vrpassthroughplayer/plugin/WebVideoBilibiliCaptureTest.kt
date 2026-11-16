@@ -6,6 +6,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WebVideoBilibiliCaptureTest {
+    @Test fun playlistCaptureKeepsExactPageAndPartAndRejectsThePreviousSelection() {
+        for (route in listOf("list/watchlater", "list/ml1234", "medialist/play/1234")) {
+            val url = "https://www.bilibili.com/$route?bvid=BV1234567890"
+            val selected = WebVideoPage.parse(url)
+            assertEquals(page, selected)
+            val media = fixture().put("frame", url)
+            media.getJSONObject("bilibili").put("page", url)
+            assertNotNull(WebVideoBilibiliCapture.formats(selected, media))
+            val nextPart = WebVideoPage.parse("$url&p=2")
+            assertNull(WebVideoBilibiliCapture.formats(nextPart, media))
+            media.put("frame", "$url&p=2")
+            assertNull(WebVideoBilibiliCapture.formats(selected, media))
+        }
+        assertThrows(IllegalArgumentException::class.java) { WebVideoPage.parse("https://www.bilibili.com/list/watchlater") }
+    }
     @Test fun observed8kAv1SdrRetainsItsExactVideoAndAudioPair() {
         val media = fixture().put("width", 7680).put("height", 3840)
         val data = media.getJSONObject("bilibili").put("quality", 127)

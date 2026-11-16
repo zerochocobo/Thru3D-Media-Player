@@ -87,3 +87,7 @@ Compatible live streams support Play Beta and quality switching in the built-in 
 ## Playback Beta diagnostics in 0.17.12
 
 Standard Release diagnostics include playback stage information. Bilibili Beta can report an unsupported format separately from a generic playback failure. PICO Neo3 verification covered a selected AVC handoff, with the tested 8K path still unresolved.
+
+## Bookmark previews in 0.18.0
+
+Bookmarks saved from an active page can show a locally stored thumbnail. The capture follows the focused region when one is active. Users can switch to a list view. Compatible Bilibili videos opened from lists or bookmarks can show Play Beta when the current video is ready.

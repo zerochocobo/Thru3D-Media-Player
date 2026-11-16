@@ -8,6 +8,8 @@ const Budget := preload("res://scripts/scene_import/scene_import_budget.gd")
 const Unity := preload("res://scripts/scene_import/scene_import_unity.gd")
 const Platform := preload("res://scripts/scene_import/scene_import_platform.gd")
 const Motion := preload("res://scripts/scene_import/scene_import_motion.gd")
+const Gallery := preload("res://scripts/scene_import/scene_gallery.gd")
+const GalleryView := preload("res://scripts/scene_import/scene_gallery_view.gd")
 const Panorama := preload("res://scripts/app_background.gd")
 ## The card that stands for a file still being copied in.
 const ADDING := "adding"
@@ -67,6 +69,10 @@ var _backdrop: ShaderMaterial
 var _loader: RefCounted
 var _layout := {}
 var motion := Motion.new()
+var gallery := Gallery.new()
+## The gallery scene asked for last: the one to open when it arrives. Earlier ones only land in the library.
+var _gallery_wanted := ""
+var _gallery_taking := ""
 ## Loads the panorama a viewer puts behind a scene that came without a sky.
 var _panorama: Node = Panorama.new()
 var posture := "stand"
@@ -83,6 +89,8 @@ func setup(owner: Node) -> void:
 	library.load_catalog()
 	library.added.connect(_added)
 	add_child(motion)
+	if Gallery.offered(): gallery.load_catalog()
+	add_child(gallery)
 	_panorama.choice = "dark"
 	add_child(_panorama)
 	_panorama.changed.connect(func() -> void:
@@ -122,6 +130,7 @@ func snapshot() -> Dictionary:
 	return {"rows": rows, "active": active_id, "pending": ADDING if library.busy else pending_id, "busy": library.busy,
 		"stage": stage, "stage_progress": snappedf(fraction, 0.01) if fraction >= 0.0 else -1.0,
 		"error": error if not error.is_empty() else library.error, "bake": bake, "tier": tier(), "screen_light": screen_light,
+		"gallery": {"rows": gallery.snapshot(library.origins()), "anchor": str(app.settings.get_value(SECTION, "gallery_anchor", ""))},
 		"baked": _source == "unity" and _root != null, "movement": motion.mode, "posture": posture, "play_dim": play_dim, "own_sky": _sky != null, "backdrop": library.backdrop(active_id), "shots": _shots, "floor_ready": motion.prepared or motion.mode == Motion.FIXED}
 
 func add(uri: String, title: String, bytes: int = -1) -> void:
@@ -130,8 +139,58 @@ func add(uri: String, title: String, bytes: int = -1) -> void:
 
 ## A picked file is in the library: go straight on to showing it, so one choice reads as one action.
 func _added(id: String, fresh: bool) -> void:
+	if not _gallery_taking.is_empty():
+		# From the gallery: it arrives the way its catalogue entry describes it, and only the scene
+		# asked for last opens, so several can be fetched in a row without the room changing each time.
+		if fresh: _apply_preset(id, gallery.row(_gallery_taking))
+		if _gallery_taking == _gallery_wanted:
+			_gallery_wanted = ""
+			activate(id)
+		return
 	activate(id)
 	if not fresh: error = "Already in My scenes"
+
+## Asks the gallery for a scene; it opens once it is here unless another is asked for meanwhile.
+func gallery_get(slug: String) -> void:
+	error = ""
+	if gallery.request(slug, tier()): _gallery_wanted = slug
+
+func gallery_cancel(slug: String) -> void:
+	gallery.cancel(slug)
+	if _gallery_wanted == slug: _gallery_wanted = ""
+
+## Where the viewer was in the gallery, by the first scene on that page: page numbers shift when the list does.
+func gallery_anchor(slug: String) -> void:
+	if str(app.settings.get_value(SECTION, "gallery_anchor", "")) == slug: return
+	app.settings.set_value(SECTION, "gallery_anchor", slug)
+	app.settings.save(app.settings_path)
+
+func gallery_preview(slug: String) -> Texture2D:
+	return gallery.preview(slug)
+
+## Downloads that have arrived whole go into the library, one at a time and never across a copy.
+func _take_downloads() -> void:
+	if library.busy: return
+	for item in gallery.rows:
+		var path: String = gallery.ready_path(item.slug)
+		if path.is_empty(): continue
+		_gallery_taking = item.slug
+		var taken := library.adopt(path, GalleryView.title(item) + "." + path.get_extension(), item.slug)
+		_gallery_taking = ""
+		gallery.settle(item.slug, "" if taken else (library.error if not library.error.is_empty() else "Could not save scene"))
+		return
+
+## The entry point, posture, panorama and card picture the catalogue gives a scene; the viewer can change any of them after.
+func _apply_preset(id: String, item: Dictionary) -> void:
+	var preset: Dictionary = item.get("preset", {})
+	var place: Variant = preset.get("entry")
+	if place is Array and place.size() == 4 and place.all(func(value: Variant) -> bool: return (value is float or value is int) and is_finite(value)):
+		library.set_entry(id, Transform3D(Basis(Vector3.UP, float(place[3])), Vector3(place[0], place[1], place[2])), maxi(0, POSTURES.find(str(preset.get("posture", "stand")))))
+	if str(preset.get("backdrop", "")) in Panorama.BUILTINS: library.set_backdrop(id, str(preset.backdrop))
+	var picture := gallery.preview(str(item.get("slug", "")))
+	if picture and not FileAccess.file_exists(library.thumbnail_path(id)):
+		DirAccess.make_dir_recursive_absolute(library.thumbnail_path(id).get_base_dir())
+		picture.get_image().save_jpg(library.thumbnail_path(id), 0.85)
 
 func remove(ids: Array) -> void:
 	if ids.has(active_id) or ids.has(pending_id): deactivate()
@@ -397,6 +456,7 @@ func _apply_dim() -> void:
 		app._update_background()
 
 func _process(delta: float) -> void:
+	_take_downloads()
 	if _shown: _fade(delta)
 	# A scene restored before the headset tracks takes its height once the head is known.
 	if _shown and not _calibrated and not motion.moving(): _settle()

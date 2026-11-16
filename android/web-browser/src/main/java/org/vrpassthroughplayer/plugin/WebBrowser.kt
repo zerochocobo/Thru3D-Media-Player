@@ -131,6 +131,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         var betaRequest = 0L
         var betaSelection = ""
         var fullScreen = false
+        val pageBetaVisibility = WebBrowserBetaVisibility()
     }
     private val ui = Handler(Looper.getMainLooper())
     private val closed = AtomicBoolean(false)
@@ -357,9 +358,95 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             // Page-load visits must not fsync on the UI thread Gecko also uses.
             val at = sequence.incrementAndGet()
             historyWriter.execute { runCatching { write(json, at) } }
-        }) { json -> write(json, sequence.incrementAndGet()) }.also { it.recordHistory = recordHistory; library = it }
+        }) { json -> write(json, sequence.incrementAndGet()) }.also {
+            it.recordHistory = recordHistory; library = it
+            val items = it.snapshot().getJSONArray("bookmarks")
+            publishedPreviews = (0 until items.length()).map { index -> items.getJSONObject(index).optString("preview") }
+                .filter { token -> token.matches(Regex("[a-f0-9]{32}")) }.toSet()
+            val retained = publishedPreviews
+            val previews = File(directory, "previews")
+            historyWriter.execute {
+                previews.listFiles()?.filter { image -> image.name.matches(Regex("[a-f0-9]{32}\\.jpg")) && image.nameWithoutExtension !in retained }
+                    ?.forEach { image -> image.delete() }
+            }
+        }
     }
-    private fun publishLibrary() { libraryState = library?.snapshot()?.toString() ?: libraryState }
+    private var publishedPreviews = emptySet<String>()
+    private fun previewDirectory(): File? = activity()?.applicationContext?.let { File(it.filesDir, "browser/previews") }
+    private fun publishLibrary() {
+        val snapshot = library?.snapshot() ?: return
+        val items = snapshot.getJSONArray("bookmarks")
+        val directory = previewDirectory()
+        val retained = mutableSetOf<String>()
+        for (i in 0 until items.length()) {
+            val item = items.getJSONObject(i)
+            val token = item.optString("preview")
+            if (token.matches(Regex("[a-f0-9]{32}")) && directory != null) {
+                retained.add(token)
+                item.put("preview_path", File(directory, "$token.jpg").absolutePath)
+            }
+        }
+        val removed = publishedPreviews - retained
+        publishedPreviews = retained
+        if (directory != null && removed.isNotEmpty()) historyWriter.execute {
+            removed.forEach { File(directory, "$it.jpg").delete() }
+        }
+        libraryState = snapshot.toString()
+    }
+
+    private var bookmarkCaptures = 0
+    /** Explicit bookmark capture: source pixels from this window, before any library overlay. */
+    private fun bookmarkWithPreview(id: Int, request: JSONObject) {
+        val slot = window(id)
+        val tab = tabs.firstOrNull { it.id == slot.tab } ?: return
+        val store = store() ?: return
+        val old = store.bookmarkEntry(tab.url)
+        operationError = try {
+            store.edit(JSONObject().put("action", "toggle_bookmark").put("url", tab.url).put("title", tab.title))
+        } catch (_: Exception) { "storage_failed" }
+        publishLibrary(); publish()
+        if (old != null || operationError.isNotEmpty() || bookmarkCaptures >= 2) return
+        val entry = store.bookmarkEntry(tab.url) ?: return
+        val display = slot.display ?: return
+        val page = tab.url; val navigation = tab.navigation
+        val directory = previewDirectory() ?: return
+        val crop = request.optJSONArray("crop")
+        val values = (0..3).map { crop?.optDouble(it, Double.NaN) ?: listOf(0.0, 0.0, 1.0, 1.0)[it] }
+        if (values.any { !it.isFinite() } || values[0] < 0 || values[1] < 0 || values[2] <= 0 || values[3] <= 0 ||
+            values[0] + values[2] > 1.00001 || values[1] + values[3] > 1.00001) return
+        val capture = runCatching { display.capturePixels() }.getOrNull() ?: return
+        bookmarkCaptures++
+        capture.accept({ bitmap ->
+            if (bitmap == null) { bookmarkCaptures--; return@accept }
+            if (closed.get() || tab.url != page || tab.navigation != navigation || slot.tab != tab.id || slot.display !== display) {
+                bookmarkCaptures--; bitmap.recycle(); return@accept
+            }
+            historyWriter.execute {
+                val token = java.util.UUID.randomUUID().toString().replace("-", "")
+                val file = File(directory, "$token.jpg")
+                val saved = runCatching {
+                    val x = (values[0] * bitmap.width).toInt().coerceIn(0, bitmap.width - 1)
+                    val y = (values[1] * bitmap.height).toInt().coerceIn(0, bitmap.height - 1)
+                    val width = (values[2] * bitmap.width).toInt().coerceIn(1, bitmap.width - x)
+                    val height = (values[3] * bitmap.height).toInt().coerceIn(1, bitmap.height - y)
+                    val cut = android.graphics.Bitmap.createBitmap(bitmap, x, y, width, height)
+                    val scale = minOf(1.0, 384.0 / maxOf(width, height))
+                    val small = android.graphics.Bitmap.createScaledBitmap(cut, maxOf(1, (width * scale).toInt()), maxOf(1, (height * scale).toInt()), true)
+                    try {
+                        check(directory.isDirectory || directory.mkdirs())
+                        file.outputStream().use { check(small.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, it)) }
+                    } finally { if (small !== cut) small.recycle(); if (cut !== bitmap) cut.recycle() }
+                }.isSuccess
+                bitmap.recycle()
+                ui.post {
+                    bookmarkCaptures--
+                    val attached = saved && !closed.get() && runCatching { store.attachPreview(entry, token) }.getOrDefault(false)
+                    if (!attached) historyWriter.execute { file.delete() }
+                    else publishLibrary()
+                }
+            }
+        }, { _ -> bookmarkCaptures--; Unit })
+    }
     private fun networkPolicy(): WebBrowserNetworkPolicy? {
         networkPolicy?.let { return it }
         val app = activity()?.applicationContext ?: return null
@@ -392,6 +479,12 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         require(!enabled || current() === tab && WebBrowserDouyin.document(tab.url))
         tab.douyinCaptureEnabled = enabled; tab.sources.clear(); tab.media.clear()
         sendNetworkPolicy(tab); publish()
+    }
+    private fun pageBetaVisibility(tab: Tab) = JSONObject().put("action", "page_beta_visibility")
+        .put("visible", displayed(tab) && tab.pageBetaVisibility.visible(tab.window, tab.navigation, tab.fullScreen))
+    private fun sendPageBetaVisibility(tab: Tab) {
+        val message = pageBetaVisibility(tab)
+        tab.ports.keys.forEach { port -> runCatching { port.postMessage(message) } }
     }
     private fun sendNetworkPolicy(tab: Tab) {
         val message = JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
@@ -646,7 +739,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             }
             override fun onFullScreen(session: GeckoSession, fullScreen: Boolean) {
                 if (!ownsSession(tab, session)) return
-                tab.fullScreen = fullScreen; updateFullscreen(tab); publish()
+                tab.fullScreen = fullScreen; sendPageBetaVisibility(tab); updateFullscreen(tab); publish()
 
             }
             override fun onCrash(session: GeckoSession) {
@@ -1014,6 +1107,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     }
                 })
                 port.postMessage(JSONObject().put("action", if (displayed(tab)) "resume" else "suspend"))
+                port.postMessage(pageBetaVisibility(tab))
                 port.postMessage(JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
                     .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url)).put("youku",WebBrowserYouku.enabled(tab.url)).put("iqiyi",WebBrowserIqiyi.enabled(tab.url)).put("niconico",WebBrowserNiconico.observing(tab.url)).put("twitch",WebBrowserTwitch.enabled(tab.url)).put("tiktok",WebBrowserTikTok.observing(tab.url)).put("instagram",WebBrowserInstagram.observing(tab.url)).put("ted",WebBrowserTed.observing(tab.url)).put("redbull",WebBrowserRedBull.observing(tab.url)).put("naver",WebBrowserNaver.observing(tab.url)).put("reddit",WebBrowserReddit.observing(tab.url)).put("streamable",WebBrowserStreamable.observing(tab.url)).put("archive",WebBrowserArchive.observing(tab.url)).put("odysee",WebBrowserOdysee.observing(tab.url)).put("dailymotion",WebBrowserDailymotion.observing(tab.url)).put("dailymotion_owner",tab.url.takeIf{WebBrowserDailymotion.observing(it)}.orEmpty())
                     .put("bilibili", bilibiliEnabled(tab)).put("douyin", douyinEnabled(tab)).put("weibo", WebBrowserWeibo.document(tab.url)).put("diagnostics", mediaDiagnosticsEnabled()))
@@ -1162,6 +1256,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         tab.session.setFocused(slot.id == focusedWindow)
         if (slot.id == focusedWindow) attachInput(tab)
         tab.ports.keys.forEach { runCatching { it.postMessage(JSONObject().put("action", "resume")) } }
+        sendPageBetaVisibility(tab)
     }
     private fun releaseDisplay(slot: Window) {
         val old = slot.display; val owner = slot.owner
@@ -1260,12 +1355,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 windows.forEach { slot -> tabs.firstOrNull { it.id == slot.tab }?.let { wakeTab(it); bindDisplay(it) } }
             }
             "blur" -> { tab.session.setFocused(false); hideInput() }
-            "bookmark" -> {
-                operationError = try {
-                    store()?.edit(JSONObject().put("action", "toggle_bookmark").put("url", tab.url).put("title", tab.title)) ?: "storage_failed"
-                } catch (_: Exception) { "storage_failed" }
-                publishLibrary()
-            }
+            "bookmark" -> bookmarkWithPreview(focusedWindow, JSONObject())
         }
         publish()
     }
@@ -1459,6 +1549,11 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         if (id !in 1..windowLimit) return@dispatch
         operationError = ""
         when (request.optString("action")) {
+            "page_beta_visibility" -> {
+                val tab = tabs.firstOrNull { it.id == window(id).tab } ?: return@dispatch
+                if (tab.pageBetaVisibility.update(request, id, tab.id, tab.navigation)) sendPageBetaVisibility(tab)
+            }
+            "bookmark" -> bookmarkWithPreview(id, request)
             "network_capture" -> {
                 val tab = tabs.firstOrNull { it.id == window(id).tab } ?: return@dispatch
                 networkPolicy()?.set(tab.url, request.optBoolean("enabled"))

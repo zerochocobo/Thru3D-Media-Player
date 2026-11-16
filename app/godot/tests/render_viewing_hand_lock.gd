@@ -48,6 +48,10 @@ func run() -> void:
 		watch.logic.media.hand_locked = locked
 		watch.logic.hand_lock_progress = 0.65 if locked else 0.0
 		for i in 40: watch._present(Transform3D.IDENTITY, 0.02)
+		# Locking only takes the keys away; time and progress stay readable.
+		for node in [watch._clock, watch._remaining, watch._ring, watch._readout_root]:
+			if not node.visible: failures.append("Locked watch hides %s" % node.name)
+		if locked and watch._buttons.play.holder.visible: failures.append("Locked watch shows play key")
 		await shot("watch-locked-hold" if locked else "watch-unlocked")
 	watch.free()
 	var indicator := Indicator.new(); view.add_child(indicator)

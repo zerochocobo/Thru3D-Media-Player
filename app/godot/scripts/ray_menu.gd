@@ -26,6 +26,8 @@ const TEMP_PASSTHROUGH := -1002
 const FREE_MOVEMENT := -1003
 const CINEMA_LIGHTS := -1004
 const SCENERY := -1005
+## Beside the stance button in the viewer's own scene: straight to that scene's settings.
+const SCENE_SETTINGS := -1006
 ## In the viewer's own scene the movement button opens these, counted down from SCENE_STANCE:
 ## three ways to watch in place, two ways to move, and making this spot the scene's entry point.
 const SCENE_STANCE := -1010
@@ -456,6 +458,8 @@ func _activate_hit(hit: Dictionary) -> void:
 func _activate_footer(target: int) -> bool:
 	if target == SCENERY:
 		scenery_requested.emit(); return true
+	if target == SCENE_SETTINGS:
+		session_control_requested.emit("scene_settings"); return true
 	if _scene_stance_target(target):
 		session_control_requested.emit("scene_" + str(SCENE_STANCES[SCENE_STANCE - target][0]))
 		refresh_session_controls(true)
@@ -603,7 +607,7 @@ func refresh_session_controls(force: bool = false) -> void:
 	if not force and state == _footer_state: return
 	_footer_state = state.duplicate()
 	for index in range(_buttons.size() - 1, -1, -1):
-		if _buttons[index].target in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT, CINEMA_LIGHTS, SCENERY, app_actions.STATUS] or _scene_stance_target(_buttons[index].target):
+		if _buttons[index].target in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT, CINEMA_LIGHTS, SCENERY, SCENE_SETTINGS, app_actions.STATUS] or _scene_stance_target(_buttons[index].target):
 			_buttons[index].node.free()
 			_buttons.remove_at(index)
 	var show_passthrough: bool = state.get("passthrough_visible", false)
@@ -636,6 +640,8 @@ func refresh_session_controls(force: bool = false) -> void:
 		var anchor:=Vector2(scene_centre.x+.09+FOOTER_GAP+FOOTER_DIAMETER*.5,_footer_centre.y)
 		_footer_button(FREE_MOVEMENT,str(chosen[0][1]) if not chosen.is_empty() else "standing",anchor,_scene_stances_open,true,
 			I18n.t(str(chosen[0][2]) if not chosen.is_empty() else "Stand"))
+		# Its light, brightness and panorama are one press away, where the cinema keeps its second shortcut.
+		_footer_button(SCENE_SETTINGS,"adjust",Vector2(anchor.x+FOOTER_DIAMETER+FOOTER_GAP,_footer_centre.y),false,true,I18n.t("Scene settings"))
 		if _scene_stances_open:
 			var pitch:=FOOTER_DIAMETER+FOOTER_GAP
 			# A rule in a wider gap sets the postures, the ways of moving and the entry point apart.

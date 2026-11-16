@@ -203,6 +203,12 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 		node.add_child(tick)
 		var middle: Label3D = menu._label(menu.I18n.t("Middle"), Vector3(left + rail_width / 2, 0.023, 0.006), 12, node)
 		middle.render_priority = 16
+	# A recommended value, marked on the rail.
+	if row.has("tick"):
+		var mark: MeshInstance3D = menu._quad(Vector2(0.003, 0.023),
+			Vector3(left + rail_width * clampf(inverse_lerp(row.span.x, row.span.y, float(row.tick)), 0, 1), y, 0.005), UiTheme.color("knob"), 16)
+		menu._style_slider_marker(mark)
+		node.add_child(mark)
 	var knob: MeshInstance3D = menu._quad(Vector2(0.022, 0.022), Vector3(left, y, 0.006), UiTheme.color("knob"), 17)
 	menu._style_slider_marker(knob)
 	node.add_child(knob)

@@ -10,6 +10,7 @@ const PLAY_Y := 0.50
 const NAV_Y := 0.632
 const TABS_Y := 0.764
 var toolbar_shown := true
+var _page_beta_signature := ""
 var _fullscreen_context := Vector2i(-1, -1)
 var _fullscreen_active := false
 var _fullscreen_restore: Variant = null
@@ -122,6 +123,19 @@ func _ready() -> void:
 	effect_controls.composition_layout_changed.connect(func(): composition_layout_changed.emit())
 func page_input_blocked() -> bool: return depth.matte and not selecting
 func chrome_hidden() -> bool: return not on_screen() and (not toolbar_shown or page_input_blocked())
+
+func sync_page_beta_visibility() -> void:
+	if not browser or not browser.active(): return
+	var current: Dictionary = browser.window_state(window_id)
+	var tab := int(current.get("tab_id", 0))
+	var navigation := int(current.get("navigation", 0))
+	if tab <= 0: return
+	var hidden := chrome_hidden() or is_focused() or selecting or locating_video()
+	var signature := str([tab, navigation, hidden])
+	if signature == _page_beta_signature: return
+	_page_beta_signature = signature
+	browser.menu.platform.web_browser_command(JSON.stringify({"action": "page_beta_visibility", "window": window_id,
+		"tab": tab, "navigation": navigation, "hidden": hidden}))
 
 func set_toolbar_shown(shown: bool) -> void:
 	if on_screen(): shown = true
@@ -544,6 +558,7 @@ func _redraw_theme() -> void:
 	_update_feedback()
 
 func _draw() -> void:
+	sync_page_beta_visibility()
 	_clear_layout()
 	_sync_presentation()
 	_backdrop.visible = not chrome_hidden()

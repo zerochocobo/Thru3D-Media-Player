@@ -192,6 +192,7 @@ const EYE_LEVELS := [1.0 / 3.0, 0.5]
 const ScreenPresets := preload("res://scripts/screen_presets.gd")
 const VideoAspect := preload("res://scripts/video_aspect.gd")
 const VIDEO_ASPECT_FACTOR := 616
+const VIDEO_ASPECT_LOCK := 617
 var _screen_measurement: Label3D
 const ERROR_DETAILS := 496
 const ERROR_OPEN := 499
@@ -2327,7 +2328,7 @@ func _settings_key() -> String:
 		_state.get("immersive_adjustment_gauges", true), _state.get("video_auto_3d", false),
 		_state.get("screen_edit_locked", false), _state.get("screen_default_locked", false), _state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("screen_scene_curve", true), _state.get("cinema_lights", "auto"),
 		_state.get("screen_curve_modes_available", false), _state.get("screen_curve_mode", "horizontal"),
-		_state.get("video_aspect_preset", "original"), _state.get("depth_requested", false),
+		_state.get("video_aspect_preset", "original"), _state.get("video_aspect_locked", false), _state.get("depth_requested", false),
 		_state.get("error", ""), _state.get("error_report", {}), _state.get("usb_takeover_offer", false), _alpha_expanded])
 
 func _setting_choices(operation: String) -> Dictionary:
@@ -3075,6 +3076,9 @@ func _draw_video_aspect(y: float) -> void:
 	var stereo: bool = _state.get("stereo", false) or _state.get("depth_requested", false)
 	var title := _label(I18n.t("Per-eye ratio" if stereo else "Video ratio"), Vector3(-0.50, y, 0.004), TEXT_BODY)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	var locked: bool = _state.get("video_aspect_locked", false)
+	_button(VIDEO_ASPECT_LOCK, "", Vector2(-0.205, y), Vector2(0.06, 0.055), true, "lock" if locked else "unlock", locked)
+	_tips[VIDEO_ASPECT_LOCK] = I18n.t("Ratio kept for the next videos" if locked else "Keep this ratio for the next videos")
 	choices.field(null, {"key": "video_aspect_preset", "value": _state.get("video_aspect_preset", "original"),
 		"choices": VideoAspect.choices(), "width": 0.64}, Vector2(0.16, y), 0.646, 0.055)
 	_adjustment_row(VIDEO_ASPECT_FACTOR, "video_aspect_factor", "Ratio adjustment", VideoAspect.LIMITS, y - 0.10)
@@ -3408,6 +3412,8 @@ func _activate_adjustment(target: int) -> void:
 		return
 	if target == 400:
 		_adjustment = ""
+	elif _adjustment == "screen" and target == VIDEO_ASPECT_LOCK:
+		setting_requested.emit("video_aspect_locked", not _state.get("video_aspect_locked", false))
 	elif _adjustment == "screen" and target in [VR_GAUGES_ON, VR_GAUGES_OFF] and int(_state.get("geometry", 0)) != 0:
 		setting_requested.emit("immersive_adjustment_gauges", target == VR_GAUGES_ON)
 	elif _adjustment == "screen" and target == VR_RESET:

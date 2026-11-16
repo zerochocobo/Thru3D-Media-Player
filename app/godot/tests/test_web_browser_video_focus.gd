@@ -61,7 +61,7 @@ func run() -> void:
 	check(bar._tips[bar.FOCUS] == "聚焦自由区域" and bar._tips[bar.VIDEO_FOCUS] == "聚焦视频", "Chinese names: " + str([bar._tips[bar.FOCUS], bar._tips[bar.VIDEO_FOCUS]]))
 	I18n.use("en"); bar.refresh()
 	host._activate(bar.VIDEO_FOCUS)
-	var sent: Dictionary = platform.commands.back()
+	var sent: Dictionary = platform.commands.filter(func(c): return c.action == "locate_video").back()
 	check(sent.action == "locate_video" and int(sent.window) == 1 and int(sent.tab) == 1 and int(sent.navigation) == 4 and int(sent.request) > 0, "Focus video asks the current tab and navigation")
 	check(host.locating_video() and not host.is_focused(), "The page stays whole while frames reply")
 	bar.sync(); check(video_button.call().base_color == bar.ACCENT, "The video button shows it is working")
@@ -78,7 +78,7 @@ func run() -> void:
 	check(host.selecting and not host.is_focused(), "Free region from a focused video starts a box on the whole page")
 	host._activate(bar.VIDEO_FOCUS)
 	check(not host.selecting and host.locating_video(), "Focus video cancels a box being drawn")
-	var stale: Dictionary = platform.commands.back()
+	var stale: Dictionary = platform.commands.filter(func(c): return c.action == "locate_video").back()
 	browser.data.video_locate = {"request": int(stale.request) - 1, "ports": 1, "frames": [frame(true, [0, 0], [player])]}
 	host.sync_page_state()
 	check(host.locating_video(), "An earlier request's reply is ignored")
@@ -95,7 +95,7 @@ func run() -> void:
 	browser.data.navigation = 4
 	browser.focus_regions[1] = Rect2(.2, .2, .3, .3)
 	check(host.is_focused() and not host.is_video_focused(), "A drawn region is a free focus")
-	host._activate(bar.VIDEO_FOCUS); sent = platform.commands.back()
+	host._activate(bar.VIDEO_FOCUS); sent = platform.commands.filter(func(c): return c.action == "locate_video").back()
 	browser.data.video_locate = {"request": int(sent.request), "ports": 1, "frames": [frame(true, [0, 0], [player])]}
 	host.sync_page_state()
 	check(host.is_video_focused(), "Focus video replaces a free region")

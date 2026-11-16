@@ -89,7 +89,7 @@ test('timeline controls keep independent current targets and remove overlays and
  const mount={append(n){n.parentElement=this;}};
  const doc={defaultView:view,body:mount,createElement:()=>({dataset:{},style:{},remove(){this.parentElement=null;}})};
  context.Thru3DPlayButton={create:(_d,overlay,_site,clicked)=>{
-  const control={host:{dataset:{},isConnected:true},button:{disabled:false},enabled(v){this.button.disabled=!v;},dispose(){this.host.isConnected=false;},clicked};
+  const control={host:{dataset:{},isConnected:true},button:{disabled:false},interactive(){return this.host.isConnected&&!this.host.hidden&&!this.button.disabled;},enabled(v){this.button.disabled=!v;},dispose(){this.host.isConnected=false;},clicked};
   created.push(control);return control;
  }};
  const a={video:fixture().video,page,source:url,epoch:1,key:'a'},b={...a,video:fixture().video,key:'b'};

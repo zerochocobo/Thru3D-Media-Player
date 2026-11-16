@@ -89,6 +89,8 @@ const VideoAspect := preload("res://scripts/video_aspect.gd")
 var video_aspect_preset := "original"
 var video_aspect_factor := 1.0
 var _video_aspect_dirty := false
+## Until the app exits: the ratio stays with the viewer across videos instead of each file's own.
+var video_aspect_locked := false
 var media := State.new()
 var _spatial_video := false # Source type survives seek/effect session generations.
 const SpatialMetadata := preload("res://scripts/spatial_video_metadata.gd")
@@ -895,7 +897,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_keep_interleave_during_close = network_interleave
 	close_video()
 	_keep_interleave_during_close = false
-	if not pip.reopening:
+	if not pip.reopening and not _aspect_lock_applies():
 		video_aspect_preset = "original"
 		video_aspect_factor = 1.0
 	_web_handoff = bool(metadata.get("web_handoff", false))
@@ -1243,8 +1245,9 @@ func discard_history_thumbnail() -> void:
 	_thumb_after_ms = -1
 
 func discard_file_settings() -> void:
-	video_aspect_preset = "original"
-	video_aspect_factor = 1.0
+	if not _aspect_lock_applies():
+		video_aspect_preset = "original"
+		video_aspect_factor = 1.0
 	_video_aspect_dirty = false
 	_mode_user_changed = true
 	_apply_geometry()
@@ -2715,6 +2718,19 @@ func set_video_aspect(key: String, value: Variant) -> bool:
 func _display_aspect(source_aspect: float) -> float:
 	return VideoAspect.display_ratio(source_aspect, video_aspect_preset, video_aspect_factor)
 
+## A cast keeps its own display-only correction.
+func _aspect_lock_applies() -> bool:
+	return video_aspect_locked and cast_token == 0
+
+func set_video_aspect_lock(locked: bool) -> void:
+	if locked == video_aspect_locked: return
+	video_aspect_locked = locked
+	# Unlocking leaves the ratio on screen with the current file.
+	if not locked and cast_token == 0 and geometry == Geometry.Geometry.FLAT:
+		_video_aspect_dirty = true
+		commit_stereo_view()
+	changed.emit()
+
 func set_immersive_adjustment(key: String, value: float) -> bool:
 	if geometry == Geometry.Geometry.FLAT or key not in ImmersiveAdjustments.KEYS or not is_finite(value): return false
 	var span := ImmersiveAdjustments.limits(key)
@@ -2860,8 +2876,9 @@ func _apply_packed() -> void:
 func _restore_saved_mode(saved: Dictionary) -> void:
 	var aspect_preset: Variant = saved.get("video_aspect_preset", "original")
 	var aspect_factor: Variant = saved.get("video_aspect_factor", 1.0)
-	video_aspect_preset = str(aspect_preset) if VideoAspect.valid({"video_aspect_preset": aspect_preset}) else "original"
-	video_aspect_factor = float(aspect_factor) if VideoAspect.valid({"video_aspect_factor": aspect_factor}) else 1.0
+	if not _aspect_lock_applies():
+		video_aspect_preset = str(aspect_preset) if VideoAspect.valid({"video_aspect_preset": aspect_preset}) else "original"
+		video_aspect_factor = float(aspect_factor) if VideoAspect.valid({"video_aspect_factor": aspect_factor}) else 1.0
 	for key in ImmersiveAdjustments.KEYS: set(key, float(saved.get(key, 0.0)))
 	geometry = int(saved.geometry)
 	stereo_sbs = bool(saved.stereo_sbs)
@@ -2922,8 +2939,11 @@ func _remember_mode(user_change: bool = true) -> void:
 	if not user_change and _mode_memory_cleared: return
 	if user_change: _mode_memory_cleared = false
 	_mode_user_changed = _mode_user_changed or user_change
+	# A locked ratio belongs to the session; each file keeps the ratio it already had.
+	var own_aspect := mode_memory.lookup(local_uri) if _aspect_lock_applies() else {}
 	var mode := {"geometry": geometry, "stereo_sbs": stereo_sbs, "swap_eyes": swap_eyes,
-		"video_aspect_preset": video_aspect_preset, "video_aspect_factor": video_aspect_factor,
+		"video_aspect_preset": own_aspect.get("video_aspect_preset", "original") if _aspect_lock_applies() else video_aspect_preset,
+		"video_aspect_factor": own_aspect.get("video_aspect_factor", 1.0) if _aspect_lock_applies() else video_aspect_factor,
 		"view_horizontal": view_horizontal, "view_vertical": view_vertical, "view_zoom": view_zoom,
 		"portrait_auto": portrait.automatic, "portrait_auto_explicit": _portrait_auto_explicit,
 		"portrait_strength": portrait.strength, "portrait_enhanced": portrait.enhanced,

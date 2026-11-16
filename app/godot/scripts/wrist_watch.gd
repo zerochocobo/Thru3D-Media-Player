@@ -149,17 +149,12 @@ func owns_tip() -> bool:
 	return visible and logic.owns_tip()
 
 func _present(head: Transform3D, delta: float) -> void:
-	# Restore only nodes suppressed by the lock; presenters own their normal visibility.
-	for node in [_clock, _remaining, _ring, _readout_root]: node.visible = true
-	for guide in _guides: guide.visible = true
 	_poll_status()
 	var media := logic.media
 	var progress := logic.progress()
 	var playing := bool(media.get("playing", false))
 	_update_marks(media)
 	_present_face(head, delta, media, playing)
-	if media.get("hand_locked", false):
-		for node in [_clock, _remaining, _state_icon]: node.visible = false
 	_holo_root.visible = expand > 0.0
 	if not _holo_root.visible: return
 	_holo_root.global_transform = logic.holo
@@ -185,10 +180,6 @@ func _present(head: Transform3D, delta: float) -> void:
 	_present_buttons(delta, clampf((expand - 0.3) / 0.7, 0.0, 1.0))
 	_present_readout(head, media, dragging, ring)
 	_present_cursor(disc)
-	var hands_locked: bool = media.get("hand_locked", false)
-	if hands_locked:
-		for node in [_clock, _remaining, _state_icon, _ring, _readout_root, _tag_root]: node.visible = false
-		for guide in _guides: guide.visible = false
 
 func _present_face(head: Transform3D, delta: float, media: Dictionary, playing: bool) -> void:
 	_face_root.visible = face_reveal > 0.0 and logic.face_valid

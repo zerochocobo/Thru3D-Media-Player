@@ -7,9 +7,13 @@ static var SELECTED: Color:
 	get: return UiTheme.color("selected")
 const TextInput := preload("res://scripts/system_text_input.gd")
 const SceneBudget := preload("res://scripts/scene_import/scene_import_budget.gd")
+const GalleryView := preload("res://scripts/scene_import/scene_gallery_view.gd")
 const BUILTINS := [["cinema","Grand cinema"],["private_beach","Private beach"],["belfast","Belfast sunset"],["morning","Morning sky"],
 	["night","Milky Way panorama"],["dark","Dark background"],["passthrough","Passthrough"]]
 const PREVIEWS := ["cinema","private_beach","belfast","morning","night"]
+## Built-in scenes that are modelled rooms, and the two that are no picture at all.
+const BUILTIN_SCENES := ["cinema","private_beach"]
+const BUILTIN_PLAIN := ["dark","passthrough"]
 const CARD := 200000
 const BACK := 10100
 const ADD := 10101
@@ -39,11 +43,32 @@ const HELP_IMAGE := 10122
 const HELP_SCENE := 10123
 ## Makes where the viewer stands the place an imported scene is entered.
 const SET_ENTRY := 10124
+## Opens the scenes offered for download.
+const GALLERY := 10125
 const ADDING_CARD := "adding"
 var _followed := ""
+## Set whenever the scene page is come to afresh: its list then turns to the scene in use.
+var _locate := true
+## The gallery keeps its place across visits: its page while the app runs, its first scene across restarts.
+var gallery_page := 0
+var gallery_anchor := ""
+var gallery_placed := false
 var scene_import: Node
 var screen_edit := preload("res://scripts/environments/private_beach_screen_edit.gd").new()
 const MODE := 10200
+## Atmosphere row: off, then the catalog's themes; how much falls; its recording on or off.
+const Atmosphere := preload("res://scripts/atmosphere/atmosphere_catalog.gd")
+const ATMOSPHERE := 10300
+const ATMOSPHERE_AMOUNT := 10320
+const ATMOSPHERE_SOUND := 10321
+const MoodLight := preload("res://scripts/passthrough_relight_model.gd")
+## The scene page ends in a row of ways into what goes with the scene.
+const ENTRY_ATMOSPHERE := 10126
+const ENTRY_MOOD := 10127
+const MOOD_OPEN := 10128
+const ENTRY_ROW := .12
+const ENTRY_HEIGHT := .075
+const SUB_ROW := .13
 const RENAMES := 400000
 const REMOVES := 600000
 var library: Node
@@ -109,11 +134,12 @@ func _scene_row(id: String) -> Dictionary:
 func _scene_active() -> bool:
 	return mode=="global" and not str(_scene_state().get("active","")).is_empty()
 
-## Everything the viewer added, newest first: panoramas, and 3D scenes where they can be used.
+## Everything the viewer added, newest first: panoramas, and 3D scenes where they can be used
+## (never in image mode, on the main page or when managing: a press there would put one on show).
 ## A file still being copied in has a card on the main page only; there is nothing to manage yet.
 func _custom_rows(everywhere: bool = false) -> Array:
 	var rows: Array=library.rows()
-	if everywhere or mode=="global":
+	if mode=="global":
 		for row in _scene_state().get("rows",[]):
 			if everywhere and str(row.id)==ADDING_CARD: continue
 			var item: Dictionary=row.duplicate(); item["scene"]=true; item["created"]=int(row.get("added",0)); rows.append(item)
@@ -128,6 +154,10 @@ func show_added_scene() -> void:
 ## Asked from the stance row under any menu: straight to the confirmation, over the scene's own page.
 func ask_entry() -> void:
 	mode="global"; view="adjust"; modal="entry"; bulk=false; selected.clear(); choices.reset(); refresh()
+
+## Asked from the shortcut beside the stance button: the settings of the scene in use.
+func show_adjust() -> void:
+	mode="global"; view="adjust"; modal=""; bulk=false; selected.clear(); choices.reset(); refresh()
 
 ## What is being done to the scene on its way in, in the viewer's language.
 func _stage_text() -> String:
@@ -144,6 +174,17 @@ func _chosen() -> String:
 			if not str(_scene_state().get(key,"")).is_empty(): return str(_scene_state()[key])
 	var pending:=str(_state.get("pending",""))
 	return pending if not pending.is_empty() else str(_state.get("selected",""))
+
+const MILKY_WAY_CREDIT := "ESO/S. Brunier · CC BY 4.0 · "
+
+## Who made the scene in use, where its licence asks that to be said: a gallery scene's author,
+## or the Milky Way panorama's. Each card also carries its own credit in its tooltip.
+func _credit() -> String:
+	var chosen:=_chosen()
+	for card in GalleryView.state(self).get("rows",[]):
+		if not chosen.is_empty() and str(card.get("id",""))==chosen: return GalleryView.credit(card)
+	if chosen=="night": return MILKY_WAY_CREDIT+I18n.t("Preview adapted")
+	return ""
 
 func _scene_status() -> String:
 	var scenes:=_scene_state()
@@ -189,7 +230,7 @@ func begin_beach_screen(head: Transform3D) -> void:
 func open(value: String) -> void:
 	mode = value if library.valid_mode(value) else "global"
 	view = "scene"; page = 0; modal = ""; bulk = false; selected.clear(); choices.reset(); _notice=""
-	_help_return=""; _issue_index=0
+	_help_return=""; _issue_index=0; _locate=true
 	visible = true; refresh()
 
 func begin_import() -> void:
@@ -229,7 +270,7 @@ func navigate_back() -> bool:
 	elif modal=="add": modal=""
 	elif not modal.is_empty(): modal = ""; selected.clear()
 	elif view=="beach_screen": view="adjust"; screen_edit.values.clear()
-	elif view != "scene": view = "scene"; bulk = false; selected.clear(); page = 0
+	elif view != "scene": view = "scene"; bulk = false; selected.clear(); page = 0; _locate=true
 	else: return false
 	refresh(); return true
 
@@ -260,6 +301,9 @@ func _draw() -> void:
 	elif view in ["manage","review"]:
 		var count: int=library.reviews.size() if view=="review" else _custom_rows(true).size()
 		height=.46+clampi(ceili(count/3.0),1,2)*.30
+	elif view=="gallery": height=GalleryView.HEIGHT
+	elif view=="atmosphere": height=.44
+	elif view=="mood": height=.40+(2*SUB_ROW if _state.get("mood_light",{}).get("on",false) else 0.0)
 	elif view=="adjust": height=(.74+(.12 if _scene_state().get("baked",false) else 0.0)+(0.0 if _scene_state().get("own_sky",true) else .12)) if _scene_active() else 1.0 if _state.get("choice","")=="cinema" else .87 if _state.get("choice","")=="private_beach" else .62
 	elif view=="beach_screen": height=1.12
 	elif view in ["import","import_error"]: height=.82
@@ -276,6 +320,9 @@ func _draw() -> void:
 	elif modal=="issues": title=I18n.t("Images not added")
 	elif modal=="add": title=I18n.t("Add")
 	elif modal=="entry": title=I18n.t("Set as entry point")
+	elif view=="gallery": title=I18n.t("Scene gallery")
+	elif view=="atmosphere": title=I18n.t("Atmosphere")
+	elif view=="mood": title=I18n.t("Screen mood light")
 	elif view=="manage": title=I18n.t("Manage my scenes")
 	elif view=="review": title=I18n.t("Confirm panoramas")
 	elif view=="adjust": title=_selected_title()
@@ -308,6 +355,9 @@ func _draw() -> void:
 	elif view == "adjust": _draw_adjust()
 	elif view == "beach_screen": _draw_beach_screen()
 	elif view in ["import","import_error"]: _draw_import()
+	elif view == "gallery": GalleryView.draw(self)
+	elif view == "atmosphere": _draw_atmosphere(_top-.25)
+	elif view == "mood": _draw_mood_light(_top-.25)
 	else: _draw_cards()
 	if view not in ["import","import_error","beach_screen"] and modal not in ["requirements","issues"]:
 		# Why images were turned down belongs with the lists of scenes, not on a scene's own page.
@@ -316,9 +366,8 @@ func _draw() -> void:
 		if status.is_empty(): status=_notice if not _notice.is_empty() else I18n.t(str(_state.get("status","")))
 		_left(status,Vector2(LEFT,_bottom+.055),TEXT_AUX,.65 if not modal.is_empty() else .94 if show_issues else 1.30,MUTED)
 		if show_issues: _button(ISSUES,I18n.t("View reasons"),Vector2(.52,_bottom+.055),Vector2(.30,.06))
-	# Attribution remains visible whenever the built-in Milky Way thumbnail is displayed.
-	if modal.is_empty() and (view == "scene" or _state.get("choice","") == "night"):
-		_left("ESO/S. Brunier · CC BY 4.0 · "+I18n.t("Preview adapted"),Vector2(LEFT,_bottom+.018),12,1.30,MUTED)
+	# The corner line credits whoever made the scene in use, on every page of this menu.
+	if modal.is_empty() and not _credit().is_empty(): _left(_credit(),Vector2(LEFT,_bottom+.018),12,1.30,MUTED)
 	choices.finish()
 
 ## Two kinds of thing can be added; each opens its own file picker.
@@ -406,16 +455,26 @@ func _draw_cards() -> void:
 		for item in BUILTINS:
 			if library.allowed(mode,item[0]): _cards.append({"id":item[0],"title":I18n.t(item[1]),"builtin":true})
 		var builtin_count:=_cards.size()
-		var builtin_y:=_section(_top-SCENE_RULE.x,I18n.t("Built-in scenes"))
+		_rule(_top-SCENE_RULE.x)
+		# The built-in scenes say so on their cards; the viewer's own follow under their heading.
+		var builtin_y:=_top-SCENE_RULE.x-SCENE_RULE.w-SCENE_CARD.y*.5
 		var rows: Array = _custom_rows()
-		var custom_rule:=_below(builtin_y,ceili(builtin_count/float(SCENE_COLUMNS)))
-		var custom_y:=_section(custom_rule,I18n.t("My scenes") + " · %d" % rows.size())
+		var custom_rule:=builtin_y-(_builtin_rows(builtin_count)-1)*SCENE_PITCH.y-SCENE_CARD.y*.5-SCENE_RULE.w
+		_rule(custom_rule)
 		var label_y:=custom_rule-SCENE_RULE.y
+		var custom_y:=custom_rule-SCENE_RULE.z
+		_left(I18n.t("My scenes") + " · %d" % rows.size(),Vector2(LEFT,label_y),TEXT_BODY,.28)
 		_button(MANAGE,I18n.t("Manage"),Vector2(.52,label_y),Vector2(.30,.065))
-		_glyph(HELP,"info",Vector2(.29,label_y),.055,true,I18n.t("Format requirements"))
-		var footer_rule:=_below(custom_y,1)
-		_rule(footer_rule)
-		var footer_y:=footer_rule-SCENE_FOOTER.x
+		# More scenes to add to these come from the gallery: its way in sits with the viewer's own scenes, left of Manage.
+		var gallery_shown: bool=mode=="global" and not GalleryView.state(self).get("rows",[]).is_empty()
+		if gallery_shown:
+			_button(GALLERY,"",Vector2(.20,label_y),Vector2(.31,.065))
+			var gallery_button: Node3D=_buttons.back().node
+			var gallery_text:=I18n.t("Scene gallery")
+			var gallery_width:=text_width(gallery_text,TEXT_BODY)
+			_icon("download",Vector3(-gallery_width*.5-.012,0,.006),.034,UiTheme.color("label"),gallery_button)
+			_label(gallery_text,Vector3(.022,0,.006),TEXT_BODY,gallery_button).modulate=UiTheme.color("label")
+		_glyph(HELP,"info",Vector2(-.01 if gallery_shown else .29,label_y),.055,true,I18n.t("Format requirements"))
 		var per_page := SCENE_CUSTOM_PER_PAGE
 		# A scene on its way in is followed to its card once, wherever the viewer had paged to.
 		var arriving:=str(_scene_state().get("pending","")) if mode=="global" else ""
@@ -423,7 +482,14 @@ func _draw_cards() -> void:
 			_followed=arriving
 			var at:=rows.find_custom(func(row): return str(row.id)==arriving)
 			if at>=0: page=at/per_page
-		page=clampi(page,0,maxi(0,ceili(rows.size()/float(per_page))-1))
+		elif _locate:
+			# Coming to this page: start where the scene in use is, however many pages in that is.
+			var chosen:=_chosen()
+			var here:=rows.find_custom(func(row): return str(row.id)==chosen)
+			if here>=0: page=here/per_page
+		_locate=false
+		var pages:=ceili(rows.size()/float(per_page))
+		page=clampi(page,0,maxi(0,pages-1))
 		for item in rows.slice(page*per_page,page*per_page+per_page): _cards.append(item)
 		for i in builtin_count: _card(_cards[i],i,_scene_slot(i%SCENE_COLUMNS,builtin_y-(i/SCENE_COLUMNS)*SCENE_PITCH.y),SCENE_CARD)
 		var start := _cards.size() - mini(per_page,rows.size()-page*per_page)
@@ -435,11 +501,13 @@ func _draw_cards() -> void:
 		_icon("plus",Vector3(0,add_layout.image_y,.007),.06,MUTED,add_card)
 		_left(I18n.t("Add"),add_layout.caption,TEXT_AUX,add_layout.caption_width,MUTED if _state.get("busy",false) else UiTheme.color("label"),add_card)
 		_tips[ADD]=I18n.t("Panorama image")+" · "+I18n.t("3D scene")
-		if _state.get("choice","") not in ["dark","passthrough"] or _scene_active(): _button(ADJUST,I18n.t("Adjust"),Vector2(.52,footer_y),Vector2(.30,.065))
-		if not library.reviews.is_empty(): _button(REVIEW,I18n.t("Review")+" (%d)"%library.reviews.size(),Vector2(-.16,footer_y),Vector2(.52,.065))
-		elif _state.get("can_import",false): _button(CURRENT,I18n.t("Use current panorama"),Vector2(-.16,footer_y),Vector2(.70,.065),not _state.get("busy",false))
-		else: _left(_selected_title(),Vector2(LEFT,footer_y),TEXT_AUX,.88,MUTED)
-		_paging(ceili(rows.size()/float(per_page)),label_y,-.04)
+		_paging(pages,label_y,-.31 if gallery_shown else -.04)
+		var entry_rule:=custom_y-SCENE_CARD.y*.5-SCENE_RULE.w
+		_rule(entry_rule)
+		_draw_entries(entry_rule-ENTRY_ROW*.5)
+		var extra_y:=entry_rule-ENTRY_ROW-EXTRA_ROW*.5+.01
+		if not library.reviews.is_empty(): _button(REVIEW,I18n.t("Review")+" (%d)"%library.reviews.size(),Vector2(LEFT+.26,extra_y),Vector2(.52,.065))
+		elif _state.get("can_import",false): _button(CURRENT,I18n.t("Use current panorama"),Vector2(LEFT+.35,extra_y),Vector2(.70,.065),not _state.get("busy",false))
 	else:
 		_cards=library.review_rows() if view=="review" else _custom_rows(true)
 		var pages:=maxi(1,ceili(_cards.size()/6.0)); page=clampi(page,0,pages-1)
@@ -463,22 +531,82 @@ func _draw_cards() -> void:
 			_card(_cards[i],i,Vector2(-.47+(slot%3)*.47,_top-.42-(slot/3)*.30))
 		_paging(pages,_bottom+.12)
 
-## Panel height that wraps the built-in rows, one row of backgrounds and the footer.
+const EXTRA_ROW := .085
+
+func _builtin_rows(count: int) -> int:
+	return maxi(1,ceili(count/float(SCENE_COLUMNS)))
+
+## Panel height that wraps the built-in rows, one row of the viewer's scenes, the row of
+## entries and the footer.
 func _scene_height() -> float:
 	var count:=0
 	for item in BUILTINS: if library.allowed(mode,item[0]): count+=1
-	var section:=SCENE_RULE.z+SCENE_CARD.y*.5+SCENE_RULE.w
-	return SCENE_RULE.x+2*section+(maxi(1,ceili(count/float(SCENE_COLUMNS)))-1)*SCENE_PITCH.y+SCENE_FOOTER.x+SCENE_FOOTER.y
+	var height:=SCENE_RULE.x+SCENE_RULE.w+SCENE_CARD.y+(_builtin_rows(count)-1)*SCENE_PITCH.y+SCENE_RULE.w
+	height+=SCENE_RULE.z+SCENE_CARD.y*.5+SCENE_RULE.w+ENTRY_ROW+SCENE_FOOTER.y
+	if not library.reviews.is_empty() or _state.get("can_import",false): height+=EXTRA_ROW
+	return height
 
-## A rule with its section label; returns the centre of the section's first card row.
-func _section(rule_y: float,text: String) -> float:
-	_rule(rule_y)
-	_left(text,Vector2(LEFT,rule_y-SCENE_RULE.y),TEXT_BODY,.50)
-	return rule_y-SCENE_RULE.z
+## What goes with the scene, each showing how it stands: the scene's own settings, the weather
+## around the viewer, and the screen's glow. The glow switches in place; its arrow opens the rest.
+func _draw_entries(y: float) -> void:
+	var entries: Array=[{"target":ADJUST,"icon":"settings","text":I18n.t("Adjust")+" · "+_selected_title(),
+		"enabled":_state.get("choice","") not in ["dark","passthrough"] or _scene_active()}]
+	if _state.has("atmosphere"):
+		var chosen:=str(_state.atmosphere.get("theme",""))
+		var shown: Dictionary={"label":"Off","icon":"atmosphere_off"}
+		for theme in Atmosphere.THEMES:
+			if str(theme.id)==chosen: shown=theme
+		entries.append({"target":ENTRY_ATMOSPHERE,"icon":str(shown.icon),"text":I18n.t("Atmosphere")+" · "+I18n.t(str(shown.label)),"on":not chosen.is_empty()})
+	if _state.has("mood_light"):
+		var lit: bool=_state.mood_light.on
+		entries.append({"target":ENTRY_MOOD,"icon":"ambient_light","text":I18n.t("Screen mood light")+" · "+I18n.t("On" if lit else "Off"),"on":lit,"more":MOOD_OPEN})
+	var gap:=.025
+	var width:=(RIGHT-LEFT-gap*2)/3.0
+	for i in entries.size():
+		var entry: Dictionary=entries[i]
+		var left:=LEFT+i*(width+gap)
+		var more:=int(entry.get("more",NONE))
+		var body:=width-(ENTRY_HEIGHT+.01 if more!=NONE else 0.0)
+		var enabled: bool=entry.get("enabled",true)
+		_button(int(entry.target),"",Vector2(left+body*.5,y),Vector2(body,ENTRY_HEIGHT),enabled)
+		var button: Dictionary=_buttons.back()
+		var on: bool=entry.get("on",false)
+		var ink:=ACCENT if on else UiTheme.color("label") if enabled else UiTheme.color("disabled_ink")
+		_icon(str(entry.icon),Vector3(-body*.5+.04,0,.006),.036,ink,button.node)
+		_left(str(entry.text),Vector2(-body*.5+.075,0),TEXT_AUX,body-.075-(.02 if more!=NONE else .05),ink,button.node)
+		_tips[int(entry.target)]=str(entry.text)
+		if more!=NONE: _glyph(more,"next",Vector2(left+width-ENTRY_HEIGHT*.5,y),ENTRY_HEIGHT,true,I18n.t("Screen mood light"))
+		else: _icon("next",Vector3(body*.5-.03,0,.006),.026,ink if enabled else UiTheme.color("disabled_ink"),button.node)
 
-## Where the next rule goes beneath `rows` card rows starting at `first_y`.
-func _below(first_y: float,rows: int) -> float:
-	return first_y-(maxi(1,rows)-1)*SCENE_PITCH.y-SCENE_CARD.y*.5-SCENE_RULE.w
+## The screen's glow, for videos and browser pages alike: a switch, then its range and brightness.
+func _draw_mood_light(y: float) -> void:
+	var light: Dictionary=_state.get("mood_light",{})
+	if light.is_empty(): return
+	_left(I18n.t("Videos and web pages"),Vector2(LEFT,y),TEXT_BODY,.80)
+	choices.field(null,{"key":"mood_light","value":light.on,"choices":[],"switch":true,
+		"hint":"The picture's colours glow around the screen. Over passthrough they also tint the room."},Vector2(.61,y),.11,.07)
+	if not light.on: return
+	var keys:=["ambient_range","ambient_brightness"]
+	for i in keys.size():
+		y-=SUB_ROW
+		var limits: Vector2=MoodLight.PERCENT_LIMITS[keys[i]]
+		var preset: float=MoodLight.PERCENT_DEFAULTS[keys[i]]
+		_left(I18n.t(["Light range","Light brightness"][i]),Vector2(LEFT,y),TEXT_BODY,.40)
+		choices.field(null,{"slider":true,"key":keys[i],"value":light[keys[i]],"span":Vector3(limits.x,limits.y,5),"unit":"%","decimals":0,
+			"tick":preset,"reset_value":preset,"reset_when_changed":true},Vector2(.25,y),.82,.07)
+
+## The themes, how much of one, and its sound.
+func _draw_atmosphere(y: float) -> void:
+	if not _state.has("atmosphere"): return
+	var air: Dictionary=_state.atmosphere
+	var themes: Array=[{"id":"","label":"Off","icon":"atmosphere_off"}]+Atmosphere.THEMES
+	for i in themes.size():
+		_button(ATMOSPHERE+i,"",Vector2(LEFT+.046+i*.105,y),Vector2(.092,.072),true,str(themes[i].icon),str(themes[i].id)==str(air.get("theme","")))
+		# A picture's folder keeps its own choice.
+		_tips[ATMOSPHERE+i]=I18n.t(str(themes[i].label))+(" · "+I18n.t("This folder") if air.get("folder",false) else "")
+	var amount:=int(air.get("amount",Atmosphere.DEFAULT_AMOUNT))
+	_glyph(ATMOSPHERE_AMOUNT,"amount_%d"%amount,Vector2(.49,y),.07,true,I18n.t("Amount")+" · "+I18n.t(["Low","Medium","High"][amount]))
+	_glyph(ATMOSPHERE_SOUND,"volume_low" if air.get("sound",true) else "mute",Vector2(.60,y),.07,true,I18n.t("Ambient sound"))
 
 func _rule(y: float) -> void:
 	var line:=_quad(Vector2(1.34,.003),Vector3(0,y,.006),UiTheme.color("divider"),11); add_child(line); _decorations.append(line)
@@ -525,18 +653,24 @@ func _card(item: Dictionary,index: int,point: Vector2,size: Vector2 = CARD_SIZE)
 	var has_actions:=view=="manage" and not bulk
 	_left(caption,layout.caption,TEXT_AUX,layout.caption_width-(.12 if has_actions else 0.0),UiTheme.color("label"),node)
 	_tips[CARD+index]=str(item.title)
+	if id=="night" and item.get("builtin",false): _tips[CARD+index]+=" · "+MILKY_WAY_CREDIT+I18n.t("Preview adapted")
 	var kind_right:=-size.x*.5+.01
-	if not item.get("builtin",false) and view!="review":
-		# Everything the viewer added says what it is: a 3D scene, or a panorama and its projection.
-		var kind:="3D" if scene else "VR180" if item.get("geometry",3)==1 else "360°"
-		var kind_width:=text_width(kind,14)+.066
+	if view!="review":
+		# Every card says what it is: a 3D scene, or a panorama and its projection. The built-in
+		# ones say so too; the plain backgrounds are only that.
+		var builtin: bool=item.get("builtin",false)
+		var solid: bool=scene or id in BUILTIN_SCENES
+		var plain: bool=builtin and id in BUILTIN_PLAIN
+		var kind:="" if plain else "3D" if solid else "VR180" if item.get("geometry",3)==1 else "360°"
+		if builtin: kind+=("" if plain else " · ")+I18n.t("Built-in")
+		var kind_width:=text_width(kind,14)+(.03 if plain else .066)
 		var kind_centre:=Vector3(-size.x*.5+.02+kind_width*.5,layout.badge.y+.002,.012)
 		var chip:=_quad(Vector2(kind_width,.042),kind_centre,PANEL,14)
 		chip.material_override.set_shader_parameter("corner_radius",.008); node.add_child(chip)
-		_icon("cube" if scene else "panorama",kind_centre+Vector3(-kind_width*.5+.025,0,.003),.026,UiTheme.color("label"),node).material_override.render_priority=16
-		_label(kind,kind_centre+Vector3(.015,0,.003),14,node).render_priority=16
+		if not plain: _icon("cube" if solid else "panorama",kind_centre+Vector3(-kind_width*.5+.025,0,.003),.026,UiTheme.color("label"),node).material_override.render_priority=16
+		_label(kind,kind_centre+Vector3(0.0 if plain else .015,0,.003),14,node).render_priority=16
 		kind_right=kind_centre.x+kind_width*.5
-		_tips[CARD+index]+=" · "+I18n.t("3D scene" if scene else "Panorama image")
+		if not plain: _tips[CARD+index]+=" · "+I18n.t("3D scene" if solid else "Panorama image")
 	if scene:
 		# The card names the scene; its cost and whether it was cut down to fit stay in the tooltip.
 		var summary: Dictionary = item.get("summary",{}).get(str(_scene_state().get("tier","")),{}) if item.get("summary") is Dictionary else {}
@@ -692,6 +826,7 @@ func _activate(target: int) -> void:
 		_help_return=modal; modal="requirements"; refresh(); return
 	if target in [HELP_IMAGE,HELP_SCENE]: _help_scene=target==HELP_SCENE; refresh(); return
 	if target==SET_ENTRY: modal="entry"; refresh(); return
+	if target==GALLERY: view="gallery"; page=gallery_page; bulk=false; selected.clear(); refresh(); return  # GalleryView.draw places the first visit
 	if target==CONFIRM and modal=="entry":
 		modal=""; _notice=I18n.t("Entry point saved"); command.emit("scene_set_entry",null); refresh(); return
 	if target==ISSUES: modal="issues"; _issue_index=0; refresh(); return
@@ -699,7 +834,17 @@ func _activate(target: int) -> void:
 		if modal=="issues" or view=="import_error": _issue_index+=1 if target==NEXT else -1
 		else: page+=1 if target==NEXT else -1
 		refresh(); return
-	if target>=MODE and target<MODE+library.visible_modes().size(): mode=library.visible_modes()[target-MODE].id; page=0
+	if target==ENTRY_ATMOSPHERE: view="atmosphere"; refresh(); return
+	if target==MOOD_OPEN: view="mood"; refresh(); return
+	if target==ENTRY_MOOD:
+		command.emit("adjust",{"mode":mode,"key":"mood_light","value":not bool(_state.get("mood_light",{}).get("on",false))}); refresh(); return
+	if target>=ATMOSPHERE and target<=ATMOSPHERE+Atmosphere.THEMES.size():
+		command.emit("atmosphere",{"mode":mode,"key":"theme","value":"" if target==ATMOSPHERE else str(Atmosphere.THEMES[target-ATMOSPHERE-1].id)}); refresh(); return
+	if target==ATMOSPHERE_AMOUNT:
+		command.emit("atmosphere",{"mode":mode,"key":"amount","value":(int(_state.get("atmosphere",{}).get("amount",Atmosphere.DEFAULT_AMOUNT))+1)%Atmosphere.AMOUNTS.size()}); refresh(); return
+	if target==ATMOSPHERE_SOUND:
+		command.emit("atmosphere",{"mode":mode,"key":"sound","value":not _state.get("atmosphere",{}).get("sound",true)}); refresh(); return
+	if target>=MODE and target<MODE+library.visible_modes().size(): mode=library.visible_modes()[target-MODE].id; page=0; _locate=true
 	elif target==MANAGE: view="manage"; page=0
 	elif target==ADD:
 		modal="add"
@@ -735,6 +880,7 @@ func _activate(target: int) -> void:
 			if selected.has(id): selected.erase(id)
 			else: selected.append(id)
 		elif id==ADDING_CARD: return
+		elif view=="gallery": GalleryView.activate(self,_cards[target-CARD])
 		elif _cards[target-CARD].get("scene",false): command.emit("scene_select",id)
 		else: command.emit("select",{"mode":mode,"id":id})
 	refresh()
@@ -762,7 +908,7 @@ func press_pointer(hand: String,origin: Vector3,direction: Vector3,tracked: bool
 	if tracked and _screen_lock_target(int(ray_hit(origin,direction).get("target",NONE))): command.emit("screen_lock_notice", hand); return true
 	if choices.press(hand,origin,direction,tracked): return true
 	var hit:=ray_hit(origin,direction) if tracked else {}
-	if modal.is_empty() and view in ["scene","manage","review"] and not hit.is_empty() and hit.point.y<_top-.27 and hit.point.y>_bottom+.17:
+	if modal.is_empty() and view in ["scene","manage","review","gallery"] and not hit.is_empty() and hit.point.y<_top-.17 and hit.point.y>_bottom+.17:
 		var id: String=str(_cards[int(hit.target)-CARD].id) if int(hit.target)>=CARD and int(hit.target)<CARD+_cards.size() else ""
 		_drag={"hand":hand,"target":int(hit.target),"id":id,"y":hit.point.y,"page":page,"moved":false}; return true
 	return super(hand,origin,direction,tracked)

@@ -176,4 +176,6 @@ This source follows the fixed release input records, not temporary channel overr
 
 ## Dated release archives
 
-Release APK archives default to the build completion date. Use the optional PowerShell parameter -ReleaseDate YYYYMMDD with Release builds to choose the archive date. Standard 0.17.12 Android source uses versionCode 99 and the PICO China store build uses 100.
+Release APK archives default to the build completion date. Use the optional PowerShell parameter -ReleaseDate YYYYMMDD with Release builds to choose the archive date. Standard 0.18.0 Android source uses versionCode 101 and the PICO China store build uses 102.
+
+Public-source builds support saving diagnostic logs locally and sharing them on Wi-Fi. Remote diagnostic upload is disabled in this export.

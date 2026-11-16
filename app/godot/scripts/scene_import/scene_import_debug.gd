@@ -22,6 +22,8 @@ func run(host: Node, command: Dictionary) -> void:
 			if not _busy: _cycle(label, command)
 		"library":
 			_library(label, command)
+		"gallery":
+			_gallery(label, command)
 		"look":
 			if _root: Unity.set_look(_root, float(command.get("exposure", 1.0)), float(command.get("bake", 1.0)))
 			_report(label, {"look": _root != null})
@@ -62,6 +64,30 @@ func _library(label: String, command: Dictionary) -> void:
 	state["background"] = str(_host.background.choice)
 	state["natives"] = {"unity": Unity.unpacker.is_valid(), "etc2": Loader.texture_encoder.is_valid()}
 	_report(label, state)
+
+## Drives the scene gallery the way its page does: step = get | cancel | state, for one `slug`.
+## Reports that scene's card once the download has settled (or the wait runs out), and how long it took.
+func _gallery(label: String, command: Dictionary) -> void:
+	var scenes: Node = _host.get("scene_import")
+	if scenes == null or scenes.get("gallery") == null:
+		_report(label, {"error": "scene gallery is off"})
+		return
+	var slug := str(command.get("slug", ""))
+	var started := Time.get_ticks_msec()
+	match str(command.get("step", "state")):
+		"get": scenes.gallery_get(slug)
+		"cancel": scenes.gallery_cancel(slug)
+	var deadline := started + int(command.get("wait_ms", 300000))
+	await get_tree().process_frame
+	while str(scenes.gallery.states.get(slug, {}).get("state", "")) in ["queued", "loading", "ready"] and Time.get_ticks_msec() < deadline: await get_tree().process_frame
+	while (scenes.library.busy or not str(scenes.pending_id).is_empty()) and Time.get_ticks_msec() < deadline: await get_tree().process_frame
+	for frame in 5: await get_tree().process_frame
+	var card := {}
+	for row in scenes.gallery.snapshot(scenes.library.origins()):
+		if str(row.slug) == slug: card = row
+	var entry: Dictionary = scenes.library.entries.get(str(card.get("id", "")), {})
+	_report(label, {"card": card, "seconds": (Time.get_ticks_msec() - started) / 1000.0, "active": scenes.active_id, "scene_error": scenes.error,
+		"entry": entry.get("entry"), "backdrop": entry.get("backdrop", ""), "title": entry.get("title", ""), "thumb": FileAccess.file_exists(scenes.library.thumbnail_path(str(card.get("id", ""))))})
 
 func _clear() -> void:
 	if _root:

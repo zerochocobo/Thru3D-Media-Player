@@ -233,6 +233,9 @@ func snapshot(mode: String) -> Dictionary:
 	state.merge({"selected":selected,"pending":pending,"choice":background.choice,"yaw":background.yaw,"brightness":background.brightness,
 		"busy":library.busy or not _pending.is_empty(),"status":status,"can_import":app.photo_active and app.photo.can_background(),"catalog":library.assets,"reviews":library.reviews,"import_progress":library.import_progress},true)
 	if is_instance_valid(app.get("scene_import")): state["scene_import"]=app.scene_import.snapshot()
+	if is_instance_valid(app.get("atmosphere")): state["atmosphere"]=app.atmosphere.snapshot(mode)
+	# One light for videos and browser pages; pictures have none.
+	if mode=="global" and app.has_method("mood_light_state"): state["mood_light"]=app.mood_light_state()
 	return state
 
 func _command(operation: String,value: Variant) -> void:
@@ -242,6 +245,7 @@ func _command(operation: String,value: Variant) -> void:
 	if operation in ["edit_beach_screen", "apply_beach_screen"] and app.screen_edit_lock.beach_locked() and app.screen_edit_lock.deny("", "beach_menu"): return
 	match operation:
 		"select": select(str(value.mode),str(value.id))
+		"atmosphere": app.atmosphere.command(str(value.mode),str(value.key),value.value)
 		"use_current": import_current(app.photo.background_source(),app.photo.display_name,str(value))
 		"add": _begin_import()
 		"scene_add": _begin_scene_import()
@@ -250,6 +254,9 @@ func _command(operation: String,value: Variant) -> void:
 		"scene_rename": app.scene_import.library.rename(str(value.id),str(value.title))
 		"scene_home": app.scene_import.home()
 		"scene_set_entry": app.scene_import.set_entry()
+		"gallery_get": app.scene_import.gallery_get(str(value))
+		"gallery_cancel": app.scene_import.gallery_cancel(str(value))
+		"gallery_anchor": app.scene_import.gallery_anchor(str(value))
 		"home": app._on_setting_changed("cinema_home",true)
 		"edit_beach_screen":
 			if app.background.choice=="private_beach" and app.beach_environment.is_ready:
@@ -263,7 +270,9 @@ func _command(operation: String,value: Variant) -> void:
 				if value.has(library.bindings[mode].get("id","")) and library.valid_mode(mode): select(mode,library.fallback(mode))
 		"adjust":
 			var mode:=str(value.mode); var key:=str(value.key)
-			if key=="scene_screen_light": app.scene_import.set_screen_light(float(value.value))
+			if key=="mood_light": app._on_setting_changed("passthrough_relight",bool(value.value))
+			elif key in ["ambient_range","ambient_brightness"]: app._on_playback_adjustment(key,float(value.value))
+			elif key=="scene_screen_light": app.scene_import.set_screen_light(float(value.value))
 			elif key=="scene_bake": app.scene_import.set_bake(float(value.value))
 			elif key=="scene_play_dim": app.scene_import.set_play_dim(float(value.value))
 			elif key=="scene_backdrop": app.scene_import.set_backdrop(str(value.value))

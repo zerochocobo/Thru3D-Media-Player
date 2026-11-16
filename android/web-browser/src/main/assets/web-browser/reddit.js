@@ -85,7 +85,7 @@ const Thru3DReddit=(()=>{
   // because Reddit owns the custom player's shadow tree and may replace it.
   const controls=(doc,selected,site='reddit')=>{
     const entries=new Map(),view=doc.defaultView||globalThis;
-    const action=event=>event.isTrusted?[...entries.values()].find(item=>(event.composedPath?.()||[]).includes(item.host)):null;
+    const action=event=>event.isTrusted?[...entries.values()].find(item=>item.interactive()&&(event.composedPath?.()||[]).includes(item.host)):null;
     const reserve=event=>{if(action(event))event.stopImmediatePropagation();};
     const click=event=>{const item=action(event);if(!item)return;event.preventDefault();event.stopImmediatePropagation();if(!item.button.disabled)selected(item.target);};
     const events=['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'];

@@ -283,6 +283,7 @@ func tick() -> void:
 	if not opening: force_floating_on_open = false
 	for id in ids:
 		windows[id].sync_fullscreen(window_state(id))
+		windows[id].sync_page_beta_visibility()
 	sync_effects()
 	if handoff and (str(data.get("url", "")) != handoff_uri or int(data.get("tab_id", 0)) != handoff_tab or int(data.get("navigation", 0)) != handoff_navigation):
 		if handoff_context.get("bilibili", false):
@@ -1006,7 +1007,12 @@ func action(target: int) -> bool:
 		2: menu.platform.web_browser_action("reload"); refresh_windows()
 		3:
 			_edit_address(draft)
-		4: menu.platform.web_browser_action("bookmark"); saved_poll = 0; refresh_windows()
+		4:
+			var crop := Rect2(0, 0, 1, 1)
+			if windows.has(focused_window): crop = windows[focused_window].focus_crop()
+			menu.platform.web_browser_command(JSON.stringify({"action": "bookmark", "window": focused_window,
+				"crop": [crop.position.x, crop.position.y, crop.size.x, crop.size.y]}))
+			saved_poll = 0; refresh_windows()
 		5: tab_command("close_window")
 		7:
 			history.reset()

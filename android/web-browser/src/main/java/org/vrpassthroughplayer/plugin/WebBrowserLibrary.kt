@@ -7,8 +7,9 @@ import org.json.JSONObject
 internal class WebBrowserLibrary(saved: String,
     /** Visits arrive on every page load; they may be written off the UI thread. */
     private val saveLater: ((String) -> Unit)? = null, private val save: (String) -> Unit) {
-    data class Entry(val url: String, val title: String, val at: Long) {
+    data class Entry(val url: String, val title: String, val at: Long, val preview: String = "") {
         fun json(): JSONObject = JSONObject().put("url", url).put("title", title).put("at", at)
+            .also { if (preview.isNotEmpty()) it.put("preview", preview) }
     }
     private val bookmarks = mutableListOf<Entry>()
     private val history = mutableListOf<Entry>()
@@ -24,7 +25,8 @@ internal class WebBrowserLibrary(saved: String,
             val item = items?.optJSONObject(i) ?: continue
             val url = WebBrowserAddress.recordable(item.optString("url")) ?: continue
             if (target.any { it.url == url }) continue
-            target.add(Entry(url, item.optString("title").take(512), item.optLong("at", 0).coerceAtLeast(0)))
+            target.add(Entry(url, item.optString("title").take(512), item.optLong("at", 0).coerceAtLeast(0),
+                item.optString("preview").takeIf { it.matches(Regex("[a-f0-9]{32}")) }.orEmpty()))
         }
     }
     fun visit(url: String, title: String, at: Long) {
@@ -37,6 +39,16 @@ internal class WebBrowserLibrary(saved: String,
         return edit(JSONObject().put("action", "toggle_bookmark").put("url", url).put("title", title)).isEmpty()
     }
     fun clearHistory() { session.clear(); history.clear(); persist() }
+    fun bookmarkEntry(url: String): Entry? = bookmarks.find { it.url == WebBrowserAddress.recordable(url) }
+    /** A late screenshot cannot attach to a removed, edited, or re-added bookmark. */
+    fun attachPreview(expected: Entry, token: String): Boolean {
+        require(token.matches(Regex("[a-f0-9]{32}")))
+        val index = bookmarks.indexOfFirst { it === expected }
+        if (index < 0) return false
+        bookmarks[index] = expected.copy(preview = token)
+        try { persist() } catch (error: Exception) { bookmarks[index] = expected; throw error }
+        return true
+    }
     /** All management writes commit atomically; failed disk writes leave the visible lists intact. */
     fun edit(request: JSONObject): String {
         val oldBookmarks = bookmarks.toList()
@@ -74,7 +86,8 @@ internal class WebBrowserLibrary(saved: String,
                     if (bookmarks.any { it.url == url && it.url != previous }) return "bookmark_exists"
                     if (index < 0 && bookmarks.size >= 1000) return "bookmark_limit"
                     val title = request.optString("title").trim().take(512).ifEmpty { url }
-                    val entry = Entry(url, title, if (index >= 0) bookmarks[index].at else System.currentTimeMillis())
+                    val entry = Entry(url, title, if (index >= 0) bookmarks[index].at else System.currentTimeMillis(),
+                        if (index >= 0 && previous == url) bookmarks[index].preview else "")
                     if (index >= 0) bookmarks[index] = entry else bookmarks.add(0, entry)
                 }
                 "remove" -> {
@@ -105,7 +118,7 @@ internal class WebBrowserLibrary(saved: String,
         .digest(items.toString().toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it.toInt() and 255) }
     /** Explicit LAN management shares the same visible library; reading never persists transient visits. */
     fun remoteSnapshot(): JSONObject {
-        val items = array(bookmarks)
+        val items = array(bookmarks.map { it.copy(preview = "") })
         val visits = array(visibleHistory())
         return JSONObject().put("bookmarks", items).put("revision", revision(items))
             .put("history", visits).put("history_revision", revision(visits))

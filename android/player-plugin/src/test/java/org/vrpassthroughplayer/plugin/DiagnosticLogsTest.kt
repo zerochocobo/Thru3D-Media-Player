@@ -4,6 +4,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.DataInputStream
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.util.zip.GZIPInputStream
+import kotlin.concurrent.thread
 
 class DiagnosticLogsTest {
     @Test fun compactExportRetainsReadRoutesAndSuppressedFramesWithoutMediaNames() {
@@ -45,6 +50,46 @@ class DiagnosticLogsTest {
         assertEquals(1, compact.count { it.contains("copy late") })
         assertTrue(compact.contains("    (repeated 4 times)"))
         assertTrue(compact.any { it.contains("image wait timed out") })
+    }
+
+    @Test fun uploadsTheGzippedLogAndReturnsTheInboxCodeOrItsRefusal() {
+        var received = ""
+        var app = ""
+        var category = ""
+        var refuse = false
+        // android.jar has no HTTP server: one request per connection is enough for the inbox's contract.
+        val server = ServerSocket(0, 1, InetAddress.getLoopbackAddress())
+        thread(isDaemon = true) {
+            while (!server.isClosed) (runCatching { server.accept() }.getOrNull() ?: break).use { client ->
+                val input = DataInputStream(client.getInputStream())
+                val headers = generateSequence { input.readLine()?.takeIf { it.isNotEmpty() } }.toList()
+                fun header(name: String) = headers.firstOrNull { it.startsWith("$name:", ignoreCase = true) }?.substringAfter(':')?.trim().orEmpty()
+                val body = ByteArray(header("Content-Length").toInt()).also { input.readFully(it) }
+                received = GZIPInputStream(body.inputStream()).bufferedReader().readText()
+                app = header("X-Thru3D-App")
+                category = header("X-Thru3D-Category")
+                val reply = if (refuse) """{"error":"rate_limited"}""" else """{"code":"7F2K9QXM"}"""
+                client.getOutputStream().write(("HTTP/1.1 ${if (refuse) "429 Too Many Requests" else "201 Created"}\r\n" +
+                    "Content-Type: application/json\r\nContent-Length: ${reply.length}\r\nConnection: close\r\n\r\n$reply").toByteArray())
+            }
+        }
+        try {
+            val endpoint = "http://127.0.0.1:${server.localPort}/v1/logs"
+            val text = "Thru3D diagnostic log 2026-11-16 10:00:00\nDevice: Oculus Quest 3\n"
+            val header = """Report: {"category":"audio_subtitles","note":"字幕比声音慢 a@b.com"}""" + "\nPlayer: {}"
+            assertEquals("audio_subtitles", DiagnosticLogs.reportCategory(header))
+            assertEquals("", DiagnosticLogs.reportCategory("Report: {\"category\":\"../x\"}"))
+            assertEquals("", DiagnosticLogs.reportCategory("Player: {}"))
+            assertTrue(DiagnosticLogs.redact(header).contains("字幕比声音慢") && !DiagnosticLogs.redact(header).contains("a@b.com"))
+            assertEquals("7F2K9QXM", DiagnosticLogs.upload(endpoint, text, "App: com.wapok.thru3d 0.17.9 (versionCode=93)", "audio_subtitles"))
+            assertEquals("audio_subtitles", category)
+            assertEquals(text, received)
+            assertEquals("com.wapok.thru3d 0.17.9 (versionCode=93)", app)
+            refuse = true
+            assertEquals("rate_limited", runCatching { DiagnosticLogs.upload(endpoint, text, "") }.exceptionOrNull()?.message)
+        } finally {
+            server.close()
+        }
     }
 
     @Test fun keepsDiagnosticText() {

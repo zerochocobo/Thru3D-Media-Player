@@ -149,7 +149,7 @@
   let tencentShape = [];
   let tencentEnvelopes = [];
   let tencentButton = null, tencentChoice = null, tencentClick = 0;
-  const tencentActionEvent = event => event.isTrusted && tencentButton && (event.composedPath?.() || []).includes(tencentButton.host);
+  const tencentActionEvent = event => event.isTrusted && tencentButton && tencentButton.interactive() && (event.composedPath?.() || []).includes(tencentButton.host);
   // ThumbPlayer installs document-wide gesture handlers. Reserve only events on
   // our own shadow action, before those handlers can capture or cancel the click.
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
@@ -185,7 +185,7 @@
   };
   let mangoEnabled = typeof Thru3DMango !== 'undefined' && !!Thru3DMango.page(location.href), mangoActionEnabled=false, mangoData=[], mangoCapture={};
   let mangoButton = null, mangoChoice = null, mangoClick = 0;
-  const mangoActionEvent = event => event.isTrusted && mangoButton && (event.composedPath?.() || []).includes(mangoButton.host);
+  const mangoActionEvent = event => event.isTrusted && mangoButton && mangoButton.interactive() && (event.composedPath?.() || []).includes(mangoButton.host);
   // Mango player installs document-wide gesture handlers. Reserve only events on
   // our own shadow action, before those handlers can capture or cancel the click.
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
@@ -221,7 +221,7 @@
   };
   let youkuEnabled = typeof Thru3DYouku !== 'undefined' && !!Thru3DYouku.page(location.href), youkuActionEnabled=false, youkuData=[], youkuCapture={};
   let youkuButton = null, youkuChoice = null, youkuClick = 0;
-  const youkuActionEvent = event => event.isTrusted && youkuButton && (event.composedPath?.() || []).includes(youkuButton.host);
+  const youkuActionEvent = event => event.isTrusted && youkuButton && youkuButton.interactive() && (event.composedPath?.() || []).includes(youkuButton.host);
   // Youku player installs document-wide gesture handlers. Reserve only events on
   // our own shadow action, before those handlers can capture or cancel the click.
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
@@ -258,7 +258,7 @@
   let niconicoEnabled = typeof Thru3DNiconico !== 'undefined' && Thru3DNiconico.documentPage(location.href), niconicoActionEnabled=false, niconicoData=[], niconicoCapture={};
   let niconicoButton = null, niconicoChoice = null, niconicoClick = 0;
   let niconicoRendered=null;
-  const niconicoActionEvent = event => event.isTrusted && niconicoButton && (event.composedPath?.() || []).includes(niconicoButton.host);
+  const niconicoActionEvent = event => event.isTrusted && niconicoButton && niconicoButton.interactive() && (event.composedPath?.() || []).includes(niconicoButton.host);
   // Reserve our own shadow action before the site's gesture handlers capture it.
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
     if(niconicoActionEvent(event))event.stopImmediatePropagation();
@@ -293,7 +293,7 @@
   };
   let twitchEnabled = typeof Thru3DTwitch !== 'undefined' && !!Thru3DTwitch.page(location.href), twitchActionEnabled=false, twitchData=[], twitchCapture={};
   let twitchButton = null, twitchChoice = null, twitchClick = 0;
-  const twitchActionEvent = event => event.isTrusted && twitchButton && (event.composedPath?.() || []).includes(twitchButton.host);
+  const twitchActionEvent = event => event.isTrusted && twitchButton && twitchButton.interactive() && (event.composedPath?.() || []).includes(twitchButton.host);
   // Reserve only our own action events before site gesture handlers. Reserve only events on
   // our own shadow action, before those handlers can capture or cancel the click.
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
@@ -329,7 +329,7 @@
   };
   let tiktokEnabled = typeof Thru3DTikTok !== 'undefined' && Thru3DTikTok.documentPage(location.href), tiktokActionEnabled=false, tiktokCapture={};
   let tiktokButton = null, tiktokChoice = null, tiktokClick = 0;
-  const tiktokActionEvent = event => event.isTrusted && tiktokButton && (event.composedPath?.() || []).includes(tiktokButton.host);
+  const tiktokActionEvent = event => event.isTrusted && tiktokButton && tiktokButton.interactive() && (event.composedPath?.() || []).includes(tiktokButton.host);
   // Reserve only our own action events before site gesture handlers. Reserve only events on
   // our own shadow action, before those handlers can capture or cancel the click.
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
@@ -365,7 +365,7 @@
   };
   let instagramEnabled = typeof Thru3DInstagram !== 'undefined' && Thru3DInstagram.documentPage(location.href), instagramActionEnabled=false, instagramCapture={};
   let instagramButton = null, instagramChoice = null, instagramClick = 0;
-  const instagramActionEvent = event => event.isTrusted && instagramButton && (event.composedPath?.() || []).includes(instagramButton.host);
+  const instagramActionEvent = event => event.isTrusted && instagramButton && instagramButton.interactive() && (event.composedPath?.() || []).includes(instagramButton.host);
   // Reserve only our own action events before site gesture handlers. Reserve only events on
   // our own shadow action, before those handlers can capture or cancel the click.
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
@@ -401,7 +401,7 @@
   };
   let tedEnabled = typeof Thru3DTed !== 'undefined' && Thru3DTed.documentPage(location.href), tedActionEnabled=false, tedCapture={};
   let tedButton = null, tedChoice = null, tedClick = 0;
-  const tedActionEvent = event => event.isTrusted && tedButton && (event.composedPath?.() || []).includes(tedButton.host);
+  const tedActionEvent = event => event.isTrusted && tedButton && tedButton.interactive() && (event.composedPath?.() || []).includes(tedButton.host);
   // Reserve only our own action events before site gesture handlers. Reserve only events on
   // our own shadow action, before those handlers can capture or cancel the click.
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
@@ -437,7 +437,7 @@
   };
   let redbullEnabled = typeof Thru3DRedBull !== 'undefined' && Thru3DRedBull.documentPage(location.href), redbullActionEnabled=false, redbullCapture={};
   let redbullButton = null, redbullChoice = null, redbullClick = 0;
-  const redbullActionEvent = event => event.isTrusted && redbullButton && (event.composedPath?.() || []).includes(redbullButton.host);
+  const redbullActionEvent = event => event.isTrusted && redbullButton && redbullButton.interactive() && (event.composedPath?.() || []).includes(redbullButton.host);
   // Reserve only our own action events before site gesture handlers. Reserve only events on
   // our own shadow action, before those handlers can capture or cancel the click.
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
@@ -492,7 +492,7 @@
     naverControls?.sync(targets,naverEnabled&&naverActionEnabled);
   };
   let streamableButton = null, streamableChoice = null, streamableClick = 0;
-  const streamableActionEvent = event => event.isTrusted && streamableButton && (event.composedPath?.() || []).includes(streamableButton.host);
+  const streamableActionEvent = event => event.isTrusted && streamableButton && streamableButton.interactive() && (event.composedPath?.() || []).includes(streamableButton.host);
   // Reserve only our own action events before site gesture handlers. Reserve only events on
   // our own shadow action, before those handlers can capture or cancel the click.
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
@@ -528,7 +528,7 @@
   };
   let archiveEnabled = typeof Thru3DArchive !== 'undefined' && Thru3DArchive.documentPage(location.href), archiveActionEnabled=false, archiveCapture={};
   let archiveButton = null, archiveChoice = null, archiveClick = 0;
-  const archiveActionEvent = event => event.isTrusted && archiveButton && (event.composedPath?.() || []).includes(archiveButton.host);
+  const archiveActionEvent = event => event.isTrusted && archiveButton && archiveButton.interactive() && (event.composedPath?.() || []).includes(archiveButton.host);
   // Reserve only our own action events before site gesture handlers. Reserve only events on
   // our own shadow action, before those handlers can capture or cancel the click.
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
@@ -564,7 +564,7 @@
   };
   let odyseeEnabled = typeof Thru3DOdysee !== 'undefined' && Thru3DOdysee.documentPage(location.href), odyseeActionEnabled=false, odyseeCapture={};
   let odyseeButton = null, odyseeChoice = null, odyseeClick = 0;
-  const odyseeActionEvent = event => event.isTrusted && odyseeButton && (event.composedPath?.() || []).includes(odyseeButton.host);
+  const odyseeActionEvent = event => event.isTrusted && odyseeButton && odyseeButton.interactive() && (event.composedPath?.() || []).includes(odyseeButton.host);
   // Reserve only our own action events before site gesture handlers. Reserve only events on
   // our own shadow action, before those handlers can capture or cancel the click.
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
@@ -600,7 +600,7 @@
   };
   let dailymotionEnabled = typeof Thru3DDailymotion !== 'undefined' && Thru3DDailymotion.frame(location.href), dailymotionActionEnabled=false, dailymotionCapture={},dailymotionBodies=[],dailymotionOwner="";
   let dailymotionButton = null, dailymotionChoice = null, dailymotionClick = 0;
-  const dailymotionActionEvent = event => event.isTrusted && dailymotionButton && (event.composedPath?.() || []).includes(dailymotionButton.host);
+  const dailymotionActionEvent = event => event.isTrusted && dailymotionButton && dailymotionButton.interactive() && (event.composedPath?.() || []).includes(dailymotionButton.host);
   // Reserve only our own action events before site gesture handlers. Reserve only events on
   // our own shadow action, before those handlers can capture or cancel the click.
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
@@ -636,7 +636,7 @@
   };
   let iqiyiEnabled = typeof Thru3DIqiyi !== 'undefined' && !!Thru3DIqiyi.page(location.href), iqiyiActionEnabled=false;
   let iqiyiButton = null, iqiyiChoice = null, iqiyiClick = 0;
-  const iqiyiActionEvent = event => event.isTrusted && iqiyiButton && (event.composedPath?.() || []).includes(iqiyiButton.host);
+  const iqiyiActionEvent = event => event.isTrusted && iqiyiButton && iqiyiButton.interactive() && (event.composedPath?.() || []).includes(iqiyiButton.host);
   // Iqiyi player installs document-wide gesture handlers. Reserve only events on
   // our own shadow action, before those handlers can capture or cancel the click.
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
@@ -671,7 +671,7 @@
     iqiyiButton.host.hidden=!Thru3DPlayButton.visible(target.video);iqiyiButton.enabled(true);
   };
   const douyinButtons = new Map();let douyinChoice=null,douyinClick=0,douyinActionEnabled=false;
-  const douyinActionEvent=event=>event.isTrusted&&[...douyinButtons.values()].find(b=>(event.composedPath?.()||[]).includes(b.host));
+  const douyinActionEvent=event=>event.isTrusted&&[...douyinButtons.values()].find(b=>b.interactive()&&(event.composedPath?.()||[]).includes(b.host));
   for(const name of ['pointerdown','mousedown','touchstart','pointerup','mouseup','touchend'])addEventListener(name,event=>{
     if(douyinActionEvent(event))event.stopImmediatePropagation();
   },true);
@@ -1477,7 +1477,10 @@
     port = browser.runtime.connectNative("thru3d_video");
     const connection = port;
     port.onMessage.addListener((message) => {
-    if (message?.action === "network_policy") {
+    if (message?.action === "page_beta_visibility") {
+      // Presentation only: never change network policy, media epochs or ready state.
+      if (typeof Thru3DPlayButton !== 'undefined') Thru3DPlayButton.setPresentationVisible(message.visible === true);
+    } else if (message?.action === "network_policy") {
       changed();
       douyinDiagnostics = message.diagnostics === true;
       const douyin = message.douyin === true;

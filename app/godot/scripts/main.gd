@@ -67,6 +67,7 @@ const BEACH_NIGHT_HOURS := 21.0
 const BEACH_SWEEP_HOURS_PER_SECOND := 3.0
 const TimeOfDay := preload("res://scripts/environments/private_beach_time.gd")
 const CinemaFilmLight := preload("res://scripts/environments/cinema_film_light.gd")
+const PassthroughRelight := preload("res://scripts/passthrough_relight.gd")
 const CinemaScreenBorder := preload("res://scripts/environments/cinema_screen_border.gd")
 const CinemaPictureResize := preload("res://scripts/environments/cinema_picture_resize.gd")
 const CinemaFeature := preload("res://scripts/environments/cinema_feature.gd")
@@ -88,6 +89,7 @@ var _beach_ambient_saved := {}
 var cinema_screen_border: MeshInstance3D
 ## Samples the picture so the baked screen light follows the film.
 var cinema_film_light: Node
+var passthrough_relight: Node
 var _cinema_screen_saved := {}
 var _cinema_transport_saved := {}
 var _cinema_desktop_look := false
@@ -235,6 +237,7 @@ var _audio_save_after := 0
 var background: Node
 var photo_background: Node
 var scenery: Node
+var atmosphere: Node
 var scenery_menu: Node3D
 ## Viewer-imported scenes (experimental; null when the feature is off).
 var scene_import: Node
@@ -315,6 +318,8 @@ func _ready() -> void:
 	display.status_changed.connect(_on_input_session_changed)
 	display.status_changed.connect(_queue_report)
 	settings.load(settings_path)
+	# Off until the viewer turns it on: low-end headsets have not been measured with it.
+	relight_wanted = bool(settings.get_value("video", "ambient_light", false))
 	UiTheme.use(UiTheme.load_choice(settings))
 	_migrate_library_distance()
 	wrist_watch = WristWatch.new()
@@ -488,6 +493,7 @@ func _ready() -> void:
 	recent_menu.collections.store = favorites
 	recent_menu.file_actions.load(settings.get_value("library", "orders", {}))
 	recent_menu.load_view_mode(settings.get_value("library", "view_mode", "grid"))
+	recent_menu.quick_access.opened = bool(settings.get_value("library", "quick_access", false))
 	recent_menu.file_actions.set_enabled(bool(settings.get_value("library", "file_editing", false)))
 	recent_menu.file_renamed.connect(_on_file_renamed)
 	recent_menu.current_file_provider = func(): return _viewer().local_uri
@@ -677,6 +683,7 @@ func _ready() -> void:
 	photo_background.changed.connect(_on_background_changed)
 	photo_background.custom_saved.connect(_on_photo_background_saved)
 	add_child(photo_background)
+	atmosphere = preload("res://scripts/atmosphere/atmosphere_controller.gd").new(); atmosphere.setup(self); add_child(atmosphere)
 	scenery.setup(self, scenery_menu)
 	var scene_import_script := load("res://scripts/scene_import/scene_import_controller.gd") as GDScript
 	if scene_import_script:
@@ -1622,6 +1629,7 @@ func _process(delta: float) -> void:
 	_sync_display_policy()
 	_sync_cinema_screen()
 	_update_cinema_film_light(delta)
+	_update_passthrough_relight(delta)
 	_update_beach_time(delta)
 	_update_beach_handhelds()
 	if beach_environment: beach_environment.set_surf(_beach_surf_audible())
@@ -4554,6 +4562,12 @@ func _on_diagnostic_log(payload: String) -> void:
 				var until := int(float(result.get("expires_ms", 0)) / 1000.0) + int(Time.get_time_zone_from_system().get("bias", 0)) * 60
 				diagnostic_state["until"] = Time.get_time_string_from_unix_time(until).left(5)
 			else: diagnostic_state.erase("url"); diagnostic_state["share_error"] = I18n.t("Connect to Wi-Fi first")
+		"upload":
+			diagnostic_state["code"] = str(result.get("code", "")) if ok else ""
+			# A sent report starts the next one empty; a failed one keeps what the user chose and typed.
+			if ok:
+				for key in ["upload_error", "category", "note"]: diagnostic_state.erase(key)
+			else: diagnostic_state["upload_error"] = I18n.t("Too many uploads, try again later" if str(result.get("error", "")) in ["rate_limited", "quota"] else "Could not upload")
 		"stop":
 			diagnostic_state.erase("url")
 		"recent":
@@ -4719,6 +4733,9 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 		"library_view_mode":
 			settings.set_value("library", "view_mode", recent_menu.Presentation.mode(value))
 			settings.save(settings_path)
+		"library_quick_access":
+			settings.set_value("library", "quick_access", bool(value))
+			settings.save(settings_path)
 		"seek_mode":
 			video.seek_mode = video.SeekPolicy.normalize(value)
 			settings.set_value("video", "seek_mode", video.seek_mode)
@@ -4879,6 +4896,11 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			settings.set_value("ui", "show_fps", bool(value))
 			settings.save(settings_path)
 			if player_menu and player_menu.visible: player_menu.refresh()
+		"passthrough_relight":
+			relight_wanted = bool(value)
+			settings.set_value("video", "ambient_light", relight_wanted)
+			settings.save(settings_path)
+			DiagnosticLog.record("passthrough_relight", {"enabled": bool(value)})
 		"stick_seek_overlay":
 			settings.set_value("ui", "stick_seek_overlay", bool(value))
 			settings.save(settings_path)
@@ -4889,8 +4911,21 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			_apply_memory_mode(platform_plugin)
 		"diagnostic_log":
 			if platform_plugin and PlatformMethods.supports(platform_plugin, "diagnostic_log"):
+				var header := _diagnostic_header()
+				if str(value) == "upload":
+					# An upload carries what the user says went wrong, on top of the log (DiagnosticLogs reads the type).
+					var category := str(diagnostic_state.get("category", ""))
+					if category.is_empty(): return
+					header = "Report: " + JSON.stringify({"category": category, "note": str(diagnostic_state.get("note", ""))}) + "\n" + header
+					diagnostic_state["report"] = false
 				diagnostic_state["busy"] = str(value)
-				platform_plugin.diagnostic_log(str(value), _diagnostic_header(), bool(diagnostic_state.get("full", false)))
+				platform_plugin.diagnostic_log(str(value), header, bool(diagnostic_state.get("full", false)))
+		"diagnostic_report":
+			diagnostic_state["report"] = bool(value)
+		"diagnostic_category":
+			diagnostic_state["category"] = str(value)
+		"diagnostic_note":
+			diagnostic_state["note"] = str(value).strip_escapes().left(200)
 		"diagnostic_detail":
 			diagnostic_state["full"] = bool(value)
 		"memory_mode":
@@ -5100,6 +5135,9 @@ func _on_menu_seek(position_ms: int) -> void:
 
 func _on_player_setting(key: String, value: Variant) -> void:
 	if key == "screen_edit_locked": screen_edit_lock.set_locked(bool(value)); return
+	if key == "video_aspect_locked":
+		if not photo_active and video: video.set_video_aspect_lock(bool(value))
+		return
 	if screen_edit_lock.guard(key): return
 	if key == "depth_position":
 		if value is Dictionary:
@@ -5383,6 +5421,7 @@ func _menu_state() -> Dictionary:
 		"screen_eye_level": video.cinema.eye_level(video, _eye()),
 		"screen_scale": video.screen_scale * 100.0, "screen_rotation": video.screen_rotation, "playback_speed": video.playback_speed,
 		"video_aspect_preset": video.video_aspect_preset, "video_aspect_factor": video.video_aspect_factor,
+		"video_aspect_locked": video.video_aspect_locked,
 		"alpha_fps": _alpha_fps(), "alpha_feather": _alpha_edge_value("alpha_feather"), "alpha_shrink": _alpha_edge_value("alpha_shrink"), "alpha_mask_blend": _alpha_mask_blend(),
 		"alpha_keep_background": _alpha_keep_background(),
 		"show_status_info": bool(settings.get_value("ui", "show_status_info", true)),
@@ -6072,6 +6111,59 @@ func _update_cinema_film_light(delta: float) -> void:
 	if cinema_film_light.update(delta, video, _cinema_scene_active() and not photo_active, fraction):
 		cinema_environment.set_film_light(cinema_film_light.colors)
 
+## Screen mood light for the flat player (regular and 3D videos alike) and browser pages, over
+## passthrough, panoramas and imported scenes. The cinema and the beach light their own rooms
+## from the film.
+func _update_passthrough_relight(delta: float) -> void:
+	var wanted := relight_wanted
+	var scene_lit := _cinema_scene_active() or _beach_active()
+	var page := _passthrough_relight_page() if wanted and not scene_lit else null
+	if not passthrough_relight:
+		if not wanted and page == null: return
+		passthrough_relight = PassthroughRelight.new(); passthrough_relight.name = "PassthroughRelight"; add_child(passthrough_relight)
+	var floor_y := xr_origin.global_position.y if xr_origin else 0.0
+	passthrough_relight.set_look(_ambient_value("ambient_range") / 100.0, _ambient_value("ambient_brightness") / 100.0)
+	# Only the camera picture can be tinted; other backgrounds get the halo and floor shadow.
+	passthrough_relight.tint_room = display.applied_passthrough
+	# An open browser window takes over from the video.
+	if page != null:
+		passthrough_relight.set_enabled(true)
+		passthrough_relight.update_browser(delta, page, not display.preview, floor_y)
+		return
+	passthrough_relight.set_enabled(wanted)
+	var flat: bool = video != null and video.geometry == Geometry.Geometry.FLAT
+	var active: bool = not display.preview and flat and not photo_active and not scene_lit
+	passthrough_relight.update(delta, video, active, floor_y)
+
+## The Scene menu's switch, for videos and browser pages alike, remembered with its range and
+## brightness.
+var relight_wanted := false
+
+## For the Scene menu.
+func mood_light_state() -> Dictionary:
+	return {"on": relight_wanted, "ambient_range": _ambient_value("ambient_range"), "ambient_brightness": _ambient_value("ambient_brightness")}
+
+## Percent.
+func _ambient_value(key: String) -> float:
+	var limits: Vector2 = PassthroughRelight.Model.PERCENT_LIMITS[key]
+	var fallback: float = PassthroughRelight.Model.PERCENT_DEFAULTS[key]
+	var value := float(settings.get_value("video", key, fallback))
+	return clampf(value, limits.x, limits.y) if is_finite(value) else fallback
+
+## The browser window that lights the room: a focus-selected one first, then the nearest.
+func _passthrough_relight_page() -> Node:
+	if not recent_menu is LibraryMenu: return null
+	var browser: RefCounted = recent_menu.web_browser
+	if browser == null or not browser.active(): return null
+	var best: Node = null
+	var best_score := INF
+	for window in browser.windows.values():
+		if not is_instance_valid(window) or not window.visible or window.surface == null: continue
+		var score: float = window.page_layout().pose.origin.distance_to(window.head().origin) - (100.0 if window.is_focused() else 0.0)
+		if score < best_score:
+			best = window; best_score = score
+	return best
+
 func _cinema_curve_max(width: float = -1.0) -> float:
 	if width < 0.0: width = video._flat.size.x if video else 32.0
 	# Never bend more tightly than the old Full radius, even with a smaller picture.
@@ -6409,6 +6501,10 @@ func _on_session_control(operation: String) -> void:
 			# The scene menu owns the confirmation; it opens over whichever menu the row was on.
 			if scenery and not scenery_menu.visible: scenery.open()
 			if scenery_menu.visible: scenery_menu.ask_entry()
+			return
+		if operation == "scene_settings":
+			if scenery and not scenery_menu.visible: scenery.open()
+			if scenery_menu.visible: scenery_menu.show_adjust()
 			return
 		# Standing, sitting or lying stops where the viewer is; walking and flying hand the sticks to movement.
 		scene_import.set_stance(operation.trim_prefix("scene_"))
@@ -6837,6 +6933,11 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 	elif key == "alpha_fps":
 		_apply_alpha_fps(value)
 		return
+	elif key in ["ambient_range", "ambient_brightness"]:
+		if not is_finite(float(value)): return
+		settings.set_value("video", key, float(value))
+		settings.save(settings_path)
+		return
 	elif key in ["alpha_feather", "alpha_shrink"]:
 		_apply_alpha_edge(key, value)
 		return
@@ -7085,6 +7186,9 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 					if item.surface.layer and item.surface.layer.effects:
 						effect = JSON.parse_string(str(item.surface.layer.effects.status(item.surface.layer.id)))
 					entries.append({"id": item.window_id, "visible": item.visible, "mode": item.mode, "cinema": item.on_screen(),
+						"toolbar_shown": item.toolbar_shown, "chrome_hidden": item.chrome_hidden(),
+						"focused": item.is_focused(), "video_focused": item.is_video_focused(), "selecting": item.selecting,
+						"beta_button_enabled": item._buttons.any(func(b): return b.target == recent_menu.web_browser.BASE + 18 and b.enabled),
 						"size": [page.size.x, page.size.y], "position": [page.pose.origin.x, page.pose.origin.y, page.pose.origin.z],
 						"scale": item.global_basis.get_scale().x, "surface_status": item.surface.status,
 						"effects": effect, "depth_enabled": item.depth.enabled, "matte_enabled": item.depth.matte,
@@ -7135,7 +7239,7 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 			"effect":
 				var browser: RefCounted = recent_menu.web_browser
 				var target := int(command.get("target", 0))
-				if browser.active() and browser.windows.has(browser.focused_window) and target in [browser.BASE+16, browser.BASE+21]:
+				if browser.active() and browser.windows.has(browser.focused_window) and target in [browser.BASE+16, browser.BASE+21, browser.BASE+25, browser.BASE+34]:
 					browser.windows[browser.focused_window]._activate(target)
 			"key": recent_menu.web_browser.action(int(command.get("target", 0)))
 			"scroll":
@@ -7234,6 +7338,14 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		if command.has("beach_probe") and beach_environment and beach_environment.beach: beach_environment.beach.debug_probe(command.beach_probe)
 		if command.has("beach_probe") and beach_environment and command.beach_probe.has("seat"): beach_environment._sit(str(command.beach_probe.seat))
 		if command.has("hold_controls"): _debug_hold_controls = bool(command.hold_controls)
+		if command.has("relight"): _on_setting_changed("passthrough_relight", bool(command.relight))
+		if command.has("atmosphere") and atmosphere: atmosphere.command("image" if photo_active else "global", "theme", str(command.atmosphere))
+		for key in ["ambient_range", "ambient_brightness"]:
+			if command.has(key): _on_playback_adjustment(key, float(command[key]))
+		if command.has("menu_target") and player_menu: player_menu._activate(int(command.menu_target))
+		if command.has("relight_parts") and passthrough_relight: passthrough_relight.debug_parts.merge(command.relight_parts, true)
+		if command.has("relight_look") and passthrough_relight: passthrough_relight.debug_look = command.relight_look
+		if command.has("relight_state") and passthrough_relight: DiagnosticLog.record("passthrough_relight_state", passthrough_relight.snapshot())
 		if command.has("relief_foveation"): display.debug_relief_foveation = int(command.relief_foveation); display._apply_foveation()
 		if command.has("render_scale") and display.xr != null and "render_target_size_multiplier" in display.xr:
 			display.xr.render_target_size_multiplier = float(command.render_scale)
@@ -7673,7 +7785,7 @@ func _clear_file_settings(network_only: bool) -> void:
 	video.commit_stereo_view()
 	if not network_only or not Privacy.is_local(video.local_uri): video.discard_file_settings()
 	for memory in [video.mode_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.audio_timing,
-			video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory, photo.grade_memory]:
+			video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory, photo.grade_memory, atmosphere.memory]:
 		var keys: Array = memory.entries.keys()
 		if network_only:
 			keys = keys.filter(func(key): return memory.entries[key].get("network", false))

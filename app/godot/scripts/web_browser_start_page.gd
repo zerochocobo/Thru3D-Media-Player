@@ -40,6 +40,9 @@ func draw(host: Node) -> void:
 		var top: float = bounds.end.y - bounds.size.y * (0.08 + section * 0.49)
 		var heading: Label3D = host._label(I18n.t("Featured sites" if section == 0 else "Bookmarks"), Vector3(bounds.position.x + 0.05, top, 0.008), 24)
 		heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		if section == 1:
+			host._button(BASE + 4, "", Vector2(bounds.get_center().x, top), Vector2(0.07, 0.065), true, "list" if browser.library.preview_mode else "grid")
+			host._tips[BASE + 4] = I18n.t("List view" if browser.library.preview_mode else "Icon view")
 		if count > 1:
 			for direction in 2:
 				host._button(BASE + section * 2 + direction, "", Vector2(bounds.end.x - 0.25 + direction * 0.18, top), Vector2(0.07, 0.065), state[key] > 0 if direction == 0 else state[key] + 1 < count, "previous" if direction == 0 else "next")
@@ -53,6 +56,15 @@ func draw(host: Node) -> void:
 			var title := str(item.get("title", ""))
 			if title.is_empty(): title = browser.library.display_address(str(item.url))
 			var target := BASE + 10 + section * PAGE_SIZE + slot
+			if section == 1 and browser.library.preview_mode:
+				var height := bounds.size.y * 0.175
+				var point := Vector2(bounds.position.x + 0.04 + width * (0.5 + slot % 3) + 0.02 * (slot % 3), top - bounds.size.y * (0.13 + 0.19 * (slot / 3)))
+				host._button(target, "", point, Vector2(width, height))
+				var card: Node3D = host._buttons.back().node
+				browser.library.draw_preview(host, card, item, Vector2(width - 0.025, height * 0.65), Vector2(0, height * 0.13))
+				host._label(host._fit_title(title, "", width - 0.025, 17), Vector3(0, -height * 0.34, 0.008), 17, card)
+				host._tips[target] = str(item.url); links[host.window_id][target] = str(item.url)
+				continue
 			var point := Vector2(bounds.position.x + 0.04 + width * (0.5 + slot % 3) + 0.02 * (slot % 3), top - bounds.size.y * (0.16 + 0.16 * (slot / 3)))
 			host._button(target, "", point, Vector2(width, minf(0.105, bounds.size.y * 0.14)))
 			var card: Node3D = host._buttons.back().node
@@ -67,7 +79,9 @@ func action(target: int) -> bool:
 	var browser: RefCounted = owner.get_ref()
 	var id: int = browser.focused_window
 	if not active(id) or browser.overlay_open(id): return true
-	if target < BASE + 4:
+	if target == BASE + 4:
+		browser.library.toggle_view()
+	elif target < BASE + 4:
 		var state: Dictionary = pages.get(id, {"sites": 0, "bookmarks": 0})
 		var key := "sites" if target < BASE + 2 else "bookmarks"
 		state[key] += -1 if (target - BASE) % 2 == 0 else 1

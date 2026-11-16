@@ -4,6 +4,14 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.18.0 — 2026-11-16
+
+- Add an optional screen mood light that lets the picture's colours glow around flat videos and browser pages, and tints the room over passthrough. Turn it on and adjust its range and brightness in the Scene menu. The initial implementation is a contribution from @ghanshyamv1.
+- Add a Scene Gallery for curated 3D scenes. Downloads in public-source builds require a configured origin. The Scene menu brings together scene selection, scene settings, environment themes and screen mood light.
+- Choose from six environment themes with adjustable particle density and optional ambient sound. The app can remember photo themes by folder.
+- Add quick access to library locations and a thumbnail view for browser bookmarks. Improve Bilibili Play Beta visibility when opening compatible videos from lists or bookmarks.
+- Official builds can send a masked diagnostic log when explicitly requested. Public-source builds offer local saving and Wi-Fi sharing.
+
 ## 0.17.12 — 2026-11-15
 
 - Play supported unencrypted DVD-Video folders from local storage and SMB through the disc player, with title, chapter and disc-menu controls. Both storage paths were tested with sample media on Quest 3.

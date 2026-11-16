@@ -6,6 +6,20 @@ import java.io.File
 import java.security.MessageDigest
 
 class WebBrowserNetworkPolicyTest {
+    @Test fun playlistContextsNeedTheirOwnCurrentVideoIdentity() {
+        val policy = WebBrowserNetworkPolicy("{}") {}
+        for (route in listOf("list/watchlater", "list/ml1234", "list/1234", "medialist/play/1234")) {
+            val context = "https://www.bilibili.com/$route"
+            assertTrue(policy.bilibiliEnabled(context))
+            assertEquals("", WebBrowserBilibiliPage.parse(context)!!.id)
+            val selected = WebBrowserBilibiliPage.parse("$context?bvid=BV1234567890&p=2")!!
+            assertEquals("BV1234567890", selected.id); assertEquals(2, selected.part)
+            assertNull(WebBrowserBilibiliPage.parse("$context?bvid=BV1234567890&bvid=BV0987654321"))
+            assertNull(WebBrowserBilibiliPage.parse("$context?p=invalid"))
+            assertFalse(policy.bilibiliEnabled(context.replace("bilibili.com", "bilibili.com.evil.test")))
+        }
+        assertFalse(policy.bilibiliEnabled("https://www.bilibili.com/list/arbitrary?bvid=BV1234567890"))
+    }
     @Test fun bilibiliAdapterIsIndependentOfHiddenGenericCaptureAndHonorsSavedOptOut() {
         val page = "https://www.bilibili.com/video/BV1234567890/?p=2"
         val policy = WebBrowserNetworkPolicy("{}", {})

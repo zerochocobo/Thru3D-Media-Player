@@ -660,7 +660,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun mpv_supported(): Boolean = !closed.get() && mpv.supported()
     @UsedByGodot fun set_mpv_output_width(width: Int) { if (width in 0..8192) mpv.outputWidthCap = width }
     @UsedByGodot fun set_mpv_memory_saver(enabled: Boolean) { mpv.memorySaver = enabled }
-    /** Diagnostic log: "save", "share", "stop" or "recent" ([full]: every line, not the compact log);
+    /** Diagnostic log: "save", "share", "upload", "stop" or "recent" ([full]: every line, not the compact log);
      * the result arrives as "diagnostic_log". */
     @UsedByGodot fun diagnostic_log(action: String, header: String, full: Boolean) {
         val host = activity ?: return

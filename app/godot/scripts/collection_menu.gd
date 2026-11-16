@@ -117,7 +117,10 @@ func draw_list_row(slot: int, row: Dictionary, centre: Vector2, parent: Node3D) 
 	title.position = Vector3(left, 0.021, 0.004); title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	menu.set_label_size(title, 20)
 	menu._icon(str(row.get("icon", "video")), Vector3(-width * 0.5 + 0.038, 0, 0.005), 0.038, menu.MUTED, node)
-	var detail: Label3D = menu._label(menu._fit_title(str(info.subtitle), "", width - 0.10, 15), Vector3(left, -0.025, 0.004), 15, node)
+	var source: String = menu.Presentation.source_icon(row)
+	var inset := 0.034 if not source.is_empty() else 0.0
+	if not source.is_empty(): menu._icon(source, Vector3(left + 0.013, -0.025, 0.005), 0.028, menu.UiTheme.color("label"), node)
+	var detail: Label3D = menu._label(menu._fit_title(str(info.subtitle), "", width - 0.10 - inset, 15), Vector3(left + inset, -0.025, 0.004), 15, node)
 	detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; detail.modulate = menu.MUTED
 	if title.text != str(row.title): menu._tips[menu.ROW_BASE + slot] = str(row.title)
 	menu._progress_on(node, float(info.ratio), Vector2(0, -0.043), width - 0.03)
@@ -239,6 +242,7 @@ func decorate_row(slot: int, row: Dictionary, centre: Vector2, grid: bool, paren
 	var location := location_for(row)
 	var folder: bool = row.get("kind") in ["folder", "archive", "pdf"]
 	if grid:
+		_source_chip(row, centre, parent)
 		var spacing := 0.05 if folder else 0.085
 		_row_button(PLAY_ROW, slot, centre + Vector2(-spacing, 0.04), "folder" if folder else "play", "Open" if folder else "Play", not location.is_empty() if folder else true, parent, true)
 		if not folder: _row_button(DIRECTORY_ROW, slot, centre + Vector2(0, 0.04), "folder", "Open location", not location.is_empty(), parent, true)
@@ -247,6 +251,20 @@ func decorate_row(slot: int, row: Dictionary, centre: Vector2, grid: bool, paren
 		_row_button(SELECT_ROW, slot, Vector2(-0.48 if menu.compact else -0.405, centre.y), "check" if selection.has(str(row.uri)) else "checkbox", "Select", true, parent)
 		if not folder: _row_button(DIRECTORY_ROW, slot, Vector2(0.37 if menu.compact else 0.65, centre.y), "folder", "Open location", not location.is_empty(), parent)
 		_row_button(REMOVE_ROW, slot, Vector2(0.46 if menu.compact else 0.745, centre.y), "star_filled" if home_tab == 1 else "trash", "Remove favorite" if home_tab == 1 else "Remove from recent", true, parent)
+
+## Corner mark on a card: local disk, SMB, DLNA, cloud drive or media server.
+func _source_chip(row: Dictionary, centre: Vector2, parent: Node3D) -> void:
+	var source: String = menu.Presentation.source_icon(row)
+	if source.is_empty(): return
+	var corner := Vector3(centre.x - menu.TILE_SIZE.x * 0.5 + 0.040, centre.y + 0.095, 0.012)
+	# Thumbnails need a dark plate under the glyph; a folder card's plain face does not.
+	var picture: bool = str(row.get("icon", "video")) in ["video", "image"]
+	if picture:
+		var plate: MeshInstance3D = menu._quad(Vector2(0.052, 0.044), corner, Color(0, 0, 0, 0.62), 13)
+		plate.material_override.set_shader_parameter("corner_radius", 0.008)
+		parent.add_child(plate)
+	var glyph: MeshInstance3D = menu._icon(source, corner + Vector3(0, 0, 0.001), 0.034, Color(1, 1, 1, 0.95) if picture else menu.MUTED, parent)
+	glyph.material_override.render_priority = 14
 
 func open_password(value: String, callback: Callable = Callable()) -> void:
 	if not store: return

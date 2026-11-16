@@ -40,8 +40,10 @@ function fixture(count = 1, blob = true, options = {}) {
   if(options.tencent)vm.runInContext(fs.readFileSync(path.join(__dirname,'../../main/assets/web-browser/tencent.js'),'utf8')+';globalThis.tencent=Thru3DTencent;',context);
   let selectWeibo;
   const playButtons=[];
-  if(options.playButtons)context.Thru3DPlayButton={visible:()=>true,create:(_,box,site,click)=>{
+  let presentationVisible=true;
+  if(options.playButtons)context.Thru3DPlayButton={setPresentationVisible:value=>{presentationVisible=value;},visible:()=>true,create:(_,box,site,click)=>{
     const control={box,site,click,host:{dataset:{}}};
+    control.interactive=()=>presentationVisible&&control.ready&&!control.host.hidden;
     control.enabled=value=>{control.ready=value;};control.dispose=()=>{control.disposed=true;};
     playButtons.push(control);return control;
   }};
@@ -264,6 +266,22 @@ function dailymotionFixture(owner='https://www.dailymotion.com/video/x5kesuj'){
   f.native.onMessage.fire({action:'network_policy',dailymotion:true,dailymotion_owner:owner});
   f.network.onMessage.fire({type:'network',page:f.location.href,dailymotion_bodies:[{}],candidates:[{url:'https://related.test/current.m3u8',kind:'hls',at:Date.now()}]});f.flush();return f;
 }
+test('presentation messages hide only page actions and preserve capture, readiness, epoch and playback',()=>{
+  const f=dailymotionFixture(),button=f.playButtons.find(b=>b.site==='dailymotion');
+  const before=JSON.stringify(f.report()),requests=f.network.messages.length,video=f.videos[0];
+  const playing=video.paused,source=video.currentSrc;
+  f.native.onMessage.fire({action:'page_beta_visibility',visible:false});f.flush();
+  assert.equal(button.interactive(),false);
+  const click={isTrusted:true,composedPath:()=>[button.host],preventDefault(){throw Error('hidden action intercepted page');},stopImmediatePropagation(){throw Error('hidden action intercepted page');}};
+  f.emit('click',click);f.flush();
+  assert.equal(JSON.stringify(f.report()),before);assert.equal(f.network.messages.length,requests);
+  assert.equal(video.paused,playing);assert.equal(video.currentSrc,source);
+  f.native.onMessage.fire({action:'page_beta_visibility',visible:true});f.flush();
+  assert.equal(button.interactive(),true);assert.equal(JSON.stringify(f.report()),before);
+  f.emit('click',{...click,preventDefault(){},stopImmediatePropagation(){}});f.flush();
+  assert.equal(f.report()[0].dailymotion_request,1);
+});
+
 test('Dailymotion hosted action binds the native parent and accepts only a real click on the current video',()=>{
   const f=dailymotionFixture(),button=f.playButtons.find(b=>b.site==='dailymotion');assert.ok(button?.ready);
   assert.equal(f.report()[0].dailymotion_ready,true);

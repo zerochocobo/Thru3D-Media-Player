@@ -91,9 +91,11 @@ State state;
 constexpr XrStructureType kQiyuPassthroughCreateInfo = static_cast<XrStructureType>(1000318001);
 constexpr XrStructureType kQiyuPassthroughLayerCreateInfo = static_cast<XrStructureType>(1000318002);
 constexpr XrStructureType kQiyuCompositionLayerPassthrough = static_cast<XrStructureType>(1000318003);
+constexpr XrStructureType kQiyuPassthroughStyle = static_cast<XrStructureType>(1000318020);
 struct Qiyu {
     XrPassthroughFB passthrough = XR_NULL_HANDLE;
     XrPassthroughLayerFB layer = XR_NULL_HANDLE;
+    bool styled = false;
     XrCompositionLayerPassthroughFB composition{};
     PFN_xrPassthroughStartFB start = nullptr;
     PFN_xrPassthroughPauseFB pause = nullptr;
@@ -534,6 +536,15 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_qiyuPassthroughLayer(JNIEnv
         }
         result = qiyu.resume(qiyu.layer);
         if (XR_FAILED(result)) throw std::runtime_error("xrPassthroughLayerResumeQIYU");
+        // Unlike FB, an unstyled layer is submitted at opacity 0: the camera runs but shows as black.
+        if (!qiyu.styled) {
+            XrPassthroughStyleFB style{};
+            style.type = kQiyuPassthroughStyle;
+            style.textureOpacityFactor = 1.0f;
+            result = proc<PFN_xrPassthroughLayerSetStyleFB>("xrPassthroughLayerSetStyleQIYU")(qiyu.layer, &style);
+            if (XR_FAILED(result)) throw std::runtime_error("xrPassthroughLayerSetStyleQIYU");
+            qiyu.styled = true;
+        }
     } catch (const std::exception& failure) {
         log(ANDROID_LOG_WARN, std::string(failure.what()) + " failed: " + std::to_string(result));
         return XR_FAILED(result) ? static_cast<jlong>(result) : static_cast<jlong>(XR_ERROR_FUNCTION_UNSUPPORTED);

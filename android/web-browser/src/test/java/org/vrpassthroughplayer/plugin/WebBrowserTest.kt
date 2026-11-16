@@ -5,6 +5,27 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WebBrowserTest {
+    @Test fun bookmarkPreviewsPersistButDoNotFollowChangedOrRecreatedAddresses() {
+        var disk = "{}"
+        val library = WebBrowserLibrary(disk) { disk = it }
+        val url = "https://www.bilibili.com/list/watchlater?bvid=BV1234567890&p=2"
+        library.bookmark(url, "Current part")
+        val entry = library.bookmarkEntry(url)!!
+        val token = "a".repeat(32)
+        assertTrue(library.attachPreview(entry, token))
+        assertEquals(token, WebBrowserLibrary(disk) {}.bookmarkEntry(url)!!.preview)
+        assertFalse(library.remoteSnapshot().getJSONArray("bookmarks").getJSONObject(0).has("preview"))
+        library.edit(JSONObject().put("action", "save_bookmark").put("url", url).put("previous", url).put("title", "Rename"))
+        assertEquals(token, library.bookmarkEntry(url)!!.preview)
+        val renamed = library.bookmarkEntry(url)!!
+        library.bookmark(url, "Remove"); library.bookmark(url, "Re-add")
+        assertFalse(library.attachPreview(renamed, token))
+        assertEquals("", library.bookmarkEntry(url)!!.preview)
+        assertThrows(IllegalArgumentException::class.java) { library.attachPreview(library.bookmarkEntry(url)!!, "../private") }
+        library.attachPreview(library.bookmarkEntry(url)!!, token)
+        library.edit(JSONObject().put("action", "save_bookmark").put("previous", url).put("url", "https://example.com/other"))
+        assertEquals("", library.bookmarkEntry("https://example.com/other")!!.preview)
+    }
     @Test fun embyHttpBookmarkUsesTheSameIdentityAcrossRoutesAndRestarts() {
         var disk = "{}"
         val home = "http://192.168.31.185:8096/web/index.html#!/home"

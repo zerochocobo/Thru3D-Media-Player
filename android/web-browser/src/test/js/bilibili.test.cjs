@@ -15,6 +15,21 @@ const context = vm.createContext({ URL });
 vm.runInContext(fs.readFileSync(path.join(root, 'bilibili.js'), 'utf8'), context);
 const api = vm.runInContext('Thru3DBilibili', context);
 
+test('playlist entry and bookmark reopening bind the current BV and part, never the collection id', () => {
+  const views = [{bvid:identity.id, aid:'1', pages:[{page:1,cid:'12345',duration:120},{page:2,cid:'67890',duration:240}]}];
+  for (const route of ['list/watchlater', 'list/ml1234', 'list/1234', 'medialist/play/1234']) {
+    const base = 'https://www.bilibili.com/' + route;
+    assert.equal(api.page(base).id, '');
+    assert.equal(api.viewIdentity(views, base), null);
+    assert.equal(api.viewIdentity(views, base + '?bvid=' + identity.id + '&p=2').cid, '67890');
+    assert.equal(api.viewIdentity(views, base + '?bvid=BV0987654321'), null);
+    assert.equal(api.page(base + '?bvid=' + identity.id + '&bvid=BV0987654321'), null);
+    assert.equal(api.page(base + '?p=invalid'), null);
+    assert.equal(api.page(base.replace('bilibili.com', 'bilibili.com.evil.test')), null);
+    assert.equal(api.sameDocumentPage(base, base + '?bvid=' + identity.id), true);
+  }
+});
+
 test('pause readiness requires current dimensions and both exactly observed tracks', () => {
   const data = api.normalize(raw(), identity);
   const video = {kind:'file',url:mediaUrl(80)}, audio = {kind:'file',url:mediaUrl(30280)};

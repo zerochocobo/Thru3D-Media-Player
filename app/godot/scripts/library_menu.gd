@@ -75,6 +75,7 @@ signal file_renamed(old_uri: String, new_uri: String, title: String)
 var current_file_provider: Callable
 const Collections := preload("res://scripts/collection_menu.gd")
 var collections := Collections.new(self)
+var quick_access := preload("res://scripts/library_quick_access.gd").new(self)
 var archives := preload("res://scripts/archive_panel.gd").new(self)
 const FileActions := preload("res://scripts/library_file_actions.gd")
 var file_actions := FileActions.new(self)
@@ -460,7 +461,11 @@ func composition_root() -> Node3D:
 func _align_playback_panel() -> void:
 	if not (compact or playback_expanded) or not get_parent().has_method("has_expanded_library"): return
 	var controls: Node3D = get_parent()
-	if controls._layout_eye != null and controls.arrange_library(self, panel_bounds()): return
+	var bounds := panel_bounds()
+	# The quick-access list hangs off the right edge without recentring the file window.
+	if quick_access.shown(): set_meta("subtitle_anchor_bounds", quick_access.anchor(bounds))
+	elif has_meta("subtitle_anchor_bounds"): remove_meta("subtitle_anchor_bounds")
+	if controls._layout_eye != null and controls.arrange_library(self, bounds): return
 	if compact:
 		transform = Transform3D(Basis.IDENTITY, Vector3(0, 0.72, 0))
 		return
@@ -1214,7 +1219,7 @@ func _animate_settings_scroll_hint(delta: float) -> void:
 	_settings_scroll_hint.position.y = _settings_scroll_hint_y + sin(_settings_scroll_hint_time / SCROLL_HINT_PERIOD * TAU) * SCROLL_HINT_AMPLITUDE
 
 func _grid() -> bool:
-	if section == Section.WEB: return false
+	if section == Section.WEB: return web_browser.library.grid()
 	if archives.browsing: return view_mode == "grid"
 	if audio_import_mode or subtitle_picker_mode: return false
 	if cloud_error.opened: return false
@@ -1305,6 +1310,7 @@ func _lines() -> int:
 	return GRID_LINES if _grid() else VISIBLE_ROWS
 
 func _pitch() -> float:
+	if section == Section.WEB and _grid(): return web_browser.library.PREVIEW_PITCH
 	if archives.browsing: return GRID_PITCH.y if _grid() else ROW_PITCH
 	if compact: return GRID_PITCH.y if _grid() else ROW_PITCH
 	if controls_page.active(): return 0.10
@@ -2627,6 +2633,7 @@ func _activate(target: int) -> void:
 	_local_release_notice = ""
 	_usb_takeover_pending = false
 	if archives.action(target): return
+	if quick_access.action(target): return
 	if collections.action(target): return
 	if _activate_footer(target): return
 	if cloud_error.action(target): return
@@ -2735,7 +2742,9 @@ func _activate(target: int) -> void:
 	elif target == TAKEOVER_USB:
 		_takeover_usb()
 	elif target == CLEAR_HISTORY:
-		collections._remove_rows(catalog.list_recent(), true)
+		# A video/image filter narrows the clear to what it lists; folder positions stay.
+		if media_filter in [1, 2]: collections._remove_rows(_filtered_history())
+		else: collections._remove_rows(catalog.list_recent(), true)
 	elif target >= CRUMB_BASE and target < CRUMB_BASE + 10:
 		_go_to(target - CRUMB_BASE)
 	elif target >= FILTER_BASE and target <= FILTER_BASE + FOLDER_FILTER:
@@ -2777,7 +2786,10 @@ func _choose(row: Dictionary) -> void:
 	if row.get("cloud_paging_group", false):
 		cloud_pagination.settings_expanded = not cloud_pagination.settings_expanded
 		choices.reset(); refresh(); return
+	if row.get("diagnostic_note", false):
+		_edit_diagnostic_note(str(row.get("note", ""))); return
 	if row.get("diagnostic_group", false):
+		system_text_input.cancel("diagnostic_note")
 		_diagnostic_expanded = not _diagnostic_expanded
 		if _diagnostic_expanded:
 			scroll = float(maxi(0, rows.find(row)))
@@ -3352,7 +3364,9 @@ func _draw_compact() -> void:
 			retry_x = -0.40
 		_button(RETRY_USB, "", Vector2(retry_x, -0.365), Vector2(0.075, 0.065), true, "refresh")
 		_tips[RETRY_USB] = I18n.t("Retry")
-	_button(EXPAND_LIBRARY, "", Vector2(0.28, -0.365), Vector2(0.09, 0.065), true, "expand")
+	# Layout controls share the bottom-right row; the side-list switch sits beside the list it opens.
+	quick_access.draw_toggle(Vector2(0.505, -0.365))
+	_button(EXPAND_LIBRARY, "", Vector2(0.205, -0.365), Vector2(0.085, 0.065), true, "expand")
 	_tips[EXPAND_LIBRARY] = I18n.t("Expand library")
 	_decoration(Vector2(1.04, 0.002), Vector2(0, 0.305), UiTheme.color("divider"))
 	if not image_picker_mode and (archives.browsing or section != Section.RECENT): collections.draw_folder_header(true)
@@ -3362,7 +3376,7 @@ func _draw_compact() -> void:
 	file_actions.draw_footer()
 	collections.draw_footer()
 	for spec in [[VIEW_LIST, "list", "List view"], [VIEW_GRID, "grid", "Icon view"]]:
-		_button(int(spec[0]), "", Vector2(0.39 + (0.11 if spec[1] == "grid" else 0), -0.365), Vector2(0.09, 0.065), true, str(spec[1]), view_mode == spec[1])
+		_button(int(spec[0]), "", Vector2(0.305 + (0.10 if spec[1] == "grid" else 0), -0.365), Vector2(0.085, 0.065), true, str(spec[1]), view_mode == spec[1])
 		_tips[int(spec[0])] = I18n.t(str(spec[2]))
 	var previous := RECENT_PREVIOUS if section == Section.RECENT else CLOUD_PREVIOUS
 	var next := RECENT_NEXT if section == Section.RECENT else CLOUD_NEXT
@@ -3386,6 +3400,7 @@ func _draw_compact() -> void:
 		if section == Section.CLOUD and not cloud_error.detail.is_empty():
 			_button(CloudBrowseError.OPEN, "", Vector2(0.39, 0.36), Vector2(0.065, 0.065), true, "info")
 			_tips[CloudBrowseError.OPEN] = I18n.t("Error details")
+	quick_access.draw()
 
 func _draw_compact_rows() -> void:
 	_list = Node3D.new(); add_child(_list); _decorations.append(_list); _bar_thumb = null
@@ -3587,7 +3602,7 @@ func _draw() -> void:
 	elif archives.browsing and not image_picker_mode: collections.draw_folder_header(false)
 	if not archives.browsing and section == Section.RECENT and collections.home_tab == 0 and not rows.is_empty():
 		_button(CLEAR_HISTORY, "", _action_position(0.80), Vector2(0.09, 0.065), true, "trash")
-		_tips[CLEAR_HISTORY] = I18n.t("Clear history")
+		_tips[CLEAR_HISTORY] = I18n.t(["Clear history", "Clear video history", "Clear image history"][media_filter if media_filter in [1, 2] else 0])
 	if not archives.browsing and section == Section.DLNA:
 		if not subtitle_picker_mode and not image_picker_mode and not audio_import_mode and not voice_picker_mode and PlatformMethods.supports(platform, "dlna_receiver_enable"):
 			CastPanel.draw(self, cast_state, -0.79)
@@ -3809,7 +3824,9 @@ func _draw_row(i: int) -> void:
 	var place := i - _list_origin() * _cols()
 	var row_top: float = (0.17 if subtitle_filter.directory_mode else 0.22) if subtitle_filter.active() else 0.045 if (cloud_search.active and not archives.browsing) else (server_browser.list_top() if (section == Section.MEDIA_SERVER and not archives.browsing) and not account_panel.active() else LIST_TOP)
 	if _grid():
-		if (section == Section.MEDIA_SERVER and not archives.browsing):
+		if section == Section.WEB:
+			web_browser.library.tile(ROW_BASE + k, row, Vector2(-0.36 + (place % COLS) * GRID_PITCH.x, GRID_TOP - web_browser.library.PREVIEW_SIZE.y * 0.5 - (place / COLS) * _pitch()))
+		elif (section == Section.MEDIA_SERVER and not archives.browsing):
 			var cols := _cols()
 			var size: Vector2 = server_browser.tile_size() if server_browser.media_content() else TILE_SIZE
 			var step: float = size.x + 0.025 if server_browser.media_content() else GRID_PITCH.x
@@ -4012,9 +4029,15 @@ func _choice_row(title: String, key: String, value: Variant, options: Array, com
 	return {"title": I18n.t(title), "key": key, "value": value, "choices": options, "compact": compact, "hint": hint}
 
 ## Diagnostic log, last in General: save it to Download/Thru3D/logs, or serve it on the headset's
-## Wi-Fi address (a headset has no share target to a phone), and read recent warnings in place.
+## Wi-Fi address (a headset has no share target to a phone), or upload it to the developer for a
+## code to quote, and read recent warnings in place.
 var _diagnostic_expanded := false
 const DIAGNOSTIC_SAVE_TIP := "Saved in the headset's Download/Thru3D/logs folder. Copy it with a USB cable to a computer, or send it from the headset's file manager."
+const DIAGNOSTIC_UPLOAD_TIP := "Sends this log to the developer. Media names, accounts and link parameters are masked, and it is deleted after 30 days. Quote the code when you report a problem."
+## What went wrong, chosen before an upload: without it a log says what happened but not what the user saw.
+const DIAGNOSTIC_CATEGORIES := [["playback", "Playback"], ["picture", "Picture or 3D"], ["audio_subtitles", "Audio or subtitles"],
+	["files_network", "Files or network"], ["web", "Web browser"], ["crash", "Crash or freeze"], ["controls", "Controls"], ["other", "Other"]]
+const DIAGNOSTIC_NOTE_LIMIT := 200
 const DIAGNOSTIC_COMPACT_HINT := "Frame-rate lines every 10 s and whenever playback struggles; warnings and errors all kept"
 func _diagnostic_rows(state: Dictionary) -> Array:
 	var header := {"title": I18n.t("Diagnostic log"), "group_header": true, "diagnostic_group": true,
@@ -4023,7 +4046,7 @@ func _diagnostic_rows(state: Dictionary) -> Array:
 	var busy := str(state.get("busy", ""))
 	var rows: Array = [header]
 	rows.append(_choice_row("Log detail", "diagnostic_detail", bool(state.get("full", false)),
-		[{"value": false, "label": "Compact", "hint": DIAGNOSTIC_COMPACT_HINT}, {"value": true, "label": "Full", "hint": "Every line"}]))
+		[{"value": false, "label": "Compact", "hint": DIAGNOSTIC_COMPACT_HINT}, {"value": true, "label": "Full log", "hint": "Every line"}]))
 	var saved := str(state.get("path", ""))
 	if busy == "save":
 		rows.append({"title": I18n.t("Saving…"), "icon": "save", "enabled": false})
@@ -4046,6 +4069,12 @@ func _diagnostic_rows(state: Dictionary) -> Array:
 	for line in state.get("lines", []):
 		rows.append({"title": str(line).left(96), "icon": "info", "enabled": false, "diagnostic_line": true})
 	return rows
+
+## The note is typed on the system keyboard; each change goes to the owner, which keeps the draft.
+func _edit_diagnostic_note(current: String) -> void:
+	var update := func(value: String) -> void:
+		setting_changed.emit("diagnostic_note", value); refresh()
+	system_text_input.begin("diagnostic_note", current, DIAGNOSTIC_NOTE_LIMIT, update, update)
 
 func _video_settings_group(group: String, title: String) -> Dictionary:
 	return {"title": I18n.t(title), "group_header": true, "video_settings_group": group,
@@ -4207,6 +4236,11 @@ func _cancel_covers() -> void:
 		request.cancel_request()
 		request.queue_free()
 	_covers.clear()
+
+## Recent entries of the kinds the active video/image filter lists, on every page.
+func _filtered_history() -> Array:
+	var kinds := ["image", "archive", "pdf"] if media_filter == 2 else ["video"]
+	return collections.home_rows().filter(func(row): return row.has("uri") and row.get("kind", "video") in kinds)
 
 func _recent_page_count() -> int:
 	return maxi(1, ceili(float(_recent_count) / RECENT_PAGE_SIZE))

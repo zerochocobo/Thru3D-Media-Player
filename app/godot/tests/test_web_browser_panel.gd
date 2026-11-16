@@ -494,6 +494,17 @@ func _run() -> void:
 	platform.browser.windows[0].title = "Next"
 	menu.web_browser.next_poll = 0; menu.web_browser.tick()
 	check(menu.web_browser._signature != drawn, "A visible title change still redraws the chrome")
+	var bookmark_host: Node = menu.web_browser.windows[menu.web_browser.focused_window]
+	menu.web_browser.focus_regions[bookmark_host.focus_tab()] = Rect2(0.1, 0.2, 0.5, 0.4)
+	var bookmark_crop: Rect2 = bookmark_host.focus_crop()
+	menu.web_browser.action(Browser.BASE + 4)
+	var bookmark_command: Dictionary = platform.browser_commands.filter(func(c): return c.action == "bookmark").back()
+	check(bookmark_command.action == "bookmark" and bookmark_command.window == menu.web_browser.focused_window,
+		"Bookmark captures the selected browser window")
+	var received_crop := Rect2(float(bookmark_command.crop[0]), float(bookmark_command.crop[1]), float(bookmark_command.crop[2]), float(bookmark_command.crop[3]))
+	check(received_crop.is_equal_approx(bookmark_crop),
+		"Bookmark passes the actually visible focus crop to native capture")
+	menu.web_browser.focus_regions.erase(bookmark_host.focus_tab())
 	menu.web_browser.action(Browser.BASE + 6)
 	menu._activate(Menu.NAV_BASE + Menu.Section.RECENT)
 	check(not menu.web_browser.opened and menu.web_video.pending == 0, "Leaving browser cancels extraction and hides browser")

@@ -81,6 +81,21 @@ static func source(uri: String) -> String:
 	if uri.begins_with("http://") or uri.begins_with("https://"): return "DLNA / HTTP"
 	return I18n.t("Local files")
 
+## Where a recent or favorite entry lives, as the glyph its library section uses.
+static func source_icon(row: Dictionary) -> String:
+	var location: Dictionary = row.get("location", {}) if row.get("location") is Dictionary else {}
+	var uri := str(row.get("uri", ""))
+	# An archive page or comic belongs to wherever its container file is stored.
+	if location.get("type") == "archive": uri = str(location.get("source_uri", uri)); location = {}
+	var kind := str(location.get("type", ""))
+	if uri.begins_with("usb://"): return "usb"
+	if uri.begins_with("smb://") or kind == "smb": return "server"
+	if uri.begins_with("cloud://") or kind == "cloud": return "cloud"
+	if uri.begins_with("medialib://") or kind == "server": return "media_library"
+	if uri.begins_with("dlna://") or uri.begins_with("http://") or uri.begins_with("https://") or kind == "dlna": return "cast"
+	if uri.begins_with("file://") or uri.begins_with("/") or uri.begins_with("content://") or kind == "local": return "device"
+	return ""
+
 static func local_record(catalog: RefCounted, uri: String) -> Dictionary:
 	if not catalog or uri.is_empty(): return {}
 	if catalog.has_method("lookup"): return catalog.lookup(uri)
