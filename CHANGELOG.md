@@ -6,7 +6,7 @@ Newest first, following product release milestones. Some development/source snap
 
 ## 0.18.0 — 2026-11-16
 
-- Add an optional screen mood light that lets the picture's colours glow around flat videos and browser pages, and tints the room over passthrough. Turn it on and adjust its range and brightness in the Scene menu. The initial implementation is a contribution from @ghanshyamv1.
+- Add an optional screen mood light that lets the picture's colours glow around flat videos and browser pages, and tints the room over passthrough. Turn it on and adjust its range and brightness in the Scene menu. The initial implementation is a contribution from @ghanshyamv1 in [PR #9](https://github.com/zerochocobo/Thru3D-Media-Player/pull/9).
 - Add a Scene Gallery for curated 3D scenes. Downloads in public-source builds require a configured origin. The Scene menu brings together scene selection, scene settings, environment themes and screen mood light.
 - Choose from six environment themes with adjustable particle density and optional ambient sound. The app can remember photo themes by folder.
 - Add quick access to library locations and a thumbnail view for browser bookmarks. Improve Bilibili Play Beta visibility when opening compatible videos from lists or bookmarks.
