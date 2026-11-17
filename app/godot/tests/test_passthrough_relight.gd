@@ -16,29 +16,29 @@ func _image(fill: Color) -> Image:
 func _initialize() -> void:
 	var w := Model.SAMPLE_SIZE.x
 	var h := Model.SAMPLE_SIZE.y
-	# Screen average: a dark frame is lifted by 1 + 2 (1 - max)^2, a white frame is not.
+	# Screen average: a dark frame is lifted by max^(gamma - 1), a white frame is not.
 	var grey := Model.linear_pixels(_image(Color(0.5, 0.5, 0.5)))
 	var linear := Color(0.5, 0.5, 0.5).srgb_to_linear().r
 	var average := Model.screen_average(grey, w, h)
-	var expected := linear * (1.0 + 2.0 * pow(1.0 - linear, 2.0))
+	var expected := pow(linear, Model.DARK_LIFT_GAMMA)
 	check(absf(average.r - expected) <= 2.0 / 255.0, "Mid grey is lifted in the frame average", [average, expected])
 	check(Model.screen_average(Model.linear_pixels(_image(Color.WHITE)), w, h).is_equal_approx(Color.WHITE), "White stays white")
 
 	# Colour scale curves at the default intensity.
 	var dark := Model.color_scale(Color.BLACK, Model.DEFAULT_INTENSITY)
 	var bright := Model.color_scale(Color.WHITE, Model.DEFAULT_INTENSITY)
-	check(dark.v < 0.05, "A black film nearly blacks out the room", dark)
+	check(dark.v < 0.06, "A black film nearly blacks out the room", dark)
 	check(bright.v > 0.6 and bright.v < 0.7, "A white film leaves the room at about two thirds", bright)
 	var red := Model.color_scale(Color(1, 0.2, 0.2), Model.DEFAULT_INTENSITY)
 	check(red.r > red.g * 1.5 and is_equal_approx(red.g, red.b), "A red film tints the room red", red)
 	check(Model.color_scale(Color(0.5, 0.5, 0.5), 1.0).v > Model.color_scale(Color(0.5, 0.5, 0.5), 0.0).v,
 		"Higher intensity keeps the room brighter")
 
-	# Smoothing is frame-rate independent: 72 one-frame steps equal one second.
+	# Smoothing is frame-rate independent: 72 steps of 1/72 s equal one step of 1 s.
 	var stepped := Color.BLACK
-	for frame in 72: stepped = Model.blend(stepped, Color.WHITE, Model.SCALE_KEEP, Model.SCALE_FRAME_RATE, 1.0 / 72.0)
-	var once := Model.blend(Color.BLACK, Color.WHITE, Model.SCALE_KEEP, Model.SCALE_FRAME_RATE, 1.0)
-	check(absf(stepped.r - once.r) < 0.001 and absf(stepped.r - (1.0 - pow(0.9, 72))) < 0.001, "EMA matches the per-frame blend", [stepped, once])
+	for frame in 72: stepped = Model.blend(stepped, Color.WHITE, Model.ROOM_TAU, 1.0 / 72.0)
+	var once := Model.blend(Color.BLACK, Color.WHITE, Model.ROOM_TAU, 1.0)
+	check(absf(stepped.r - once.r) < 0.001 and absf(once.r - (1.0 - exp(-1.0 / Model.ROOM_TAU))) < 0.001, "Easing is frame-rate independent", [stepped, once])
 
 	# Perimeter walk and halo bar: a red left half lights the left edge, not the right.
 	check(Model.perimeter_point(0.0).is_equal_approx(Vector2(0.06, 0.06)) and Model.perimeter_point(0.4999).distance_to(Vector2(0.94, 0.94)) < 0.001,
@@ -51,6 +51,7 @@ func _initialize() -> void:
 	var uniform := Model.halo_bar(Model.linear_pixels(_image(Color(0.2, 0.4, 0.6))), w, h)
 	var target := Vector3(Color(0.2, 0.4, 0.6).srgb_to_linear().r, Color(0.2, 0.4, 0.6).srgb_to_linear().g, Color(0.2, 0.4, 0.6).srgb_to_linear().b)
 	check(uniform[10].distance_to(target) < 0.01, "The blur kernels are normalised", [uniform[10], target])
+	check(Model.halo_reach(1.0) > Model.halo_reach(0.0), "Higher intensity spreads the halo further")
 
 	# Passthrough LUT layout of OpenXRMetaPassthroughColorLut: width res^2, height res.
 	var lut := Model.scale_lut_image(Color(0.5, 1.0, 1.0), 16)

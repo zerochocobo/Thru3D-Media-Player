@@ -18,15 +18,12 @@ const FLOOR_SHADER := preload("res://shaders/passthrough_relight_floor.gdshader"
 
 const LAYER_INTERVAL_MS := 80
 const EYE_BUFFER_INTERVAL_MS := 250
-## The halo bar is filtered in time at a nominal 36 Hz; samples arrive slower than that,
-## so a short extra settle hides their steps without visibly delaying cuts.
-const HALO_SETTLE_TAU := 0.06
+## The halo bar eases towards each new sample with this time constant (seconds), which hides
+## the steps between samples without visibly delaying cuts.
+const HALO_TAU := 0.08
 ## The glow quad reaches far past the picture: the glow only falls to a few percent tens
 ## of units out, so a tight quad would show its border.
 const GLOW_MARGIN_UNITS := 29.0
-## Halo profile, 0 (tight) to 1 (immersive). At 1 the glow is nearly
-## opaque at the picture's edge, holds for ~0.34 units, then fades as 0.7 / (1 + 2.2 x).
-const IMMERSIVE := 1.0
 ## Glow plane offset along the screen normal: just behind a video panel, and behind the browser
 ## window's frame for a page (its layout pose sits 12 mm in front of the window), so opaque
 ## window parts occlude the halo. The halo is also drawn first among transparent surfaces.
@@ -44,16 +41,14 @@ const UNIT_SCREEN_HEIGHT := 1.08
 const LUT_INTERVAL_MS := 66
 const LUT_EPSILON := 1.5 / 255.0
 const LUT_RESOLUTION := 16
-## Floor shadow look.
-const FLOOR_COLOR := Color(0, 0, 0, 0.18)
-const FLOOR_INTENSITY := 0.72
-const FLOOR_STRIP_DEPTH := 0.18
-const FLOOR_STRIP_LENGTH_SCALE := 0.6667
-const FLOOR_TILT_DEPTH_SCALE := 0.35
-const FLOOR_MAX_TILT_DEPTH := 0.24
-const FLOOR_GROUND_CONTACT_FADE := 0.08
-const FLOOR_HEIGHT_FADE := Vector3(0.45, 1.6, 0.25) # start, end, minimum
-const FLOOR_FADE_DURATION := 0.2
+## Floor shadow: opacity, strip size (depth in metres, length as a share of the screen width),
+## fade near the floor and with height (full below 0.5 m, down to 30 % at 2 m), fade-in time.
+const FLOOR_OPACITY := 0.15
+const FLOOR_DEPTH := 0.3
+const FLOOR_LENGTH_SCALE := 0.8
+const FLOOR_CONTACT_FADE := 0.1
+const FLOOR_HEIGHT_FADE := Vector3(0.5, 2.0, 0.3) # start, end, minimum
+const FLOOR_FADE_DURATION := 0.25
 
 var enabled := false
 var intensity := Model.DEFAULT_INTENSITY
@@ -159,17 +154,16 @@ func _use_source(source: Object) -> void:
 
 
 func _step(delta: float, showing: bool, active: bool, frame: Dictionary, floor_y: float) -> void:
-	# The room returns to white at 2 %/frame whenever no video is showing.
+	# The room eases back to white whenever no video is showing.
 	if showing and _has_frame:
-		scale = Model.blend(scale, Model.color_scale(_latest, intensity), Model.SCALE_KEEP, Model.SCALE_FRAME_RATE, delta)
+		scale = Model.blend(scale, Model.color_scale(_latest, intensity), Model.ROOM_TAU, delta)
 	else:
-		scale = Model.blend(scale, Color.WHITE, Model.NEUTRAL_KEEP, Model.SCALE_FRAME_RATE, delta)
+		scale = Model.blend(scale, Color.WHITE, Model.NEUTRAL_TAU, delta)
 		if not showing: _has_frame = false
-	var keep := pow(Model.BAR_KEEP, maxf(delta, 0.0) * Model.BAR_FRAME_RATE)
-	var settle := 1.0 - exp(-maxf(delta, 0.0) / HALO_SETTLE_TAU)
+	var settle := 1.0 - exp(-maxf(delta, 0.0) / HALO_TAU)
 	for i in Model.BAR_SIZE:
 		var target: Vector3 = _bar_target[i] if showing and _has_frame else Vector3.ZERO
-		_bar[i] = _bar[i].lerp(_bar[i].lerp(target, 1.0 - keep), settle)
+		_bar[i] = _bar[i].lerp(target, settle)
 	var fade_step := maxf(delta, 0.0) / FLOOR_FADE_DURATION
 	_visibility = clampf(_visibility + (fade_step if showing and _has_frame else -fade_step), 0.0, 1.0)
 	_apply_passthrough(active and enabled)
@@ -251,15 +245,9 @@ func _place(frame: Dictionary, floor_y: float) -> void:
 			material.set_shader_parameter("unit", unit)
 			material.set_shader_parameter("half_width", size.x * 0.5 / unit)
 			material.set_shader_parameter("half_height", size.y * 0.5 / unit)
-			material.set_shader_parameter("slider_value", _slider_value())
-			material.set_shader_parameter("immersive", IMMERSIVE)
+			material.set_shader_parameter("reach", Model.halo_reach(intensity))
 			material.set_shader_parameter("strength", _visibility)
 	_place_floor(xform, size, floor_y)
-
-
-## The intensity through a normalised sigmoid.
-func _slider_value() -> float:
-	return (1.0 / (1.0 + exp(-8.0 * (intensity - 0.2))) - 0.1679816097021103) / 0.8303595781326294
 
 
 func _place_floor(xform: Transform3D, size: Vector2, floor_y: float) -> void:
@@ -273,18 +261,16 @@ func _place_floor(xform: Transform3D, size: Vector2, floor_y: float) -> void:
 		return
 	var span := (FLOOR_HEIGHT_FADE.y - FLOOR_HEIGHT_FADE.x)
 	var height_alpha := lerpf(1.0, FLOOR_HEIGHT_FADE.z, clampf((height - FLOOR_HEIGHT_FADE.x) / span, 0.0, 1.0))
-	height_alpha *= clampf(height / FLOOR_GROUND_CONTACT_FADE, 0.0, 1.0)
+	height_alpha *= clampf(height / FLOOR_CONTACT_FADE, 0.0, 1.0)
 	var flat_right := Vector3(right.x, 0, right.z)
 	if flat_right.length_squared() < 0.0001: flat_right = Vector3.RIGHT
 	flat_right = flat_right.normalized()
 	var forward := flat_right.cross(Vector3.UP)
-	var tilt := absf(basis.z.y)
-	var depth := FLOOR_STRIP_DEPTH + minf(FLOOR_MAX_TILT_DEPTH, tilt * FLOOR_TILT_DEPTH_SCALE)
-	var length := size.x * xform.basis.x.length() * FLOOR_STRIP_LENGTH_SCALE
+	var depth := FLOOR_DEPTH
+	var length := size.x * xform.basis.x.length() * FLOOR_LENGTH_SCALE
 	_floor.visible = true
 	_floor.global_transform = Transform3D(Basis(flat_right * length, forward * depth, Vector3.UP), Vector3(bottom.x, floor_y + 0.002, bottom.z))
-	var color := FLOOR_COLOR
-	color.a *= FLOOR_INTENSITY * height_alpha * _visibility
+	var color := Color(0, 0, 0, FLOOR_OPACITY * height_alpha * _visibility)
 	_floor_material.set_shader_parameter("projection_color", color)
 
 

@@ -32,31 +32,27 @@ Two values are derived from each sample:
 
 | Value | Size | Work |
 |---|---|---|
-| Frame average | 1 colour | mean of a 16×16 grid, then `avg · (1 + 2(1 − max(rgb))²)` to lift dark frames |
-| Halo bar | 32 colours | perimeter of the 0.06–0.94 inset rectangle (left edge up, top, right edge down, bottom); 4 rings × 8 taps, radius 0.015·k, weights (6−k)/144; then a 31-tap blur (step 0.002, weights (22−\|k\|)/442) and a 9-tap blur at k/32 |
+| Frame average | 1 colour | mean of a 16×16 grid, then `avg · max(rgb)^(γ − 1)` with γ = 0.8 to lift dark frames (white is unchanged, hue and saturation are kept) |
+| Halo bar | 32 colours | 128 points on the perimeter of the 0.06–0.94 inset rectangle (left edge up, top, right edge down, bottom), each the mean of a 5×5 grid at 0.02 UV steps; then one Gaussian blur along the closed perimeter (σ = 0.035 of the perimeter, normalised weights) evaluated at the 32 bar positions |
 
-All colour maths is linear. Per-frame blends are written in frame-rate-independent form at nominal
-rates (72 Hz for the room colour, 36 Hz for the halo bar, which keeps 25 % of its previous value),
-and the halo adds a 60 ms settle to hide sample steps.
+All colour maths is linear. Smoothing is exponential easing with a time constant, independent
+of frame rate: 0.4 s for the room colour, 1 s for its return to white when no picture is showing,
+and 0.08 s for the halo colours.
 
 ### Room relight
 
-The frame average goes through HSV curves to a per-channel colour scale, eased as
-`smoothed·0.9 + target·0.1` per frame. Without a picture it returns to white at 2 % per frame.
+The frame average is mapped to a per-channel colour scale for the room:
 
-With σ(x; k, c) = 1/(1 + e^(−k(x − c))) and I = intensity:
+With I = intensity (0..1) and the frame average in HSV:
 
 ```
-H, S, V = RGBToHSV(rgb)
-p  = 1.2 + 0.4·(σ(I;8,.85) − 0.0011125) / −0.7674122
-S' = S·((p + 1) − S^p) / (p + 1)
-b  = σ(I;8,.4) − 0.0391657 ;  c = σ(I;8,.8) − 0.0016588 ;  t = 0.2 − 0.1c
-V' = 1/(1 + e^(−8b(V − t))) − 1/(1 + e^(−8b(−0.2 − c)))
-scale = HSVToRGB(H, S', V')
+low   = lerp(0.02, 0.08, I)      # room brightness for a black frame
+high  = lerp(0.45, 0.85, I)      # room brightness for a white frame
+scale = HSVToRGB(H, 0.6·S, lerp(low, high, V))
 ```
 
 The intensity is fixed at 0.4; no slider is exposed yet. At 0.4, a black frame takes the room to
-about 3 %, a mid frame to about 45 %, and a white frame to about 66 %.
+about 4 %, a mid frame to about 33 %, and a white frame to about 61 %.
 
 Godot's passthrough layer is owned by the OpenXR Vendors plugin, so the per-channel multiply is
 expressed as an `XR_META_passthrough_color_lut` (16³, `out = encode(decode(in)·scale)`) through
@@ -68,28 +64,59 @@ is left untouched (`snapshot().lut_supported`).
 
 ### Screen halo
 
-The colour comes from the halo bar at the pseudo-angle around the screen (the same perimeter
-walk, aspect-normalised so the corners land at quarter points). It is compressed by
-`L = 1 − 1/(1 + r + g + 2·min(r,g))`, `f = 1 − L·(0.4 + 0.6(1 − G))`, and shaped by a
-rounded-rect distance `d` (radius 0.08). The profile is nearly opaque at the picture's edge,
-holds for about a third of the screen height, then fades as `0.7 / (1 + 2.2 x)` across the room.
-The result is multiplied by a gain of 1.25. Output is premultiplied `(G·w·f·c, G·w)`, so the
-compositor darkens the room behind the glow and adds the picture's edge colour. The halo quad
-reaches 29 units past the edge so its own border is never visible.
+The colour comes from the halo bar at the nearest edge of the picture (the same perimeter walk;
+each fragment picks the edge it is closest to in aspect-normalised coordinates, so the corners
+land on the quarter points). `d` is the signed distance to the picture as a rounded rectangle
+(corner radius 0.08). The glow is:
+
+```
+glow   = peak / (1 + (max(d, 0) / reach)⁴)^¼      peak = 1, reach = lerp(0.25, 0.625, I)
+alpha  = glow
+colour = c · gain / (1 + 0.5 · luma(c)) · glow    gain = 1.25, premultiplied
+```
+
+The profile is flat for about `reach` past the edge, so it continues the edge band without a
+step, then falls as `reach / d`. At the default intensity (reach 0.4) it is at 98 % 0.2 units
+out, 57 % at 0.7, 26 % at 1.5 and 13 % at 3 units. The colour term tones bright colours down
+(white to about 83 %) so the glow is never brighter than the picture. The compositor keeps
+`(1 − alpha)` of the room and adds the colour. The halo quad reaches 29 units past the edge so
+its own border is never visible.
 
 ### Edge dissolve
 
 The picture is an opaque compositor layer, so its edge cannot fade into the room. The outer
-0.12 units of the picture, with rounded corners, are covered by the glow colour with alpha
-`(d / 0.12)²` (shader `part = 1`, a quad of the picture's size drawn after the layer's hole),
-which meets the halo seamlessly and leaves no hard border.
+0.12 units of the picture are covered by the glow colour (shader `part = 1`, a quad of the
+picture's size drawn after the layer's hole) with `alpha = (1 − t)²`, t = 0 at the edge and 1 at
+0.12 units in: fully opaque at the edge, so the picture's border never shows, and falling off
+quickly so most of the band is already picture.
+
+### How the curves were chosen
+
+Every curve is a standard, simple form picked for one visual property, with round-number
+constants that are meant to be tuned on the device:
+
+- **Halo profile**: `1 / (1 + x⁴)^¼` is flat near the edge, has a long `1/x` tail into the room
+  and one size parameter (`reach`). Its slope has no kink, so it shows no ring. `reach` was
+  tuned so the glow keeps the width and tail of the previous version of this effect.
+- **Gaussian perimeter blur**: separates the colours of different edges while hiding the
+  sampling grid; normalised weights keep a uniform picture's colour exact.
+- **Quadratic edge band**: opaque at the edge, mostly picture after a third of the band.
+- **Gamma lift of the frame average**: dark scenes still tint the room, white stays white.
+- **Linear room brightness between two end points**: easy to tune by looking at a black and a
+  white frame; reduced saturation keeps the room's tint gentle.
+
+Tuning procedure (Quest 3): play a colour-card video and full-screen black, grey and white
+frames, take headset screenshots with the effect on and off, and read the room brightness and
+the halo brightness at fixed distances from the screen edge. Adjust `ROOM_BLACK`/`ROOM_WHITE`,
+`HALO_REACH`, `peak` and `gain` until the room and the halo look right; all of them are named
+constants or shader uniforms.
 
 ### Floor shadow
 
-Colour (0, 0, 0, 0.18) × intensity 0.72, edge feather 0.68, centre lift 0.58, strip depth 0.18 m
-(+ up to 0.24 with tilt × 0.35), length 0.667 × panel width, height fade from 0.45 m to 1.6 m
-down to 25 %, ground-contact fade 0.08 m, 0.2 s visibility fade. Fragment:
-`alpha = clamp((1 − lift·r²)·(1 − smoothstep(edge)))·a`.
+A black strip on the floor under the screen's bottom edge, 0.3 m deep and 0.8 × the screen width
+long, with an elliptical falloff `alpha = (1 − r²)² · 0.15` (r = 0 in the middle, 1 at the
+ellipse touching the strip's edges). It is at full strength while the screen's bottom edge is
+below 0.5 m, fades to 30 % by 2 m, fades out within 0.1 m of the floor, and fades in over 0.25 s.
 
 ## Notes
 

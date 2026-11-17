@@ -13,21 +13,18 @@ extends RefCounted
 
 ## Default brightness.
 const DEFAULT_INTENSITY := 0.4
-## Left-eye picture sample. The halo blurs with rings up to 0.06 UV and a ~0.1 UV
-## perimeter kernel, so finer detail never reaches the output.
+## Left-eye picture sample. The halo averages 0.08 UV squares and blurs along the
+## perimeter, so finer detail never reaches the output.
 const SAMPLE_SIZE := Vector2i(48, 27)
 ## Halo bar resolution (32 colours, looked up with wrap-around).
 const BAR_SIZE := 32
 ## Perimeter samples before blurring; 128 is well below the blur scale.
 const NEAR_BAR_SAMPLES := 128
 
-## The room colour eases per frame at a nominal 72 Hz.
-const SCALE_FRAME_RATE := 72.0
-const SCALE_KEEP := 0.9 # smoothed*0.9 + target*0.1 while a video plays
-const NEUTRAL_KEEP := 0.98 # 2 % per frame back to white without video
-## The halo bar keeps 25 % of its previous value at a nominal 36 Hz.
-const BAR_FRAME_RATE := 36.0
-const BAR_KEEP := 0.25
+## Time constants (seconds) of the room colour following the picture, and of its return to
+## white when no picture is showing.
+const ROOM_TAU := 0.4
+const NEUTRAL_TAU := 1.0
 
 
 ## Linear RGB floats of an image, row 0 at the top.
@@ -59,43 +56,50 @@ static func sample(px: PackedFloat32Array, width: int, height: int, u: float, v:
 	return top.lerp(bottom, ty)
 
 
-## Frame average: a 16 x 16 grid mean with a lift that
-## raises dark frames, quantised to 8 bits.
+## Gamma applied to the brightest channel of the frame average: below 1 it raises dark
+## frames (a 20 % frame becomes about 28 %) and leaves white unchanged.
+const DARK_LIFT_GAMMA := 0.8
+## Room brightness for a black and for a white frame, at intensity 0 and 1.
+const ROOM_BLACK := Vector2(0.02, 0.08)
+const ROOM_WHITE := Vector2(0.45, 0.85)
+## Share of the frame's saturation passed to the room, so tints stay gentle.
+const ROOM_SATURATION := 0.6
+## Halo fade distance in halo units at intensity 0 and 1.
+const HALO_REACH := Vector2(0.25, 0.625)
+
+
+## Frame average: a 16 x 16 grid mean, dark frames raised by DARK_LIFT_GAMMA on the
+## brightest channel (hue and saturation kept), quantised to 8 bits.
 static func screen_average(px: PackedFloat32Array, width: int, height: int) -> Color:
 	var sum := Vector3.ZERO
 	for i in 16:
 		for j in 16:
-			sum += sample(px, width, height, i * 0.0625, j * 0.0625)
+			sum += sample(px, width, height, (i + 0.5) / 16.0, (j + 0.5) / 16.0)
 	var avg := sum / 256.0
-	var lift := 1.0 - maxf(avg.x, maxf(avg.y, avg.z))
-	var boosted := avg * (1.0 + 2.0 * lift * lift) # dot(vec2(x), vec2(x)) + 1
+	var top := maxf(avg.x, maxf(avg.y, avg.z))
+	var boosted := avg * pow(top, DARK_LIFT_GAMMA - 1.0) if top > 0.0 else avg
 	return Color(snappedf(clampf(boosted.x, 0, 1), 1.0 / 255.0), snappedf(clampf(boosted.y, 0, 1), 1.0 / 255.0),
 		snappedf(clampf(boosted.z, 0, 1), 1.0 / 255.0))
 
 
-static func _sigmoid(x: float, steepness: float, centre: float) -> float:
-	return 1.0 / (1.0 + exp(-steepness * (x - centre)))
-
-
-## Room colour scale: the frame colour through HSV curves.
-## Intensity 0..1 steepens the value curve and relaxes the saturation curve.
+## Room colour scale: the frame's hue, a reduced share of its saturation, and a brightness
+## running linearly from ROOM_BLACK (black frame) to ROOM_WHITE (white frame).
+## Higher intensity keeps the room brighter.
 static func color_scale(average: Color, intensity: float) -> Color:
-	var h := average.h
-	var s := average.s
-	var v := average.v
-	var bend := (_sigmoid(intensity, 8.0, 0.85) - 0.0011125360615551472) / -0.7674121856689453
-	var exponent := bend * 0.4 + 1.2
-	s = s * ((exponent + 1.0) - pow(s, exponent)) / (exponent + 1.0)
-	var steep := -8.0 * (_sigmoid(intensity, 8.0, 0.4) - 0.03916572406888008)
-	var floor_lift := _sigmoid(intensity, 8.0, 0.8) - 0.0016588012222200632
-	var threshold := 0.2 - 0.1 * floor_lift
-	var value := 1.0 / (1.0 + exp(steep * (v - threshold))) - 1.0 / (1.0 + exp(steep * (-0.2 - floor_lift)))
-	return Color.from_hsv(h, s, value)
+	var i := clampf(intensity, 0.0, 1.0)
+	var low := lerpf(ROOM_BLACK.x, ROOM_BLACK.y, i)
+	var high := lerpf(ROOM_WHITE.x, ROOM_WHITE.y, i)
+	return Color.from_hsv(average.h, average.s * ROOM_SATURATION, lerpf(low, high, average.v))
 
 
-## Frame-rate independent form of the per-frame blend `x*keep + target*(1-keep)`.
-static func blend(current: Color, target: Color, keep: float, rate: float, delta: float) -> Color:
-	return current.lerp(target, 1.0 - pow(keep, maxf(delta, 0.0) * rate))
+## Halo fade distance for an intensity (the glow shader's `reach`).
+static func halo_reach(intensity: float) -> float:
+	return lerpf(HALO_REACH.x, HALO_REACH.y, clampf(intensity, 0.0, 1.0))
+
+
+## Exponential easing towards `target` with time constant `tau`, independent of frame rate.
+static func blend(current: Color, target: Color, tau: float, delta: float) -> Color:
+	return current.lerp(target, 1.0 - exp(-maxf(delta, 0.0) / maxf(tau, 0.0001)))
 
 
 ## Point on the 0.06..0.94 inset rectangle for perimeter u.
@@ -106,18 +110,17 @@ static func perimeter_point(u: float) -> Vector2:
 	return Vector2(3.58 - 3.52 * u, 0.06)
 
 
-## Ring blur around one perimeter point: rings 1..4 x 0.015 UV, 8 taps each at
-## k*pi/4 + pi/7, weights (6 - ring)/144 (they sum to one).
+## Edge colour around one perimeter point: the plain mean of a 5 x 5 grid,
+## step NEAR_STEP UV, centred on the point.
+const NEAR_STEP := 0.02
+
 static func near_bar(px: PackedFloat32Array, width: int, height: int, u: float) -> Vector3:
 	var p := perimeter_point(u)
 	var sum := Vector3.ZERO
-	for ring in 4:
-		var weight := float(6 - ring) / 144.0
-		var radius := float(ring + 1) * 0.015
-		for tap in 8:
-			var angle := tap * 0.78539812564849853515625 + 0.448798954486846923828125
-			sum += sample(px, width, height, p.x + cos(angle) * radius, p.y + sin(angle) * radius) * weight
-	return sum
+	for i in range(-2, 3):
+		for j in range(-2, 3):
+			sum += sample(px, width, height, p.x + i * NEAR_STEP, p.y + j * NEAR_STEP)
+	return sum / 25.0
 
 
 ## Linear lookup into an evenly sampled bar (texel centres), clamp or repeat.
@@ -133,30 +136,32 @@ static func bar_lookup(bar: PackedVector3Array, u: float, repeat: bool) -> Vecto
 	return bar[j0].lerp(bar[mini(j0 + 1, n - 1)], f - j0)
 
 
-## Perimeter samples -> 31-tap blur (step 0.002, weights (22-|k|)/442, clamp)
-## -> 9-tap blur at k/32 (repeat). Unfiltered in time.
+## Width (standard deviation) of the Gaussian blur along the perimeter, as a fraction of
+## the whole perimeter. 0.035 spreads one edge colour over about a third of that edge.
+const BAR_BLUR_SIGMA := 0.035
+
+
+## Perimeter samples -> one Gaussian blur along the closed perimeter (weights normalised
+## to sum to one) evaluated at the 32 bar positions. Unfiltered in time.
 static func halo_bar(px: PackedFloat32Array, width: int, height: int) -> PackedVector3Array:
 	var near := PackedVector3Array()
 	near.resize(NEAR_BAR_SAMPLES)
 	for k in NEAR_BAR_SAMPLES:
 		near[k] = near_bar(px, width, height, (k + 0.5) / NEAR_BAR_SAMPLES)
-	var smooth := PackedVector3Array()
-	smooth.resize(64)
-	for i in 64:
-		var x := (i + 0.5) / 64.0
-		var sum := Vector3.ZERO
-		for k in range(-15, 16):
-			sum += bar_lookup(near, x + k * 0.002, false) * (float(22 - absi(k)) / 442.0)
-		smooth[i] = sum
-	const WEIGHTS := [0.02, 0.06, 0.13, 0.34, 2.46, 0.34, 0.13, 0.06, 0.02]
 	var out := PackedVector3Array()
 	out.resize(BAR_SIZE)
+	var inv := 1.0 / (2.0 * BAR_BLUR_SIGMA * BAR_BLUR_SIGMA)
 	for i in BAR_SIZE:
 		var x := (i + 0.5) / BAR_SIZE
 		var sum := Vector3.ZERO
-		for k in range(-4, 5):
-			sum += bar_lookup(smooth, x + k / 32.0, true) * WEIGHTS[k + 4]
-		out[i] = sum * 0.280898869037628173828125
+		var total := 0.0
+		for k in NEAR_BAR_SAMPLES:
+			var offset := absf(x - (k + 0.5) / NEAR_BAR_SAMPLES)
+			offset = minf(offset, 1.0 - offset) # wrap around the closed perimeter
+			var weight := exp(-offset * offset * inv)
+			sum += near[k] * weight
+			total += weight
+		out[i] = sum / total
 	return out
 
 
