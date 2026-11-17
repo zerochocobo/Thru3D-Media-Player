@@ -115,6 +115,35 @@ func _run() -> void:
 	_check(read.sky is Sky and read.warnings == ["one note"], "Panoramic sky and unpacker notes are passed on")
 	root.free()
 
+	# Realtime lights: a lightmapped surface takes only the realtime ones, an unbaked one the mixed ones too.
+	var lamps := SceneFile.new()
+	var lamp_scene := _scene(lamps)
+	var light := func(kind: int, bake: int, intensity: float, at: Vector3) -> Dictionary:
+		return {"name": "L", "type": kind, "bake": bake, "baked": bake == 2, "color": [1, 0.8, 0.6], "intensity": intensity,
+			"range": 8, "spot_angle": 60, "inner_spot_angle": 0, "transform": _place(at)}
+	lamp_scene.lights = [light.call(Unity.POINT, Unity.REALTIME, 2.0, Vector3(0, 3, 0)), light.call(Unity.SPOT, Unity.MIXED, 1.5, Vector3(1, 3, 0)),
+		light.call(Unity.DIRECTIONAL, 2, 1.0, Vector3.ZERO), light.call(Unity.POINT, Unity.REALTIME, 0.2, Vector3(4, 1, 0))]
+	lamps.save(output.path_join("lamps.t3ds"), lamp_scene)
+	var four := limits.duplicate()
+	four.lights = 4
+	var lit_read := Unity.new().read_container(output.path_join("lamps.t3ds"), four)
+	if lit_read.has("root"):
+		var baked := (lit_read.root.find_child("thru3d_floor_Plaza", true, false) as MeshInstance3D).mesh.surface_get_material(0) as ShaderMaterial
+		var unbaked := (lit_read.root.find_child("Tree", true, false) as MeshInstance3D).mesh.surface_get_material(0) as ShaderMaterial
+		_check(baked.get_shader_parameter("light_count") == 2 and unbaked.get_shader_parameter("light_count") == 3 and lit_read.actions.lights_removed == 0,
+			"Lightmapped surfaces take the realtime lights, unbaked ones the mixed light too, baked lights none")
+		var colours: PackedVector3Array = unbaked.get_shader_parameter("light_color")
+		var shapes: PackedVector4Array = unbaked.get_shader_parameter("light_shape")
+		_check(colours[0].is_equal_approx(Vector3(2.0, 1.6, 1.2)) and is_equal_approx(shapes[1].y, cos(deg_to_rad(30.0))) and is_equal_approx(shapes[1].w, Unity.SPOT),
+			"Lights arrive strongest first, colour times intensity, with the spot's half-angle")
+		lit_read.root.free()
+	var few := Unity.new().read_container(output.path_join("lamps.t3ds"), Budget.limits(Budget.LOW))
+	if few.has("root"):
+		var unbaked := (few.root.find_child("Tree", true, false) as MeshInstance3D).mesh.surface_get_material(0) as ShaderMaterial
+		_check(unbaked.get_shader_parameter("light_count") == Budget.limits(Budget.LOW).lights and few.actions.lights_removed == 3 - Budget.limits(Budget.LOW).lights,
+			"The low tier keeps only its strongest lights")
+		few.root.free()
+
 	var tight := limits.duplicate()
 	tight.triangles = 3
 	var culled := Unity.new().read_container(path, tight)

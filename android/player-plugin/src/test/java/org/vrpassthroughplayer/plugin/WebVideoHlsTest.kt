@@ -20,6 +20,7 @@ class WebVideoHlsTest {
                 transport="hls",browserManifest=body,browserHeaders=WebVideoRequestHeaders(mapOf(upstream to mapOf("cookie" to "this-request=only")),org.json.JSONArray()))
             val url=hls.prepare(input);val text=read(url).toString(Charsets.UTF_8)
             val resources=text.lines().filter { it.startsWith("http") }
+            assertEquals(resources[0],resources[1])
             for((i,range) in listOf("bytes=1-3","bytes=4-7").withIndex()) {
                 val connection=java.net.URL(resources[i]).openConnection() as java.net.HttpURLConnection
                 connection.setRequestProperty("Range",range)
@@ -27,6 +28,43 @@ class WebVideoHlsTest {
                 finally { connection.disconnect() }
             }
             assertEquals(1,received.get());hls.close();assertFalse(local.hasSource(url));resources.forEach { assertFalse(local.hasSource(it)) }
+        } } }
+    }
+    @Test fun concurrentImplicitRangesShareOneUpstreamTransfer() {
+        val requests = java.util.concurrent.atomic.AtomicInteger()
+        Fixture { _, _, _ ->
+            requests.incrementAndGet()
+            Thread.sleep(150)
+            Reply(200, body="abcdefgh".toByteArray())
+        }.use { origin -> LocalStreamServer().use { local -> WebVideoHls(local).use { hls ->
+            val body = "#EXTM3U\n#EXT-X-VERSION:4\n#EXT-X-TARGETDURATION:2\n" +
+                "#EXTINF:2,\n#EXT-X-BYTERANGE:3@1\nfile.ts\n#EXTINF:2,\n#EXT-X-BYTERANGE:4\nfile.ts\n#EXT-X-ENDLIST\n"
+            val input = WebVideoTrack("observed",URI(origin.url+"/list"),emptyMap(),"mp4","avc1","mp4a",1280,720,24.0,
+                transport="hls",browserManifest=body,browserHeaders=WebVideoRequestHeaders(emptyMap(),org.json.JSONArray()))
+            val playlist = read(hls.prepare(input)).toString(Charsets.UTF_8)
+            val urls = playlist.lines().filter { it.startsWith("http") }
+            assertEquals(urls[0], urls[1])
+            assertTrue(playlist.contains("#EXT-X-BYTERANGE:4\n"))
+            val workers = java.util.concurrent.Executors.newFixedThreadPool(2)
+            val start = java.util.concurrent.CountDownLatch(1)
+            try {
+                val tasks = listOf("bytes=1-3", "bytes=4-7").mapIndexed { index, range ->
+                    workers.submit<String> {
+                        check(start.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                        val connection = URI(urls[index]).toURL().openConnection() as java.net.HttpURLConnection
+                        connection.connectTimeout=5000;connection.readTimeout=5000
+                        connection.setRequestProperty("Range",range)
+                        try {
+                            assertEquals(206,connection.responseCode)
+                            connection.inputStream.use { it.readBytes() }.toString(Charsets.UTF_8)
+                        } finally { connection.disconnect() }
+                    }
+                }
+                start.countDown()
+                assertEquals(listOf("bcd","efgh"),tasks.map { it.get(8,java.util.concurrent.TimeUnit.SECONDS) })
+                assertEquals(1,requests.get())
+                hls.close();urls.forEach { assertFalse(local.hasSource(it)) }
+            } finally { workers.shutdownNow() }
         } } }
     }
     private fun clearInit(protected: Boolean=false,width: Int=1920): ByteArray {
@@ -139,15 +177,25 @@ class WebVideoHlsTest {
         }
         run("-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=15", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
             "-t", "4", "-c:v", "libx264", "-g", "15", "-c:a", "aac", "-f", "hls", "-hls_time", "1", "-hls_playlist_type", "vod", "sample.m3u8")
+        run("-v", "error", "-y", "-i", "sample.m3u8", "-c", "copy", "-f", "hls", "-hls_time", "1",
+            "-hls_playlist_type", "vod", "-hls_flags", "single_file", "ranges.m3u8")
+        val ranges = java.io.File(root,"ranges.m3u8")
+        var firstRange = true
+        ranges.writeText(ranges.readLines().joinToString("\n",postfix="\n") { line ->
+            if (!line.startsWith("#EXT-X-BYTERANGE:")) line
+            else if (firstRange) { firstRange=false;line } else line.substringBefore('@')
+        })
         Fixture { request, _, _ ->
             val name = request.split(' ')[1].substringAfterLast('/')
             val file = java.io.File(root, name)
             if (file.isFile && file.parentFile == root) Reply(200, body = file.readBytes()) else Reply(404, body = ByteArray(0))
-        }.use { origin -> LocalStreamServer().use { local -> WebVideoHls(local).use { hls ->
-            val url = hls.prepare(track(origin.url + "/sample.m3u8"))
-            run("-v", "error", "-i", url, "-map", "0:v", "-map", "0:a", "-f", "null", "-")
-            run("-v", "error", "-ss", "2", "-i", url, "-t", "1", "-map", "0:v", "-map", "0:a", "-f", "null", "-")
-        } } }
+        }.use { origin -> LocalStreamServer().use { local ->
+            for (name in listOf("sample.m3u8","ranges.m3u8")) WebVideoHls(local).use { hls ->
+                val url = hls.prepare(track(origin.url + "/" + name))
+                run("-v", "error", "-i", url, "-map", "0:v", "-map", "0:a", "-f", "null", "-")
+                run("-v", "error", "-ss", "2", "-i", url, "-t", "1", "-map", "0:v", "-map", "0:a", "-f", "null", "-")
+            }
+        } }
     }
 
     @Test fun rewritesNestedManifestsMapAndSegmentsAndRevokesEveryCapability() {

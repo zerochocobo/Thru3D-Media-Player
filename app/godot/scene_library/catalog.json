@@ -13,14 +13,14 @@
    "source": "https://sketchfab.com/3d-models/abandoned-building-room-3b075930ce9040ddaf76238c44f9d51a",
    "tiers": {
     "low": {
-     "file": "abandoned_building_room.low.d4966fe250a1.glb",
-     "bytes": 1680916,
-     "sha256": "d4966fe250a1183f654d5685b3cb5cf36dc12997980f0c40b2cc7430a223c74e"
+     "file": "abandoned_building_room.low.3d4e735db139.glb",
+     "bytes": 1663380,
+     "sha256": "3d4e735db139e6f99d03c3dbf6efac5a5d9e73d998513d392c3ee4ffefecc51d"
     },
     "high": {
-     "file": "abandoned_building_room.high.e7fe5310546b.glb",
-     "bytes": 1680920,
-     "sha256": "e7fe5310546b7ce5709aedcc3e55dc9ffe77b3456f1e032d1d2e889de8fa0d03"
+     "file": "abandoned_building_room.high.e3422d4daf19.glb",
+     "bytes": 4918268,
+     "sha256": "e3422d4daf195397603ced1f6135960f174a3e4abd235f9a453583d93009c82e"
     }
    },
    "preset": {
@@ -112,14 +112,14 @@
    "source": "https://sketchfab.com/3d-models/bar-diorama-1762fb3868a34e9988cf0b34d5384bb6",
    "tiers": {
     "low": {
-     "file": "bar_diorama.low.7b77e2b772ab.glb",
-     "bytes": 2681976,
-     "sha256": "7b77e2b772abbe64ad254895337a3c19034283d7facde3afc207eb035bb128aa"
+     "file": "bar_diorama.low.8ac16a713336.glb",
+     "bytes": 2673128,
+     "sha256": "8ac16a713336db5f3a33b4bba124db7fa2c2bce9e67afd217e211295f850206b"
     },
     "high": {
-     "file": "bar_diorama.high.6507ad83a11a.glb",
-     "bytes": 2681976,
-     "sha256": "6507ad83a11ace1b5d0574047ddb6dda4d65af7871ddc2ba153d16f269c09896"
+     "file": "bar_diorama.high.4225969749e1.glb",
+     "bytes": 3899384,
+     "sha256": "4225969749e138e0b284b751c3ae1fbfb09aeefb113e300c45b505271ae00631"
     }
    },
    "preset": {
@@ -376,14 +376,14 @@
    "source": "https://sketchfab.com/3d-models/modern-bathroom-9ba7e0a094694335bd8f4656611c0676",
    "tiers": {
     "low": {
-     "file": "modern_bathroom.low.17d78cb6092f.glb",
-     "bytes": 8286276,
-     "sha256": "17d78cb6092fc169566f17e8e105941697a206cd0fa1711883184c5761898a8d"
+     "file": "modern_bathroom.low.c51206c39fc2.glb",
+     "bytes": 8285940,
+     "sha256": "c51206c39fc2cd47328490c99196e40caee0e54d445f611773b95719bed5c849"
     },
     "high": {
-     "file": "modern_bathroom.high.c83da4b47bf4.glb",
-     "bytes": 8286280,
-     "sha256": "c83da4b47bf488554fecb9247d19ddd0f3ea8d49290377cc90a4ecce04be5bf4"
+     "file": "modern_bathroom.high.9ccb149b2beb.glb",
+     "bytes": 10526452,
+     "sha256": "9ccb149b2beb456cd73b7c76c7cbc6575498375c88fa5bd5b56d22dcb21f6a15"
     }
    },
    "preset": {
@@ -661,14 +661,14 @@
    "source": "https://sketchfab.com/3d-models/station-d933750b1fb443c3bb84e06be15a30fc",
    "tiers": {
     "low": {
-     "file": "station.low.128807241553.glb",
-     "bytes": 8236748,
-     "sha256": "128807241553aa3bc7353a81a7981965a0ebf25800a54a06602fa423eb3f0b01"
+     "file": "station.low.2ee52cd17c17.glb",
+     "bytes": 8235316,
+     "sha256": "2ee52cd17c17f3990a1acd7116ea114ee80d9c7bc3ba369f6652a48b541a401b"
     },
     "high": {
-     "file": "station.high.d1c1aca9cabb.glb",
-     "bytes": 8236748,
-     "sha256": "d1c1aca9cabb77908e240f529a5d5e1f239dc52727b7bbe730e31dcae09007e2"
+     "file": "station.high.89023dc7b80c.glb",
+     "bytes": 10128828,
+     "sha256": "89023dc7b80ce40243a0d9752f56339608af10d1e5bf8ffc95109c52ffe76caa"
     }
    },
    "preset": {
@@ -754,14 +754,14 @@
    "source": "https://sketchfab.com/3d-models/throne-room-247c37e6a9694ae891398911876f0c14",
    "tiers": {
     "low": {
-     "file": "throne_room.low.5567d8a3b7c5.glb",
-     "bytes": 10748580,
-     "sha256": "5567d8a3b7c564fef17d548a8e1aa22bc1c1086b61c1885e6103d4c1744105d4"
+     "file": "throne_room.low.336789e1ffe3.glb",
+     "bytes": 10745700,
+     "sha256": "336789e1ffe3eebc9ae3a6ae7968007b2d0866b7674a220e9729813d30623a3c"
     },
     "high": {
-     "file": "throne_room.high.39fa1d76d875.glb",
-     "bytes": 10748580,
-     "sha256": "39fa1d76d87576ed8cec5fbe4cbfb5eba39191cb73f70788566cdb33e8cd465b"
+     "file": "throne_room.high.043835fbcc6c.glb",
+     "bytes": 24988224,
+     "sha256": "043835fbcc6ce81736821d06491b3f8b62b1f7358456c55c1685fd2eabab3c3b"
     }
    },
    "preset": {
@@ -787,14 +787,14 @@
    "source": "https://sketchfab.com/3d-models/tropical-island-f91862f8c38b481aa19edccac851eefb",
    "tiers": {
     "low": {
-     "file": "tropical_island.low.90b59f795032.glb",
-     "bytes": 4636548,
-     "sha256": "90b59f7950322dc6ecf113c9c0c506f22075be79205366c787f3be4a8e91bc4c"
+     "file": "tropical_island.low.35e7513d56a7.glb",
+     "bytes": 5023884,
+     "sha256": "35e7513d56a7ef9ebb8b0d707f7f5a6d03d8a76c539b6b9d103c3e4a64f35cd8"
     },
     "high": {
-     "file": "tropical_island.high.a8e5fbf9f04d.glb",
-     "bytes": 4636548,
-     "sha256": "a8e5fbf9f04dd870661af41979b262837c2d397f1ddc0c376c0d9cf0526c24fe"
+     "file": "tropical_island.high.72e7e958b89c.glb",
+     "bytes": 9728184,
+     "sha256": "72e7e958b89cf5d736710bb16d202d2cfca80b501d4e4dc42ddf3e1902120463"
     }
    },
    "preset": {
@@ -858,6 +858,864 @@
     }
    },
    "preset": {
+    "posture": "stand",
+    "backdrop": ""
+   }
+  },
+  {
+   "slug": "theater_weekend_club_2",
+   "title": "Club Theater",
+   "title_zh": "周末俱乐部剧场",
+   "title_zh_hant": "週末俱樂部劇場",
+   "title_ja": "週末クラブ劇場",
+   "work": "Theater | Weekend Club 2",
+   "author": "digilife4444",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/08770cfb14b446c29c7faa26fd6c7baa",
+   "tiers": {
+    "low": {
+     "file": "theater_weekend_club_2.low.dbcf0ab6c81a.glb",
+     "bytes": 8869840,
+     "sha256": "dbcf0ab6c81a32fbfa3fc04d7107332e24131a75b1a363e2c3676da0c075ac7a"
+    },
+    "high": {
+     "file": "theater_weekend_club_2.high.a38d19574a9d.glb",
+     "bytes": 20024356,
+     "sha256": "a38d19574a9dd2f673762bd540c722d5ed81a55f0087d3f415184cb228266c93"
+    }
+   },
+   "preset": {
+    "entry": [
+     1.635,
+     0.01,
+     -1.4576,
+     1.1114
+    ],
+    "posture": "stand",
+    "backdrop": ""
+   }
+  },
+  {
+   "slug": "studio_apartment_baked",
+   "title": "Studio Apartment",
+   "title_zh": "单间公寓",
+   "title_zh_hant": "單間公寓",
+   "title_ja": "ワンルーム",
+   "work": "Studio apartment (vray baked textures included)",
+   "author": "zamorev4d",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/cae2d96ede1d4112b1fd391099a43f77",
+   "tiers": {
+    "low": {
+     "file": "studio_apartment_baked.low.03f054bef58c.glb",
+     "bytes": 3218860,
+     "sha256": "03f054bef58cf1d83e7efe0838ad91fc6b935ea20f421db22dfa7bc7a9de115b"
+    },
+    "high": {
+     "file": "studio_apartment_baked.high.68929c588769.glb",
+     "bytes": 3446872,
+     "sha256": "68929c5887699f8e7b4df96e85dfbb4d3715d6d45a00d0af97b61eeb9889d9df"
+    }
+   },
+   "preset": {
+    "entry": [
+     1.1429,
+     -0.0,
+     -2.3369,
+     2.7979
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "vr_apartment_loft_baked",
+   "title": "Duplex Loft",
+   "title_zh": "VR复式公寓",
+   "title_zh_hant": "VR複式公寓",
+   "title_ja": "メゾネットのロフト",
+   "work": "VR apartment loft interior | baked",
+   "author": "ida61xq",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/54bc929a26094b6cb36f977903fbcd97",
+   "tiers": {
+    "low": {
+     "file": "vr_apartment_loft_baked.low.61693e7fae4a.glb",
+     "bytes": 4175024,
+     "sha256": "61693e7fae4a9091423cf10ff6fe8dda8110de826cf942f6df3ce78002289204"
+    },
+    "high": {
+     "file": "vr_apartment_loft_baked.high.f9534d574e6a.glb",
+     "bytes": 4501156,
+     "sha256": "f9534d574e6aa2d08188fc60430528bfbab7933a284c1619de9c96534abfb645"
+    }
+   },
+   "preset": {
+    "entry": [
+     4.1976,
+     0.0087,
+     -3.6384,
+     2.369
+    ],
+    "posture": "stand",
+    "backdrop": "morning"
+   }
+  },
+  {
+   "slug": "winter_loft",
+   "title": "Winter Loft",
+   "title_zh": "冬日阁楼",
+   "title_zh_hant": "冬日閣樓",
+   "title_ja": "冬のロフト",
+   "work": "Winter Loft",
+   "author": "ElinHohler",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/582e75361edb4e95b20df20c3a8681bf",
+   "tiers": {
+    "low": {
+     "file": "winter_loft.low.4a954635f5ca.glb",
+     "bytes": 4697396,
+     "sha256": "4a954635f5cabc6c3423d83c4ce41a23ccc0dee231cd6d4675d605a4c33be708"
+    },
+    "high": {
+     "file": "winter_loft.high.0eea63674f00.glb",
+     "bytes": 11981692,
+     "sha256": "0eea63674f0007276addaab2adbad9f23561048c1934744fdd2fe9671458ec03"
+    }
+   },
+   "preset": {
+    "entry": [
+     2.0013,
+     0.0,
+     -6.7606,
+     2.3573
+    ],
+    "posture": "stand",
+    "backdrop": ""
+   }
+  },
+  {
+   "slug": "white_modern_living_room",
+   "title": "White Living Room",
+   "title_zh": "白色现代客厅",
+   "title_zh_hant": "白色現代客廳",
+   "title_ja": "白いリビング",
+   "work": "White Modern Living Room",
+   "author": "dylanheyes",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/afb8cb0cbee1488caf61471ef14041e9",
+   "tiers": {
+    "low": {
+     "file": "white_modern_living_room.low.8ad4cb32f68f.glb",
+     "bytes": 3526224,
+     "sha256": "8ad4cb32f68f7b43a79a9f358d40988776c3f076d5fee0b9282538f99c5174e1"
+    },
+    "high": {
+     "file": "white_modern_living_room.high.199ea717b633.glb",
+     "bytes": 4298100,
+     "sha256": "199ea717b6338df8a546d3b9e94dea2bf74a669b7989e3e66f5bc17d74c4fb01"
+    }
+   },
+   "preset": {
+    "entry": [
+     2.0294,
+     -0.2056,
+     1.2474,
+     0.9971
+    ],
+    "posture": "stand",
+    "backdrop": "morning"
+   }
+  },
+  {
+   "slug": "minimalistic_modern_bedroom",
+   "title": "Minimalist Bedroom",
+   "title_zh": "极简现代卧室",
+   "title_zh_hant": "極簡現代臥室",
+   "title_ja": "ミニマルな寝室",
+   "work": "Minimalistic Modern Bedroom",
+   "author": "dylanheyes",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/4f3db3cb57bd4bce886f7b9a13273a2f",
+   "tiers": {
+    "low": {
+     "file": "minimalistic_modern_bedroom.low.a5ccf8872a4d.glb",
+     "bytes": 3944124,
+     "sha256": "a5ccf8872a4d67cf1f1053fc60fd4c8c67ef5d1beaedc14a1174e324ea3dbc5d"
+    },
+    "high": {
+     "file": "minimalistic_modern_bedroom.high.dcccbd83ba42.glb",
+     "bytes": 4169168,
+     "sha256": "dcccbd83ba42be824b1dc50062ac233918e23fea27fa6c222c367cc174f1d20e"
+    }
+   },
+   "preset": {
+    "entry": [
+     1.7917,
+     -1.7128,
+     1.1718,
+     0.2662
+    ],
+    "posture": "stand",
+    "backdrop": "night"
+   }
+  },
+  {
+   "slug": "neon_bedroom",
+   "title": "Neon Bedroom",
+   "title_zh": "霓虹卧室",
+   "title_zh_hant": "霓虹臥室",
+   "title_ja": "ネオンの寝室",
+   "work": "Neon Bedroom",
+   "author": "dylanheyes",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/cece4d1882994721811afdd500d8bcf3",
+   "tiers": {
+    "low": {
+     "file": "neon_bedroom.low.669f05ed126f.glb",
+     "bytes": 1499012,
+     "sha256": "669f05ed126fdefd5a2d40a98a2ae328d06da4b3ec6d7c0f85842adef2a2e367"
+    },
+    "high": {
+     "file": "neon_bedroom.high.a87d44789abd.glb",
+     "bytes": 2104036,
+     "sha256": "a87d44789abdd420785295fdd6f11f2747126a7de97ccab1745377b74e49e47b"
+    }
+   },
+   "preset": {
+    "entry": [
+     1.0819,
+     -1.2641,
+     1.8671,
+     0.8428
+    ],
+    "posture": "stand",
+    "backdrop": "night"
+   }
+  },
+  {
+   "slug": "loft_bedroom",
+   "title": "Loft Bedroom",
+   "title_zh": "阁楼卧室",
+   "title_zh_hant": "閣樓臥室",
+   "title_ja": "ロフトの寝室",
+   "work": "Loft Bedroom",
+   "author": "dylanheyes",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/7e9b8fa98c254b01b040992205fd7545",
+   "tiers": {
+    "low": {
+     "file": "loft_bedroom.low.6cfc8d80608d.glb",
+     "bytes": 2691328,
+     "sha256": "6cfc8d80608dd78e93165179d60b960b2f83b94e04b33ff224792944a6473be3"
+    },
+    "high": {
+     "file": "loft_bedroom.high.5b466d1c1718.glb",
+     "bytes": 3619524,
+     "sha256": "5b466d1c1718e75d7fa4ce91a6660fdc10f5d3149cc87d062c298dfdd979e8d3"
+    }
+   },
+   "preset": {
+    "entry": [
+     1.8406,
+     -1.3729,
+     -1.1192,
+     1.7531
+    ],
+    "posture": "stand",
+    "backdrop": "night"
+   }
+  },
+  {
+   "slug": "dining_room_kitchen_baked",
+   "title": "Dining Kitchen",
+   "title_zh": "餐厅厨房",
+   "title_zh_hant": "餐廳廚房",
+   "title_ja": "ダイニングキッチン",
+   "work": "Dining room | Kichen baked",
+   "author": "ida61xq",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/4831c2ce6a0044d9bee9eacefcc0f2bd",
+   "tiers": {
+    "low": {
+     "file": "dining_room_kitchen_baked.low.50f92fb5d806.glb",
+     "bytes": 10147008,
+     "sha256": "50f92fb5d8064fa33116cfbdf75500e0f698475700d7f6e3e27e004dddfd56c7"
+    },
+    "high": {
+     "file": "dining_room_kitchen_baked.high.daf185fcfffa.glb",
+     "bytes": 12372248,
+     "sha256": "daf185fcfffaf3d049c230fe1423840ce1e9585e918f23458c1aca552ae04b4e"
+    }
+   },
+   "preset": {
+    "entry": [
+     -3.0282,
+     0.0131,
+     -0.531,
+     -1.602
+    ],
+    "posture": "stand",
+    "backdrop": ""
+   }
+  },
+  {
+   "slug": "cozy_living_room_baked",
+   "title": "Cozy Living Room",
+   "title_zh": "温馨客厅",
+   "title_zh_hant": "溫馨客廳",
+   "title_ja": "くつろぎのリビング",
+   "work": "Cozy living room baked",
+   "author": "ida61xq",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/581238dc5fda4dc990571cdc02827783",
+   "tiers": {
+    "low": {
+     "file": "cozy_living_room_baked.low.3bad55bd923c.glb",
+     "bytes": 17401956,
+     "sha256": "3bad55bd923c71fa7192f68dc3c30abc7727c8c3689ffa10165628958699a66d"
+    },
+    "high": {
+     "file": "cozy_living_room_baked.high.e84ce5705667.glb",
+     "bytes": 33279096,
+     "sha256": "e84ce570566768656da4a262ba983c959085d7572f8c03b50b4f5f816a130c6a"
+    }
+   },
+   "preset": {
+    "entry": [
+     0.0513,
+     0.06,
+     2.5084,
+     0.3859
+    ],
+    "posture": "stand",
+    "backdrop": ""
+   }
+  },
+  {
+   "slug": "living_room_night",
+   "title": "Living Room at Night",
+   "title_zh": "夜晚客厅",
+   "title_zh_hant": "夜晚客廳",
+   "title_ja": "夜のリビング",
+   "work": "Living Room (Night) - Custom Home Environment",
+   "author": "sidequest",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/761f36d81cda49e781a5b9e3616d5d47",
+   "tiers": {
+    "low": {
+     "file": "living_room_night.low.873ef9c0afb9.glb",
+     "bytes": 5768620,
+     "sha256": "873ef9c0afb9d8b777ac48c63e64b83a5972527c8f5b900178a068e96ab1c04c"
+    },
+    "high": {
+     "file": "living_room_night.high.ecf5329e13e7.glb",
+     "bytes": 6717776,
+     "sha256": "ecf5329e13e7a5dbe8d2741176f802d8f060fb8fbd8178959ed5d504574c5a7c"
+    }
+   },
+   "preset": {
+    "entry": [
+     -0.034,
+     -0.1006,
+     -0.6204,
+     -0.2316
+    ],
+    "posture": "stand",
+    "backdrop": ""
+   }
+  },
+  {
+   "slug": "cozy_modern_living_room",
+   "title": "Modern Living Room",
+   "title_zh": "温馨现代客厅",
+   "title_zh_hant": "溫馨現代客廳",
+   "title_ja": "モダンなリビング",
+   "work": "Cozy Modern Living Room",
+   "author": "dylanheyes",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/6a030bdb839e4e74bb58d7edb8f329e7",
+   "tiers": {
+    "low": {
+     "file": "cozy_modern_living_room.low.6d1d8aefafc9.glb",
+     "bytes": 24240124,
+     "sha256": "6d1d8aefafc90bd826bb8123e7a107df632a3969d56cff900928a781d3475564"
+    },
+    "high": {
+     "file": "cozy_modern_living_room.high.1dd0f522b3fd.glb",
+     "bytes": 66548344,
+     "sha256": "1dd0f522b3fd5e562fec0f16a5cdcd6b6c687bf0ba14bf4465152e0195798ca0"
+    }
+   },
+   "preset": {
+    "entry": [
+     -4.0423,
+     -1.0227,
+     0.5826,
+     -0.744
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "low_poly_winter_scene",
+   "title": "Low Poly Winter",
+   "title_zh": "低多边形冬景",
+   "title_zh_hant": "低多邊形冬景",
+   "title_ja": "ローポリの冬景色",
+   "work": "Low Poly Winter Scene",
+   "author": "Edwin3D",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/2ffe1ed449414cc184078dd1e2882284",
+   "tiers": {
+    "low": {
+     "file": "low_poly_winter_scene.low.f9a248c9fafc.glb",
+     "bytes": 6383640,
+     "sha256": "f9a248c9fafc4010d42afa89f6b882afee8490320d8dcf3e01bc8177a8c92909"
+    },
+    "high": {
+     "file": "low_poly_winter_scene.high.188ea7007349.glb",
+     "bytes": 6383640,
+     "sha256": "188ea7007349341876ac404de225c45590ad19bb1b59fe0bb3322ce0bea17ab6"
+    }
+   },
+   "preset": {
+    "entry": [
+     6.2561,
+     -0.2886,
+     4.5743,
+     0.9564
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "snowy_mountain_road_scene",
+   "title": "Snowy Mountain Road",
+   "title_zh": "雪山公路",
+   "title_zh_hant": "雪山公路",
+   "title_ja": "雪山の道",
+   "work": "Snowy Mountain Road Scene",
+   "author": "99.Miles",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/504729dd1afc4ff0a7dd17687ccd71a1",
+   "tiers": {
+    "low": {
+     "file": "snowy_mountain_road_scene.low.cf7192629cfc.glb",
+     "bytes": 4169588,
+     "sha256": "cf7192629cfcdde02d73b8ab2028e92dccdb6aee9d917e10f13d982148421c75"
+    },
+    "high": {
+     "file": "snowy_mountain_road_scene.high.e119b6b7e3ae.glb",
+     "bytes": 5599024,
+     "sha256": "e119b6b7e3aef4a022a6af9d771155c5f9eb6fd423cb514ca61521687007a9ac"
+    }
+   },
+   "preset": {
+    "entry": [
+     328.6975,
+     -15.9277,
+     -268.475,
+     0.3304
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "persian_garden_afternoon",
+   "title": "Persian Garden",
+   "title_zh": "波斯花园午后",
+   "title_zh_hant": "波斯花園午後",
+   "title_ja": "ペルシャ庭園の午後",
+   "work": "An afternoon in a Persian Garden",
+   "author": "shahriyarshahrabi",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/b13afbaf1aae4f6aad03aaa081ce471e",
+   "tiers": {
+    "low": {
+     "file": "persian_garden_afternoon.low.85f2532441f2.glb",
+     "bytes": 7401004,
+     "sha256": "85f2532441f23b3ff701c1884244a275c3397bb7482046465887152d0ee7dd55"
+    },
+    "high": {
+     "file": "persian_garden_afternoon.high.f52ea7eb5d2c.glb",
+     "bytes": 9833312,
+     "sha256": "f52ea7eb5d2c531905d22cda286e43e1d6653cfa575e082e49c814b480014f25"
+    }
+   },
+   "preset": {
+    "entry": [
+     -1.9564,
+     -0.0001,
+     2.7297,
+     -0.2623
+    ],
+    "posture": "stand",
+    "backdrop": "morning"
+   }
+  },
+  {
+   "slug": "pool_in_the_mountains_baked",
+   "title": "Mountain Pool",
+   "title_zh": "山间泳池",
+   "title_zh_hant": "山間泳池",
+   "title_ja": "山あいのプール",
+   "work": "Pool in the Mountains (Baked)",
+   "author": "vince.trust",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/96537a370338456680c8327ec811733f",
+   "tiers": {
+    "low": {
+     "file": "pool_in_the_mountains_baked.low.b9a7a26748f4.glb",
+     "bytes": 1444728,
+     "sha256": "b9a7a26748f4e0314463318424ad0d187089664def44cad36205df87fac52991"
+    },
+    "high": {
+     "file": "pool_in_the_mountains_baked.high.ea9054967a5e.glb",
+     "bytes": 1888420,
+     "sha256": "ea9054967a5edb1141731cb4ac2090f6ba2dcae8ec291e441676634408e1bfb4"
+    }
+   },
+   "preset": {
+    "entry": [
+     -0.5115,
+     0.0017,
+     -1.4854,
+     -2.1114
+    ],
+    "posture": "stand",
+    "backdrop": ""
+   }
+  },
+  {
+   "slug": "beach_homestead",
+   "title": "Beach House",
+   "title_zh": "海边农舍",
+   "title_zh_hant": "海邊農舍",
+   "title_ja": "海辺の家",
+   "work": "Beach Homestead",
+   "author": "tuomaspaul",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/394df4a75f1a4d5b80cd8d447b844871",
+   "tiers": {
+    "low": {
+     "file": "beach_homestead.low.abe413bbe49b.glb",
+     "bytes": 10258540,
+     "sha256": "abe413bbe49b876908cf5c0ff828175f932a8420a9307c0e6a2a672d2747f58a"
+    },
+    "high": {
+     "file": "beach_homestead.high.2e7a38ffacba.glb",
+     "bytes": 10324488,
+     "sha256": "2e7a38ffacbad5908aa923d0ada5951e114188341b10c05aa103f1e68812e717"
+    }
+   },
+   "preset": {
+    "entry": [
+     0.0104,
+     2.2775,
+     -0.008,
+     0.6116
+    ],
+    "posture": "stand",
+    "backdrop": "morning"
+   }
+  },
+  {
+   "slug": "abandoned_underground_train_station",
+   "title": "Abandoned Subway Station",
+   "title_zh": "废弃地下车站",
+   "title_zh_hant": "廢棄地下車站",
+   "title_ja": "廃駅",
+   "work": "Abandoned Underground Train Station",
+   "author": "Bl4ckGh0st",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/86cce05689704587ad295b49205304a8",
+   "tiers": {
+    "low": {
+     "file": "abandoned_underground_train_station.low.6079e538d31c.glb",
+     "bytes": 16381420,
+     "sha256": "6079e538d31ccbdfd7148f737cb552326ed5cdf1e324435695fdc4d30325530f"
+    },
+    "high": {
+     "file": "abandoned_underground_train_station.high.844078610ef2.glb",
+     "bytes": 43017840,
+     "sha256": "844078610ef2afacbf8fb7ec857cb94e495d0a386cfcd2bd934ca74b3b087862"
+    }
+   },
+   "preset": {
+    "entry": [
+     -12.8415,
+     4.4999,
+     3.2395,
+     -1.7543
+    ],
+    "posture": "stand",
+    "backdrop": "morning"
+   }
+  },
+  {
+   "slug": "mars_one_mission_base",
+   "title": "Mars Base",
+   "title_zh": "火星基地",
+   "title_zh_hant": "火星基地",
+   "title_ja": "火星基地",
+   "work": "\"Mars One\" Mission - Base",
+   "author": "admone",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/83ced347037f47aba8473147d65df074",
+   "tiers": {
+    "low": {
+     "file": "mars_one_mission_base.low.9237b34a1305.glb",
+     "bytes": 7277068,
+     "sha256": "9237b34a13052fd997f3f91346de6c18faeb6e6377ba531ac5e5a895e594b4c0"
+    },
+    "high": {
+     "file": "mars_one_mission_base.high.ac016eceb602.glb",
+     "bytes": 10115832,
+     "sha256": "ac016eceb6025d63fd1c946ce022e50dd9d03b2e959aa793f984165796c005d7"
+    }
+   },
+   "preset": {
+    "entry": [
+     11.254,
+     0.4792,
+     6.9086,
+     0.9792
+    ],
+    "posture": "stand",
+    "backdrop": ""
+   }
+  },
+  {
+   "slug": "sci_fi_computer_room",
+   "title": "Sci-Fi Computer Room",
+   "title_zh": "科幻机房",
+   "title_zh_hant": "科幻機房",
+   "title_ja": "SFコンピュータールーム",
+   "work": "Sci-Fi Computer Room",
+   "author": "bossdeff",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/a149d5bfcef6496c9a0606b5ce5ebf27",
+   "tiers": {
+    "low": {
+     "file": "sci_fi_computer_room.low.e16638dca3fa.glb",
+     "bytes": 1812400,
+     "sha256": "e16638dca3fad2c1934241064f81dab95289c5e5cf1ac83a254c729793478a7a"
+    },
+    "high": {
+     "file": "sci_fi_computer_room.high.aebaee32468d.glb",
+     "bytes": 4115200,
+     "sha256": "aebaee32468d9447b2465ee6e27363d51a8401a7fd0d61dc93d8f3ab9c5bf904"
+    }
+   },
+   "preset": {
+    "entry": [
+     -0.5887,
+     -1.062,
+     1.5114,
+     0.034
+    ],
+    "posture": "stand",
+    "backdrop": "night"
+   }
+  },
+  {
+   "slug": "space_smugglers_club",
+   "title": "Space Smugglers' Club",
+   "title_zh": "太空走私者俱乐部",
+   "title_zh_hant": "太空走私者俱樂部",
+   "title_ja": "宇宙密輸団のクラブ",
+   "work": "Space smugglers club house - Light Version",
+   "author": "sawcisson",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/30fc7d71530c40e9b10887e73e1477f4",
+   "tiers": {
+    "low": {
+     "file": "space_smugglers_club.low.819832fd0ce0.glb",
+     "bytes": 1204312,
+     "sha256": "819832fd0ce0649e596410b87a1675e656f5215a25eaa003307a80423620efaf"
+    },
+    "high": {
+     "file": "space_smugglers_club.high.0431a1c69be2.glb",
+     "bytes": 1312156,
+     "sha256": "0431a1c69be2067e9abfbd500e3f4740ee21a6181b4a9e1183121aa02b47a2ee"
+    }
+   },
+   "preset": {
+    "entry": [
+     -0.1936,
+     -0.037,
+     7.6772,
+     -3.1306
+    ],
+    "posture": "stand",
+    "backdrop": "night"
+   }
+  },
+  {
+   "slug": "old_church_interior",
+   "title": "Old Church",
+   "title_zh": "废弃老教堂",
+   "title_zh_hant": "廢棄老教堂",
+   "title_ja": "古い教会",
+   "work": "Old church modeling - Interior Scene",
+   "author": "aurelien_martel",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/eb6cf543aa7d45e3acee49887ae3135c",
+   "tiers": {
+    "low": {
+     "file": "old_church_interior.low.d4229836877b.glb",
+     "bytes": 15313380,
+     "sha256": "d4229836877b9fbf117b0f3794e3796800d105c6b1301158036e81446e83556e"
+    },
+    "high": {
+     "file": "old_church_interior.high.d0fe11ac4815.glb",
+     "bytes": 29208252,
+     "sha256": "d0fe11ac4815a5c5fc92df5edf328f1efc67e46403a159b53e413642c57862f0"
+    }
+   },
+   "preset": {
+    "entry": [
+     -15.441,
+     -15.131,
+     0.2284,
+     -1.7363
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "chinese_siheyuan_courtyard",
+   "title": "Beijing Courtyard",
+   "title_zh": "北京四合院",
+   "title_zh_hant": "北京四合院",
+   "title_ja": "北京の四合院",
+   "work": "Traditional Chinese Siheyuan Courtyard",
+   "author": "andertan",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/a18881525cfd4fe882e739c9c7cee752",
+   "tiers": {
+    "low": {
+     "file": "chinese_siheyuan_courtyard.low.5e7dbc747c2e.glb",
+     "bytes": 16603136,
+     "sha256": "5e7dbc747c2e18139bee5e2cfd4a2edb4c9a6be57b5a7c59259a15f22878f441"
+    },
+    "high": {
+     "file": "chinese_siheyuan_courtyard.high.c9f4cc9bada6.glb",
+     "bytes": 29106808,
+     "sha256": "c9f4cc9bada68c8cb369e0c11ad835e1ec45fc1345faa68d12e842e34c7dd01e"
+    }
+   },
+   "preset": {
+    "entry": [
+     4.7192,
+     -0.0,
+     0.3417,
+     1.4453
+    ],
+    "posture": "stand",
+    "backdrop": "belfast"
+   }
+  },
+  {
+   "slug": "cozy_morning_cafe",
+   "title": "Morning Café",
+   "title_zh": "晨间咖啡馆",
+   "title_zh_hant": "晨間咖啡館",
+   "title_ja": "朝のカフェ",
+   "work": "Cozy Morning in a Cafe | 3D Editor Challenge",
+   "author": "wackyblocks",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/3e70ea39900848d0951e1b47954361eb",
+   "tiers": {
+    "low": {
+     "file": "cozy_morning_cafe.low.7241388f4ff7.glb",
+     "bytes": 1801588,
+     "sha256": "7241388f4ff798447e32087eaac088fad88275f62bc6c383659c5bba5349162c"
+    },
+    "high": {
+     "file": "cozy_morning_cafe.high.c0b7946dc092.glb",
+     "bytes": 2112208,
+     "sha256": "c0b7946dc092ec7c0f34a05cac4973843af3fa81adaaf320af649c085c132d7b"
+    }
+   },
+   "preset": {
+    "entry": [
+     -2.1013,
+     0.0,
+     -2.2424,
+     -0.771
+    ],
+    "posture": "stand",
+    "backdrop": "morning"
+   }
+  },
+  {
+   "slug": "cafe_misti",
+   "title": "Peruvian Café",
+   "title_zh": "秘鲁咖啡馆",
+   "title_zh_hant": "秘魯咖啡館",
+   "title_ja": "ペルーのカフェ",
+   "work": "Cafe-Misti",
+   "author": "asimitree",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/419c3293b0e54313be4b1f02845d606a",
+   "tiers": {
+    "low": {
+     "file": "cafe_misti.low.2adc11b03b79.glb",
+     "bytes": 12674228,
+     "sha256": "2adc11b03b790406eb615a06e12a2f89a584b4c70bef95130fc933b5092607e7"
+    },
+    "high": {
+     "file": "cafe_misti.high.a5dbbdf7acbc.glb",
+     "bytes": 24527188,
+     "sha256": "a5dbbdf7acbc68f8d1c035bb51cb4da9032032d795079686eaf89a539e0d7132"
+    }
+   },
+   "preset": {
+    "entry": [
+     7.2333,
+     0.0,
+     0.0767,
+     0.7456
+    ],
+    "posture": "stand",
+    "backdrop": "morning"
+   }
+  },
+  {
+   "slug": "stylized_mangrove_greenhouse",
+   "title": "Mangrove Greenhouse",
+   "title_zh": "风格化红树温室",
+   "title_zh_hant": "風格化紅樹溫室",
+   "title_ja": "マングローブの温室",
+   "work": "Stylized Mangrove Greenhouse",
+   "author": "borsh_and",
+   "license": "CC BY 4.0",
+   "source": "https://sketchfab.com/3d-models/4ad533f838f44fa583683ab7939c6aa1",
+   "tiers": {
+    "low": {
+     "file": "stylized_mangrove_greenhouse.low.387cb0da9a74.glb",
+     "bytes": 1254988,
+     "sha256": "387cb0da9a747f46b5636e7f68df1d593f39656263ce2723da97eafa5cc7cff2"
+    },
+    "high": {
+     "file": "stylized_mangrove_greenhouse.high.ea049fec1249.glb",
+     "bytes": 1741920,
+     "sha256": "ea049fec1249aad5f2ba44e0a41aa8069ff68bc4750349428b85f1d9a9d5e302"
+    }
+   },
+   "preset": {
+    "entry": [
+     2.7815,
+     0.1189,
+     1.4194,
+     0.4077
+    ],
     "posture": "stand",
     "backdrop": ""
    }

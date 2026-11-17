@@ -1125,7 +1125,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
 
     // Android can resume before Godot registers the plugin's native signals.
-    override fun onGodotSetupCompleted() { activity?.let { CrashRecords.start(it); WebBrowserDepthBridge.install(it) }; signalsReady = true; clear_photo_cache(); runCatching { panoramaOriginals.prepare() } }
+    override fun onGodotSetupCompleted() { activity?.let { CrashRecords.start(it); WebBrowserDepthBridge.install(it) }; WebBrowserTextureBridge.install { runOnRenderThread(it) }; signalsReady = true; clear_photo_cache(); runCatching { panoramaOriginals.prepare() } }
     override fun onMainPause() { CrashRecords.foreground(false); if (!closed.get()) { sources.serverPlaybackPaused(); webBrowser.action("pause"); listeningTasks.foreground(false); readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
     override fun onMainResume() { CrashRecords.foreground(true); if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; listeningTasks.foreground(true); readingPages.foreground(true); dlnaForeground(true); systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
     override fun onMainDestroy() { close() }

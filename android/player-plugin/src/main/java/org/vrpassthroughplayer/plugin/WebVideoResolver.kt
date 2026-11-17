@@ -162,7 +162,12 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                 // The browser already selected this quality using the user's site session.
                 // Do not force its member/4K stream through the extractor's default 1080p cap.
                 val maxHeight = WebVideoBrowserCapture.maximumHeight(media, browserQuality, BuildConfig.DEBUG)
-                val capabilities = WebVideoCapabilities(maxHeight)::accepts
+                val capabilityReports = mutableSetOf<WebVideoCapabilities.Report>()
+                val capabilities = WebVideoCapabilities(maxHeight, rejected = { report ->
+                    // Bounded per explicit Bilibili attempt; repeated final binding checks do not spam.
+                    if (bilibiliVod && capabilityReports.size < 4 && capabilityReports.add(report))
+                        report.details(id).forEach { CrashTrail.mark("web_beta.capability", it) }
+                })::accepts
                 val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
                 val network = WebVideoNetworkCapture({ uri, headers, prefix ->
                     readBrowserResource(uri, headers, prefix, attempt, deadline)
@@ -179,7 +184,16 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     val captured = WebVideoBilibiliCapture.formats(page, media)
                         ?: throw ExtractionFailure(WebVideoBilibiliCapture.unavailableReason(media))
                     attempt.stage = "selection"
-                    val selected = selectBilibiliFormat(page, captured, capabilities, id)
+                    val selected = try { selectBilibiliFormat(page, captured, capabilities, id) }
+                    catch (error: ExtractionFailure) {
+                        if (error.code == "browser_format_unsupported") {
+                            // Inspect same-quality HEVC declarations without fetching them or replacing
+                            // the observed pair. Diagnostics must never mask the original failure.
+                            runCatching { WebVideoBilibiliHevcDiagnostics.log(page, media, maxHeight, id) }
+                                .onFailure { CrashTrail.mark("web_beta.hevc", "id=$id diagnostic_query_error=true") }
+                        }
+                        throw error
+                    }
                     attempt.check()
                     captured to selected
                 } else WebVideoResolution.select(page, {

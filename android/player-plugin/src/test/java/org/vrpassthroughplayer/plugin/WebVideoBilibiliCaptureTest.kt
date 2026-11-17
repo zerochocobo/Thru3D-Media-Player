@@ -6,6 +6,38 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WebVideoBilibiliCaptureTest {
+    @Test fun hevcDiagnosticDeclarationsNeverReplaceTheObservedPair() {
+        val media = fixture().put("width", 7680).put("height", 3840)
+        val data = media.getJSONObject("bilibili").put("quality", 127)
+        val av1 = data.getJSONArray("video").getJSONObject(0).put("id", 127)
+            .put("width", 7680).put("height", 3840).put("codec", "av01.0.16M.10")
+        val hevc = JSONObject(av1.toString()).put("codec", "hev1.1.6.L180.90")
+            .put("urls", JSONArray().put(url(127)))
+        data.getJSONArray("video").put(hevc)
+        fun candidates() = WebVideoBilibiliHevcDiagnostics.candidates(page, media)
+        val candidate = candidates().single()
+        assertEquals(7680, candidate.width); assertFalse(candidate.observed)
+        assertEquals("hev1.1.6.L180.90", candidate.probe().videoCodec)
+        assertEquals("capability.invalid", candidate.probe().url.host)
+        assertTrue(candidate.probe().headers.isEmpty())
+        // Declaration plus hardware acceptance alone must not become a native handoff.
+        val captured = WebVideoBilibiliCapture.formats(page, media)!!
+        assertThrows(WebVideoFormats.DecoderRejected::class.java) {
+            WebVideoFormats.select(page, captured) { it.videoCodec.startsWith("hev1") }
+        }
+        hevc.put("id", 120); assertTrue(candidates().isEmpty()); hevc.put("id", 127)
+        hevc.put("height", 2160); assertTrue(candidates().isEmpty()); hevc.put("height", 3840)
+        hevc.put("fps", 60); assertTrue(candidates().isEmpty()); hevc.put("fps", 30)
+        media.put("protected", true); assertTrue(candidates().isEmpty()); media.remove("protected")
+        assertTrue(WebVideoBilibiliHevcDiagnostics.candidates(WebVideoPage.parse(page.url + "?p=2"), media).isEmpty())
+        // Historical exact requests are visible as observations, but the later AV1 still wins.
+        media.getJSONArray("network").put(JSONObject().put("url", url(127)).put("kind", "file")
+            .put("at", 500).put("headers", JSONObject().put("referer", page.url)))
+        assertTrue(candidates().single().observed)
+        assertEquals("av01.0.16m.10", WebVideoFormats.select(page,
+            WebVideoBilibiliCapture.formats(page, media)!!) { true }.video.videoCodec)
+    }
+
     @Test fun playlistCaptureKeepsExactPageAndPartAndRejectsThePreviousSelection() {
         for (route in listOf("list/watchlater", "list/ml1234", "medialist/play/1234")) {
             val url = "https://www.bilibili.com/$route?bvid=BV1234567890"
@@ -188,6 +220,21 @@ class WebVideoBilibiliCaptureTest {
         }
         media.put("bilibili_quality", 80)
         assertNull(WebVideoBilibiliCapture.formats(page, media))
+    }
+
+    @Test fun widerDisplayPixelsDoNotRejectTheAlreadyBoundCodedQuality() {
+        val media = fixture().put("width", 2560).put("height", 1080)
+            .put("bilibili_frame_width", 1920).put("bilibili_frame_height", 1080)
+        val info = WebVideoBilibiliCapture.formats(page, media)
+        assertNotNull(info)
+        val selected = WebVideoFormats.select(page, info!!) { true }
+        assertTrue(WebVideoNetworkCapture.keepsQuality(selected.video, media))
+        fun otherSize(width: Int, height: Int) = WebVideoTrack("other", selected.video.url, emptyMap(),
+            "mp4", "avc1.640028", "none", width, height, 30.0)
+        assertFalse(WebVideoNetworkCapture.keepsQuality(otherSize(1280, 720), media))
+        assertFalse(WebVideoNetworkCapture.keepsQuality(otherSize(3840, 2160), media))
+        media.put("bilibili_frame_width", "1920")
+        assertFalse(WebVideoNetworkCapture.keepsQuality(selected.video, media))
     }
 
     @Test fun outgoingQualityFinishingLastDoesNotOverrideTheDecodedQuality() {

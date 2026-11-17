@@ -13,7 +13,10 @@ const Thru3DDouyin = (() => {
       const path = /^\/video\/([1-9][0-9]{14,19})\/?$/.exec(u.pathname)?.[1];
       const ids = u.searchParams.getAll('modal_id');
       if (ids.length > 1 || path && ids.length && ids[0] !== path) return null;
-      const modal = ['/', '/recommend', '/discover', '/search/'].includes(u.pathname) && ids[0];
+      // Personal history/favorites keep their own route when opening a player.
+      // modal_id nominates content only; the rendered owner and requests must agree.
+      if (u.pathname.startsWith('/video/') && !path) return null;
+      const modal = ids[0];
       const id = path || modal;
       return /^[1-9][0-9]{14,19}$/.test(id || '') ? {id} : null;
     } catch (_) { return null; }

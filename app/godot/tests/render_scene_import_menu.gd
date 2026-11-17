@@ -94,6 +94,13 @@ func _run() -> void:
 	await save_frame(viewport, camera, menu, output.path_join("adjust.png"))
 	menu._choice_changed("scene_screen_light", 1.0)
 	_check(commands.back() == ["adjust", {"mode": "global", "key": "scene_screen_light", "value": 1.0}], "Its screen light is a setting")
+	menu._choice_changed("scene_screen_pin", true)
+	_check(commands.back() == ["adjust", {"mode": "global", "key": "scene_screen_pin", "value": true}], "Pinning the screen in the scene is a switch there")
+	# The most rows a scene shows: baked lighting and a panorama behind a scene without a sky.
+	scenes.own_sky = false
+	scenes.screen_pinned = true
+	menu.refresh()
+	await save_frame(viewport, camera, menu, output.path_join("adjust-full.png"))
 	menu._activate(menu.CURRENT)
 	_check(commands.back() == ["scene_home", "global"], "Return to start goes back to where the scene put the viewer")
 	menu.navigate_back()

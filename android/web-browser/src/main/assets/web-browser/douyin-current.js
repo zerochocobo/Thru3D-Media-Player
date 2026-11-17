@@ -60,7 +60,7 @@ const Thru3DDouyinCurrent = (() => {
   const ownerState=(video,value)=>{
     if(!Thru3DDouyin.documentPage(value))return {reason:'document'};
     const url=new URL(value),modal=url.searchParams.getAll('modal_id'),path=/^\/video\/([1-9][0-9]{14,19})\/?$/.exec(url.pathname)?.[1];
-    if(!path&&!['/','/jingxuan','/recommend','/discover','/search/'].includes(url.pathname))return {reason:'path'};
+    if(url.pathname.startsWith('/video/')&&!path)return {reason:'path'};
     if(modal.length>1||modal.length&&!validId(modal[0])||path&&modal.length&&path!==modal[0])return {reason:'modal'};
     const ids=new Set();let active=false,detail=false,player=false;
     for(let node=video,i=0;node&&i<ancestors;node=node.parentElement,i++){

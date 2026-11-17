@@ -418,6 +418,33 @@ class WebVideoNetworkCaptureTest {
         assertEquals(root,selected.video.url.toString());assertEquals(listOf(URI(root),URI(init)),reads.map{it.first})
         assertEquals("root-only",reads.first().second["authorization"]);assertFalse(reads.last().second.containsKey("authorization"))
         assertTrue(WebVideoYoukuCapture.keeps(p,m,m,selected.video))
+
+        val cdn = URI("https://edge.test/redirected/list.m3u8?signature=new")
+        val redirectedInit = cdn.resolve("init.mp4")
+        val redirectedReads = mutableListOf<URI>()
+        val redirected = WebVideoNetworkCapture({ uri, headers, prefix ->
+            redirectedReads.add(uri)
+            when (uri) {
+                URI(root) -> {
+                    assertFalse(prefix)
+                    assertEquals("root-only", headers["authorization"])
+                    cdn to body.toByteArray()
+                }
+                redirectedInit -> {
+                    assertTrue(prefix)
+                    assertFalse(headers.containsKey("authorization"))
+                    uri to mp4()
+                }
+                else -> error("Unexpected HLS request")
+            }
+        }, { true })
+        val redirectedInfo = WebVideoYoukuCapture.resolve(p,m,redirected)!!
+        val redirectedTrack = WebVideoFormats.select(p,redirectedInfo){true}.video
+        assertEquals(URI(root), redirectedTrack.url)
+        assertEquals("root-only", redirectedTrack.headers["authorization"])
+        assertEquals(listOf(URI(root), redirectedInit), redirectedReads)
+        assertTrue(WebVideoYoukuCapture.keeps(p,m,m,redirectedTrack))
+
         for(bad in listOf(mp4(width=1280,height=720),mp4(audio=false),mp4(protected=true)))
             assertNull(WebVideoYoukuCapture.resolve(p,m,resolver(data+(init to bad))))
         assertNull(WebVideoYoukuCapture.resolve(p,m,resolver(data+(root to body.replace("#EXTINF", "#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"key\"\n#EXTINF").toByteArray()))))

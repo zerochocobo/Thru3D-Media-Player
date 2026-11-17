@@ -4,7 +4,7 @@ The application uses yt-dlp for local media discovery, and the Android Python an
 QuickJS distribution from youtubedl-android. It does not use its download manager,
 automatic updates, FFmpeg or aria2c packages.
 
-- yt-dlp 2026.10.26: https://github.com/yt-dlp/yt-dlp/tree/2026.10.26
+- yt-dlp 2026.11.16.232655 (official nightly): https://github.com/yt-dlp/yt-dlp/tree/8f9e23a47eb68816a639096aecfb9d802f83c0a5
   (Unlicense; see LICENSE.yt-dlp). The pinned Python zip includes EJS 0.8.0;
   its Meriyah and Astring notices are embedded in the solver JavaScript headers,
   not standalone license files. NOTICE.ejs.txt makes those original headers
@@ -25,3 +25,23 @@ runtime.json pins the Python zip and its SHA-256. Build-Player downloads it to
 build/web-video, verifies it, and stages it as an APK asset. No third-party account
 credentials or browser cookies are included. This development integration does
 not constitute a store submission or a completed distribution audit.
+
+## Updating the pinned extractor
+
+Run `tools/Check-WebVideoUpdate.ps1` to compare both official release channels
+with the pin. This is a read-only maintenance check; builds and installed apps
+never follow a floating `latest` URL or update the extractor automatically.
+
+For an update, review the upstream changes and choose a fixed release. Verify
+the `yt-dlp` asset against both its GitHub asset digest and `SHA2-256SUMS`, then
+update runtime.json (version, channel, source commit, URL, size and SHA-256).
+Review the bundled EJS version, solver headers and license notices as well as
+the Python/QuickJS compatibility; update this notice and RUNTIME-NOTICE.txt.
+Run `tools/environment/Prepare-WebVideo.ps1`, then
+`python -m unittest discover -s tests -p "test_web_video_*.py"` and
+`python tools/Test-LicenseCatalog.py`. Check representative actual websites
+separately: offline compatibility is not evidence of successful extraction.
+Record results in prompt/HANDOVER_yyyyMMdd.md and commit the pin with its notices.
+The next normal full build must pass the existing APK asset hash checks before
+device validation. Reverting the pin and notices and rerunning preparation
+restores the previous extractor; do not depend on build/ for a rollback copy.

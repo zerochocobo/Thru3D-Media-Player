@@ -1,0 +1,11 @@
+{
+  "manifest_version": 2,
+  "name": "Thru3D Thunder verification",
+  "version": "1.0",
+  "browser_specific_settings": { "gecko": { "id": "thunder-login@thru3d.local" } },
+  "permissions": ["nativeMessaging", "nativeMessagingFromContent", "geckoViewAddons"],
+  "content_scripts": [{
+    "matches": ["https://i.xunlei.com/xlcaptcha/android.html"],
+    "js": ["review.js"], "run_at": "document_start", "all_frames": false
+  }]
+}

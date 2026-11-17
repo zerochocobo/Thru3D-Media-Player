@@ -17,6 +17,7 @@ The retained `.svg` files are source material, not runtime downloads.
 | Quark Netdisk | `quark.svg` | [Arcticons Team](https://github.com/Arcticons-Team/Arcticons/blob/main/newicons/quark_cloud_drive.svg), GPL-3.0 |
 | OneDrive | `onedrive.svg` | [selfh.st icons](https://github.com/selfhst/icons/blob/main/svg/microsoft-onedrive-2018-dark.svg), CC BY 4.0 |
 | WebDAV | `webdav.svg` | Original globe / bidirectional transfer pictogram, project GPL-3.0 |
+| Thunder Cloud Drive | `thunder.svg` | [Thunder Cloud official website](https://pan.xunlei.com/), [official combined SVG](https://static-pan.xunlei.com/_nuxt/dist/client/img/logo-pan-mix.9caf949.svg); vendor product mark |
 
 `tools/Prepare-ProviderIcons.py` reproducibly creates the runtime vectors in
 `app/godot/assets/provider-icons/`. Changes: remove application tile backgrounds
@@ -41,6 +42,15 @@ unchanged. The implementation and color mapping are in `provider_icons.gd` and
 `ray_menu.gd`; no new image source or license is introduced.
 
 Upstream license texts are retained in the `LICENSE-*.txt` files in this directory.
+Thunder was added 2026-11-17. Its retained official SVG is unchanged; preparation
+extracts the bird path (`p-id=3065`), removes the blue tile and Chinese wordmark,
+and centres it on the same transparent canvas. The one white vector is drawn
+in brand blue on light themes and white on dark themes, retaining the UI state's
+alpha. Blue starts from the official source tile's `#3F85FF`; the existing light
+theme contrast adjustment applies. This supersedes the initial pure-black preview.
+No colored background or additional raster copy is used. The official asset
+does not supply a separate artwork license; no trademark grant is asserted.
+
 Packaged attribution is in
 `third_party/player-licenses/provider-icons.txt`. Product names and marks remain
 associated with their respective owners; collection licenses do not transfer

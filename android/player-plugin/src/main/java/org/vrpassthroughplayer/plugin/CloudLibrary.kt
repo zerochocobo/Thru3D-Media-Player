@@ -79,6 +79,13 @@ internal object CloudLibrary {
         JSONObject().put("base", account.getString("base")).put("username", account.optString("username"))
             .put("has_password", account.optBoolean("has_password"))
     }
+    fun connectThunder(credential: JSONObject, name: String, id: String? = null,
+        commit: ((() -> Unit) -> Unit) = { it() }) = safe {
+        require(name.isNotBlank())
+        CloudLoginFailure.at(CloudLoginFailure.Stage.CORE) { OpenListBackend.start(appContext) }
+        val candidate = CloudLoginFailure.at(CloudLoginFailure.Stage.MOUNT) { OpenListBackend.createThunder(credential) }
+        CloudLoginFailure.at(CloudLoginFailure.Stage.SAVE) { saveMount(candidate, name, id, commit) }
+    }
     fun connectWebDav(name: String, base: String, username: String, password: String, id: String? = null,
         commit: ((() -> Unit) -> Unit) = { it() }) = safe {
         require(name.isNotBlank())
@@ -203,12 +210,12 @@ internal object CloudLibrary {
             .put("kind", MediaKinds.fileNameKind(name)).put("uri", if (data.getBoolean("is_dir")) "" else CloudPaths.uri(full))
     }
     fun sortOrders(provider: String): JSONArray {
-        if (provider == CloudDrive.OPEN123) return JSONArray(listOf("source"))
+        if (provider in setOf(CloudDrive.OPEN123, CloudDrive.THUNDER)) return JSONArray(listOf("source"))
         val orders = (CloudSortedPages.ORDERS + "source").filter { provider != CloudDrive.QUARK || !it.startsWith("size_") }
         return JSONArray(if (provider in setOf(CloudDrive.OPEN115, CloudDrive.WEBDAV)) orders + orders.map { "mixed_$it" } else orders)
     }
     fun effectiveOrder(provider: String, order: String): String =
-        if (provider == CloudDrive.OPEN123) "source" else if (provider == CloudDrive.QUARK && order.startsWith("size_")) "name_asc" else order
+        if (provider in setOf(CloudDrive.OPEN123, CloudDrive.THUNDER)) "source" else if (provider == CloudDrive.QUARK && order.startsWith("size_")) "name_asc" else order
 
     fun browse(path: String, refresh: Boolean, offset: Int = 0, http: CloudTransport = CloudHttp, order: String = "", folderId: String = "", subtitlesOnly: Boolean = false, requestedSize: Int = CloudDrive.PAGE_SIZE): JSONObject = safe {
         val entries = JSONArray()

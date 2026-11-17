@@ -5,6 +5,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WebBrowserCaptureDiagnosticsTest {
+    @Test fun webpagePlaybackExportsOnlyBoundedCountersAndErrorCodes() {
+        val raw = JSONObject().put("ready_state",4).put("network_state",2).put("error_code",3)
+            .put("total_frames",100).put("dropped_frames",2).put("decoded_frames",99).put("presented_frames",97)
+            .put("source","PRIVATE_URL").put("message","PRIVATE_ERROR")
+        val item=JSONObject().put("playback",raw)
+        val result=WebBrowserCaptureDiagnostics.playback(item)
+        assertEquals(7,result.length());assertEquals(97,result.getInt("presented_frames"))
+        assertFalse(result.toString().contains("PRIVATE"))
+        raw.put("ready_state",5).put("network_state",-1).put("error_code","3")
+            .put("total_frames",1000000001L).put("dropped_frames",1.5)
+        assertEquals(2,WebBrowserCaptureDiagnostics.playback(item).length())
+    }
     @Test fun rejectedIqiyiDeclarationReasonsNeverExportTheDeclaration() {
         for(reason in listOf("unsupported_declaration","unsupported_container","missing_playlist","oversize_playlist","non_hls_playlist")) {
             val raw=JSONObject().put("status",reason).put("capture_ready",false).put("binding_ready",false)

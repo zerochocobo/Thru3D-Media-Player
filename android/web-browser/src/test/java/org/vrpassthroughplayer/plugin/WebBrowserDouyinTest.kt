@@ -10,7 +10,8 @@ class WebBrowserDouyinTest {
         .put("douyin",JSONObject().put("id",id).put("page",frame))
 
     @Test fun renderedFeedIdentityKeepsTheRealFrameAndCannotSurviveAnOwnerSwitch() {
-        for (frame in listOf("https://www.douyin.com/", "https://www.douyin.com/jingxuan", "https://www.douyin.com/jingxuan?modal_id=$id")) {
+        for (frame in listOf("https://www.douyin.com/", "https://www.douyin.com/jingxuan", "https://www.douyin.com/jingxuan?modal_id=$id",
+            "https://www.douyin.com/user/self?showTab=favorite", "https://www.douyin.com/user/self?showTab=record&modal_id=$id")) {
             val item = metadataItem(frame)
             val blob="blob:https://www.douyin.com/synthetic"
             item.put("blob",true).put("douyin_source",blob).put("width",1280).put("height",720)
@@ -24,7 +25,8 @@ class WebBrowserDouyinTest {
             assertNull(WebBrowserDouyin.renderedId(item)); assertNull(WebBrowserDouyin.metadata(item, frame, true))
         }
         for (bad in listOf("https://www.douyin.com/jingxuan?modal_id=$id&modal_id=$id", "https://www.douyin.com/jingxuan?modal_id=7674225615168824549",
-            "https://www.douyin.com/video/7674225615168824549", "https://www.douyin.com/account/", "https://user@www.douyin.com/")) {
+            "https://www.douyin.com/video/7674225615168824549", "https://www.douyin.com/video/invalid", "https://user@www.douyin.com/",
+            "https://www.douyin.com/user/self?modal_id=$id&modal_id=$id", "https://www.douyin.com/user/self?modal_id=7674225615168824549")) {
             val item=metadataItem(bad); item.getJSONObject("douyin").put("binding","rendered_card").put("active_id",id)
             assertNull(WebBrowserDouyin.renderedId(item))
         }

@@ -15,6 +15,7 @@ const PIXELS := Vector2i(2400, 1500)
 const LOW_END_PIXELS := Vector2i(1920, 1200)
 const HOLE := preload("res://shaders/web_browser_hole.gdshader")
 const Layer := preload("res://scripts/web_browser_layer.gd")
+const Page := preload("res://scripts/web_browser_page.gd")
 var target: WeakRef
 var platform: Object
 var layer: RefCounted
@@ -97,7 +98,9 @@ func _ready() -> void:
 	if menu: menu.set_meta("menu_browser_layer", true)
 
 func _create_layer() -> void:
-	layer = Layer.new()
+	# No Android-surface swapchains (QIYU factory runtime): the page goes into the eye buffer.
+	var page := Page.needed()
+	layer = Page.new() if page else Layer.new()
 	var menu: Node = target.get_ref() if target else null
 	var convert: bool = menu != null and (menu.depth.enabled or menu.depth.matte) and not menu.selecting
 	var matte: bool = menu != null and menu.depth.matte and not menu.selecting
@@ -106,6 +109,7 @@ func _create_layer() -> void:
 		if convert and menu:
 			menu.depth.enabled = false; menu.depth.matte = false; menu.depth.error = "3D unavailable"; menu.refresh(); menu.browser.effects_changed.emit()
 		status = "surface_unavailable"; layer = null; return
+	if page: hole.material_override = layer.material
 	if menu: menu.set_meta("menu_browser_layer", true)
 
 func present(value: bool, bounds: Rect2) -> void:
@@ -146,6 +150,10 @@ func _process(_delta: float) -> void:
 	if ending: return
 	var conversion: bool = (menu.depth.enabled or menu.depth.matte) and not menu.selecting
 	var matte: bool = menu.depth.matte and not menu.selecting
+	if conversion and Page.needed():
+		# An eye-buffer page has no stereo producer: refuse before loading the depth model.
+		menu.depth.enabled = false; menu.depth.matte = false; menu.depth.error = "3D unavailable"; menu.refresh(); menu.browser.effects_changed.emit()
+		conversion = false; matte = false
 	var preparation_pending := false
 	if conversion and (not layer or not layer.stereo or layer.alpha != matte):
 		if not preparation_api: preparation_api = JavaClassWrapper.wrap("org.vrpassthroughplayer.plugin.WebBrowserDepthBridge")

@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const root=path.join(__dirname,'../../main/assets/web-browser'),id='6961737553342991651',other='6961737553342991652';
 const first='https://associated.test/first.mp4?signature=synthetic',second='https://associated.test/second.mp4?signature=synthetic';
-function fixture(){
+function fixture(page='https://www.douyin.com/'){
  const signal=()=>({listeners:[],addListener(fn){this.listeners.push(fn)},emit(m){this.listeners.forEach(fn=>fn(m))}});
  const timers=[],ports=[],events={},buttons=[];let ownerId=id;
  const raw=(id,url)=>({awemeId:id,video:{duration:25000,width:1280,height:720,playAddr:[{src:url}]}});
@@ -11,7 +11,7 @@ function fixture(){
    addEventListener(n,f){(listeners[n]??=[]).push(f)},pause(){this.paused=true},play(){this.paused=false;for(const f of listeners.play||[])f();return Promise.resolve()},
    getBoundingClientRect:()=>({left:0,top:0,right:1280,bottom:720,width:1280,height:720})};
  const body={append(o){o.parentElement=this}},document={nodeType:9,body,querySelectorAll:s=>s==='video'?[video]:[],createElement:()=>({dataset:{},style:{},remove(){this.removed=true}})};
- const context={URL,document,location:{href:'https://www.douyin.com/'},navigator:{userAgent:'fixture'},setTimeout(fn){timers.push(fn)},
+ const context={URL,document,location:{href:page},navigator:{userAgent:'fixture'},setTimeout(fn){timers.push(fn)},
    addEventListener(n,f){(events[n]??=[]).push(f)},performance:{now:()=>0,getEntriesByType:()=>[]},MutationObserver:class{observe(){}disconnect(){}},
    Thru3DPlayButton:{visible:()=>true,create(doc,overlay,site,clicked){const host={dataset:{},isConnected:true,hidden:false};buttons.push({host,clicked});return {host,interactive:()=>host.isConnected&&!host.hidden,enabled(){},dispose(){host.isConnected=false}}}},
    browser:{runtime:{connect(){const p={onMessage:signal(),onDisconnect:signal(),postMessage(){}};ports.push(p);return p},
@@ -34,6 +34,19 @@ test('trusted current-card click works, preloaded files and same-Blob owner swit
  assert.equal(after.douyin.id,other);assert.notEqual(after.network_epoch,before.network_epoch);assert.equal(after.douyin_request,0);
  assert.equal(f.click(old).douyin_request,0);assert.equal(f.click().douyin_request,2);
  assert.equal(f.latest().douyin.observed_file,second);
+});
+test('personal history and favorites require the same rendered owner and fresh click as the home feed',()=>{
+ for(const page of ['https://www.douyin.com/user/self?showTab=record',
+   'https://www.douyin.com/user/self?showTab=favorite&modal_id='+id,
+   'https://www.douyin.com/jingxuan?modal_id='+id]){
+   const f=fixture(page);assert.equal(f.latest().douyin_ready,true);
+   assert.equal(f.latest().douyin.page,page);assert.equal(f.click().douyin_request,1);
+   f.switchOwner(false);assert.equal(f.snapshot().douyin_ready,false);
+ }
+ for(const suffix of ['?modal_id='+other,'?modal_id='+id+'&modal_id='+id]){
+   const f=fixture('https://www.douyin.com/user/self'+suffix);
+   assert.equal(f.latest().douyin_ready,false);
+ }
 });
 test('retained pause lease and return keep the bound page paused, reject stale revisions and never seek a replacement owner',()=>{
  const f=fixture(),initial=f.latest(),message={action:'restore_douyin',id:String(initial.id),epoch:initial.network_epoch,page:initial.frame,revision:initial.douyin.revision,time:20,play:false};

@@ -131,8 +131,9 @@ internal class CloudDrive(val provider: String, private val cookie: String, priv
         const val QUARK = "quark_open"
         const val OPEN123 = "123_open"
         const val WEBDAV = "webdav"
-        val PROVIDERS = linkedMapOf(OPEN115 to "115", BAIDU to "百度网盘", ALIYUN to "阿里云盘", QUARK to "夸克网盘", OPEN123 to "123云盘", ONEDRIVE to "OneDrive", WEBDAV to "WebDAV")
-        // Candidate providers are opened explicitly by Debug diagnostics only.
+        const val THUNDER = "thunder"
+        val PROVIDERS = linkedMapOf(OPEN115 to "115", BAIDU to "百度网盘", ALIYUN to "阿里云盘", QUARK to "夸克网盘", OPEN123 to "123云盘", ONEDRIVE to "OneDrive", WEBDAV to "WebDAV", THUNDER to "迅雷云盘（测试版）")
+        // Candidate providers remain outside the Release provider list.
         val TRIAL_PROVIDERS = emptyMap<String, String>()
         fun providerName(provider: String) = PROVIDERS[provider] ?: TRIAL_PROVIDERS.getValue(provider)
         private val mediaDomains = mapOf(P115 to listOf("115.com", "115cdn.com", "115cdn.net"),

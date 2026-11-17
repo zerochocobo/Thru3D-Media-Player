@@ -417,7 +417,7 @@ func _draw_requirements() -> void:
 		["Unity scene bundle",".unity3d · .assetbundle · .bundle · .ab · .vrcw · .omission"],
 		["Limits","≤%d MB · "%(int(limits.file_bytes)/1048576)+I18n.t("≤%s triangles")%I18n.t("%d0K")%(int(limits.triangles)/10000)],
 		["Textures",I18n.t("Embedded in the file")],
-		["Lights and animation",I18n.t("Not used")]] if scene else [
+		["Lights and animation",I18n.t("≤%d lights · No animation")%int(limits.lights)]] if scene else [
 		["File format","JPG / JPEG · PNG · WebP"],
 		["Per-eye projection","360° · 2:1   /   VR180 · 1:1"],
 		["Resolution limit",I18n.t("≤8192 px per side · ≤33.5 MP")],
@@ -431,6 +431,8 @@ func _draw_requirements() -> void:
 	if scene:
 		_left(I18n.t("Exported from Blender, Maya, 3ds Max…"),Vector2(.14,_top-.27),TEXT_AUX,.53,MUTED)
 		_left(I18n.t("Far objects are left out beyond that"),Vector2(.14,_top-.27-2*.105),TEXT_AUX,.53,MUTED)
+		# Blender's glTF export leaves lights out unless this box is ticked; its FBX export keeps them.
+		_left(I18n.t("For .glb, tick Punctual Lights when exporting"),Vector2(.14,_top-.27-4*.105),TEXT_AUX,.53,MUTED)
 	_rule(_top-.27-rows.size()*.105+.03)
 	_left(I18n.t("New to modelling? Let an AI drive Blender for you, then export .glb." if scene else "Stretching an ordinary image does not make it a panorama."),Vector2(LEFT,_top-.27-rows.size()*.105-.035),TEXT_AUX,1.30,MUTED)
 	_button(BACK,I18n.t("Got it"),Vector2(.47,_bottom+.09),Vector2(.40,.075))
@@ -746,6 +748,8 @@ func _draw_adjust() -> void:
 		if scenes.get("baked",false):
 			rows.append({"key":"scene_bake","value":scenes.get("bake",1.0),"choices":[{"value":0.0,"label":"Off"},{"value":.5,"label":"50%"},{"value":1.0,"label":"100%"}]})
 			names.append("Baked lighting")
+		rows.append({"key":"scene_screen_pin","value":scenes.get("screen_pinned",false),"choices":[],"switch":true,"hint":"The screen stays here while you walk"})
+		names.append("Pin screen in scene")
 		if not scenes.get("own_sky",true):
 			# A scene that came without a sky can have any panorama behind it.
 			var skies: Array=[{"value":"","label":"Dark background"}]
@@ -772,8 +776,10 @@ func _draw_adjust() -> void:
 			{"key":"background_brightness","value":_state.get("brightness",1.0),"choices":[{"value":.5,"label":"50%"},{"value":.75,"label":"75%"},{"value":1.0,"label":"100%"},{"value":1.25,"label":"125%"}]}]
 	if not _scene_active() and choice=="cinema": names=["Cinema lighting","Cinema interaction","Viewing brightness","Screen ambient light"]
 	elif not _scene_active() and choice=="private_beach": names=["Time of day","Cinema interaction","Screen ambient light"]
+	# Five rows (a baked scene without a sky) close up to leave the buttons below their room.
+	var step:=.13 if rows.size()<=4 else .115
 	for i in rows.size():
-		var y:=_top-.25-i*.13
+		var y:=_top-.25-i*step
 		_left(I18n.t(names[i]),Vector2(LEFT,y),TEXT_BODY,.43)
 		choices.field(null,rows[i],Vector2(.61 if rows[i].get("switch",false) else .25,y),.11 if rows[i].get("switch",false) else .82,.07)
 	if choice in ["cinema","private_beach"] and not _state.get("cinema_ready",true):

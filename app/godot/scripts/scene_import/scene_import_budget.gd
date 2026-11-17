@@ -4,14 +4,14 @@ extends RefCounted
 const LOW := "low"    # Quest 2, PICO Neo3, PICO 4
 const HIGH := "high"  # Quest 3, PICO 4 Ultra
 
-## No imported realtime light survives on either tier: glTF light strengths are physical
-## units that wash a room out here (seen on a headset), and the player supplies ambient and
-## screen light itself. The limit stays per tier so a later tier can keep some.
+## A scene's own lights are kept, strongest first, rescaled and unshadowed (see the loader).
+## The renderer draws each mesh again for every lamp that reaches it, hence the small caps: on
+## Quest 3 a 676k-triangle cafe held 72 fps with two lamps and fell to 69 with four (2026-11-17).
 const TIERS := {
 	LOW: {"triangles": 300000, "batches": 100, "texture_bytes": 128 * 1024 * 1024,
-		"texture_size": 1024, "sky_width": 4096, "lights": 0, "file_bytes": 256 * 1024 * 1024},
+		"texture_size": 1024, "sky_width": 4096, "lights": 1, "file_bytes": 256 * 1024 * 1024},
 	HIGH: {"triangles": 800000, "batches": 200, "texture_bytes": 384 * 1024 * 1024,
-		"texture_size": 2048, "sky_width": 4096, "lights": 0, "file_bytes": 768 * 1024 * 1024},
+		"texture_size": 2048, "sky_width": 4096, "lights": 2, "file_bytes": 768 * 1024 * 1024},
 }
 
 static func limits(tier: String) -> Dictionary:

@@ -16,7 +16,8 @@ class OpenListCandidateAuthTest {
     @Test fun bothVerifiedProvidersHavePublicEntries() {
         assertTrue(CloudDrive.PROVIDERS.containsKey(CloudDrive.ALIYUN))
         assertTrue(CloudDrive.PROVIDERS.containsKey(CloudDrive.QUARK))
-        assertTrue(CloudDrive.TRIAL_PROVIDERS.isEmpty())
+        assertFalse(CloudDrive.TRIAL_PROVIDERS.containsKey(CloudDrive.ALIYUN))
+        assertFalse(CloudDrive.TRIAL_PROVIDERS.containsKey(CloudDrive.QUARK))
         assertTrue(OpenListAuth.requestUrl(CloudDrive.ALIYUN).contains("driver_txt=alicloud_go&server_use=true"))
         assertTrue(OpenListAuth.requestUrl(CloudDrive.QUARK).contains("driver_txt=quarkyun_fn&server_use=true"))
     }

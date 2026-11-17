@@ -29,6 +29,9 @@ class Film extends Node:
 class Video extends Node3D:
 	var geometry := 0
 	var flat_pose := Transform3D(Basis.IDENTITY, Vector3(0, 1.5, -3))
+	var screen_rotation := 0.0
+	var screen_distance := 3.0
+	var local_uri := "film.mp4"
 	var _flat := Flat.new()
 	var playing := false
 	var placed := 0
@@ -290,6 +293,35 @@ func _run() -> void:
 	(sky.sky_material as ShaderMaterial).set_shader_parameter("rotation", 0.5)
 	var twin: ShaderMaterial = Controller.Unity.sky_backdrop(sky)
 	_check(twin != null and twin.shader.get_mode() == Shader.MODE_SPATIAL and is_equal_approx(twin.get_shader_parameter("rotation"), 0.5), "A scene's own sky has a twin for when menus sit on layers")
+
+	# The viewer can fix the screen in the scene: it stays there while they move, and stands on its bottom edge.
+	var video: Video = app.video
+	var room: Node3D = controller._root
+	_check(not controller.screen_pinned() and not controller.snapshot().screen_pinned, "The screen follows the viewer until it is pinned")
+	video.set_flat_world_pose(Transform3D(Basis(Vector3.UP, 0.4), Vector3(1.0, 1.6, -2.5)))
+	var bottom := Vector3(1.0, 1.6 - video._flat.size.y * 0.5, -2.5)
+	_check(controller.set_screen_pinned(true) and controller.screen_pinned() and controller.snapshot().screen_pinned
+		and controller.library.entries[plaza].screen_pinned == true and controller.library.entries[plaza].screen.size() == 7, "Pinning keeps the switch and the place with the scene")
+	room.global_position += Vector3(2.0, 0.0, -1.0)
+	await process_frame
+	var screen: Transform3D = video.global_transform * video.flat_pose
+	_check(screen.origin.is_equal_approx(Vector3(3.0, 1.6, -3.5)) and is_equal_approx(screen.basis.get_euler().y, 0.4), "Moving through the scene leaves the screen in its place there (%s)" % screen.origin)
+	video._flat.size *= 2.0
+	await process_frame
+	screen = video.global_transform * video.flat_pose
+	_check((screen.origin - screen.basis.y * video._flat.size.y * 0.5).is_equal_approx(bottom + Vector3(2.0, 0.0, -1.0)), "A bigger screen grows up from where its bottom edge stood")
+	video.set_flat_world_pose(Transform3D.IDENTITY)
+	await process_frame
+	_check((video.global_transform * video.flat_pose).origin.is_equal_approx(screen.origin), "Something else moving the screen is undone")
+	var kept := Library.new()
+	kept.directory = home
+	kept.load_catalog()
+	var pin: Variant = kept.screen_pin(plaza)
+	_check(pin is Transform3D and (pin as Transform3D).is_equal_approx(controller._pin), "The pinned place is read back after a restart")
+	_check(controller.set_screen_pinned(false) and not controller.screen_pinned() and controller.library.entries[plaza].screen_pinned == false
+		and controller.library.entries[plaza].has("screen") and controller.library.screen_pin(plaza) == null, "Unpinning turns the switch off and keeps the last place")
+	video._flat.size /= 2.0
+	room.global_position -= Vector3(2.0, 0.0, -1.0)
 
 	# Picking a file that is already here goes to that scene instead of copying it again.
 	controller.add(second, "Hall.glb", FileAccess.get_size(second))

@@ -93,7 +93,7 @@ func start(type: String, selected_provider: String = "", id: String = "", defaul
 	fields.assign(["name", "base", "username", "password"] if type == "server" or (type == "cloud" and provider == "webdav") else ["name", "username", "password"])
 	if type == "server" and provider == "stash": fields.erase("username")
 	if type == "server" and provider == "plex": fields.assign(["name", "base"])
-	if type == "cloud" and provider not in ["115", "webdav"]: fields.assign(["name"])
+	if type == "cloud" and provider not in ["115", "webdav", "thunder"]: fields.assign(["name"])
 	field = "base" if type == "server" or provider == "webdav" else "username"
 	if not field in fields: field = "name"
 	_defaults = {}
@@ -102,6 +102,7 @@ func start(type: String, selected_provider: String = "", id: String = "", defaul
 	_begin_field_input()
 
 func provider_name(value: String) -> String:
+	if value == "thunder": return I18n.t("Thunder Cloud Drive (Beta)")
 	return {"115": "115", "115_open": "115", "onedrive": "OneDrive", "webdav": "WebDAV", "baidu": I18n.t("Baidu Netdisk"), "aliyun_open": I18n.t("Aliyun Drive"), "quark_open": I18n.t("Quark Netdisk"), "123_open": I18n.t("123 Cloud Drive"), "emby": "Emby", "jellyfin": "Jellyfin", "stash": "Stash", "xbvr": "XBVR", "plex": "Plex"}.get(value, value)
 
 func poll() -> void:
@@ -201,7 +202,10 @@ func rows() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	if view == "choose":
 		if kind == "cloud":
-			for p in ["115_open", "baidu", "aliyun_open", "quark_open", "123_open", "onedrive", "webdav"]: result.append({"title": provider_name(p), "icon": menu.Icons.provider(p), "account_provider": p})
+			for p in ["115_open", "baidu", "aliyun_open", "quark_open", "123_open", "onedrive", "thunder", "webdav"]:
+				var row := {"title": provider_name(p), "icon": menu.Icons.provider(p), "account_provider": p}
+				if p == "thunder": row.tip = "Beta. Unofficial integration; may be unstable."
+				result.append(row)
 		else:
 			result.append({"title": I18n.t("Search local network"), "icon": "refresh", "account_discover": true})
 			for p in ["emby", "jellyfin", "plex", "stash", "xbvr"]: result.append({"title": provider_name(p), "icon": menu.Icons.provider(p, "server"), "account_provider": p})
@@ -348,7 +352,11 @@ func draw() -> void:
 				if _editing_id(): menu._button(BASE + 6, I18n.t("Test and save"), Vector2(0.55 if compact else 0.3, actions), Vector2(0.4, 0.07), enabled)
 			elif kind == "server" or provider == "webdav": menu._button(BASE + 6, I18n.t("Test and save"), Vector2(0.3, actions), Vector2(0.4, 0.07), enabled, "", true)
 			else:
-				if provider == "115":
+				if provider == "thunder":
+					var note: Label3D = menu._label(I18n.t("Your username and password are used only for this sign-in and are not saved."), Vector3(0.17, 0.22 if compact else 0.069, 0.004), 16)
+					note.modulate = menu.MUTED
+					menu._button(BASE + 6, I18n.t("Sign in"), Vector2(0.17, login_y), Vector2(0.7, 0.077), enabled and not str(data.get("fields", {}).get("username", "")).is_empty() and int(data.get("password_length", 0)) > 0, "", true)
+				elif provider == "115":
 					menu._button(BASE + 7, I18n.t("Sign in on website"), Vector2(-0.15, login_y), Vector2(0.54, 0.077), enabled)
 					menu._button(BASE + 6, I18n.t("Sign in"), Vector2(0.46, login_y), Vector2(0.54, 0.077), enabled and not str(data.get("fields", {}).get("username", "")).is_empty() and int(data.get("password_length", 0)) > 0, "", true)
 				else: menu._button(BASE + 7, I18n.t("Authorize" if provider in ["115_open", "baidu", "aliyun_open", "quark_open", "123_open", "onedrive"] else "Sign in on website"), Vector2(0.17, login_y), Vector2(0.7, 0.077), enabled, "", true)

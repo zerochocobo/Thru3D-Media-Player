@@ -29,6 +29,12 @@ internal class WebVideoNetworkCapture(
 
     companion object {
         fun keepsQuality(track: WebVideoTrack, media: JSONObject): Boolean {
+            if (media.optBoolean("bilibili_enabled") && media.optJSONObject("bilibili") != null) {
+                // Gecko's display pixels can differ from coded pixels (pixel aspect).
+                // Keep the same exact size used by the validated observed Bilibili pair.
+                val size = runCatching { WebVideoBilibiliCapture.trackSize(media) }.getOrNull() ?: return false
+                return track.width == size.first && track.height == size.second
+            }
             val width = media.optInt("width"); val height = media.optInt("height")
             return width <= 0 || height <= 0 || track.width >= width && track.height >= height
         }
@@ -396,8 +402,7 @@ internal class WebVideoNetworkCapture(
         val scoped = scoped(base, uri)
         return Resource(uri, kind, scoped.headers)
     }
-    private fun validateHls(resource: Resource, expectedDuration: Double = 0.0) {
-        val (_, body) = text(resource); val lines = body.lineSequence().map(String::trim).toList()
+    private fun validateHls(lines: List<String>, expectedDuration: Double = 0.0) {
         require(lines.firstOrNull() == "#EXTM3U" && lines.contains("#EXT-X-ENDLIST"))
         require(lines.any { it.startsWith("#EXTINF:") })
         require(lines.none { it.startsWith("#EXT-X-DEFINE:") || it.startsWith("#EXT-X-STREAM-INF:") })
@@ -415,15 +420,18 @@ internal class WebVideoNetworkCapture(
         duration: Double = media.optDouble("duration")): JSONObject {
         val width = media.optInt("width"); val height = media.optInt("height")
         require(width > 0 && height > 0 && duration.isFinite() && duration > 0)
-        val matched = loaded.values.mapNotNull { (base, body) -> runCatching {
-            validateHls(base, duration)
+        val matched = loaded.mapNotNull { (observed, response) -> runCatching {
+            val (base, body) = response
             val lines = body.lineSequence().map(String::trim).toList()
+            validateHls(lines, duration)
             val first = lines.first { it.isNotEmpty() && !it.startsWith('#') }
             val init = lines.firstOrNull { it.startsWith("#EXT-X-MAP:") }?.let { attrs(it)["URI"] }
             val sample = read(target(base, init ?: first, "file"), true).second
             val container = WebVideoContainer.parse(sample) ?: WebVideoContainer.transportStream(sample) ?: error("Unknown HLS tracks")
             require(container.video != "none" && container.audio != "none" && container.width == width && container.height == height)
-            format(base, container.video, container.audio, container.width, container.height)
+            // Resolve relative segments at the redirected playlist, while retaining the
+            // exact browser request for the final selection check and authenticated replay.
+            format(observed, container.video, container.audio, container.width, container.height)
         }.getOrNull() }
         // An equal-size unrelated player or two unbound aliases remain ambiguous.
         require(matched.size == 1)
@@ -446,7 +454,7 @@ internal class WebVideoNetworkCapture(
         val lines = body.lineSequence().map(String::trim).toList()
         require(lines.firstOrNull() == "#EXTM3U")
         if (lines.none { it.startsWith("#EXT-X-STREAM-INF:") }) {
-            validateHls(base)
+            validateHls(lines)
             val first = lines.firstOrNull { it.isNotEmpty() && !it.startsWith('#') } ?: error("Empty playlist")
             val init = lines.firstOrNull { it.startsWith("#EXT-X-MAP:") }?.let { attrs(it)["URI"] }
             val sample = read(target(base, init ?: first, "file"), true).second
@@ -484,7 +492,9 @@ internal class WebVideoNetworkCapture(
         val chosen = pool.maxWithOrNull(compareBy<Pair<JSONObject, List<Resource>>> {
             val v = it.first.getJSONArray("formats").getJSONObject(0); v.optLong("width") * v.optLong("height")
         }.thenBy { it.first.getJSONArray("formats").getJSONObject(0).optDouble("tbr") }) ?: error("No compatible HLS variant")
-        chosen.second.forEach { validateHls(it, if (current) media.optDouble("duration") else 0.0) }
+        chosen.second.forEach {
+            validateHls(text(it).second.lineSequence().map(String::trim).toList(), if (current) media.optDouble("duration") else 0.0)
+        }
         return chosen.first
     }
 

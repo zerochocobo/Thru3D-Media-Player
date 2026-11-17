@@ -188,6 +188,34 @@ func _run() -> void:
 	var preference_path: String = paging.preferences.path
 	menu.queue_free(); await process_frame; platform.free()
 	if FileAccess.file_exists(preference_path): DirAccess.remove_absolute(preference_path)
+	await thunder_browse_cases()
 	print("cloud paging options checks=%d failures=%d" % [checks, failures.size()])
 	for failure in failures: push_error(failure)
 	quit(0 if failures.is_empty() else 1)
+
+func thunder_browse_cases() -> void:
+	var platform := Platform.new()
+	var menu := Menu.new(); root.add_child(menu); menu.attach_platform(platform)
+	menu.visible = true; menu.section = Menu.Section.CLOUD
+	menu.cloud_pagination.preferences.path = "user://test-thunder-paging-%d.cfg" % Time.get_ticks_usec()
+	menu._choose({"container": {"id": "/thunder", "title": "Thunder", "provider": "thunder", "sort_orders": ["source"]}})
+	check(platform.calls.back().page_size == 100, "Opening a saved Thunder account sends the supported 100-row request")
+	check(Paging.choices("thunder").all(func(choice): return choice.value <= 100), "Thunder settings never offer the rejected 200-row size")
+	if platform.calls.back().page_size == 100:
+		platform.respond({"order": "source", "order_fallback": true, "sort_orders": ["source"], "raw_ids": ["folder"], "entries": [{"id": "/thunder/Folder", "title": "Folder", "container": true, "cloud_id": "folder"}], "total": 1, "next_offset": -1})
+		check(menu.status.is_empty() and menu.rows.size() == 1, "Thunder root commits its folder without a page-size error")
+		menu._choose(menu.rows[0])
+		check(platform.calls.back().path == "/thunder/Folder" and platform.calls.back().folder == "folder" and platform.calls.back().page_size == 100, "Thunder child folder preserves identity and the supported page size")
+		platform.respond(); menu.cloud_pagination.jump(1)
+		check(platform.calls.back().offset == 100 and platform.calls.back().page_size == 100, "Thunder continuation uses a consistent 100-row cursor")
+		platform.respond({"next_offset": -1})
+		check(menu._cloud_page == 1 and menu.status.is_empty(), "Thunder continuation commits the next page")
+		menu.settings_provider = func(): return {"cloud_page_sizes": {"thunder": 200}}
+		menu._load_cloud()
+		check(platform.calls.back().page_size == 100, "An unsupported saved Thunder override falls back to 100")
+		platform.respond({"next_offset": -1})
+		menu.settings_provider = func(): return {"cloud_page_sizes": {"thunder": 48}}
+		menu._load_cloud()
+		check(platform.calls.back().page_size == 48, "Thunder still supports an explicit 48-row override")
+		platform.respond({"next_offset": -1})
+	menu.queue_free(); await process_frame; platform.free()

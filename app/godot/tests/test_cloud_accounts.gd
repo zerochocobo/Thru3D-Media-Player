@@ -32,6 +32,7 @@ func _run() -> void:
 	var a: RefCounted = menu.cloud_accounts
 	menu.account_panel.kind = "cloud"; menu.account_panel.view = "choose"
 	check(menu.account_panel.rows().any(func(row): return row.get("account_provider", "") == "123_open"), "123 official cloud entry is available")
+	check(menu.account_panel.rows().any(func(row): return row.get("account_provider", "") == "thunder"), "Thunder beta add entry is available in every build")
 	for language in ["zh", "en", "ja", "ru"]:
 		preload("res://scripts/i18n.gd").use(language)
 		check(menu.account_panel.provider_name("123_open") != "123_open", "123 localized name: " + language)

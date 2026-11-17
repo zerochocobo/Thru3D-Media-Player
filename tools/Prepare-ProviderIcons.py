@@ -22,6 +22,7 @@ BOUNDS = {
     "baidu": (2, 6, 44, 36), "aliyun": (1, 2, 46, 44),
     "quark": (2, 6, 44, 36), "xbvr": (0, 0, 444, 123),
     "webdav": (1, 1, 22, 22),
+    "thunder": (64.067072, 118.995862, 848.153938, 827.578527),
 }
 SERVER_COLORS = {
     "emby": "#52b54b", "jellyfin": "url(#jellyfin-color)",
@@ -31,6 +32,11 @@ SERVER_COLORS = {
 
 def rebuild(name, bounds):
     source = ET.parse(SOURCE / (name + ".svg")).getroot()
+    if name == "thunder":
+        # Official combined logo: retain the bird, omit the app tile and wordmark.
+        paths = source.findall(f"{{{NS}}}path")
+        assert paths[1].get("p-id") == "3065"
+        source[:] = [paths[1]]
     foreground = SERVER_COLORS.get(name, "white")
     # Expand the three line-art styles before discarding editor/style metadata.
     outlined = name in {"baidu", "aliyun", "quark"}

@@ -30,12 +30,33 @@ class Platform extends Fixture.Platform:
 	func web_browser_pointer(action: String, x: float, y: float, scroll: float) -> void: pointers.append([action, x, y, scroll])
 	func web_browser_library() -> String: return JSON.stringify(library)
 var checks := 0
+class PlaybackTrail extends RefCounted:
+	var events: Array = []
+	func crash_trail(stage: String, detail: String) -> void: events.append([stage, detail])
 var failures: Array[String] = []
 func check(ok: bool, message: String) -> void:
 	checks += 1
 	if not ok: failures.append(message)
 func _initialize() -> void: call_deferred("_run")
 func _run() -> void:
+	var trail := PlaybackTrail.new()
+	var previous_sink: Object = DiagnosticLog.trail_sink
+	DiagnosticLog.trail_sink = trail
+	var diagnostics_owner := Node.new()
+	var diagnostics := Browser.new(diagnostics_owner)
+	diagnostics.data = {"douyin_beta_available": true, "url": "PRIVATE_URL", "videos": [{"playing": true,
+		"width": 1920, "height": 1080, "time": 12, "douyin_ready": false, "selection": "PRIVATE_SELECTION",
+		"playback": {"ready_state": 4, "total_frames": 0, "dropped_frames": 0, "error_code": 0}}]}
+	diagnostics._record_webpage_playback(); diagnostics._record_webpage_playback()
+	check(trail.events.size() == 1, "Gray Beta webpage diagnostics are throttled without needing a handoff")
+	check(trail.events[0][0] == "web_beta.webpage" and not str(trail.events).contains("PRIVATE"), "Webpage diagnostics omit addresses and selection tokens")
+	diagnostics._next_media_diagnostic = 0
+	diagnostics.data.videos[0].playback.total_frames = 60
+	diagnostics._record_webpage_playback()
+	var later: Variant = JSON.parse_string(str(trail.events[1][1]).trim_prefix("site=douyin ")) if trail.events.size() == 2 else null
+	check(later is Dictionary and int(later.get("total_frames", -1)) == 60, "Later frame counters expose webpage decode progress")
+	DiagnosticLog.trail_sink = previous_sink
+	diagnostics_owner.free()
 	var platform := Platform.new()
 	var menu := Menu.new(); root.add_child(menu); menu.attach_platform(platform); menu.toggle()
 	menu._activate(Menu.NAV_BASE + Menu.Section.WEB)

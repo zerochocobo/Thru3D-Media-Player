@@ -10,7 +10,9 @@ internal class WebVideoHls(private val server: LocalStreamServer, private val st
     private val published = ArrayList<String>()
     private val manifests = HashMap<URI, String>()
     private val visiting = HashSet<URI>()
-    private val cache = LinkedHashMap<URI, ByteArray>(16, .75f, true)
+    private data class ResourceIdentity(val uri: URI, val headers: Map<String, String>, val key: Boolean)
+    private val resourceUrls = HashMap<ResourceIdentity, String>()
+    private val cache = LinkedHashMap<ResourceIdentity, ByteArray>(16, .75f, true)
     private var cachedBytes = 0L
     private val transfers = java.util.concurrent.Semaphore(2)
     @Volatile private var closed = false
@@ -107,18 +109,21 @@ internal class WebVideoHls(private val server: LocalStreamServer, private val st
         return server.publish(source, name).also(published::add)
     }
 
-    private fun resource(uri: URI, headers: Map<String, String>, key: Boolean = false): String {
+    @Synchronized private fun resource(uri: URI, headers: Map<String, String>, key: Boolean = false): String {
+        check(!closed)
+        val identity = ResourceIdentity(uri, headers.toMap(), key)
+        resourceUrls[identity]?.let { return it }
         val limit = if (key) 16 else 16 * 1024 * 1024
         val source = object : StreamSource {
             private var length = -1L
             @Synchronized fun load(): ByteArray {
                 check(!closed)
-                val data = synchronized(cache) { cache[uri] } ?: bytes(uri, headers, limit).second.also { data ->
+                val data = synchronized(cache) { cache[identity] } ?: bytes(uri, identity.headers, limit).second.also { data ->
                     require(data.isNotEmpty() && (!key || data.size == 16)) { "Invalid media resource" }
                     synchronized(cache) {
                         check(!closed)
-                        cache.remove(uri)?.let { cachedBytes -= it.size }
-                        if (data.size <= 32 * 1024 * 1024) { cache[uri] = data; cachedBytes += data.size }
+                        cache.remove(identity)?.let { cachedBytes -= it.size }
+                        if (data.size <= 32 * 1024 * 1024) { cache[identity] = data; cachedBytes += data.size }
                         while (cachedBytes > 32 * 1024 * 1024) {
                             val first = cache.entries.iterator(); cachedBytes -= first.next().value.size; first.remove()
                         }
@@ -145,7 +150,9 @@ internal class WebVideoHls(private val server: LocalStreamServer, private val st
             }
         }
         val ext = uri.path.substringAfterLast('.', "").takeIf { it in setOf("ts", "mp4", "m4s", "aac", "mp3", "key") } ?: if (key) "key" else "ts"
-        return publish(source, "resource.$ext")
+        // Implicit byte ranges require repeated references to keep the same URI.
+        // Sharing the source also serializes cache misses for this exact request.
+        return publish(source, "resource.$ext").also { resourceUrls[identity] = it }
     }
 
     private fun manifest(uri: URI, headers: Map<String, String>, depth: Int): String {
@@ -230,7 +237,7 @@ internal class WebVideoHls(private val server: LocalStreamServer, private val st
         iqiyiResources?.close();iqiyiResources=null
         selectedTrack = null
         initialManifest = null
-        val leases = synchronized(this) { closed = true; published.toList().also { published.clear() } }
+        val leases = synchronized(this) { closed = true; resourceUrls.clear(); published.toList().also { published.clear() } }
         http.close()
         leases.forEach(server::revoke)
         synchronized(cache) { cache.clear(); cachedBytes = 0 }

@@ -41,6 +41,7 @@ const StorageVolume := preload("res://scripts/storage_volume.gd")
 const Quality := preload("res://scripts/display_quality.gd")
 const ThumbnailCache := preload("res://scripts/thumbnail_cache.gd")
 const SETTINGS_PATH := "user://player_settings.cfg"
+const SCENE_SCREEN_PINNED := "Screen pinned · unpin it in scene settings"
 const LIBRARY_DISTANCE_DEFAULT := 1.4
 const PhotoDisplay := preload("res://scripts/photo_display.gd")
 const PhotoMenu := preload("res://scripts/puzzle/puzzle_photo_menu.gd")
@@ -1347,14 +1348,15 @@ func _begin_interface_move(hand: String, input: String) -> String:
 	var media_anchor: Variant = _media_move_anchor(surface, ray)
 	# Only the auditorium movie is fixed. Alpha cutouts retain the existing flat/VR gestures.
 	var fixed_cinema := _cinema_scene_active() and not photo_active and not _person_passthrough()
+	var pinned := surface == video and _scene_screen_pinned()
 	if screen_edit_lock.locked() and hit.is_empty() and media_anchor != null:
 		screen_edit_lock.deny(hand, "move"); return "blocked.screen_locked"
-	if fixed_cinema:
+	if fixed_cinema or pinned:
 		if hit.is_empty() and media_anchor != null:
-			_show_cinema_gesture_hint("Screen fixed · switch background to move")
+			_show_cinema_gesture_hint(SCENE_SCREEN_PINNED if pinned and not fixed_cinema else "Screen fixed · switch background to move")
 		media_anchor = null
 	# Movement range changes the linked targets, never turns a miss into a grab.
-	if hit.is_empty() and media_anchor == null: return "blocked.fixed_cinema_screen" if fixed_cinema else "ignored.no_move_target"
+	if hit.is_empty() and media_anchor == null: return "blocked.fixed_cinema_screen" if fixed_cinema or pinned else "ignored.no_move_target"
 	var scope: String = controller_bindings.move_scope
 	var move_media := scope != "panel" or menu == null
 	if menu and (scope != "panel" or not hit.is_empty()):
@@ -1727,6 +1729,12 @@ func _sync_display_policy() -> void:
 	# The beach fills the whole view at every rate: 11.8 -> 9.0 ms from the centre lounger at night.
 	display.set_scene_relief(_cinema_scene_active() and not photo_active and (display.refresh_preference > 90.5 or _beach_active()))
 	_sample_playback_diagnostics(playing and video.media.state == "playing")
+	var slow: Dictionary = frame_budget.tick(get_viewport(), display.xr.display_refresh_rate if display.xr is OpenXRInterface and display.xr.is_initialized() else 0.0,
+		{"playing": playing, "passthrough": display.applied_passthrough, "menu_layers": display.menu_layers})
+	if not slow.is_empty(): Log.record("frame_budget", slow)
+
+## Slow frames only: where the time goes (see frame_diagnostics.gd).
+var frame_budget := preload("res://scripts/frame_diagnostics.gd").new()
 
 ## Once a second: playback windows for the exported log (see playback_diagnostics.gd).
 var playback_windows := preload("res://scripts/playback_diagnostics.gd").new()
@@ -2816,6 +2824,9 @@ func _turn_picture(yaw: float, pitch: float) -> void:
 	if _cinema_video_locked() and video.geometry == Geometry.Geometry.FLAT:
 		if not is_zero_approx(yaw) or not is_zero_approx(pitch): _show_cinema_gesture_hint("Screen fixed · switch background to move")
 		return
+	if _scene_screen_pinned():
+		if not is_zero_approx(yaw) or not is_zero_approx(pitch): _show_cinema_gesture_hint(SCENE_SCREEN_PINNED)
+		return
 	if photo_active and photo.inspect: return
 	if not photo_active and video and (not is_zero_approx(yaw) or not is_zero_approx(pitch)): video.manual_portrait_pose()
 	if not photo_active and video.cinema.active(video):
@@ -2863,6 +2874,9 @@ func _push_screen(amount: float) -> void:
 	if not is_zero_approx(amount) and screen_edit_lock.deny("", "distance"): return
 	if _cinema_video_locked():
 		if not is_zero_approx(amount): _show_cinema_gesture_hint("Screen fixed · switch background to move")
+		return
+	if _scene_screen_pinned():
+		if not is_zero_approx(amount): _show_cinema_gesture_hint(SCENE_SCREEN_PINNED)
 		return
 	if not photo_active and video and not is_zero_approx(amount): video.manual_portrait_pose()
 	if not photo_active and portrait_screen.active:
@@ -2986,6 +3000,10 @@ func _current_cinema_state() -> Dictionary:
 	var height: float = video.cinema.bottom.origin.y - _eye().y if video.cinema.active(video) and video.cinema.bottom is Transform3D else video.cinema.height
 	return {"enabled": video.cinema.enabled, "height": height, "preset": video.screen_preset}
 
+## The viewer fixed the flat video in an imported scene: it keeps its place there and only resizes.
+func _scene_screen_pinned() -> bool:
+	return scene_import != null and scene_import.screen_pinned()
+
 func _cinema_video_locked() -> bool:
 	if portrait_screen.active and not photo_active: return false
 	return not photo_active and (not _cinema_screen_saved.is_empty() or
@@ -3007,7 +3025,8 @@ func _remember_current_screen() -> void:
 		portrait_screen.remember(self)
 		return
 	if _cinema_video_locked(): return
-	_set_screen_preference("distance", video.screen_distance)
+	# A pinned screen's distance is the scene's, not one to bring to the next background.
+	if not _scene_screen_pinned(): _set_screen_preference("distance", video.screen_distance)
 	_set_screen_preference("scale", video.screen_scale)
 	if video.geometry == Geometry.Geometry.FLAT:
 		var cinema := _current_cinema_state()
@@ -3081,7 +3100,7 @@ func _resize_gripped_media(stick: Vector2, delta: float) -> bool:
 	if not surface or screen_edit_lock.locked(): return false
 	var gallery_overview: bool = photo_active and photo.gallery.overview()
 	if surface.geometry != Geometry.Geometry.FLAT and not gallery_overview: return false
-	if (photo_active and photo.inspect) or (not photo_active and _cinema_video_locked()): return false
+	if (photo_active and photo.inspect) or (not photo_active and (_cinema_video_locked() or _scene_screen_pinned())): return false
 	var capture := interface_move.capture
 	if capture.is_empty() or capture.input != "grip_click" or not capture.get("depth_ready", false): return false
 	if not stick.is_finite() or not is_finite(delta) or delta <= 0.0 or absf(stick.x) <= 0.2 or absf(stick.x) <= absf(stick.y): return false
@@ -3130,6 +3149,8 @@ func _reset_picture() -> void:
 	if _cinema_video_locked() and video.geometry != Geometry.Geometry.FLAT:
 		video.reset_view(); return
 	if _cinema_video_locked(): return
+	if _scene_screen_pinned():
+		video.set_screen_scale(1.0); return
 	_viewer().reset_view()
 	_viewer().set_screen_scale(1.0)
 	var offset: Vector3 = (_viewer().global_transform * _viewer().flat_pose).origin - _eye()
@@ -4009,6 +4030,7 @@ func _place_screen(recenter: bool = false) -> void:
 	if recenter and not photo_active and video: video.portrait.reset()
 	if _cinema_scene_active() and not photo_active and video and video.geometry == Geometry.Geometry.FLAT:
 		_sync_cinema_screen(); return
+	if not photo_active and _scene_screen_pinned(): return  # the scene puts it back in its place
 	var head: Variant = _head_pose()
 	if not photo_active and video.cinema.active(video):
 		if view_follow.enabled: _on_session_control("follow")
@@ -4030,6 +4052,7 @@ func _place_screen(recenter: bool = false) -> void:
 			_viewer()._apply_geometry()
 
 func _flat_followable(surface: Node3D) -> bool:
+	if surface == video and _scene_screen_pinned(): return false
 	if surface == video and _cinema_scene_active(): return false
 	if surface == video and video and video.cinema.active(video): return false
 	return surface != null and surface.geometry == Geometry.Geometry.FLAT and (surface != photo or photo.gallery.mode in [0, 4] or photo.portrait_requested)

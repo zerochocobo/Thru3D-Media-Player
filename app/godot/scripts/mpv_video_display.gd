@@ -369,6 +369,7 @@ var vr_passthrough := preload("res://scripts/vr_passthrough_view.gd").new(self)
 var pip := preload("res://scripts/video_pip.gd").new(self)
 var _pending_pair: Dictionary = {}
 var _pending_revision: Dictionary = {}
+var _mode_recorded: Array = []
 var _fixture := -1
 var _recover := false
 var _recover_ms := 0
@@ -1298,6 +1299,11 @@ func _request_revision(position_ms: int = -1, mode: String = "", source_reset: b
 		"seek_mode": SeekPolicy.normalize(seek_mode if mode.is_empty() else mode)}
 	if source_reset: _pending_revision.source_reset = true
 	if initial_layout: _pending_revision.initial_layout = true
+	# Exported diagnostics: mode switches only, not the seeks that share this path.
+	var wanted := [_pending_revision.alpha, _pending_revision.depth, _pending_revision.stereo]
+	if wanted != _mode_recorded:
+		_mode_recorded = wanted
+		DiagnosticLog.record("video_mode_requested", {"alpha": wanted[0], "depth": wanted[1], "stereo": wanted[2], "session_id": media.session_id, "position_ms": position_ms})
 	_set_backend_playing(media.session_id, false)
 	_waiting_first = true
 	_output_deadline_ms = Time.get_ticks_msec() + OUTPUT_TIMEOUT_MS
@@ -3212,6 +3218,11 @@ func _check_playback_timeout(now_ms: int) -> void:
 		_check_playback_stall(now_ms)
 		return
 	var id: int = media.session_id
+	# Exported diagnostics: what the picture was still waiting for when the wait ran out.
+	DiagnosticLog.record("mpv_wait_timeout", {"code": code, "session_id": id, "state": media.state, "frames": media.frame_counter,
+		"waiting_first": _waiting_first, "requested_play": requested_play, "alpha": alpha_requested, "depth": depth_requested,
+		"pending_revision": not _pending_revision.is_empty(), "bound": not _binding.ticket.is_empty(), "layer": _binding.layer,
+		"transition": mode_transition.stage})
 	_on_error(id, JSON.stringify({"code": code, "stage": "reading" if code == "MPV_BUFFER_TIMEOUT" else "output"}))
 	if platform: platform.close_mpv_video(id)
 

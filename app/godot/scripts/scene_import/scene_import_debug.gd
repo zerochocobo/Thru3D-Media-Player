@@ -54,6 +54,11 @@ func _library(label: String, command: Dictionary) -> void:
 		"light":
 			while not is_equal_approx(scenes.screen_light, float(command.get("level", 0.7))): scenes.cycle_screen_light()
 		"remove": scenes.remove([id])
+		"pin": scenes.set_screen_pinned(bool(command.get("on", true)))
+		# Stands in for a teleport: the scene moves under the viewer by `offset`.
+		"shift":
+			var offset: Variant = command.get("offset")
+			if scenes._root and offset is Array and offset.size() == 3: scenes._root.global_position += Vector3(offset[0], offset[1], offset[2])
 	# Let a copy or a load finish before reporting, within a bound.
 	var deadline := Time.get_ticks_msec() + int(command.get("wait_ms", 120000))
 	await get_tree().process_frame
@@ -62,7 +67,13 @@ func _library(label: String, command: Dictionary) -> void:
 	var state: Dictionary = scenes.snapshot()
 	state["memory"] = _memory()
 	state["background"] = str(_host.background.choice)
-	state["natives"] = {"unity": Unity.unpacker.is_valid(), "etc2": Loader.texture_encoder.is_valid()}
+	state["natives"] = {"unity": not Unity.unpacker.is_null(), "etc2": not Loader.texture_encoder.is_null()}
+	var video: Node = _host.get("video")
+	if video:
+		var screen: Transform3D = video.global_transform * video.flat_pose
+		var scene: Transform3D = scenes._root.global_transform if scenes._root else Transform3D.IDENTITY
+		state["screen"] = {"world": [screen.origin.x, screen.origin.y, screen.origin.z], "size": [video._flat.size.x, video._flat.size.y],
+			"in_scene": var_to_str((scene.affine_inverse() * screen).origin), "pinned_now": scenes.screen_pinned()}
 	_report(label, state)
 
 ## Drives the scene gallery the way its page does: step = get | cancel | state, for one `slug`.

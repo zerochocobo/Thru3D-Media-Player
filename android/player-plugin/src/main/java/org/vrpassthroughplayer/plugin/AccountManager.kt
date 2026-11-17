@@ -40,6 +40,7 @@ internal class AccountManager(private val host: () -> Activity?) {
         var retry = "password"
         var result = JSONObject()
         var auth: Cloud115Auth? = null
+        var thunder: ThunderAuth? = null
         @Volatile var http: MediaServerHttp? = null
         @Volatile var discovery: MediaServerDiscovery? = null
         var web: AccountWebLogin? = null
@@ -76,6 +77,7 @@ internal class AccountManager(private val host: () -> Activity?) {
                 require(accountId.isEmpty() || old?.optString("provider") == provider)
                 s.set("name", old?.getString("name") ?: CloudDrive.providerName(provider))
                 s.auth = if (provider == CloudDrive.P115) Cloud115Auth() else null
+                s.thunder = if (provider == CloudDrive.THUNDER) ThunderAuth() else null
                 if (provider == CloudDrive.WEBDAV) {
                     val metadata = if (accountId.isEmpty()) JSONObject() else CloudLibrary.webDavMetadata(accountId)
                     s.set("base", metadata.optString("base", data.optString("base", "http://")))
@@ -198,8 +200,11 @@ internal class AccountManager(private val host: () -> Activity?) {
                 }
                 "rename" -> { require(s.kind == "cloud" && s.accountId.isNotEmpty()); commit(s) { CloudLibrary.rename(s.accountId, s.value("name")); s.state = "done" } }
                 "password", "send_sms", "verify_sms", "captcha", "answer" -> {
-                    require(s.kind == "cloud" && s.provider == CloudDrive.P115)
-                    login(s, action, data)
+                    require(s.kind == "cloud")
+                    if (s.provider == CloudDrive.THUNDER) {
+                        require(action == "password")
+                        loginThunder(s)
+                    } else { require(s.provider == CloudDrive.P115); login(s, action, data) }
                 }
                 "dav_enable" -> { require(s.kind == "dav"); commit(s) { CloudWebDav.setEnabled(app, data.optBoolean("enabled")) }; dav(s, app) }
                 "dav_reset" -> { require(s.kind == "dav"); commit(s) { CloudWebDav.resetPassword(app) }; dav(s, app) }
@@ -249,6 +254,28 @@ internal class AccountManager(private val host: () -> Activity?) {
             s.accountId.ifEmpty { null }, { block -> commit(s, block) })
         commit(s) { s.state = "done"; s.inputs.values.forEach { it.clear() }; s.challenge = null }
         s.web?.close()
+    }
+
+    private fun loginThunder(s: Session) {
+        val auth = s.thunder ?: error("No login session")
+        OpenListBackend.start(context())
+        val result = CloudLoginFailure.at(CloudLoginFailure.Stage.REQUEST) { auth.login(s.value("username"), s.value("password")) }
+        if (result.has("credential")) {
+            CloudLibrary.connectThunder(result.getJSONObject("credential"), s.value("name").ifBlank { CloudDrive.providerName(CloudDrive.THUNDER) },
+                s.accountId.ifEmpty { null }, { block -> commit(s, block) })
+            commit(s) { s.state = "done"; s.inputs.values.forEach { it.clear() } }
+            s.web?.close(); auth.close()
+        } else {
+            val challenge = result.getJSONObject("challenge")
+            commit(s) {
+                s.web?.close()
+                s.state = "web"
+                s.web = ThunderWebLogin(host, challenge) { answer ->
+                    task(s) { auth.verified(answer); loginThunder(s) }
+                }
+                s.web!!.open()
+            }
+        }
     }
 
     private fun login(s: Session, action: String, data: JSONObject) {
@@ -427,7 +454,7 @@ internal class AccountManager(private val host: () -> Activity?) {
         val s = session?.takeIf { it.id == id } ?: return
         s.cancelSession { s.inputs.values.forEach { it.clear() }; s.challenge = null; s.result = JSONObject() }
         s.plexServers = emptyList(); s.plexPin = null; s.plexToken = null
-        s.auth?.close(); s.http?.close(); s.discovery?.close(); s.web?.close(); s.plex?.close()
+        s.auth?.close(); s.thunder?.close(); s.http?.close(); s.discovery?.close(); s.web?.close(); s.plex?.close()
         session = null
     }
     @Synchronized fun close() { closed = true; cancel(session?.id ?: 0); worker.shutdownNow() }

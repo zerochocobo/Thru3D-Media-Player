@@ -99,6 +99,7 @@ internal class DepthVideoProbe(
             try {
                 if (synchronized(lock) { closed }) return@post
                 val host = context() ?: error("Depth activity unavailable")
+                val began = System.nanoTime()
                 val created = DepthNative.videoModelFile(host)?.let { DepthNative.createFromFile(it.path, DepthWarmup.cacheDirectory(host).absolutePath) }
                     ?: DepthNative.create(host.assets, DepthWarmup.cacheDirectory(host).absolutePath)
                 check(created > 0) { "Depth prepare failed" }
@@ -110,6 +111,8 @@ internal class DepthVideoProbe(
                 }
                 val kept = synchronized(lock) { if (closed) false else { handle = created; true } }
                 if (!kept) DepthNative.close(created) else { info = description; ready() }
+                // Exported diagnostics: a cold OpenCL compile shows as a long wait here.
+                android.util.Log.i("QuestDepth", "video depth model ready ms=%d kept=%b".format(Locale.US, (System.nanoTime() - began) / 1_000_000, kept))
             } catch (failure: Throwable) {
                 error = failure.message ?: failure.javaClass.simpleName
                 android.util.Log.w("QuestDepth", "2D->3D unavailable, playing 2D: $error")

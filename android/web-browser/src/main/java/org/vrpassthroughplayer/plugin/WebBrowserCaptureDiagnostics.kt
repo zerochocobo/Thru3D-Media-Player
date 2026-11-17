@@ -5,6 +5,17 @@ import org.json.JSONObject
 /** Same bounded public-status boundary as WebBrowserMango.captureDiagnostics.
  * No source addresses, declarations, headers or arbitrary website strings. */
 internal object WebBrowserCaptureDiagnostics {
+    fun playback(item: JSONObject): JSONObject {
+        val raw = item.optJSONObject("playback") ?: return JSONObject()
+        val result = JSONObject()
+        for ((key, limit) in mapOf("ready_state" to 4L, "network_state" to 3L, "error_code" to 4L,
+            "total_frames" to 1000000000L, "dropped_frames" to 1000000000L,
+            "decoded_frames" to 1000000000L, "presented_frames" to 1000000000L)) {
+            val value = (raw.opt(key) as? Number)?.toDouble() ?: continue
+            if (value.isFinite() && value >= 0 && value <= limit && value == kotlin.math.floor(value)) result.put(key, value.toLong())
+        }
+        return result
+    }
     private val states=mapOf(
         "tiktok" to setOf("document","card","owner_identity","different_item","excluded_content","source_identity",
             "source_shape","source_address","ambiguous_declaration","declaration_error","not_decoded","source_scheme",

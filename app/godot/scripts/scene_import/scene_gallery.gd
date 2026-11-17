@@ -4,8 +4,6 @@ extends Node
 ## withdrawn; nothing else about the list changes without a new app version. Every channel
 ## offers it, and no screen names the server the files come from.
 signal changed
-const Channel := preload("res://scripts/distribution_channel.gd")
-const I18n := preload("res://scripts/i18n.gd")
 const CATALOG := "res://scene_library/catalog.json"
 const PREVIEWS := "res://scene_library/previews/"
 ## Public builds have no bundled download origins. Set sites for a self-hosted catalog.
@@ -46,15 +44,11 @@ var _stop := false
 static func offered() -> bool:
 	return true
 
-## Whether the viewer is most likely in mainland China: the domestic store build, or the app in
-## Simplified Chinese. A wrong guess costs speed, not the download: the other sites follow.
-static func mainland() -> bool:
-	return Channel.current() == "pico_cn_store" or I18n.language == "zh"
-
-## The sites to try, in order, for a download starting now.
+## The sites to try, in order, for a download starting now. A paid stand-in that once delivered
+## is not moved ahead: the next download tries the free sites again first.
 func site_order() -> Array:
-	var order: Array = sites.duplicate() if not sites.is_empty() else (MAINLAND + WORLD if mainland() else WORLD + MAINLAND)
-	if order.has(_good):
+	var order: Array = sites.duplicate() if not sites.is_empty() else WORLD + MAINLAND
+	if order.has(_good) and not MAINLAND.has(_good):
 		order.erase(_good)
 		order.push_front(_good)
 	return order

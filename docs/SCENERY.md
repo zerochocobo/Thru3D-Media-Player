@@ -34,6 +34,8 @@ An imported scene can remember an entry point. The stance row offers posture and
 
 The Scene Gallery verifies downloaded files against their catalog size and SHA-256. The catalog and preview images ship with the source. Public-source builds ship with an empty origin list. To use your own scene server, set the Scene Gallery sites to rows of host, port, TLS and folder, serving files that match the catalog. Existing local scene import is available through My scenes.
 
-公开源码保留场景目录、预览与本地导入，默认下载源为空。自行提供与目录校验信息相符的文件和下载源后，可使用场景馆下载。 The 27 bundled previews are rendered views of adapted scenes. The catalog records each original title, creator and source link. Both the underlying scene assets and these adapted previews are offered under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). See the [scene catalog](../app/godot/scene_library/catalog.json).
+公开源码保留场景目录、预览与本地导入，默认下载源为空。自行提供与目录校验信息相符的文件和下载源后，可使用场景馆下载。
+
+The 53 bundled previews are rendered views of adapted scenes. The catalog records each original title, creator and source link. Both the underlying scene assets and these adapted previews are offered under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). See the [scene catalog](../app/godot/scene_library/catalog.json).
 
 The Scene menu offers six environment themes and optional screen mood light. Ambient sound uses the separately supplied audio listed in the build documentation. Screen mood light starts off for new settings. Room tint requires passthrough color-LUT support. Thanks to [@ghanshyamv1](https://github.com/ghanshyamv1) for the initial screen mood light implementation in [PR #9](https://github.com/zerochocobo/Thru3D-Media-Player/pull/9).

@@ -40,7 +40,8 @@ object WebBrowserDouyin {
         val hasModal = uri.rawQuery.orEmpty().split('&').any { URLDecoder.decode(it.substringBefore('='), "UTF-8") == "modal_id" }
         val explicit = pageId(frame)
         if (hasModal || uri.path.startsWith("/video/")) require(explicit == id)
-        else require(uri.path in setOf("/", "/jingxuan", "/recommend", "/discover", "/search/"))
+        // A personal-list route is not a video identity. The current rendered
+        // owner, declaration, source and revision still bind the selection.
         id
     }.getOrNull()
 
@@ -72,11 +73,12 @@ object WebBrowserDouyin {
         require(document(value))
         val u = URI(value)
         val path = Regex("/video/([1-9][0-9]{14,19})/?").matchEntire(u.path)?.groupValues?.get(1)
+        require(!u.path.startsWith("/video/") || path != null)
         val modal = u.rawQuery.orEmpty().split('&').map {
             URLDecoder.decode(it.substringBefore('='), "UTF-8") to URLDecoder.decode(it.substringAfter('=', ""), "UTF-8")
         }.filter { it.first == "modal_id" }.map { it.second }
         require(modal.size <= 1 && (path == null || modal.isEmpty() || modal.single() == path))
-        (path ?: modal.singleOrNull()?.takeIf { u.path in setOf("/", "/jingxuan", "/recommend", "/discover", "/search/") })
+        (path ?: modal.singleOrNull())
             ?.takeIf { Regex("[1-9][0-9]{14,19}").matches(it) }
     }.getOrNull()
 

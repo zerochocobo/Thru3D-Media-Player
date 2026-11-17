@@ -45,6 +45,16 @@ func _event(value: String) -> void:
 	events.append({"event": value, "time_ms": Time.get_ticks_msec(), "session_id": video.media.session_id})
 	if events.size() > 32: events.pop_front()
 
+## Exported diagnostics: how far a failed 2D/3D/Alpha switch got, and what it was still waiting for.
+func _report(reason: String) -> void:
+	var now := Time.get_ticks_msec()
+	DiagnosticLog.record("video_mode_transition", {"reason": reason, "source_mode": source_mode, "source_layer": source_layer,
+		"wanted": {"alpha": video.alpha_requested, "depth": video.depth_requested, "stereo": video.stereo_sbs},
+		"waiting_first": video._waiting_first, "pending_revision": not video._pending_revision.is_empty(),
+		"bound": not video._binding.ticket.is_empty(), "ready_session": ready_session, "session_id": video.media.session_id,
+		"frames": video.media.frame_counter, "state": video.media.state, "requested_play": video.requested_play,
+		"steps": events.map(func(item: Dictionary) -> Dictionary: return {"event": item.event, "ago_ms": now - int(item.time_ms), "session_id": item.session_id})})
+
 func capturing() -> bool:
 	return stage in ["capturing", "armed"]
 
@@ -185,6 +195,7 @@ func poll() -> void:
 	if stage == "capturing" and Time.get_ticks_msec() >= deadline:
 		_capture_failed("Video frame capture timed out")
 	elif stage == "preparing" and Time.get_ticks_msec() >= deadline:
+		_report("prepare_timeout")
 		video._on_error(video.media.session_id, JSON.stringify({"code": "MPV_OUTPUT_TIMEOUT", "stage": "output"}))
 
 func preparing() -> void:
@@ -214,6 +225,7 @@ func recover() -> bool:
 	if stage != "preparing" or rolling_back or video.local_uri != source_uri: return false
 	rolling_back = true
 	_event("rollback")
+	_report("rollback")
 	_restore_mode()
 	video._pending_revision = {}
 	video._pending_pair = {}

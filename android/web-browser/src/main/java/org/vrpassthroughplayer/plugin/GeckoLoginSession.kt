@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit
 class GeckoLoginSession(private val host: () -> Activity?, private val desktopOnly: Boolean = false,
     private val touchOnly: Boolean = false,
     initialDesktop: Boolean = desktopOnly,
+    private val verification: GeckoLoginVerification? = null,
     private val navigate: (String, Boolean) -> String?) {
     val id = UUID.randomUUID().toString()
     private val ui = Handler(Looper.getMainLooper())
@@ -121,12 +122,20 @@ class GeckoLoginSession(private val host: () -> Activity?, private val desktopOn
             }
             // Reuse the browser's default Gecko IME delegate and attached Android input host.
             // Passwords and field contents never enter the account snapshot.
-            current.open(WebBrowser.engine(activity))
+            val runtime = WebBrowser.engine(activity)
+            current.open(runtime)
             input = LoginInput(activity).also { view ->
                 (activity.window.decorView as ViewGroup).addView(view, ViewGroup.LayoutParams(1, 1))
                 current.textInput.setView(view)
             }
-            permitted(url, true)?.let { load.open(it) }
+            if (verification == null) permitted(url, true)?.let { load.open(it) }
+            else verification.attach(runtime, current) { success ->
+                dispatch {
+                    if (success) permitted(url, true)?.let { load.open(it) }
+                    else failed = true
+                    bindDisplay(); publish()
+                }
+            }
             bindDisplay()
             publish()
         } catch (_: Exception) { failed = true; publish() }
@@ -303,6 +312,7 @@ class GeckoLoginSession(private val host: () -> Activity?, private val desktopOn
                 .put("held", downTime != 0L).put("paused", paused).put("down_result", lastDownResult)) }.toString()
     }
     fun close() {
+        verification?.close()
         closed = true
         ui.post {
             load.close()

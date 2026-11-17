@@ -2,6 +2,8 @@ extends RefCounted
 ## Unity scene bundles. A native unpacker (native/unity-scene) turns the bundle into a neutral
 ## container of bulk arrays; this script builds the Godot scene from it. Baked lighting is kept:
 ## surfaces are unshaded albedo x lightmap, which is also the cheapest thing a headset can draw.
+## The scene's realtime lights are worked out in the same shader, the way Unity's built-in
+## pipeline does in gamma space, rather than handed to the engine as lights.
 const Layout := preload("res://scripts/scene_import/scene_import_layout.gd")
 const CONTAINER_MAGIC := "T3DSCENE"
 const MAX_JSON_BYTES := 64 * 1024 * 1024
@@ -21,6 +23,15 @@ const FLOOR_CLASSES := ["TeleportationArea", "TeleportationAnchor"]
 const LIGHTMAP_SCALE := 2.0
 ## Unity's sky tint is "0.5 = unchanged": doubled in display space, which is x4.59 in linear light.
 const SKY_TINT_SCALE := 4.594794
+## Size of the shader's light arrays: the most lights any tier keeps.
+const MAX_LIGHTS := 4
+## Unity's Light.type, and LightmapBakeType: realtime lights light everything, mixed ones only
+## what has no lightmap (the lightmap already holds them), baked ones nothing.
+const SPOT := 0
+const DIRECTIONAL := 1
+const POINT := 2
+const REALTIME := 4
+const MIXED := 1
 ## Textures are sampled as stored and multiplied in display space, the way the source shows
 ## them. The GL Compatibility renderer passes an unshaded colour straight to the screen
 ## (measured: 0.5 in, 0.5 out); the other renderers expect linear light, hence the two outputs.
@@ -39,14 +50,39 @@ uniform vec3 emission_color = vec3(0.0);
 uniform float alpha_cutoff = 0.0;
 uniform float exposure = 1.0;
 uniform float bake_strength = 1.0;
+uniform int light_count = 0;
+uniform vec3 light_position[4];
+uniform vec3 light_direction[4];
+uniform vec3 light_color[4];
+// range, cosine of the outer and inner half-angles, kind (0 spot, 1 directional, 2 point)
+uniform vec4 light_shape[4];
 // The playing screen as a light: set once for every imported surface (see ensure_globals).
 global uniform vec3 scene_import_screen_position;
 global uniform vec3 scene_import_screen_normal;
 global uniform vec3 scene_import_screen_color;
 global uniform float scene_import_screen_range;
 varying vec3 screen_lit;
+varying vec3 world_position;
+varying vec3 world_normal;
+// Unity's built-in forward lighting: Lambert, and its point falloff 1 / (1 + 25 r^2) brought to zero at the range.
+vec3 unity_light(int i, vec3 at, vec3 normal) {
+	vec4 shape = light_shape[i];
+	vec3 toward = -light_direction[i];
+	float falloff = 1.0;
+	if (shape.w != 1.0) {
+		vec3 offset = light_position[i] - at;
+		float r2 = dot(offset, offset) / max(shape.x * shape.x, 0.0001);
+		if (r2 >= 1.0) return vec3(0.0);
+		toward = normalize(offset);
+		falloff = clamp((1.0 - r2) * 5.0, 0.0, 1.0) / (1.0 + 25.0 * r2);
+		if (shape.w == 0.0) falloff *= smoothstep(shape.y, shape.z, dot(-toward, light_direction[i]));
+	}
+	return light_color[i] * max(dot(normal, toward), 0.0) * falloff;
+}
 void vertex() {
-	vec3 to_screen = scene_import_screen_position - (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	world_normal = MODEL_NORMAL_MATRIX * NORMAL;
+	vec3 to_screen = scene_import_screen_position - world_position;
 	float away = max(length(to_screen), 0.001);
 	vec3 toward = to_screen / away;
 	float facing = max(dot(normalize(MODEL_NORMAL_MATRIX * NORMAL), toward), 0.0);
@@ -58,7 +94,10 @@ void fragment() {
 	vec2 uv = UV * albedo_st.xy + albedo_st.zw;
 	vec4 base = texture(albedo_map, uv) * albedo_color;
 	vec3 light = light_scale > 0.0 ? mix(vec3(1.0), texture(light_map, UV2).rgb * light_scale, bake_strength) : flat_light;
-	vec3 shown = base.rgb * (light + screen_lit) + texture(emission_map, uv).rgb * emission_color;
+	vec3 direct = vec3(0.0);
+	vec3 normal = normalize(world_normal) * (FRONT_FACING ? 1.0 : -1.0);
+	for (int i = 0; i < light_count; i++) direct += unity_light(i, world_position, normal);
+	vec3 shown = base.rgb * (light + screen_lit + direct) + texture(emission_map, uv).rgb * emission_color;
 	ALBEDO = %s;
 %s}
 """
@@ -118,6 +157,7 @@ var _textures := {}
 var _shaders := {}
 var _materials := {}
 var _ambient := Color(0.5, 0.5, 0.5)
+var _lights: Array[Dictionary] = []
 
 static var _globals_ready := false
 const SCREEN_GLOBALS := [["scene_import_screen_position", RenderingServer.GLOBAL_VAR_TYPE_VEC3, Vector3.ZERO],
@@ -171,7 +211,7 @@ func read(path: String, limits: Dictionary, work_dir: String) -> Dictionary:
 	return result
 
 static func _unpack(bundle: String, container: String, max_texture: int, max_sky: int) -> String:
-	if unpacker.is_valid(): return str(unpacker.call(bundle, container, max_texture, max_sky))
+	if not unpacker.is_null(): return str(unpacker.call(bundle, container, max_texture, max_sky))
 	if unpacker_executable.is_empty() or not FileAccess.file_exists(unpacker_executable):
 		return "Unity scenes are not supported on this build"
 	var output: Array = []
@@ -197,6 +237,7 @@ func read_container(container: String, limits: Dictionary) -> Dictionary:
 		if not _scene.get(key) is Array: return {"error": "Scene could not be read"}
 	var ambient: Variant = _scene.get("ambient")
 	if ambient is Array and ambient.size() == 3: _ambient = Color(ambient[0], ambient[1], ambient[2])
+	var dropped := _read_lights(int(limits.get("lights", 0)))
 
 	var root := Node3D.new()
 	root.name = "ImportedScene"
@@ -241,9 +282,60 @@ func read_container(container: String, limits: Dictionary) -> Dictionary:
 		return {"error": "Scene holds no usable geometry"}
 	var warnings: Array = _scene.get("warnings", []) if _scene.get("warnings") is Array else []
 	return {"root": root, "sky": _sky(), "warnings": warnings,
-		"actions": {"meshes_culled": kept.culled, "lights_removed": 0, "textures_resized": 0, "textures_kept_compressed": 0}}
+		"actions": {"meshes_culled": kept.culled, "lights_removed": dropped, "textures_resized": 0, "textures_kept_compressed": 0}}
 
 # ---- descriptors
+
+## The lights the shader works out, strongest first and at most `allowed`; returns how many were left out.
+## Baked lights are not counted: what they gave is in the lightmaps.
+func _read_lights(allowed: int) -> int:
+	var found: Array[Dictionary] = []
+	for entry in _scene.get("lights", []) if _scene.get("lights") is Array else []:
+		if not entry is Dictionary: continue
+		var bake := int(entry.get("bake", 2 if entry.get("baked") == true else REALTIME))
+		var kind := int(entry.get("type", -1))
+		var colour: Variant = entry.get("color")
+		if bake not in [REALTIME, MIXED] or kind not in [SPOT, DIRECTIONAL, POINT] or not colour is Array or colour.size() < 3: continue
+		var intensity := float(entry.get("intensity", 1.0))
+		var strength := intensity * maxf(float(colour[0]), maxf(float(colour[1]), float(colour[2])))
+		if strength <= 0.0: continue
+		var place := _transform(entry.get("transform"))
+		var outer := deg_to_rad(clampf(float(entry.get("spot_angle", 30.0)), 1.0, 179.0)) * 0.5
+		var inner := deg_to_rad(float(entry.get("inner_spot_angle", 0.0))) * 0.5
+		if inner <= 0.0 or inner >= outer: inner = outer * 0.75
+		# A sun reaches every surface, so it counts double against a lamp of the same strength.
+		found.append({"mixed": bake == MIXED, "strength": strength * (2.0 if kind == DIRECTIONAL else 1.0),
+			"position": place.origin, "direction": -place.basis.z.normalized(),
+			"color": Vector3(colour[0], colour[1], colour[2]) * intensity,
+			"shape": Vector4(maxf(float(entry.get("range", 10.0)), 0.01), cos(outer), cos(inner), kind)})
+	found.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.strength > b.strength)
+	_lights.assign(found.slice(0, mini(allowed, MAX_LIGHTS)))
+	return found.size() - _lights.size()
+
+## Hands a material the lights that reach it: a lightmapped surface already holds the mixed ones.
+func _apply_lights(material: ShaderMaterial, lightmapped: bool) -> void:
+	var positions := PackedVector3Array()
+	var directions := PackedVector3Array()
+	var colours := PackedVector3Array()
+	var shapes := PackedVector4Array()
+	for light in _lights:
+		if lightmapped and light.mixed: continue
+		positions.append(light.position)
+		directions.append(light.direction)
+		colours.append(light.color)
+		shapes.append(light.shape)
+	var count := positions.size()
+	if count == 0: return
+	for i in range(count, MAX_LIGHTS):
+		positions.append(Vector3.ZERO)
+		directions.append(Vector3.FORWARD)
+		colours.append(Vector3.ZERO)
+		shapes.append(Vector4.ZERO)
+	material.set_shader_parameter("light_count", count)
+	material.set_shader_parameter("light_position", positions)
+	material.set_shader_parameter("light_direction", directions)
+	material.set_shader_parameter("light_color", colours)
+	material.set_shader_parameter("light_shape", shapes)
 
 func _item(list_name: String, index: Variant) -> Dictionary:
 	var list: Array = _scene[list_name]
@@ -453,10 +545,12 @@ func _material(index: Variant, lightmap: int, has_uv2: bool) -> Material:
 	if light != null:
 		material.set_shader_parameter("light_map", light)
 		material.set_shader_parameter("light_scale", LIGHTMAP_SCALE)
+		_apply_lights(material, true)
 	else:
-		# No bake for this object: unlit shaders show as authored, lit ones get the scene's ambient level.
+		# No bake for this object: unlit shaders show as authored, lit ones get the scene's ambient level and its lights.
 		var unlit := shader_name.contains("Unlit") or shader_name.contains("Particles") or transparent
 		material.set_shader_parameter("flat_light", Vector3.ONE if unlit else Vector3(_ambient.r, _ambient.g, _ambient.b) * 2.0)
+		if not unlit: _apply_lights(material, false)
 	_materials[key] = material
 	return material
 

@@ -51,6 +51,9 @@ func load_catalog() -> void:
 		if _entry_valid(entry.get("entry")): entries[str(id)]["entry"] = entry.entry
 		if entry.get("backdrop") is String and not str(entry.backdrop).is_empty(): entries[str(id)]["backdrop"] = str(entry.backdrop).left(64)
 		if entry.get("origin") is String and not str(entry.origin).is_empty(): entries[str(id)]["origin"] = str(entry.origin).left(64)
+		if _screen_valid(entry.get("screen")):
+			entries[str(id)]["screen"] = entry.screen
+			entries[str(id)]["screen_pinned"] = entry.get("screen_pinned") == true
 
 static func _entry_valid(value: Variant) -> bool:
 	return value is Array and value.size() in [4, 5] and value.all(func(number: Variant) -> bool: return (number is float or number is int) and is_finite(number))
@@ -86,6 +89,32 @@ func set_entry(id: String, place: Transform3D, posture: int = 0) -> bool:
 	if save_catalog(): return true
 	if previous == null: entries[id].erase("entry")
 	else: entries[id]["entry"] = previous
+	return false
+
+static func _screen_valid(value: Variant) -> bool:
+	return value is Array and value.size() == 7 and value.all(func(number: Variant) -> bool: return (number is float or number is int) and is_finite(number))
+
+## Where the viewer fixed the screen in this scene: the middle of its bottom edge, in the scene's
+## own space. Null while the screen follows the viewer. The place is kept when the switch is off.
+func screen_pin(id: String) -> Variant:
+	var item: Dictionary = entries.get(id, {})
+	var saved: Variant = item.get("screen")
+	if not item.get("screen_pinned", false) or not _screen_valid(saved): return null
+	var turn := Quaternion(saved[3], saved[4], saved[5], saved[6])
+	if turn.length_squared() < 0.0001: return null
+	return Transform3D(Basis(turn.normalized()), Vector3(saved[0], saved[1], saved[2]))
+
+## Null turns the switch off and keeps the last place.
+func set_screen_pin(id: String, place: Variant) -> bool:
+	if not entries.has(id) or (place != null and not (place is Transform3D and (place as Transform3D).is_finite())): return false
+	var previous: Dictionary = entries[id].duplicate(true)
+	entries[id]["screen_pinned"] = place != null
+	if place is Transform3D:
+		var at: Vector3 = place.origin
+		var turn: Quaternion = (place as Transform3D).basis.orthonormalized().get_rotation_quaternion()
+		entries[id]["screen"] = [at.x, at.y, at.z, turn.x, turn.y, turn.z, turn.w]
+	if save_catalog(): return true
+	entries[id] = previous
 	return false
 
 func save_catalog() -> bool:

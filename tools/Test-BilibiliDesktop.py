@@ -23,7 +23,7 @@ import urllib.parse
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'android/web-browser/src/main/assets/web-browser'
 
-def extension(target, endpoint):
+def extension(target, endpoint, native_binding=False):
     target.mkdir(parents=True, exist_ok=True)
     hashes = {}
     for name in ['bilibili.js', 'bilibili-response.js', 'play-button.js', 'direct-return.js', 'network.js', 'media.js']:
@@ -35,6 +35,8 @@ def extension(target, endpoint):
             data = data.replace(old, b'browser.runtime.connect({name: "thru3d_desktop_media"})')
         (target / name).write_bytes(data)
     bridge = (ROOT / 'tools/web-video-desktop/bridge.js').read_text(encoding='utf8')
+    if native_binding:
+        bridge = bridge.replace('...summarize(item), document_sequence: sequence', '...summarize(item), document_sequence: sequence, private_media:item')
     (target / 'bridge.js').write_text(bridge.replace('__REPORT_ENDPOINT__', endpoint), encoding='utf8')
     shutil.copyfile(ROOT / 'tools/web-video-desktop/shape.js', target / 'shape.js')
     manifest = {'manifest_version': 2, 'name': 'Thru3D desktop capture test', 'version': '1.0',
@@ -59,11 +61,15 @@ def main():
     parser.add_argument('--recommendations', type=int, choices=[0, 1, 2], default=0, help='Click visible sidebar recommendations without reloading')
     parser.add_argument('--playlist-next', action='store_true', help='Select a real next playlist card, then reopen its current URL')
     parser.add_argument('--favorites', action='store_true', help='Follow the signed-in favorites link and its Play all button')
+    parser.add_argument('--favorites-folder', type=int, default=0, help='Choose an existing additional favorites folder by index; never creates or edits account data')
+    parser.add_argument('--cold-restart', action='store_true', help='Exit Firefox and reopen the exact current page in a fresh process using the same profile')
+    parser.add_argument('--native-binding', action='store_true', help='Check the captured pair with the current JVM production parser; raw data stays in memory')
     args = parser.parse_args()
     parsed = urllib.parse.urlparse(args.url)
     if parsed.scheme != 'https' or parsed.netloc != 'www.bilibili.com' or not re.fullmatch(r'/(?:video/(BV[A-Za-z0-9]+|av[0-9]+)|bangumi/play/(?:ss|ep)[1-9][0-9]*|list/(?:watchlater|ml[1-9][0-9]*|[1-9][0-9]*)|medialist/play/[1-9][0-9]*)/?', parsed.path):
         parser.error('Use an HTTPS www.bilibili.com video or episode URL')
     if not 1 <= args.seconds <= 60: parser.error('--seconds must be 1..60')
+    if args.cold_restart and not args.profile: parser.error('--cold-restart requires a persistent profile')
     if args.profile:
         args.profile = args.profile.resolve()
         if not args.profile.is_dir() or not args.profile.is_relative_to((ROOT / 'backups/web-beta-browser').resolve()):
@@ -72,7 +78,7 @@ def main():
             parser.error('Private profile capture is scoped to the supplied video and its parts')
     run = ROOT / 'build/output/bilibili-desktop' / time.strftime('%Y%m%d-%H%M%S')
     run.mkdir(parents=True)
-    reports = []; token = secrets.token_hex(24)
+    reports = []; private_media = {}; token = secrets.token_hex(24)
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *unused): pass
         def do_POST(self):
@@ -80,12 +86,15 @@ def main():
             if self.path != '/' + token or not 0 < length < 256 * 1024:
                 self.send_error(400); return
             body = json.loads(self.rfile.read(length))
+            media = body.pop('private_media', None)
+            if media:
+                private_media.clear(); private_media.update(media)
             reports.append(body)
             if len(reports) > 256: reports.pop(0)
             self.send_response(204); self.end_headers()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    hashes = extension(run / 'extension', f'http://127.0.0.1:{server.server_port}/{token}')
+    hashes = extension(run / 'extension', f'http://127.0.0.1:{server.server_port}/{token}', args.native_binding)
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0)); port = probe.getsockname()[1]
     profile_root = ROOT / 'tmp/bilibili-desktop'
@@ -118,12 +127,25 @@ def main():
             time.sleep(.25)
         evidence['stages'].append({'name': name, 'wait_seconds': round(time.monotonic() - started, 2),
                                    'latest': reports[-1] if reports else None})
+        if args.native_binding:
+            runtime = json.loads((ROOT / 'build/output/web-video-desktop-host/runtime.json').read_text(encoding='utf-8-sig'))
+            for source, digest in runtime['source_sha256'].items():
+                if hashlib.sha256((ROOT / source).read_bytes()).hexdigest() != digest:
+                    raise RuntimeError('Native probe sources changed; prepare the current runtime first')
+            completed = subprocess.run([runtime['java'], '-cp', runtime['classpath'], runtime['cn_main'], '--bilibili-binding'],
+                input=json.dumps(dict(private_media)), text=True, capture_output=True, timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            native = json.loads(completed.stdout.strip())
+            evidence['stages'][-1]['native_binding'] = native
+            if not native.get('passed'): raise RuntimeError('Production native binding rejected the ready capture')
         if previous_cid and (not reports or reports[-1].get('cid') == previous_cid):
             raise RuntimeError('Playlist did not bind a different current video')
         if args.buttons:
             current = reports[-1] if reports else {}
             target = script("""const h=document.querySelector('[data-thru3d-bilibili=beta]');if(!h||h.hidden)return null;
-                const r=h.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2),width:r.width,height:r.height};""")
+                const r=h.getBoundingClientRect(),x=Math.round(r.x+r.width/2),y=Math.round(r.y+r.height/2),hit=document.elementFromPoint(x,y);
+                return {x,y,width:r.width,height:r.height,hit_host:hit===h,hit_tag:hit?.tagName,
+                  hit_class:typeof hit?.className==='string'?hit.className.slice(0,120):'',fullscreen:!!document.fullscreenElement};""")
             if not target: raise RuntimeError('Bound Bilibili player button missing')
             if not args.profile:
                 (run / ('button-'+name+'.png')).write_bytes(base64.b64decode(call('GET','/session/'+session+'/screenshot')))
@@ -139,10 +161,8 @@ def main():
             evidence['button_stages'].append({'name':name,'target':target,'cid':clicked.get('cid') if clicked else None,
                 'passed':bool(clicked) and target['height'] >= 68 and target['width'] >= 180})
             if not evidence['button_stages'][-1]['passed']:raise RuntimeError('In-player Beta click was not bound to the current part')
-    try:
-        for _ in range(100):
-            try: call('GET', '/status'); break
-            except Exception: time.sleep(.1)
+    def start_browser():
+        nonlocal session
         value = call('POST', '/session', {'capabilities': {'alwaysMatch': {'browserName': 'firefox',
             'moz:firefoxOptions': {'binary': str(args.firefox.resolve()), 'args': ['-headless'] + (['--profile', str(args.profile)] if args.profile else []),
                 'prefs': {'media.autoplay.default': 0, 'media.autoplay.blocking_policy': 0}}}}})
@@ -154,12 +174,34 @@ def main():
             assert evidence['profile_in_place'] and evidence['browser_build_id'] == expected.split('.')[-1]
         command('/moz/addon/install', {'path': str((run / 'extension').resolve()), 'temporary': True})
         command('/window/rect', {'width': 1500, 'height': 1100})
+    try:
+        for _ in range(100):
+            try: call('GET', '/status'); break
+            except Exception: time.sleep(.1)
+        start_browser()
         command('/url', {'url': args.url})
         time.sleep(args.seconds)
         if args.favorites:
             favorite = script("return [...document.querySelectorAll('a[href]')].find(a=>a.href.includes('/favlist'))?.href || null;")
-            if not favorite: raise RuntimeError('Actual favorites link missing')
+            if not favorite:
+                # The header can defer its personal menu until hover. Only use the
+                # already signed-in account identity in memory; never log cookies/UID.
+                cookies = call('GET', '/session/' + session + '/cookie')
+                owner = next((c['value'] for c in cookies if c['name']=='DedeUserID' and re.fullmatch(r'[1-9][0-9]*',c['value'])), None)
+                evidence['signed_in_identity_present'] = bool(owner)
+                if owner: favorite = 'https://space.bilibili.com/' + owner + '/favlist'
+            if not favorite: raise RuntimeError('Signed-in favorites entry unavailable')
             command('/url', {'url': favorite}); time.sleep(args.seconds)
+            if args.favorites_folder:
+                # Default is a sibling of the sortable custom-folder list, not
+                # its first item. Count both within the actual created section.
+                folder_selector = "document.querySelector('.fav-collapse:has(.fav-sortable-list)')?.querySelectorAll('.fav-sidebar-item')"
+                evidence['favorites_folder_count'] = script("return (" + folder_selector + ")?.length || 0;")
+                if not 0 <= args.favorites_folder < evidence['favorites_folder_count']: raise RuntimeError('Requested existing favorites folder unavailable')
+                target = script("const e=(" + folder_selector + ")["+str(args.favorites_folder)+"];e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};")
+                command('/actions', {'actions':[{'type':'pointer','id':'folder','parameters':{'pointerType':'mouse'},'actions':[
+                    {'type':'pointerMove','duration':100,**target},{'type':'pointerDown','button':0},{'type':'pointerUp','button':0}]}]})
+                time.sleep(args.seconds)
             target = script("const e=document.querySelector('.playall-btn');if(!e)return null;e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};")
             if not target: raise RuntimeError('Actual favorites Play all control missing')
             before = call('GET', '/session/' + session + '/window/handles')
@@ -217,17 +259,28 @@ def main():
             reports.clear(); command('/refresh', {}); time.sleep(2)
             script("document.querySelector('video')?.play().catch(()=>{}); return true;")
             checkpoint('reload', int(urllib.parse.parse_qs(parsed.query).get('p', ['1'])[0]))
+        if args.cold_restart:
+            current_url = script('return location.href;')
+            expected_cid = reports[-1].get('cid') if reports else None
+            part = int(script("return new URL(location.href).searchParams.get('p') || '1';"))
+            call('DELETE', '/session/' + session); session = None
+            reports.clear(); private_media.clear()
+            start_browser(); command('/url', {'url': current_url}); time.sleep(args.seconds)
+            script("document.querySelector('video')?.play().catch(()=>{}); return true;")
+            checkpoint('cold_restart', part)
+            evidence['cold_restart_same_cid'] = bool(expected_cid) and reports[-1].get('cid') == expected_cid
         evidence['reports_received'] = len(reports)
-        evidence['passed'] = len(evidence['stages']) == (3 if args.playlist_next else 1 + args.recommendations if args.recommendations else 2 if args.single else 3) and all(
+        evidence['passed'] = len(evidence['stages']) == (3 if args.playlist_next else 1 + args.recommendations if args.recommendations else 2 if args.single else 3) + int(args.cold_restart) and all(
             stage['latest'] and stage['latest'].get('binding') == 'matched' and
             stage['latest'].get('captured_video', 0) > 0 and stage['latest'].get('captured_audio', 0) > 0
             for stage in evidence['stages'])
         if args.recommendations:
             evidence['passed'] = evidence['passed'] and len({stage['latest'].get('document_sequence') for stage in evidence['stages'] if stage['latest']}) == 1
-        if args.playlist_next and len(evidence['stages']) == 3:
-            first, next_video, reopened = [s['latest'] for s in evidence['stages']]
+        if args.playlist_next and len(evidence['stages']) >= 3:
+            first, next_video, reopened = [s['latest'] for s in evidence['stages'][:3]]
             evidence['passed'] = evidence['passed'] and first['cid'] != next_video['cid'] == reopened['cid'] and first['document_sequence'] == next_video['document_sequence'] != reopened['document_sequence']
         if args.buttons: evidence['passed'] = evidence['passed'] and all(s['passed'] for s in evidence['button_stages'])
+        if args.cold_restart: evidence['passed'] = evidence['passed'] and evidence['cold_restart_same_cid']
         (run / 'summary.json').write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding='utf8')
         print(json.dumps({'browser_version': evidence['browser_version'], 'passed': evidence['passed'],
                           'stages': [{k: stage['latest'].get(k) for k in ['part', 'binding', 'response_status', 'captured_video', 'captured_audio']}

@@ -4,7 +4,7 @@ const Menu := preload("res://scripts/library_menu.gd")
 const Icons := preload("res://scripts/menu_icons.gd")
 const CloudFixture := preload("res://tests/test_cloud_accounts.gd")
 const Servers := ["emby", "jellyfin", "plex", "stash", "xbvr"]
-const Clouds := ["115_open", "baidu", "aliyun_open", "quark_open", "123_open", "onedrive", "webdav"]
+const Clouds := ["115_open", "baidu", "aliyun_open", "quark_open", "123_open", "onedrive", "thunder", "webdav"]
 var output := ""
 var viewport: SubViewport
 var menu: Node
@@ -19,6 +19,7 @@ func capture(name: String) -> void:
 func _run() -> void:
 	output = OS.get_environment("THRU3D_PROVIDER_PREVIEW_DIR")
 	if output.is_empty(): quit(1); return
+	preload("res://scripts/ui_theme.gd").use(OS.get_environment("THRU3D_PROVIDER_PREVIEW_THEME"))
 	DirAccess.make_dir_recursive_absolute(output)
 	# Inspect the actual imported pixels, including alpha and rasterized edge padding.
 	for key in Icons.Providers.TEXTURES:
@@ -34,7 +35,7 @@ func _run() -> void:
 					colored = true
 		if colored != (key in Icons.Providers.COLORED):
 			push_error("Unexpected provider mark colors: " + key); quit(1); return
-	print("11 imported provider marks: transparent padding, 5 colored server marks and 6 monochrome cloud marks verified")
+	print("%d imported provider marks: transparent padding and source colors verified" % Icons.Providers.TEXTURES.size())
 	preload("res://scripts/i18n.gd").use("zh")
 	viewport = SubViewport.new(); viewport.size = Vector2i(1600, 1100); viewport.own_world_3d = true
 	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS; root.add_child(viewport)

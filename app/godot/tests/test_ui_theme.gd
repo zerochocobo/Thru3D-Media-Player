@@ -138,7 +138,9 @@ func _run() -> void:
 		for key in Providers.TEXTURES:
 			var mark: MeshInstance3D = entry._icon(key, Vector3.ZERO, 0.05, Palette.color("provider_ink"))
 			var ink: Color = mark.material_override.albedo_color
-			if key in Providers.COLORED:
+			if key in Providers.WHITE_ON_DARK and not Palette.light():
+				check(ink == Color(Color.WHITE, Palette.color("provider_ink").a) and contrast(ink, Palette.color("tile")) >= 3.0, option.value + " readable white provider mark: " + key)
+			elif key in Providers.COLORED:
 				check(ink == Color.WHITE, option.value + " retains existing multicolor provider artwork: " + key)
 			elif Palette.light():
 				check(not is_equal_approx(ink.r, ink.b) and contrast(ink, Palette.color("tile")) >= 3.0, option.value + " readable colored cloud mark: " + key)

@@ -74,8 +74,12 @@ internal class RvmVideoProbe(
                 val host = context() ?: error("RVM probe activity unavailable")
                 RvmNative.configureGpu(RvmWarmup.cacheDirectory(host).absolutePath, RvmNative.fp16())
                 val generation = gate.modelGeneration()
+                val began = System.nanoTime()
                 val prepared = RvmRuntime.prepare(host.assets, vulkan, profile,
                     scope.logicalSessionId.toLong(), generation)
+                // Exported diagnostics: how long the model took, and which transport Alpha runs on.
+                android.util.Log.i("QuestRvm", "video alpha model ready ms=%d profile=%s gpu=%b zero_copy=%d".format(java.util.Locale.US,
+                    (System.nanoTime() - began) / 1_000_000, profile, vulkan, RvmNative.zeroCopySupport()))
                 val retained = synchronized(lock) {
                     if (closed) false else { runtime = prepared; appliedGeneration = generation; true }
                 }
@@ -265,6 +269,8 @@ internal class RvmVideoProbe(
             if (publish) scoutAfterPublish?.invoke()
             if (publish) handedOff = completed(result, leftAlpha, rightAlpha)
             measured = publish
+            if (publish && count == 1) android.util.Log.i("QuestRvm", "video alpha first mask wait_ms=%.0f infer_ms=%.0f shared=%b handed_off=%b".format(java.util.Locale.US,
+                (drainStart - input.submittedNs) / 1e6, (System.nanoTime() - drainStart) / 1e6, input.shared != null, handedOff))
         } catch (error: Throwable) {
             if (!synchronized(lock) { closed }) failed(error)
         } finally {

@@ -686,7 +686,9 @@ func _decoration(size: Vector2, centre: Vector2, color: Color) -> MeshInstance3D
 
 func _icon(key: String, location: Vector3, size: float, color: Color, parent: Node = self) -> MeshInstance3D:
 	if Icons.Providers.TEXTURES.has(key):
-		if key in Icons.Providers.COLORED:
+		if key in Icons.Providers.WHITE_ON_DARK and not UiTheme.light():
+			color = Color(Color.WHITE, color.a)
+		elif key in Icons.Providers.COLORED:
 			color = Color(1, 1, 1, color.a)
 		elif UiTheme.light() and Icons.Providers.LIGHT_COLORS.has(key):
 			var brand: Color = Icons.Providers.LIGHT_COLORS[key]

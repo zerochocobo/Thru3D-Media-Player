@@ -10,6 +10,12 @@ const MAX_JSON_BYTES := 64 * 1024 * 1024
 const MAX_SIDECAR_BYTES := 64 * 1024
 const MAX_NODES := 100000
 const MAX_STORED_TRIANGLES := 8000000
+## How the scene's own lights are scaled (see _level); the controller reads LIGHT_ENERGY to dim them.
+const LAMP_LEVEL := 0.5
+const LAMP_REACH := 2.0
+const LAMP_FLOOR := 0.02
+const SUN_LEVEL := 1.0
+const LIGHT_ENERGY := &"scene_light_energy"
 
 ## Set on Android to the plugin's ETC2 encoder: (rgba mip chain, width, height, alpha) -> encoded
 ## mip chain, empty on failure. Without it decoded textures stay uncompressed (four times larger).
@@ -128,10 +134,10 @@ func _read_model(path: String, limits: Dictionary) -> Dictionary:
 	if fbx and int(Audit.audit(root).triangles) > MAX_STORED_TRIANGLES:
 		root.free()
 		return {"error": "Scene is too detailed for this headset"}
-	var actions := {"lights_removed": _strip(root, int(limits.lights)), "meshes_culled": 0}
+	var actions := {"lights_removed": _strip(root, int(limits.lights), fbx), "meshes_culled": 0}
 	var items := Audit.drawables(root)
-	# With no light kept, surface detail maps (normal, roughness, metal...) cannot show: drop them.
-	actions.detail_maps_dropped = _drop_detail_maps(items) if int(limits.lights) == 0 else 0
+	# Kept lights are unshadowed fill: surface detail maps (normal, roughness, metal...) would only add memory.
+	actions.detail_maps_dropped = _drop_detail_maps(items)
 	_report("Processing textures")
 	actions.merge(_shrink_textures(items, int(limits.texture_size)))
 	actions.textures_compressed = _compress_textures(items)
@@ -169,7 +175,7 @@ func _drop_detail_maps(items: Array[Dictionary]) -> int:
 
 ## Decoded textures to ETC2 through the platform encoder, when there is one.
 func _compress_textures(items: Array[Dictionary]) -> int:
-	if not texture_encoder.is_valid(): return 0
+	if texture_encoder.is_null(): return 0
 	# Each distinct texture once, with alpha looked for only where it can show.
 	var alpha := {}
 	for material in Audit.materials(items):
@@ -265,18 +271,54 @@ func _sidecar(path: String) -> Dictionary:
 	return parser.data if parser.parse(file.get_as_text()) == OK and parser.data is Dictionary else {}
 
 ## Cameras and animation never drive the viewer here; lights are capped and unshadowed.
-func _strip(root: Node3D, lights_allowed: int) -> int:
+func _strip(root: Node3D, lights_allowed: int, fbx: bool = false) -> int:
 	var removed := 0
 	for node in root.find_children("*", "Camera3D", true, false) + root.find_children("*", "AnimationPlayer", true, false):
 		_detach(node)
+	var lights: Array[Light3D] = []
 	for node in root.find_children("*", "Light3D", true, false):
-		if lights_allowed > 0:
-			lights_allowed -= 1
-			(node as Light3D).shadow_enabled = false
+		if node.visible and (node as Light3D).light_energy > 0.0: lights.append(node)
 		else:
 			_detach(node)
 			removed += 1
+	# FBX keeps a lamp's whole output (Blender writes its watts unchanged, as it does a sun's strength);
+	# glTF gives it per steradian. Brought to glTF's terms, a sun keeps the same weight beside lamps.
+	if fbx:
+		for light in lights: if not light is DirectionalLight3D: light.light_energy /= 4.0 * PI
+	_level(lights)
+	# The brightest are kept, judged by what each gives at arm's length (a sun the same everywhere).
+	lights.sort_custom(func(a: Light3D, b: Light3D) -> bool: return _strength(a) > _strength(b))
+	for light in lights.slice(lights_allowed):
+		_detach(light)
+		removed += 1
 	return removed
+
+static func _strength(light: Light3D) -> float:
+	return light.light_energy if light is DirectionalLight3D else light.light_energy / (LAMP_REACH * LAMP_REACH)
+
+## Exporters scale light strengths their own way (Blender's watts arrive as thousands of candela and
+## washed a room out on a headset), so only the ratios between a scene's lights are kept: its
+## strongest lamp gives LAMP_LEVEL at LAMP_REACH metres. Suns share that scale (glTF gives lamps in
+## candela and suns in lux, so a dim moon beside bright lamps stays dim), up to SUN_LEVEL; a scene
+## lit only by suns has its strongest at SUN_LEVEL. Each lamp ends where it falls to LAMP_FLOOR of
+## that level, so it draws only the meshes near it.
+func _level(lights: Array[Light3D]) -> void:
+	var peak := {}
+	for light in lights:
+		var kind := light is DirectionalLight3D
+		peak[kind] = maxf(peak.get(kind, 0.0), light.light_energy)
+	var scale: float = LAMP_LEVEL * LAMP_REACH * LAMP_REACH / peak[false] if peak.has(false) else SUN_LEVEL / peak.get(true, 1.0)
+	for light in lights:
+		light.shadow_enabled = false
+		light.light_indirect_energy = 0.0
+		light.light_specular = 0.0
+		if light is DirectionalLight3D:
+			light.light_energy = minf(light.light_energy * scale, SUN_LEVEL)
+		else:
+			light.light_energy *= scale
+			light.set_param(Light3D.PARAM_ATTENUATION, 2.0)
+			light.set_param(Light3D.PARAM_RANGE, minf(light.get_param(Light3D.PARAM_RANGE), sqrt(light.light_energy / (LAMP_LEVEL * LAMP_FLOOR))))
+		light.set_meta(LIGHT_ENERGY, light.light_energy)
 
 static func _detach(node: Node) -> void:
 	var parent := node.get_parent()

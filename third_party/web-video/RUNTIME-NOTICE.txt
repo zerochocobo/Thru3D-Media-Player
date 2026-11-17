@@ -1,7 +1,7 @@
 Web video extraction runtime
 
-yt-dlp 2026.10.26 — yt-dlp contributors — Unlicense
-https://github.com/yt-dlp/yt-dlp/tree/2026.10.26
+yt-dlp 2026.11.16.232655 (official nightly) — yt-dlp contributors — Unlicense
+https://github.com/yt-dlp/yt-dlp/tree/8f9e23a47eb68816a639096aecfb9d802f83c0a5
 yt-dlp-ejs 0.8.0 — yt-dlp contributors — Unlicense
 https://github.com/yt-dlp/ejs/tree/0.8.0
 The EJS solver bundles Meriyah and Astring. Their original attribution and

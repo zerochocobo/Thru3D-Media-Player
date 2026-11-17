@@ -31,8 +31,10 @@ func _run() -> void:
 	java.free()
 	menu._activate(Menu.CLOUD_ACCOUNTS)
 	check(panel.view == "choose" and not menu._grid(), "cloud plus opens provider list in the VR menu")
-	check(menu.rows.size() == 6 and menu.rows[0].account_provider == "115_open" and menu.rows[0].title == "115" and menu.rows[2].account_provider == "aliyun_open" and menu.rows[3].account_provider == "quark_open" and menu.rows[4].account_provider == "onedrive" and menu.rows[5].account_provider == "webdav" and not menu.rows.any(func(row): return row.get("account_provider", "") == "115" or row.has("account_dav")), "Only 115 Open is offered for new 115 accounts")
-	panel.choose(menu.rows[5])
+	check(menu.rows.size() == 8 and menu.rows[0].account_provider == "115_open" and menu.rows[0].title == "115" and menu.rows.any(func(row): return row.get("account_provider", "") == "123_open") and not menu.rows.any(func(row): return row.get("account_provider", "") == "115" or row.has("account_dav")), "Public cloud entries include Thunder beta in every build")
+	check(menu.rows[6].account_provider == "thunder" and menu.rows[7].account_provider == "webdav" and is_zero_approx(menu.scroll) and menu._buttons.any(func(b): return b.target == Menu.ROW_BASE + 6 and b.node.is_visible_in_tree()), "Thunder is above WebDAV and visible without scrolling")
+	check(menu._tips.get(Menu.ROW_BASE + 6, "") == menu.I18n.t("Beta. Unofficial integration; may be unstable."), "Visible Thunder entry retains its beta tooltip")
+	panel.choose(menu.rows.filter(func(row): return row.get("account_provider", "") == "webdav")[0])
 	check(panel.view == "form" and panel.provider == "webdav" and panel.fields == ["name", "base", "username", "password"] and panel.field == "base", "WebDAV is a remote connection form inside the cloud library")
 	check(menu._buttons.any(func(b): return b.target == Accounts.BASE + 6) and not menu._buttons.any(func(b): return b.target in [Accounts.BASE + 7, Accounts.BASE + 14]), "WebDAV uses test/save without web login or a local service toggle")
 	panel.field = "username"

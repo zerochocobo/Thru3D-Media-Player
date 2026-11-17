@@ -1101,7 +1101,7 @@
       if (biliIdentity?.pgc && bili?.whole && bili.ep === biliIdentity.ep)
         biliIdentity = {...biliIdentity, cid: bili.cid, aid: bili.aid, expected_duration: bili.duration};
       const biliCid = biliIdentity?.cid;
-      const sameVideo = biliIdentity?.pgc || bili?.id === biliIdentity?.id || bili?.id === 'av' + biliIdentity?.aid;
+      const sameVideo = typeof Thru3DBilibili !== 'undefined' && Thru3DBilibili.sameIdentity(bili, biliIdentity);
       // Scrolling/hover previews leave additional <video> elements in the page. Bind
       // the full current part, not the number or CSS visibility of those elements.
       // An already verified owner survives reparenting, but never a new source/epoch/CID.
@@ -1329,6 +1329,14 @@
         layout: owner?.getAttribute("format") || "",
         time: (Number.isFinite(video.currentTime) ? video.currentTime : 0) + (resource && Number.isFinite(resource.offset) ? resource.offset : 0),
         duration: Number.isFinite(video.duration) ? video.duration : 0,
+        playback: (() => {
+          try {
+            const q = video.getVideoPlaybackQuality?.();
+            return {ready_state:video.readyState,network_state:video.networkState,error_code:video.error?.code || 0,
+              total_frames:q?.totalVideoFrames,dropped_frames:q?.droppedVideoFrames,
+              decoded_frames:video.mozDecodedFrames,presented_frames:video.mozPresentedFrames};
+          } catch (_) { return {}; }
+        })(),
         playing: !video.paused && !video.ended });
     }
     syncBilibiliButton(bilibiliTarget);

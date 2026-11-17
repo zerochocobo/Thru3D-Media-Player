@@ -8,14 +8,16 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.util.UUID
 
-/** OAuth mounts live in the encrypted core database; account IDs keep existing cloud paths stable. */
+/** Mount secrets live in the encrypted core database; account IDs keep cloud paths stable. */
 internal object OpenListBackend {
-    private val drivers = OpenListAuth.drivers + (CloudDrive.WEBDAV to "WebDav")
+    private val drivers = OpenListAuth.drivers + (CloudDrive.WEBDAV to "WebDav") +
+        (CloudDrive.THUNDER to "ThunderPlayer")
     fun supported(provider: String) = provider in drivers
     private var initialized = false
     @Synchronized fun start(context: Context) {
         if (initialized) { Cloudcore.configureReadDiagnostics(BuildConfig.DEBUG && PlaybackPrivacy.diagnostics);return }
         try {
+            Cloudcore.request("POST", "/thunder-development", JSONObject().put("enabled", true).toString())
             Cloudcore.start(File(context.noBackupFilesDir, "openlist-vr-v1").absolutePath, CloudSecret.key(context))
             Cloudcore.configureReadDiagnostics(BuildConfig.DEBUG && PlaybackPrivacy.diagnostics)
             initialized = true
@@ -36,6 +38,9 @@ internal object OpenListBackend {
         return CloudDiagnostics.checkCore(result, route)
     }
     fun create(credential: OpenListAuth.Credential) = create(credential.provider, credential.addition())
+    fun createThunder(credential: JSONObject): JSONObject {
+        return create(CloudDrive.THUNDER, ThunderAuth.credential(credential))
+    }
     fun createWebDav(connection: RemoteWebDav.Connection): JSONObject =
         create(CloudDrive.WEBDAV, connection.addition()).apply {
             val fields = connection.metadata()
@@ -246,6 +251,9 @@ internal object OpenListBackend {
         }
         override fun resolve(file: CloudFile): CloudLink {
             require(!file.folder && file.size > 0)
+            // Reuse the existing identity-bound proxy: transient CDN disconnects
+            // become 502, allowing CloudStreamSource's single exact-range retry.
+            if (provider == CloudDrive.THUNDER) return resolveArchive(file)
             // Consume a single recent find() result instead of searching the same path twice.
             // Listed companions and subsequent link refreshes still verify identity afresh.
             var receipt = synchronized(this) {

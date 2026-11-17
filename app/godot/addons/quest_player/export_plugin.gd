@@ -28,6 +28,13 @@ class QuestPlayerExport extends EditorExportPlugin:
 	func _get_android_libraries(_platform: EditorExportPlatform, debug: bool) -> PackedStringArray:
 		return PackedStringArray(["res://addons/quest_player/bin/player-plugin-%s.aar" % ("debug" if debug else "release"), "res://addons/quest_player/bin/web-browser-%s.aar" % ("debug" if debug else "release"), "res://addons/quest_player/bin/cloudcore.aar"])
 
+	# iQIYI QIYU's package manager calls a package a VR application (and schedules it as one) only
+	# when it carries this flag; the standard OpenXR package is the one QIYU headsets install.
+	# Quest and PICO packages stay free of it (Build-Player rejects them otherwise).
+	func _get_android_manifest_application_element_contents(_platform: EditorExportPlatform, _debug: bool) -> String:
+		if not get_option("xr_features/enable_khronos_plugin"): return ""
+		return "        <meta-data android:name=\"qiyu-sdk-flag\" android:value=\"true\" />\n"
+
 	func _get_android_dependencies_maven_repos(_platform: EditorExportPlatform, _debug: bool) -> PackedStringArray:
 		return PackedStringArray(["https://maven.mozilla.org/maven2/"])
 

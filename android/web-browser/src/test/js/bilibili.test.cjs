@@ -39,6 +39,17 @@ test('pause readiness requires current dimensions and both exactly observed trac
   assert.equal(api.ready(null, [video, audio], 1920, 1080), false);
   assert.equal(api.ready(data, [video, audio], 1920, 1080), true);
 });
+test('oid bookmarks accept the BV alias only from the observed view mapping', () => {
+  const views = [{bvid:identity.id, aid:'1', pages:[{page:1,cid:'12345',duration:120}]}];
+  const mapped = api.viewIdentity(views, 'https://www.bilibili.com/list/ml1234?oid=1');
+  assert.equal(mapped.id,'av1');
+  assert.equal(api.sameIdentity({id:identity.id,avid:'1'},mapped),true);
+  assert.equal(api.sameIdentity({id:identity.id,avid:'2'},mapped),false);
+  assert.equal(api.sameIdentity({id:'BV0987654321',avid:'1'},mapped),false);
+  assert.equal(api.sameIdentity({id:identity.id},{...mapped,bvid:undefined}),false);
+  assert.equal(api.sameIdentity({id:'av1'},api.viewIdentity(views,page)),true);
+  assert.equal(api.viewIdentity(views,'https://www.bilibili.com/list/ml1234?oid=2'),null);
+});
 test('normalization keeps SDR representations for observed ABR selection and rational fps', () => {
   const data = api.normalize(raw(), identity);
   assert.equal(data.video.length, 2); assert.equal(data.audio.length, 1);

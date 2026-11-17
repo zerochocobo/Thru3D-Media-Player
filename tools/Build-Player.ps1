@@ -375,13 +375,14 @@ if ($headFeatureBlock -notmatch 'android:required[^\r\n]*=true') { throw 'Immers
 $vendorManifest = @(switch ($XrVendor) {
     'Pico' { @('handtracking', 'Hand_Tracking_HighFrequency', 'pvr.app.type', 'pxr.sdk.version_code') }
     'Quest' { @('com.oculus.feature.PASSTHROUGH', 'com.oculus.permission.HAND_TRACKING', 'oculus.software.handtracking') }
-    'OpenXR' { @() }
+    'OpenXR' { @('qiyu-sdk-flag') }
 })
 foreach ($expected in (@('org.vrpassthroughplayer.plugin.QuestPlayerPlugin','org.khronos.openxr.intent.category.IMMERSIVE_HMD', $applicationId) + $vendorManifest)) {
     if (-not $manifestText.Contains($expected)) { throw "APK manifest is missing: $expected" }
 }
 if ($XrVendor -eq 'Pico' -and $manifestText.Contains('com.oculus.permission.HAND_TRACKING')) { throw 'PICO APK contains Meta hand tracking configuration.' }
 if ($XrVendor -eq 'Quest' -and $manifestText.Contains('pvr.app.type')) { throw 'Quest APK contains PICO VR configuration.' }
+if ($XrVendor -ne 'OpenXR' -and $manifestText.Contains('qiyu-sdk-flag')) { throw "$XrVendor APK contains QIYU VR configuration." }
 if ($XrVendor -eq 'Quest') {
     $devicesLine = @($manifestLines | Select-String 'com\.oculus\.supportedDevices')
     if ($devicesLine.Count -ne 1) { throw 'Quest APK must declare supported devices exactly once.' }

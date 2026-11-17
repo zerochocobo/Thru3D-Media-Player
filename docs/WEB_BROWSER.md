@@ -91,3 +91,7 @@ Standard Release diagnostics include playback stage information. Bilibili Beta c
 ## Bookmark previews in 0.18.0
 
 Bookmarks saved from an active page can show a locally stored thumbnail. The capture follows the focused region when one is active. Users can switch to a list view. Compatible Bilibili videos opened from lists or bookmarks can show Play Beta when the current video is ready.
+
+## Codec and rendering fallback in 0.18.1
+
+Android devices without a hardware AV1 decoder disable AV1 in browser playback and WebRTC codec selection. OpenXR runtimes without Android-surface swapchains can use the eye-buffer browser path.

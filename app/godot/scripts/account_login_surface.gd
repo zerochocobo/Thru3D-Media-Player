@@ -1,6 +1,7 @@
 extends Node3D
 ## Dedicated account slot; same provider and acknowledged Surface lifetime as the browser.
 const Layer := preload("res://scripts/web_browser_layer.gd")
+const Page := preload("res://scripts/web_browser_page.gd")
 const HOLE := preload("res://shaders/web_browser_hole.gdshader")
 var target: WeakRef
 var bridge: JavaClass
@@ -60,9 +61,11 @@ func _process(_delta: float) -> void:
 	if layer and (identity != next_id or pixels != desired or recreate or (Layer.api and layer.session != Layer.api.get_session())):
 		if not _release(): return
 	if not layer:
-		layer = Layer.new(); pixels = desired; identity = next_id
+		var page := Page.needed()
+		layer = Page.new() if page else Layer.new(); pixels = desired; identity = next_id
 		if not layer.create(5, pixels):
 			layer = null; status = "surface_unavailable"; retry_at = Time.get_ticks_msec() + 1000; return
+		if page: hole.material_override = layer.material
 		menu.set_meta("menu_browser_layer", true)
 	if not attached:
 		generation += 1

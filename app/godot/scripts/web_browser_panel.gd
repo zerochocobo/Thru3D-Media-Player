@@ -111,6 +111,7 @@ var handoff_navigation := 0
 var cinema_provider: Callable
 var cinema_video_provider: Callable
 var next_poll := 0
+var _next_media_diagnostic := 0
 var handoff := false
 var handoff_uri := ""
 var pause_started := 0
@@ -252,6 +253,7 @@ func tick() -> void:
 		var parsed: Variant = JSON.parse_string(raw)
 		if not parsed is Dictionary: return
 		_status_raw = raw; data = parsed
+	_record_webpage_playback()
 	var next_focus := int(data.get("focused_window", 1))
 	if focused_window != next_focus:
 		cancel(); menu.system_text_input.cancel("web_browser")
@@ -438,6 +440,18 @@ func iqiyi_target(current: Dictionary, selection: String = "") -> Dictionary:
 func douyin_target(current: Dictionary, selection: String = "") -> Dictionary:
 	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("douyin_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
 	return candidates[0] if candidates.size() == 1 else {}
+
+func _record_webpage_playback() -> void:
+	if Time.get_ticks_msec() < _next_media_diagnostic: return
+	var site := "bilibili" if data.get("bilibili_beta_available", false) else "douyin" if data.get("douyin_beta_available", false) else ""
+	if site.is_empty(): return
+	_next_media_diagnostic = Time.get_ticks_msec() + 30000
+	for item in data.get("videos", []).slice(0, 2):
+		var sample: Dictionary = item.get("playback", {}).duplicate()
+		if sample.is_empty(): continue
+		for key in ["width", "height", "time", "playing", "bilibili_ready", "douyin_ready"]:
+			sample[key] = item.get(key, 0)
+		DiagnosticLog.trail("web_beta.webpage", "site=%s %s" % [site, JSON.stringify(sample)])
 
 func bilibili_target(current: Dictionary, selection: String = "") -> Dictionary:
 	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("bilibili_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))

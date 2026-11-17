@@ -49,9 +49,15 @@ func _fixture(path: String, markers: bool, texture_size: int = 2048) -> void:
 		scene.add_child(_box("Tower%d" % index, Vector3(8, 2, -5.0 - index * 8.0), Vector3(2, 4, 2), _texture(texture_size if index == 0 else 64, 3 + index), 12))
 	var lamp := OmniLight3D.new()
 	lamp.name = "Lamp"
+	lamp.light_energy = 400.0
 	scene.add_child(lamp)
+	var dim := OmniLight3D.new()
+	dim.name = "Dim"
+	dim.light_energy = 100.0
+	scene.add_child(dim)
 	var second := DirectionalLight3D.new()
 	second.name = "Sun"
+	second.light_energy = 80.0
 	scene.add_child(second)
 	var camera := Camera3D.new()
 	camera.name = "ShotCamera"
@@ -109,9 +115,28 @@ func _run() -> void:
 	var root: Node3D = low.root
 	_check(info.stats.meshes == 8 and info.stats.triangles > 5000, "Audit counts every mesh and its triangles (%d)" % info.stats.triangles)
 	_check(root.find_children("*", "Camera3D", true, false).is_empty(), "Authoring cameras are removed")
-	_check(info.stats.lights == 0 and info.actions.lights_removed == 2, "Low tier drops realtime lights")
+	_check(info.stats.lights == 1 and info.actions.lights_removed == 2, "Low tier keeps one of the scene's three lights")
+	var kept_low := {}
+	for light in root.find_children("*", "Light3D", true, false): kept_low[light.name] = light
+	_check(kept_low.has("Lamp"), "The strongest lamp is the one kept (%s)" % [kept_low.keys()])
+	var every_limit := Budget.limits(Budget.LOW).duplicate()
+	every_limit.lights = 3
+	var every := loader.load_scene(marked, Budget.LOW, {"use_cache": false, "limits": every_limit})
+	for light in every.root.find_children("*", "Light3D", true, false): kept_low[light.name] = light
+	if kept_low.has("Sun") and kept_low.has("Lamp"):
+		var sun: Light3D = kept_low.Sun
+		var lamp: OmniLight3D = kept_low.Lamp
+		_check(is_equal_approx(lamp.light_energy, Loader.LAMP_LEVEL * Loader.LAMP_REACH * Loader.LAMP_REACH) and is_equal_approx(sun.light_energy, lamp.light_energy * 80.0 / 400.0),
+			"Exporter units are replaced: the strongest lamp comes out at the player's level and the sun keeps its ratio to it (%s, %s)" % [lamp.light_energy, sun.light_energy])
+		_check(is_equal_approx(lamp.omni_range, minf(5.0, sqrt(lamp.light_energy / (Loader.LAMP_LEVEL * Loader.LAMP_FLOOR)))) and lamp.omni_attenuation == 2.0,
+			"A lamp ends where its light has faded or where the file says, the nearer (%s m)" % lamp.omni_range)
+		_check(not sun.shadow_enabled and not lamp.shadow_enabled and is_equal_approx(float(lamp.get_meta(Loader.LIGHT_ENERGY)), lamp.light_energy),
+			"Kept lights are unshadowed and remember their level for dimming")
+		var dim: Node = every.root.find_child("Dim", true, false)
+		_check(dim is OmniLight3D and is_equal_approx(dim.light_energy, lamp.light_energy / 4.0), "A weaker lamp keeps its ratio to the strongest")
+	every.root.free()
 	_check(root.find_children("*", "MeshInstance3D", true, false).all(func(node): return (node.mesh.surface_get_material(0) as BaseMaterial3D).metallic == 0.0),
-		"Without lights no surface is left as bare metal, which ambient would show black")
+		"No surface is left as bare metal, which ambient would show black")
 	_check(info.stats.largest_texture <= 1024 and info.actions.textures_resized == 1,
 		"Oversized texture is reduced to the tier limit (largest %d)" % info.stats.largest_texture)
 	_check(info.layout.source == "marker" and (info.layout.spawn as Transform3D).origin.is_equal_approx(Vector3(1, 0, 2)),
@@ -131,15 +156,15 @@ func _run() -> void:
 	_check(Cache.entries(cache).size() == 1 and Cache.entries(cache)[0].get("name") == "marked.glb", "Cache lists the stored scene")
 
 	var high := loader.load_scene(marked, Budget.HIGH, options)
-	_check(high.has("root") and not high.cached and high.info.stats.lights == 0 and high.info.stats.largest_texture == 2048,
-		"High tier is cached separately, also drops realtime lights, and keeps the 2K texture")
+	_check(high.has("root") and not high.cached and high.info.stats.lights == 2 and high.info.stats.largest_texture == 2048,
+		"High tier is cached separately, keeps two lights, and keeps the 2K texture")
 	if high.has("root"): high.root.free()
 	var lamp_limits := Budget.limits(Budget.HIGH).duplicate()
 	lamp_limits.lights = 1
 	var lit := loader.load_scene(marked, Budget.HIGH, {"use_cache": false, "limits": lamp_limits})
 	if lit.has("root"):
 		var kept: Array[Node] = lit.root.find_children("*", "Light3D", true, false)
-		_check(kept.size() == 1 and not (kept[0] as Light3D).shadow_enabled and lit.info.actions.lights_removed == 1, "A tier that allows a light keeps one, without shadows")
+		_check(kept.size() == 1 and kept[0].name == "Lamp" and lit.info.actions.lights_removed == 2, "A tier that allows one light keeps the brightest")
 		lit.root.free()
 
 	var open := loader.load_scene(plain, Budget.LOW, options)

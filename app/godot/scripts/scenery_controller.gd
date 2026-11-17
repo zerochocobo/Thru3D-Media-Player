@@ -276,6 +276,7 @@ func _command(operation: String,value: Variant) -> void:
 			elif key=="scene_bake": app.scene_import.set_bake(float(value.value))
 			elif key=="scene_play_dim": app.scene_import.set_play_dim(float(value.value))
 			elif key=="scene_backdrop": app.scene_import.set_backdrop(str(value.value))
+			elif key=="scene_screen_pin": app.scene_import.set_screen_pinned(bool(value.value))
 			elif key.begins_with("cinema_") or key.begins_with("beach_"): app._on_setting_changed(key,value.value)
 			else:
 				var background: Node=_background(mode)

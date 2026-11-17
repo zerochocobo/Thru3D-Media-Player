@@ -4,6 +4,13 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.18.1 — 2026-11-17
+
+- Add Thunder Cloud Drive (Beta) with one-time sign-in, directory browsing, and original-quality playback. Improve pagination and link renewal for supported media.
+- Add 26 Scene Gallery entries. Imported scenes can retain a limited number of their own lights and remember a fixed screen position per scene.
+- Disable browser AV1 on Android devices without a hardware AV1 decoder, including WebRTC codec selection. On OpenXR runtimes without Android-surface swapchains, browser pages can use the eye-buffer rendering path.
+- Expand playback diagnostics for slow frames, model execution, mode switches, and Bilibili Play Beta format rejection. Update the bundled web-video extractor pin.
+
 ## 0.18.0 — 2026-11-16
 
 - Add an optional screen mood light that lets the picture's colours glow around flat videos and browser pages, and tints the room over passthrough. Turn it on and adjust its range and brightness in the Scene menu. The initial implementation is a contribution from @ghanshyamv1 in [PR #9](https://github.com/zerochocobo/Thru3D-Media-Player/pull/9).

@@ -1,6 +1,8 @@
 package org.vrpassthroughplayer.plugin
 
 import android.app.Activity
+import android.content.pm.ApplicationInfo
+import android.media.MediaCodecList
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -57,8 +59,24 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             return runtime ?: GeckoRuntime.create(owner.applicationContext,
                 GeckoRuntimeSettings.Builder().remoteDebuggingEnabled(false).consoleOutput(false)
                     .displayDensityOverride(profile.density).displayDpiOverride(profile.dpi)
-                    .screenSizeOverride(profile.width, profile.height).build()).also { runtime = it }
+                    .screenSizeOverride(profile.width, profile.height).build()).also {
+                    runtime = it
+                    // Gecko otherwise offers AV1 through its software decoder, so sites such as
+                    // Bilibili pick it on XR2 Gen 1 headsets (Quest 2, PICO Neo3, QIYU) and the CPU
+                    // decode starves rendering. Without AV1 they serve HEVC/H.264, decoded in hardware.
+                    // Bilibili also reads the WebRTC codec list: with only the media pref off it still
+                    // chose AV1 (Quest 3, 2026-11-17). Default branch of this process only; a
+                    // debuggable build can force it via a file.
+                    if (!hardwareAv1() || forcedNoAv1(owner)) for (pref in listOf("media.av1.enabled", "media.webrtc.codec.video.av1.enabled"))
+                        GeckoPreferenceController.setGeckoPref(pref, false, GeckoPreferenceController.PREF_BRANCH_DEFAULT)
+                }
         }
+        private fun hardwareAv1(): Boolean = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { codec ->
+            !codec.isEncoder && codec.isHardwareAccelerated && codec.supportedTypes.any { it.equals("video/av01", true) }
+        }
+        private fun forcedNoAv1(owner: Activity): Boolean =
+            (owner.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0 &&
+                File(owner.filesDir, "browser_no_av1").exists()
     }
     private class Tab(val id: Int, var session: GeckoSession, var window: Int, val opener: Int = 0) {
         var openerLinked = opener != 0
@@ -891,6 +909,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                 .digest((item.optString("source") + "\n" + directFile.getString("url")).toByteArray())
                                 .joinToString("") { "%02x".format(it) }
                             safe.put(JSONObject().put("direct_ready", direct).put("width", item.optInt("width").coerceIn(0, 32768))
+                                .put("playback", WebBrowserCaptureDiagnostics.playback(item))
                                 .put("id", id).put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play"))
                                 .put("server_play", server && item.optBoolean("server_play"))
                                 .put("server_media", server)

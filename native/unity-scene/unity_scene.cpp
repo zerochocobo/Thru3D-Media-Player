@@ -1425,7 +1425,13 @@ private:
         Json entry = Json::object();
         entry.set("name", name_of(owner)).set("type", value["m_Type"].whole()).set("color", std::move(color));
         entry.set("intensity", value["m_Intensity"].num(1)).set("range", value["m_Range"].num(10));
-        entry.set("baked", value["m_BakingOutput"]["lightmapBakeMode"]["lightmapBakeType"].whole() == 2);
+        // LightmapBakeType: 4 realtime, 1 mixed, 2 baked (already in the lightmaps).
+        // A scene never baked keeps only the requested mode.
+        const Value& output = value["m_BakingOutput"];
+        int bake = int(output["isBaked"].whole(1) ? output["lightmapBakeMode"]["lightmapBakeType"].whole(value["m_Lightmapping"].whole(4))
+                                                   : value["m_Lightmapping"].whole(4));
+        entry.set("baked", bake == 2).set("bake", bake);
+        entry.set("spot_angle", value["m_SpotAngle"].num(30)).set("inner_spot_angle", value["m_InnerSpotAngle"].num(0));
         entry.set("transform", to_json(world_of(owner)));
         lights.add(std::move(entry));
     }

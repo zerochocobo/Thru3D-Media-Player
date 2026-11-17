@@ -17,6 +17,7 @@
 -keep class org.vrpassthroughplayer.plugin.TiffPhotoNative { *; }
 -keep class org.vrpassthroughplayer.plugin.AirplayNative { *; }
 -keep class org.vrpassthroughplayer.plugin.WebBrowserDepthBridge { *; }
+-keep class org.vrpassthroughplayer.plugin.WebBrowserTextureBridge { public static *; }
 # Godot's JavaClassWrapper resolves the browser relight sampler by name.
 -keep class org.vrpassthroughplayer.plugin.LayerThumbnail { public static *; }
 -keep class * implements org.vrpassthroughplayer.plugin.AirplayNative$Listener { *; }

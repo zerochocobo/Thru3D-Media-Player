@@ -11,9 +11,11 @@ static func configure() -> void:
 		# Plugin methods are not in the object's own method list; ask the way the rest of the player does.
 		# Plain method callables, not lambdas: a lambda kept in another script's static var is
 		# destroyed during engine shutdown after this script's mutex is gone and aborts the app.
-		if not Unity.unpacker.is_valid() and Methods.supports(plugin, "unity_scene_unpack"):
+		# Test them with is_null(), never is_valid(): the plugin's Java methods are not in the object's
+		# method list, so is_valid() calls them missing and the hooks look absent (all of 11-16 to 11-17).
+		if Unity.unpacker.is_null() and Methods.supports(plugin, "unity_scene_unpack"):
 			Unity.unpacker = Callable(plugin, "unity_scene_unpack")
-		if not Loader.texture_encoder.is_valid() and Methods.supports(plugin, "scene_texture_etc2"):
+		if Loader.texture_encoder.is_null() and Methods.supports(plugin, "scene_texture_etc2"):
 			Loader.texture_encoder = Callable(plugin, "scene_texture_etc2")
 	elif Unity.unpacker_executable.is_empty() and not OS.has_feature("template"):
 		# Desktop development runs use the command-line unpacker when it has been built.

@@ -38,7 +38,7 @@ const Thru3DBilibili = (() => {
     const p = page(value); if (!p || p.pgc) return null;
     const v = views.find(v => v.bvid === p.id || 'av' + v.aid === p.id);
     const part = v?.pages?.find(part => part.page === p.part);
-    return part ? {page:value, id:p.id, aid:v.aid, part:p.part, cid:part.cid, expected_duration:part.duration} : null;
+    return part ? {page:value, id:p.id, bvid:v.bvid, aid:v.aid, part:p.part, cid:part.cid, expected_duration:part.duration} : null;
   };
   // The initial public recommendation list can supply the first part before the
   // detail XHR arrives. It grants no stream/entitlement: playurl, exact observed
@@ -48,8 +48,12 @@ const Thru3DBilibili = (() => {
     const v = related.slice(0, 64).find(v => v.bvid === p.id || 'av' + v.aid === p.id);
     if (!v || ![v.aid, v.cid].every(n => Number.isSafeInteger(n) && n > 0) ||
         !Number.isFinite(v.duration) || v.duration <= 0 || v.duration > 86400) return null;
-    return {page:value,id:p.id,aid:String(v.aid),part:1,cid:String(v.cid),expected_duration:v.duration};
+    return {page:value,id:p.id,bvid:v.bvid,aid:String(v.aid),part:1,cid:String(v.cid),expected_duration:v.duration};
   };
+  const sameIdentity = (data, identity) => !!data && !!identity &&
+    (!data.avid || data.avid === identity.aid) &&
+    (identity.pgc || data.id === identity.id || data.id === 'av' + identity.aid ||
+      /^BV[A-Za-z0-9]{10}$/.test(identity.bvid || '') && data.id === identity.bvid);
   const mediaCid = value => {
     try {
       const u = new URL(value);
@@ -232,7 +236,7 @@ const Thru3DBilibili = (() => {
     const cid = String(part?.cid || '');
     initialStatus = 'part_missing';
     if (!/^[1-9][0-9]{0,19}$/.test(cid)) return null;
-    const identity = { page: value, id: p.id, aid: String(v.aid || ''), part: p.part, cid, expected_duration: Number(part.duration) };
+    const identity = { page: value, id: p.id, bvid:v.bvid, aid: String(v.aid || ''), part: p.part, cid, expected_duration: Number(part.duration) };
     // Inline playinfo belongs only to the original part; keep its CID binding immutable.
     const loadedCid = String(state.cid || v.cid || '');
     const data = loadedCid === cid ? normalize(assignment(document, '__playinfo__') || savedPlayinfo || {}, identity) : null;
@@ -303,6 +307,6 @@ const Thru3DBilibili = (() => {
       return {room, quality, url:info.playurl, page:href, stream};
     } catch (_) { return null; }
   };
-  return { page, sameDocumentPage, view, viewIdentity, mediaCid, address, normalize, normalizePgc, merge, ready, episode, initial, initialStatus: () => initialStatus,
+  return { page, sameDocumentPage, view, viewIdentity, sameIdentity, mediaCid, address, normalize, normalizePgc, merge, ready, episode, initial, initialStatus: () => initialStatus,
     liveRoom, livePlaylist, liveRendition, livePlaylistBody, liveDeclaration };
 })();

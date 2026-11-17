@@ -247,6 +247,22 @@ object WebVideoCnDesktopProbe {
         try {
             val bytes = System.`in`.readNBytes(256 * 1024 + 1);require(bytes.size <= 256 * 1024)
             val media = JSONObject(bytes.toString(Charsets.UTF_8))
+            if (args.contentEquals(arrayOf("--bilibili-binding"))) {
+                stage = "bilibili_binding"
+                media.put("bilibili_enabled", true)
+                val source = WebVideoPage.parse(media.getString("frame"))
+                val page = if (source.id.matches(Regex("(?:ep|ss)[1-9][0-9]{0,19}:1")))
+                    WebVideoBilibiliCapture.episodePage(source, media) ?: error("Episode binding missing") else source
+                val info = WebVideoBilibiliCapture.formats(page, media)
+                result.put("formats_bound", info != null).put("js_ready", media.optBoolean("bilibili_ready"))
+                if (info != null) {
+                    val selected = WebVideoFormats.select(page, info) { true }
+                    result.put("keeps_quality", WebVideoNetworkCapture.keepsQuality(selected.video, media))
+                        .put("width", selected.video.width).put("height", selected.video.height)
+                        .put("passed", media.optBoolean("bilibili_ready") && result.getBoolean("keeps_quality"))
+                }
+                println(result.put("scope", "production native binding only; no playback or Android acceptance")); return
+            }
             if(args.contentEquals(arrayOf("--instagram-identity"))){
                 val before=media.getJSONObject("before");val after=media.getJSONObject("after")
                 val page=before.getString("frame")

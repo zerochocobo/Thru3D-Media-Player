@@ -30,8 +30,10 @@ const FilmLight := preload("res://scripts/environments/cinema_film_light.gd")
 const Geometry := preload("res://scripts/video_geometry.gd")
 ## Reflected screen light, as with the built-in scenes: medium by default, then high, off, low.
 const SCREEN_LIGHT_STEPS := [0.7, 1.0, 0.0, 0.35]
-## Imported glTF scenes carry no light of their own once realtime lights are dropped.
+## Ambient for imported glTF scenes: bright when the scene brings no light of its own, low when it does,
+## so its lamps set the mood and only the corners they miss stay dark.
 const AMBIENT := 0.75
+const LIT_AMBIENT := 0.1
 const SLOW_SAMPLE_MS := 1000
 const SLOW_SETTLE := 0.35
 const SLOW_COLLECT_MS := 150
@@ -62,6 +64,7 @@ var _sky_tint: Variant
 var _film: Node = FilmLight.new()
 var _lamp := SpotLight3D.new()
 var _ambient_saved := {}
+var _lights: Array[Light3D] = []
 var _sampled_ms := 0
 var _thrown := Color.BLACK
 var _settle_due := false
@@ -80,6 +83,10 @@ var body_height := BODY_HEIGHT.z
 ## How far the scene is raised from where its level meets the real floor.
 var _raised := 0.0
 var _calibrated := false
+## Where the viewer fixed the screen, in the scene's space (see Library.screen_pin); null while it follows them.
+var _pin: Variant = null
+## What the pinned screen was last placed from, and where it ended up: placed again when any of it changes.
+var _pin_applied := []
 
 func setup(owner: Node) -> void:
 	app = owner
@@ -131,7 +138,7 @@ func snapshot() -> Dictionary:
 		"stage": stage, "stage_progress": snappedf(fraction, 0.01) if fraction >= 0.0 else -1.0,
 		"error": error if not error.is_empty() else library.error, "bake": bake, "tier": tier(), "screen_light": screen_light,
 		"gallery": {"rows": gallery.snapshot(library.origins()), "anchor": str(app.settings.get_value(SECTION, "gallery_anchor", ""))},
-		"baked": _source == "unity" and _root != null, "movement": motion.mode, "posture": posture, "play_dim": play_dim, "own_sky": _sky != null, "backdrop": library.backdrop(active_id), "shots": _shots, "floor_ready": motion.prepared or motion.mode == Motion.FIXED}
+		"baked": _source == "unity" and _root != null, "movement": motion.mode, "posture": posture, "play_dim": play_dim, "own_sky": _sky != null, "backdrop": library.backdrop(active_id), "screen_pinned": _pin is Transform3D, "shots": _shots, "floor_ready": motion.prepared or motion.mode == Motion.FIXED}
 
 func add(uri: String, title: String, bytes: int = -1) -> void:
 	error = ""
@@ -225,6 +232,7 @@ func _loaded(result: Dictionary, id: String) -> void:
 	_backdrop = Unity.sky_backdrop(_sky)
 	_layout = info.layout
 	_source = str(info.get("source", ""))
+	_lights.assign(_root.find_children("*", "Light3D", true, false).filter(func(light: Node) -> bool: return light.has_meta(Loader.LIGHT_ENERGY)))
 	# The viewer's floor position lands on the scene's spawn point, facing what the spawn faces.
 	var origin := (app.xr_origin as Node3D).global_transform
 	var head := (app.xr_camera as Node3D).global_transform
@@ -240,6 +248,7 @@ func _loaded(result: Dictionary, id: String) -> void:
 	_sky_tint = (_sky.sky_material as ShaderMaterial).get_shader_parameter("tint") if _sky and _sky.sky_material is ShaderMaterial else null
 	if _source == "unity": Unity.set_look(_root, 1.0, bake)
 	motion.attach(_root, info.stats.bounds)
+	_pin = library.screen_pin(id)
 	_enter_pose(id)
 	_load_backdrop(library.backdrop(id) if _sky == null else "")
 	active_id = id
@@ -272,11 +281,14 @@ func _release() -> void:
 	if _root: _root.queue_free()
 	_root = null
 	_sky = null
+	_lights.clear()
 	_backdrop = null
 	_layout = {}
 	_source = ""
 	_shown = false
 	_raised = 0.0
+	_pin = null
+	_pin_applied = []
 
 ## Called by the background update with whether scenery may show right now; returns whether the scene does.
 func present(allowed: bool) -> bool:
@@ -288,12 +300,60 @@ func present(allowed: bool) -> bool:
 		motion.suspend()
 	return _shown
 
-## A scene that names its screen gets the picture there; otherwise the ordinary screen stays in front.
+## Where the viewer fixed the screen comes first, then where the scene names one; otherwise the
+## ordinary screen stays in front of the viewer.
 func _place_screen() -> void:
 	var video: Node = app.get("video")
-	if video == null or app.get("photo_active") or _layout.get("source", "") not in ["marker", "sidecar"] or not _layout.get("screen") is Transform3D: return
-	if video.geometry != Geometry.Geometry.FLAT or not video.has_method("set_flat_world_pose"): return
+	if video == null or app.get("photo_active") or video.geometry != Geometry.Geometry.FLAT or not video.has_method("set_flat_world_pose"): return
+	if _pin is Transform3D:
+		if not _shown: return
+		# Kept by the middle of its bottom edge, so a resized screen still stands where it stood.
+		var pose: Transform3D = _root.global_transform * (_pin as Transform3D)
+		pose.origin += pose.basis.y * _screen_height(video) * 0.5
+		video.set_flat_world_pose(pose)
+		_pin_applied = [_root.global_transform, video._flat.size, video.screen_rotation, video.global_transform * video.flat_pose]
+		return
+	if _layout.get("source", "") not in ["marker", "sidecar"] or not _layout.get("screen") is Transform3D: return
 	video.set_flat_world_pose(_root.transform * (_layout.screen as Transform3D))
+
+## How tall the picture stands as it is turned on its screen.
+static func _screen_height(video: Node) -> float:
+	var turn := deg_to_rad(float(video.screen_rotation))
+	var size: Vector2 = video._flat.size
+	return absf(cos(turn)) * size.y + absf(sin(turn)) * size.x
+
+## Whether the flat video stays where the viewer fixed it in this scene, rather than in front of them.
+func screen_pinned() -> bool:
+	var video: Node = app.get("video")
+	return _shown and _pin is Transform3D and video != null and not app.get("photo_active") and video.geometry == Geometry.Geometry.FLAT
+
+## Fixes the screen in the scene where it is now, or lets it follow the viewer again from where it is.
+func set_screen_pinned(on: bool) -> bool:
+	if not _shown or not library.entries.has(active_id): return false
+	var place: Variant = null
+	if on:
+		var video: Node = app.get("video")
+		if video == null: return false
+		var pose: Transform3D = video.global_transform * video.flat_pose
+		# Nothing open: the screen would come up in front, at its usual distance.
+		if str(video.get("local_uri")).is_empty() and app.has_method("_view_pose"):
+			var ahead: Variant = app._view_pose(video.screen_distance, 0.0)
+			if ahead is Transform3D: pose = ahead
+		pose.basis = pose.basis.orthonormalized()
+		pose.origin -= pose.basis.y * _screen_height(video) * 0.5
+		place = _root.global_transform.affine_inverse() * pose
+	if not library.set_screen_pin(active_id, place):
+		error = "Could not save scene library"
+		return false
+	error = ""
+	_pin = library.screen_pin(active_id)
+	_pin_applied = []
+	return true
+
+func _pin_held(video: Node) -> bool:
+	return _pin_applied.size() == 4 and (_pin_applied[0] as Transform3D).is_equal_approx(_root.global_transform) \
+		and (_pin_applied[1] as Vector2).is_equal_approx(video._flat.size) and is_equal_approx(float(_pin_applied[2]), float(video.screen_rotation)) \
+		and (_pin_applied[3] as Transform3D).is_equal_approx(video.global_transform * video.flat_pose)
 
 # Free movement, to the player, is the same thing here as in the built-in scenes: the members
 # below are the ones it drives on whichever scene is showing.
@@ -419,7 +479,7 @@ func _ambient(wanted: bool) -> void:
 		for key in ["ambient_light_source", "ambient_light_color", "ambient_light_energy"]: _ambient_saved[key] = surroundings.get(key)
 		surroundings.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 		surroundings.ambient_light_color = Color.WHITE
-		surroundings.ambient_light_energy = AMBIENT * _dimmed
+		surroundings.ambient_light_energy = _ambient_level()
 	elif not wanted and not _ambient_saved.is_empty():
 		for key in _ambient_saved: surroundings.set(key, _ambient_saved[key])
 		_ambient_saved.clear()
@@ -440,12 +500,16 @@ func _fade(delta: float) -> void:
 	_dimmed = move_toward(_dimmed, wanted, DIM_APPLY_SECONDS / DIM_SECONDS)
 	_apply_dim()
 
+func _ambient_level() -> float:
+	return (AMBIENT if _lights.is_empty() else LIT_AMBIENT) * _dimmed
+
 ## The scene's own brightness: baked surfaces through their exposure, lit ones through the ambient
-## light, and the sky behind either. The screen's reflected light is not part of it.
+## light and their own lamps, and the sky behind either. The screen's reflected light is not part of it.
 func _apply_dim() -> void:
 	if _root == null: return
 	if _source == "unity": Unity.set_look(_root, _dimmed, bake)
-	elif not _ambient_saved.is_empty(): (app.get("display").environment as Environment).ambient_light_energy = AMBIENT * _dimmed
+	elif not _ambient_saved.is_empty(): (app.get("display").environment as Environment).ambient_light_energy = _ambient_level()
+	for light in _lights: light.light_energy = float(light.get_meta(Loader.LIGHT_ENERGY)) * _dimmed
 	if _sky:
 		if _sky_tint is Vector3:
 			for material in [_sky.sky_material, _backdrop]:
@@ -458,6 +522,8 @@ func _apply_dim() -> void:
 func _process(delta: float) -> void:
 	_take_downloads()
 	if _shown: _fade(delta)
+	# Walking, a new film, a resize or anything that put the screen elsewhere: back to its place.
+	if screen_pinned() and not _pin_held(app.video): _place_screen()
 	# A scene restored before the headset tracks takes its height once the head is known.
 	if _shown and not _calibrated and not motion.moving(): _settle()
 	if not _shown or screen_light <= 0.0: return

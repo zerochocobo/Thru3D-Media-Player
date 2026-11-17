@@ -133,6 +133,7 @@ func start(dataDir, keyHex string) (err error) {
 	api = gin.New()
 	api.Use(gin.Recovery(), middlewares.StoragesLoaded, middlewares.Auth(false), middlewares.AuthAdmin)
 	api.POST("/list", handles.FsListSplit)
+	thunderRoutes(api)
 	comicRoutes(api)
 	comicSourceRoutes(api)
 	deletionRoutes(api)
@@ -221,6 +222,17 @@ func (s secretField) Scan(ctx context.Context, field *schema.Field, dst reflect.
 // Request is JNI-only. No credentials, admin token or management route is exposed
 // to HTTP clients. Responses containing driver secrets stay in the Android layer.
 func Request(method, route, body string) (string, error) {
+	// JNI-only capability configuration precedes bootstrap.LoadStorages.
+	if method == "POST" && route == "/thunder-development" {
+		var setting struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.Unmarshal([]byte(body), &setting); err != nil {
+			return "", errors.New("invalid thunder setting")
+		}
+		ConfigureThunder(setting.Enabled)
+		return `{"code":200}`, nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	return requestContext(ctx, method, route, body)
