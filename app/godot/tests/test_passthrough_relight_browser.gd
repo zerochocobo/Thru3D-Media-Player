@@ -53,17 +53,16 @@ func _initialize() -> void:
 	check(glow != null and glow.visible, "The page has a halo")
 	if glow:
 		check(glow.global_position.is_equal_approx(Vector3(0, 1.4, -1.2 + Runtime.BROWSER_GLOW_Z)), "The halo sits behind the window frame", glow.global_position)
-		var unit: float = 0.9 / Runtime.UNIT_SCREEN_HEIGHT
-		var expected := Vector2(0.6, 0.9) + Vector2.ONE * Model.halo_margin(relight.reach, relight._slider_value()) * 2.0 * unit
+		var expected := Vector2(0.6, 0.9) + Vector2.ONE * Model.halo_margin(relight.reach) * 2.0 * 0.9
 		check(relight.glow_size.is_equal_approx(expected), "The halo wraps the drawn (tall) page size", relight.glow_size)
 		check(glow.mesh.get_aabb().size.x < expected.x + 0.001 and not _covers(glow.mesh, Vector3.ZERO), "The halo leaves the page itself uncovered")
-		check(is_equal_approx(float(relight._glow_material.get_shader_parameter("half_height")) / float(relight._glow_material.get_shader_parameter("half_width")), 1.5),
+		check(is_equal_approx(0.5 / float(relight._glow_material.get_shader_parameter("half_width")), 1.5),
 			"The halo rectangle keeps the page aspect")
 	check(relight.scale.r > relight.scale.g * 1.5, "A red page tints the room red", relight.scale)
 	check(relight._floor != null and relight._floor.visible, "The floor shadow is shown under the window")
 	check(relight._edge != null and not relight._edge.visible, "A page keeps a hard edge")
 	# The two controls: a short reach needs a much smaller quad, and low brightness tints less.
-	check(Model.halo_margin(0.0, 0.4) < Model.halo_margin(1.0, 0.4) * 0.5, "A tight halo covers far less than a wide one")
+	check(Model.halo_margin(0.0) < Model.halo_margin(1.0) * 0.5, "A tight halo covers far less than a wide one")
 	check(Model.halo_strength(0.0) < Model.halo_strength(1.0), "Brightness scales the halo")
 	check(Model.room_tint(Color(0.2, 0.2, 0.2), 0.0).r > Model.room_tint(Color(0.2, 0.2, 0.2), 1.0).r, "Low brightness leaves the room lighter")
 	var wide: Vector2 = relight.glow_size

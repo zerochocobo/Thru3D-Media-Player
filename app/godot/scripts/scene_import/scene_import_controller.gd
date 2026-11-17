@@ -27,6 +27,7 @@ const BODY_HEIGHT := Vector3(140, 200, 170)
 ## A head this low above the floor is a headset that is not tracking yet.
 const TRACKED_HEAD := 0.2
 const FilmLight := preload("res://scripts/environments/cinema_film_light.gd")
+const XrFloor := preload("res://scripts/xr_floor.gd")
 const Geometry := preload("res://scripts/video_geometry.gd")
 ## Reflected screen light, as with the built-in scenes: medium by default, then high, off, low.
 const SCREEN_LIGHT_STEPS := [0.7, 1.0, 0.0, 0.35]
@@ -401,7 +402,8 @@ func set_body_height(centimetres: float) -> void:
 func _settle() -> void:
 	if _root == null: return
 	var head := (app.xr_camera as Node3D).global_position.y - (app.xr_origin as Node3D).global_position.y
-	_calibrated = head >= TRACKED_HEAD
+	# A runtime without a floor keeps the head near its origin: that head is real, not untracked.
+	_calibrated = head >= TRACKED_HEAD or XrFloor.floorless
 	var wanted := (head if _calibrated else eye_height("stand")) - eye_height()
 	_root.global_position.y += wanted - _raised
 	_raised = wanted

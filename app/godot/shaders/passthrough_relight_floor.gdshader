@@ -1,22 +1,17 @@
-// Originally contributed by ghanshyam (github.com/ghanshyamv1) in public PR #9.
+// The effect was first contributed by ghanshyam (github.com/ghanshyamv1) in public PR #9.
+// This shader was rewritten for 0.18.1.1.
 shader_type spatial;
-// Soft contact shadow on the real floor below the screen. Alpha blended, depth test
-// always, drawn after other transparent surfaces.
+// Soft shadow on the floor below the screen: darkest in the middle, gone at the quad's sides.
+// Drawn after other transparent surfaces, whatever is in front.
 render_mode unshaded, blend_mix, cull_disabled, depth_draw_never, depth_test_disabled, shadows_disabled, fog_disabled;
 
-uniform vec4 projection_color = vec4(0.0, 0.0, 0.0, 0.18);
-uniform float edge_feather : hint_range(0.001, 0.85) = 0.68;
-uniform float center_lift : hint_range(0.0, 1.0) = 0.58;
+uniform float opacity = 0.13;
+// The share of each half that stays at full darkness before the fall to the side.
+uniform float core = 0.3;
 
 void fragment() {
-	float feather = 1.0 - clamp(edge_feather, 0.001, 0.85);
-	float inv = 1.0 / (1.0 - feather);
-	vec2 q = abs(UV - 0.5) * 2.0;
-	float box = max(q.y, q.x);
-	float radial = min(length(q), 1.0);
-	float lift = 1.0 - center_lift * radial * radial;
-	float t = clamp((box - feather) * inv, 0.0, 1.0);
-	float edge = 1.0 - (3.0 - 2.0 * t) * t * t;
-	ALBEDO = projection_color.rgb;
-	ALPHA = clamp(lift * edge, 0.0, 1.0) * projection_color.a;
+	vec2 from_centre = abs(UV - 0.5) * 2.0;
+	vec2 fall = 1.0 - smoothstep(vec2(core), vec2(1.0), from_centre);
+	ALBEDO = vec3(0.0);
+	ALPHA = fall.x * fall.y * opacity;
 }

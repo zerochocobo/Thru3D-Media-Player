@@ -2,6 +2,7 @@ extends SceneTree
 ## The viewer's scene library and the controller that shows one scene over the dark background,
 ## against a stand-in for the player (no headset, no plugin).
 const Library := preload("res://scripts/scene_import/scene_import_library.gd")
+const XrFloor := preload("res://scripts/xr_floor.gd")
 const Controller := preload("res://scripts/scene_import/scene_import_controller.gd")
 const Cache := preload("res://scripts/scene_import/scene_import_cache.gd")
 var checks := 0
@@ -259,6 +260,14 @@ func _run() -> void:
 	app.xr_camera.position.y = 0.0
 	controller.home()
 	_check(controller.stance() == "stand" and absf(shown.global_position.y - stood) < 0.001, "Without a saved entry point a scene is entered standing")
+	# A runtime without a floor keeps the head near its origin; the eyes still go to standing height.
+	XrFloor.floorless = true
+	app.xr_camera.position.y = 0.15
+	controller.home()
+	_check(absf(shown.global_position.y - stood + 1.45) < 0.001, "Without a tracking floor the eyes stand at standing height above the scene (%s)" % (shown.global_position.y - stood))
+	XrFloor.floorless = false
+	app.xr_camera.position.y = 0.0
+	controller.home()
 	# The scene dims while a film plays and comes back when it stops.
 	controller.set_play_dim(0.25)
 	app.video.playing = true

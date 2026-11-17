@@ -18,6 +18,7 @@ const ServerPlayback := preload("res://scripts/media_server_playback.gd")
 const AlphaEdge := preload("res://scripts/alpha_edge.gd")
 const StickControls := preload("res://scripts/player_stick_controls.gd")
 const HandPointer := preload("res://scripts/hand_pointer.gd")
+const XrFloor := preload("res://scripts/xr_floor.gd")
 const InputVisuals := preload("res://scripts/input_visuals.gd")
 const ControllerDiagnostics := preload("res://scripts/controller_diagnostics.gd")
 var controller_diagnostics := ControllerDiagnostics.new()
@@ -873,6 +874,8 @@ func _route_controller_release(action: String, hand: String = "") -> String:
 		controller_bindings.cancel_hand(hand); return "blocked.hand_lock"
 	if action == "trigger_click" and _beach_prop_release(hand):
 		controller_bindings.release(hand,action); return "handled.beach_prop_release"
+	if action == "trigger_click" and _trigger_move_release(hand):
+		controller_bindings.release(hand, action); _controller_consumed.erase(hand + "/" + action); return "handled.trigger_move_release"
 	if action in ["trigger_click", "grip_click"] and beach_environment and beach_environment.scene_held(hand) and beach_environment.scene_input_matches(action) and beach_environment.scene_release(hand):
 		controller_bindings.release(hand,action); _controller_consumed.erase(hand+"/"+action); _vr_release_guard.erase(hand); stick_controls.suspend(); return "handled.beach_scene_release"
 	if action == "trigger_click" and screen_edit_lock.release(hand):
@@ -1047,6 +1050,8 @@ func _route_controller_button(action: String, hand: String = "") -> String:
 		_controller_consumed[hand + "/" + action] = true; return "handled.beach_scene"
 	# Free movement uses an otherwise unclaimed trigger to retrieve controls.
 	if action == "trigger_click" and first_press and _cinema_interaction_owns() and not _cinema_input_blocked():
+		if _trigger_move_press(hand):
+			_controller_consumed[hand + "/" + action] = true; return "handled.trigger_move"
 		_move_host().suspend(); _show_player_menu()
 		_controller_consumed[hand + "/" + action] = true; return "handled.cinema_menu"
 	if action == "grip_click" and first_press and _beach_screen_grab(hand):
@@ -1649,6 +1654,8 @@ func _process(delta: float) -> void:
 		puzzle_game.tick(delta); stick_controls.suspend(); display.set_video_layer(false); return
 	if not _head_placed and _head_tracked():
 		_head_placed = true
+		XrFloor.detect(xr_camera.global_position.y - xr_origin.global_position.y)
+		if XrFloor.floorless: Log.record("xr_floorless", {"head_height": snappedf(xr_camera.global_position.y - xr_origin.global_position.y, 0.01)})
 		if not view_follow.enabled: _recenter(false)
 	if video and (_viewer().local_uri != _screen_uri or (photo_active and photo.placement_pending)):
 		_screen_uri = _viewer().local_uri
@@ -1882,7 +1889,7 @@ func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> String
 		return "blocked.menu_capture" if _menu_captured(menu) else "routed.menu_scroll"
 	if _cinema_interaction_owns():
 		var waiting := _cinema_stick_waiting_for_neutral
-		if not _cinema_input_blocked(): _process_cinema_move_stick(left, right, delta)
+		if not _cinema_input_blocked(): _process_cinema_move_stick(left + _trigger_fly(), right, delta)
 		stick_controls.suspend()
 		if menu: _update_controls_visibility(menu)
 		if _cinema_input_blocked(): return "blocked.cinema_input"
@@ -5947,6 +5954,42 @@ func _on_cinema_seat_hovered(hand: String) -> void:
 	if controller is XRController3D and _controller_allowed(hand) and controller.get_is_active() and controller.get_has_tracking_data():
 		controller.trigger_haptic_pulse("haptic", 0.0, .10, .018, 0.0)
 
+## Some runtimes map controllers only to the basic OpenXR profile, which has no stick: free movement
+## then aims (walk) or flies (fly) while the trigger is held, and a short tap still brings the controls.
+const TRIGGER_MOVE_TAP_MS := 300
+## Hands moving on the trigger: {hand: {since: msec, fly: bool}}.
+var _trigger_moves := {}
+
+func _stickless(hand: String) -> bool:
+	var tracker := _hand_action_tracker(hand)
+	return tracker != null and str(tracker.get_tracker_profile()) == HandPointer.SIMPLE_PROFILE
+
+func _trigger_move_press(hand: String) -> bool:
+	if not _stickless(hand) or not _trigger_moves.is_empty(): return false
+	var fly: bool = _move_host() == scene_import and scene_import.motion.mode == "fly"
+	if not fly and not _cinema_pointer_press(hand): return false
+	_trigger_moves[hand] = {"since": Time.get_ticks_msec(), "fly": fly}
+	return true
+
+func _trigger_move_release(hand: String) -> bool:
+	if not _trigger_moves.has(hand): return false
+	var move: Dictionary = _trigger_moves[hand]
+	_trigger_moves.erase(hand)
+	var host := _move_host()
+	if Time.get_ticks_msec() - int(move.since) < TRIGGER_MOVE_TAP_MS:
+		_cinema_move_hands.erase(hand)
+		if host:
+			host.cancel_pointer(hand); host.suspend()
+		if not _cinema_input_blocked(): _show_player_menu()
+	elif not move.fly: _cinema_pointer_release(hand)
+	return true
+
+## A held trigger flies forward, once it is plainly not a tap.
+func _trigger_fly() -> Vector2:
+	for hand in _trigger_moves:
+		if _trigger_moves[hand].fly and Time.get_ticks_msec() - int(_trigger_moves[hand].since) >= TRIGGER_MOVE_TAP_MS: return Vector2(0, 1)
+	return Vector2.ZERO
+
 func _cinema_pointer_release(hand: String) -> bool:
 	if not _cinema_move_hands.has(hand): return false
 	_cinema_move_hands.erase(hand)
@@ -5967,6 +6010,7 @@ func _suspend_cinema_move_stick() -> void:
 		if cinema_environment: cinema_environment.cancel_pointer(hand)
 		if scene_import: scene_import.cancel_pointer(hand)
 	_cinema_move_hands.clear()
+	_trigger_moves.clear()
 
 func _process_cinema_move_stick(left: Vector2, right: Vector2, delta: float) -> void:
 	var host := _move_host()
@@ -6144,7 +6188,7 @@ func _update_passthrough_relight(delta: float) -> void:
 	if not passthrough_relight:
 		if not wanted and page == null: return
 		passthrough_relight = PassthroughRelight.new(); passthrough_relight.name = "PassthroughRelight"; add_child(passthrough_relight)
-	var floor_y := xr_origin.global_position.y if xr_origin else 0.0
+	var floor_y := xr_origin.global_position.y - XrFloor.offset() if xr_origin else 0.0
 	passthrough_relight.set_look(_ambient_value("ambient_range") / 100.0, _ambient_value("ambient_brightness") / 100.0)
 	# Only the camera picture can be tinted; other backgrounds get the halo and floor shadow.
 	passthrough_relight.tint_room = display.applied_passthrough

@@ -1,4 +1,5 @@
 # Originally contributed by ghanshyam (github.com/ghanshyamv1) in public PR #9.
+# The halo, room colour, smoothing and floor shadow were rewritten for 0.18.1.1.
 extends Node
 ## Video-driven lighting over passthrough for the flat player (regular and 3D videos):
 ##  1. Passthrough relight: the real room is tinted and dimmed by the picture's colour
@@ -18,9 +19,6 @@ const FLOOR_SHADER := preload("res://shaders/passthrough_relight_floor.gdshader"
 
 const LAYER_INTERVAL_MS := 80
 const EYE_BUFFER_INTERVAL_MS := 250
-## The halo bar is filtered in time at a nominal 36 Hz; samples arrive slower than that,
-## so a short extra settle hides their steps without visibly delaying cuts.
-const HALO_SETTLE_TAU := 0.06
 ## Glow plane offset along the screen normal: just behind a video panel, and behind the browser
 ## window's frame for a page (its layout pose sits 12 mm in front of the window), so opaque
 ## window parts occlude the halo. The halo is also drawn first among transparent surfaces.
@@ -29,33 +27,29 @@ const BROWSER_GLOW_Z := -0.015
 ## The edge dissolve lies on the picture and must be drawn after the hole that clears the eye
 ## buffer for the compositor layer: the video's hole has priority -128, the browser page's 25.
 const EDGE_Z := 0.001
-## Width of the dissolve band inside the picture, as in the shader.
-const EDGE_BAND_UNITS := 0.12
 const SCENERY_DIMMING := 0.35
 const VIDEO_EDGE_PRIORITY := -126
 const BROWSER_EDGE_PRIORITY := 26
 const BROWSER_INTERVAL_MS := 100
-## Halo units: a screen is 1.08 units tall. One unit in metres follows the screen size.
-const UNIT_SCREEN_HEIGHT := 1.08
 ## Re-create the passthrough LUT at most this often, and only for a visible change.
 const LUT_INTERVAL_MS := 100
 const LUT_EPSILON := 1.5 / 255.0
 const LUT_RESOLUTION := 16
-## Floor shadow look.
-const FLOOR_COLOR := Color(0, 0, 0, 0.18)
-const FLOOR_INTENSITY := 0.72
-const FLOOR_STRIP_DEPTH := 0.18
-const FLOOR_STRIP_LENGTH_SCALE := 0.6667
-const FLOOR_TILT_DEPTH_SCALE := 0.35
-const FLOOR_MAX_TILT_DEPTH := 0.24
-const FLOOR_GROUND_CONTACT_FADE := 0.08
-const FLOOR_HEIGHT_FADE := Vector3(0.45, 1.6, 0.25) # start, end, minimum
-const FLOOR_FADE_DURATION := 0.2
+## Floor shadow: its darkness, its depth in metres and its length as a share of the screen's
+## width. It is full while the screen stands within FLOOR_NEAR of the floor (fading in over
+## FLOOR_CONTACT so a screen on the floor has none), and thins to FLOOR_HIGH_SHARE by FLOOR_FAR.
+const FLOOR_OPACITY := 0.13
+const FLOOR_DEPTH := 0.2
+const FLOOR_LENGTH := 0.65
+const FLOOR_CONTACT := 0.1
+const FLOOR_NEAR := 0.5
+const FLOOR_FAR := 1.5
+const FLOOR_HIGH_SHARE := 0.3
+## The halo and shadow appear and leave over this long.
+const FADE_DURATION := 0.2
 
 var enabled := false
-var intensity := Model.DEFAULT_INTENSITY
-## Halo profile, 0 (tight) to 1 (immersive). At 1 the glow is nearly opaque at the picture's
-## edge, holds for ~0.34 units, then fades as 0.7 / (1 + 2.2 x).
+## Halo spread, 0 (a tight ring) to 1 (the whole room).
 var reach := Model.DEFAULT_REACH
 var brightness := Model.DEFAULT_BRIGHTNESS
 var samples := 0
@@ -124,10 +118,6 @@ func set_enabled(value: bool) -> void:
 	_last_pts = -1; _next_ms = 0
 
 
-func set_intensity(value: float) -> void:
-	intensity = clampf(value, 0.0, 1.0)
-
-
 func set_look(new_reach: float, new_brightness: float) -> void:
 	reach = clampf(new_reach, 0.0, 1.0)
 	brightness = clampf(new_brightness, 0.0, 1.0)
@@ -181,18 +171,18 @@ func _step(delta: float, showing: bool, active: bool, frame: Dictionary, floor_y
 	if not showing and _visibility <= 0.0 and not _lut_active and not _lut_busy and scale.is_equal_approx(Color.WHITE):
 		_has_frame = false
 		return
-	# The room returns to white at 2 %/frame whenever no video is showing.
+	# The room returns to white whenever no video is showing.
 	if showing and _has_frame:
-		scale = Model.blend(scale, Model.color_scale(_latest, intensity), Model.SCALE_KEEP, Model.SCALE_FRAME_RATE, delta)
+		scale = scale.lerp(Model.color_scale(_latest), Model.ease_weight(Model.ROOM_FOLLOW, delta))
 	else:
-		scale = Model.blend(scale, Color.WHITE, Model.NEUTRAL_KEEP, Model.SCALE_FRAME_RATE, delta)
+		scale = scale.lerp(Color.WHITE, Model.ease_weight(Model.ROOM_RETURN, delta))
 		if not showing: _has_frame = false
-	var keep := pow(Model.BAR_KEEP, maxf(delta, 0.0) * Model.BAR_FRAME_RATE)
-	var settle := 1.0 - exp(-maxf(delta, 0.0) / HALO_SETTLE_TAU)
+	# Samples arrive a few times a second; the easing hides their steps without delaying cuts.
+	var follow := Model.ease_weight(Model.HALO_FOLLOW, delta)
 	for i in Model.BAR_SIZE:
 		var target: Vector3 = _bar_target[i] if showing and _has_frame else Vector3.ZERO
-		_bar[i] = _bar[i].lerp(_bar[i].lerp(target, 1.0 - keep), settle)
-	var fade_step := maxf(delta, 0.0) / FLOOR_FADE_DURATION
+		_bar[i] = _bar[i].lerp(target, follow)
+	var fade_step := maxf(delta, 0.0) / FADE_DURATION
 	_visibility = clampf(_visibility + (fade_step if showing and _has_frame else -fade_step), 0.0, 1.0)
 	_apply_passthrough(active and enabled and tint_room)
 	_place(frame, floor_y)
@@ -200,7 +190,7 @@ func _step(delta: float, showing: bool, active: bool, frame: Dictionary, floor_y
 
 func snapshot() -> Dictionary:
 	return {"enabled": enabled, "samples": samples, "failures": failures, "path": path, "lut_supported": lut_supported,
-		"lut_updates": lut_updates, "intensity": intensity, "reach": reach, "brightness": brightness,
+		"lut_updates": lut_updates, "reach": reach, "brightness": brightness,
 		"scale": [snappedf(scale.r, .001), snappedf(scale.g, .001), snappedf(scale.b, .001)]}
 
 
@@ -271,14 +261,15 @@ func _place(frame: Dictionary, floor_y: float) -> void:
 		return
 	var xform: Transform3D = frame.transform
 	var size: Vector2 = frame.size
-	var unit := size.y / UNIT_SCREEN_HEIGHT
+	var unit := size.y
 	_ensure_nodes()
 	# A curved screen does not have the flat rectangle the halo is shaped around.
 	var flat := bool(frame.flat)
 	_glow.visible = flat and debug_parts.glow
 	_edge.visible = flat and bool(frame.get("edge", true)) and debug_parts.edge
 	if flat:
-		var margin := Model.halo_margin(reach, _slider_value())
+		var margin := Model.halo_margin(reach)
+		var profile := Model.halo_profile(reach)
 		glow_size = size + Vector2.ONE * margin * 2.0 * unit
 		# Neither part covers the picture's interior. The halo is a grid shaded per vertex.
 		var outline := [size, margin * unit]
@@ -288,17 +279,18 @@ func _place(frame: Dictionary, floor_y: float) -> void:
 			mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, Model.halo_arrays(size, margin * unit, unit))
 			_glow.mesh = mesh
 		_glow.global_transform = xform * Transform3D(Basis.IDENTITY, Vector3(0, 0, float(frame.glow_z)))
-		_set_frame(_edge, size, (size - Vector2.ONE * EDGE_BAND_UNITS * 2.0 * unit).max(Vector2.ZERO))
+		_set_frame(_edge, size, (size - Vector2.ONE * Model.EDGE_BAND * 2.0 * unit).max(Vector2.ZERO))
 		_edge.global_transform = xform * Transform3D(Basis.IDENTITY, Vector3(0, 0, EDGE_Z))
 		_edge_material.render_priority = int(frame.edge_priority)
 		for material in [_glow_material, _edge_material]:
 			material.set_shader_parameter("bar", _bar)
 			material.set_shader_parameter("unit", unit)
 			material.set_shader_parameter("half_width", size.x * 0.5 / unit)
-			material.set_shader_parameter("half_height", size.y * 0.5 / unit)
-			material.set_shader_parameter("slider_value", _slider_value())
-			material.set_shader_parameter("immersive", reach)
-			material.set_shader_parameter("reach", margin)
+			material.set_shader_parameter("peak", profile.x)
+			material.set_shader_parameter("width", profile.y)
+			material.set_shader_parameter("power", Model.HALO_POWER)
+			material.set_shader_parameter("band", Model.EDGE_BAND)
+			material.set_shader_parameter("extent", margin)
 			material.set_shader_parameter("display_referred", bool(debug_look.get("encode", true)))
 			material.set_shader_parameter("dimming", float(debug_look.get("dimming", 1.0 if tint_room else SCENERY_DIMMING)))
 			material.set_shader_parameter("strength", _visibility * Model.halo_strength(brightness))
@@ -323,11 +315,6 @@ func _set_frame(node: MeshInstance3D, outer: Vector2, inner: Vector2) -> void:
 	node.mesh = mesh
 
 
-## The intensity through a normalised sigmoid.
-func _slider_value() -> float:
-	return (1.0 / (1.0 + exp(-8.0 * (intensity - 0.2))) - 0.1679816097021103) / 0.8303595781326294
-
-
 func _place_floor(xform: Transform3D, size: Vector2, floor_y: float) -> void:
 	var basis := xform.basis.orthonormalized()
 	var right := basis.x
@@ -337,21 +324,15 @@ func _place_floor(xform: Transform3D, size: Vector2, floor_y: float) -> void:
 	if height < 0.0:
 		_floor.visible = false
 		return
-	var span := (FLOOR_HEIGHT_FADE.y - FLOOR_HEIGHT_FADE.x)
-	var height_alpha := lerpf(1.0, FLOOR_HEIGHT_FADE.z, clampf((height - FLOOR_HEIGHT_FADE.x) / span, 0.0, 1.0))
-	height_alpha *= clampf(height / FLOOR_GROUND_CONTACT_FADE, 0.0, 1.0)
+	var share := lerpf(1.0, FLOOR_HIGH_SHARE, smoothstep(FLOOR_NEAR, FLOOR_FAR, height)) * clampf(height / FLOOR_CONTACT, 0.0, 1.0)
 	var flat_right := Vector3(right.x, 0, right.z)
 	if flat_right.length_squared() < 0.0001: flat_right = Vector3.RIGHT
 	flat_right = flat_right.normalized()
 	var forward := flat_right.cross(Vector3.UP)
-	var tilt := absf(basis.z.y)
-	var depth := FLOOR_STRIP_DEPTH + minf(FLOOR_MAX_TILT_DEPTH, tilt * FLOOR_TILT_DEPTH_SCALE)
-	var length := size.x * xform.basis.x.length() * FLOOR_STRIP_LENGTH_SCALE
+	var length := size.x * xform.basis.x.length() * FLOOR_LENGTH
 	_floor.visible = true
-	_floor.global_transform = Transform3D(Basis(flat_right * length, forward * depth, Vector3.UP), Vector3(bottom.x, floor_y + 0.002, bottom.z))
-	var color := FLOOR_COLOR
-	color.a *= FLOOR_INTENSITY * height_alpha * _visibility
-	_floor_material.set_shader_parameter("projection_color", color)
+	_floor.global_transform = Transform3D(Basis(flat_right * length, forward * FLOOR_DEPTH, Vector3.UP), Vector3(bottom.x, floor_y + 0.002, bottom.z))
+	_floor_material.set_shader_parameter("opacity", FLOOR_OPACITY * share * _visibility)
 
 
 func _ensure_nodes() -> void:

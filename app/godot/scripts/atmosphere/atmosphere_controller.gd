@@ -8,6 +8,7 @@ const Field := preload("res://scripts/atmosphere/atmosphere_field.gd")
 const Sound := preload("res://scripts/atmosphere/atmosphere_sound.gd")
 const Memory := preload("res://scripts/atmosphere/atmosphere_memory.gd")
 const Privacy := preload("res://scripts/media_privacy.gd")
+const XrFloor := preload("res://scripts/xr_floor.gd")
 const SECTION := "atmosphere"
 var app: Node
 var field := Field.new()
@@ -106,7 +107,7 @@ func _process(delta: float) -> void:
 	elif field.amount != amount and not field.theme.is_empty() and field.opacity <= 0.0:
 		field.build(field.theme, amount, app.low_end_gpu)
 	var current: bool = last.shown and field.theme == last.theme and field.amount == amount
-	field.step(delta, current, app.xr_camera.global_position, app.xr_origin.global_position.y, _screen(last.keep), _over_layers())
+	field.step(delta, current, app.xr_camera.global_position, app.xr_origin.global_position.y - XrFloor.offset(), _screen(last.keep), _over_layers())
 	if last.theme.is_empty() and field.opacity <= 0.0 and not field.theme.is_empty(): field.clear()
 	# The recording is only loaded once it may be heard, and changes after the old one has faded.
 	if last.audible and sound.theme != last.theme and sound.level <= 0.0: sound.select(str(last.theme))

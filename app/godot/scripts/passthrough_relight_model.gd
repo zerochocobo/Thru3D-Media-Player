@@ -1,49 +1,65 @@
-# Originally contributed by ghanshyam (github.com/ghanshyamv1) in public PR #9.
+# The effect was first contributed by ghanshyam (github.com/ghanshyamv1) in public PR #9.
+# The curves and constants in this file were rewritten for 0.18.1.1.
 extends RefCounted
-## Pure maths of the passthrough relight: video-driven lighting of the real room
-## around a flat screen.
+## Pure maths of the screen mood light: video-driven lighting of the room around a flat screen.
 ##
 ## Two outputs per sampled frame:
-##  - passthrough colour scale: the frame average, boosted, mapped through HSV curves
-##    driven by one "intensity" (a brightness setting), applied to the real room.
-##  - halo bar: 32 colours walking the picture's perimeter (left edge up, top, right edge
-##    down, bottom), blurred along the perimeter;
-##    the glow shader looks them up by angle around the screen.
+##  - room colour: the frame's mean colour, with its brightness and saturation remapped,
+##    multiplied into the camera picture.
+##  - halo bar: 32 colours around the picture's border (clockwise from the top-left corner),
+##    which the glow shader looks up by direction from the picture's centre.
 ##
-## All colour maths is linear.
+## All colour maths is linear. Lengths are in screen heights.
 
-## Default brightness.
-const DEFAULT_INTENSITY := 0.4
 ## The viewer's two controls, 0..1: how far the halo spreads (a tight ring to the whole room)
 ## and how strongly the halo and the room tint show.
 const DEFAULT_REACH := 0.35
 const DEFAULT_BRIGHTNESS := 0.6
-const MAX_HALO_MARGIN := 29.0
 ## The same two controls as the settings sliders show them. Brightness stops short of zero:
 ## the switch turns the light off.
 const PERCENT_DEFAULTS := {"ambient_range": 35.0, "ambient_brightness": 60.0}
 const PERCENT_LIMITS := {"ambient_range": Vector2(0, 100), "ambient_brightness": Vector2(20, 100)}
+
+## Halo falloff past the picture's edge: peak / (1 + (d / width)^1.5)^(1 / 1.5), level near the
+## edge and inversely proportional to distance far from it, like light from a long source.
+## A wider reach raises the peak past one, which shows as a solid ring at the edge, and
+## widens the level part.
+const HALO_POWER := 1.5
+const HALO_PEAK := Vector2(0.62, 1.85) # tightest, widest
+const HALO_PEAK_EASE := 1.25
+const HALO_WIDTH := 0.063
+const HALO_WIDEN := 2.0
+const HALO_WIDEN_EASE := 6.0
 ## The halo is cut where it has fallen to this fraction; the shader fades it out before that.
 const HALO_CUTOFF := 0.03
-## The halo mesh: rings at these halo units past the picture's edge (denser where the glow
+const HALO_MARGIN_LIMITS := Vector2(1.4, 12.0)
+## The picture's own outer band dissolves into the halo, with corners of the same radius.
+const EDGE_BAND := 0.1
+## The halo mesh: rings at these distances past the picture's edge (denser where the glow
 ## falls fastest), and this many cells along the picture's width and height.
-const HALO_RINGS := [0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8]
+const HALO_RINGS := [0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.5, 3.0, 6.0]
 const HALO_CELLS := Vector2i(16, 9)
-## Left-eye picture sample. The halo blurs with rings up to 0.06 UV and a ~0.1 UV
-## perimeter kernel, so finer detail never reaches the output.
+## Left-eye picture sample: the halo only needs the border's broad colours.
 const SAMPLE_SIZE := Vector2i(48, 27)
-## Halo bar resolution (32 colours, looked up with wrap-around).
 const BAR_SIZE := 32
-## Perimeter samples before blurring; 128 is well below the blur scale.
-const NEAR_BAR_SAMPLES := 128
+## The outer part of the picture that colours the halo, as a share of the way from the centre
+## to the border; pixels nearer the border count more.
+const BORDER_SHARE := 0.24
+## Blur along the border, in bar entries either side.
+const BAR_BLUR := [6.0, 4.0, 1.0]
 
-## The room colour eases per frame at a nominal 72 Hz.
-const SCALE_FRAME_RATE := 72.0
-const SCALE_KEEP := 0.9 # smoothed*0.9 + target*0.1 while a video plays
-const NEUTRAL_KEEP := 0.98 # 2 % per frame back to white without video
-## The halo bar keeps 25 % of its previous value at a nominal 36 Hz.
-const BAR_FRAME_RATE := 36.0
-const BAR_KEEP := 0.25
+## Room brightness for a frame's brightness v: from ROOM_VALUE.x under a black frame, rising
+## quickly (1 - exp(-v / ROOM_RISE)) to ROOM_VALUE.y under a white one. Saturated frames tint
+## the room less than proportionally.
+const ROOM_VALUE := Vector2(0.02, 0.64)
+const ROOM_RISE := 0.19
+const ROOM_DESATURATE := 0.44
+
+## Easing time constants, seconds: the room follows the film, returns to white without one,
+## and the halo follows the border.
+const ROOM_FOLLOW := 0.15
+const ROOM_RETURN := 0.7
+const HALO_FOLLOW := 0.07
 
 
 ## Linear RGB floats of an image, row 0 at the top.
@@ -61,118 +77,71 @@ static func linear_pixels(image: Image) -> PackedFloat32Array:
 	return out
 
 
-## Bilinear, clamp to edge; v = 0 at the bottom of the picture.
-static func sample(px: PackedFloat32Array, width: int, height: int, u: float, v: float) -> Vector3:
-	var fx := clampf(u * width - 0.5, 0.0, width - 1.0)
-	var fy := clampf((1.0 - v) * height - 0.5, 0.0, height - 1.0)
-	var x0 := int(fx); var y0 := int(fy)
-	var x1 := mini(x0 + 1, width - 1); var y1 := mini(y0 + 1, height - 1)
-	var tx := fx - x0; var ty := fy - y0
-	var a := (y0 * width + x0) * 3; var b := (y0 * width + x1) * 3
-	var c := (y1 * width + x0) * 3; var d := (y1 * width + x1) * 3
-	var top := Vector3(px[a], px[a + 1], px[a + 2]).lerp(Vector3(px[b], px[b + 1], px[b + 2]), tx)
-	var bottom := Vector3(px[c], px[c + 1], px[c + 2]).lerp(Vector3(px[d], px[d + 1], px[d + 2]), tx)
-	return top.lerp(bottom, ty)
-
-
-## Frame average: a 16 x 16 grid mean with a lift that
-## raises dark frames, quantised to 8 bits.
+## Mean colour of the frame.
 static func screen_average(px: PackedFloat32Array, width: int, height: int) -> Color:
 	var sum := Vector3.ZERO
-	for i in 16:
-		for j in 16:
-			sum += sample(px, width, height, i * 0.0625, j * 0.0625)
-	var avg := sum / 256.0
-	var lift := 1.0 - maxf(avg.x, maxf(avg.y, avg.z))
-	var boosted := avg * (1.0 + 2.0 * lift * lift) # dot(vec2(x), vec2(x)) + 1
-	return Color(snappedf(clampf(boosted.x, 0, 1), 1.0 / 255.0), snappedf(clampf(boosted.y, 0, 1), 1.0 / 255.0),
-		snappedf(clampf(boosted.z, 0, 1), 1.0 / 255.0))
+	for index in range(0, width * height * 3, 3):
+		sum += Vector3(px[index], px[index + 1], px[index + 2])
+	sum /= maxf(1.0, width * height)
+	return Color(sum.x, sum.y, sum.z)
 
 
-static func _sigmoid(x: float, steepness: float, centre: float) -> float:
-	return 1.0 / (1.0 + exp(-steepness * (x - centre)))
+## What the room is multiplied by under a frame of this mean colour.
+static func color_scale(average: Color) -> Color:
+	var rise := (1.0 - exp(-average.v / ROOM_RISE)) / (1.0 - exp(-1.0 / ROOM_RISE))
+	var saturation := average.s * (1.0 - ROOM_DESATURATE * average.s)
+	return Color.from_hsv(average.h, saturation, lerpf(ROOM_VALUE.x, ROOM_VALUE.y, rise))
 
 
-## Room colour scale: the frame colour through HSV curves.
-## Intensity 0..1 steepens the value curve and relaxes the saturation curve.
-static func color_scale(average: Color, intensity: float) -> Color:
-	var h := average.h
-	var s := average.s
-	var v := average.v
-	var bend := (_sigmoid(intensity, 8.0, 0.85) - 0.0011125360615551472) / -0.7674121856689453
-	var exponent := bend * 0.4 + 1.2
-	s = s * ((exponent + 1.0) - pow(s, exponent)) / (exponent + 1.0)
-	var steep := -8.0 * (_sigmoid(intensity, 8.0, 0.4) - 0.03916572406888008)
-	var floor_lift := _sigmoid(intensity, 8.0, 0.8) - 0.0016588012222200632
-	var threshold := 0.2 - 0.1 * floor_lift
-	var value := 1.0 / (1.0 + exp(steep * (v - threshold))) - 1.0 / (1.0 + exp(steep * (-0.2 - floor_lift)))
-	return Color.from_hsv(h, s, value)
+## Exponential easing towards a target with a time constant, whatever the frame rate.
+static func ease_weight(time_constant: float, delta: float) -> float:
+	return 1.0 - exp(-maxf(delta, 0.0) / time_constant)
 
 
-## Frame-rate independent form of the per-frame blend `x*keep + target*(1-keep)`.
-static func blend(current: Color, target: Color, keep: float, rate: float, delta: float) -> Color:
-	return current.lerp(target, 1.0 - pow(keep, maxf(delta, 0.0) * rate))
+## Border coordinate 0..1 of a direction from the picture's centre, where the ray leaves the
+## picture: clockwise from the top-left corner, a quarter for each side. `point` is in half
+## sizes, y up. The glow shader walks the border the same way.
+static func border_coordinate(point: Vector2) -> float:
+	var reach := maxf(maxf(absf(point.x), absf(point.y)), 0.000001)
+	var edge := point / reach
+	if absf(point.x) < absf(point.y):
+		return 0.125 * (edge.x + 1.0) if point.y > 0.0 else 0.5 + 0.125 * (1.0 - edge.x)
+	return 0.25 + 0.125 * (1.0 - edge.y) if point.x > 0.0 else 0.75 + 0.125 * (edge.y + 1.0)
 
 
-## Point on the 0.06..0.94 inset rectangle for perimeter u.
-static func perimeter_point(u: float) -> Vector2:
-	if u < 0.25: return Vector2(0.06, 0.06 + 3.52 * u)
-	if u < 0.5: return Vector2(3.52 * u - 0.82, 0.94)
-	if u < 0.75: return Vector2(0.94, 2.7 - 3.52 * u)
-	return Vector2(3.58 - 3.52 * u, 0.06)
-
-
-## Ring blur around one perimeter point: rings 1..4 x 0.015 UV, 8 taps each at
-## k*pi/4 + pi/7, weights (6 - ring)/144 (they sum to one).
-static func near_bar(px: PackedFloat32Array, width: int, height: int, u: float) -> Vector3:
-	var p := perimeter_point(u)
-	var sum := Vector3.ZERO
-	for ring in 4:
-		var weight := float(6 - ring) / 144.0
-		var radius := float(ring + 1) * 0.015
-		for tap in 8:
-			var angle := tap * 0.78539812564849853515625 + 0.448798954486846923828125
-			sum += sample(px, width, height, p.x + cos(angle) * radius, p.y + sin(angle) * radius) * weight
-	return sum
-
-
-## Linear lookup into an evenly sampled bar (texel centres), clamp or repeat.
-static func bar_lookup(bar: PackedVector3Array, u: float, repeat: bool) -> Vector3:
-	var n := bar.size()
-	var f := u * n - 0.5
-	if repeat:
-		f = fposmod(f, float(n))
-		var i0 := int(f)
-		return bar[i0].lerp(bar[(i0 + 1) % n], f - i0)
-	f = clampf(f, 0.0, n - 1.0)
-	var j0 := int(f)
-	return bar[j0].lerp(bar[mini(j0 + 1, n - 1)], f - j0)
-
-
-## Perimeter samples -> 31-tap blur (step 0.002, weights (22-|k|)/442, clamp)
-## -> 9-tap blur at k/32 (repeat). Unfiltered in time.
+## The border's colours: every pixel in the picture's outer part adds its colour to the bar
+## entries nearest its direction from the centre, then the bar is blurred around the border.
 static func halo_bar(px: PackedFloat32Array, width: int, height: int) -> PackedVector3Array:
-	var near := PackedVector3Array()
-	near.resize(NEAR_BAR_SAMPLES)
-	for k in NEAR_BAR_SAMPLES:
-		near[k] = near_bar(px, width, height, (k + 0.5) / NEAR_BAR_SAMPLES)
-	var smooth := PackedVector3Array()
-	smooth.resize(64)
-	for i in 64:
-		var x := (i + 0.5) / 64.0
-		var sum := Vector3.ZERO
-		for k in range(-15, 16):
-			sum += bar_lookup(near, x + k * 0.002, false) * (float(22 - absi(k)) / 442.0)
-		smooth[i] = sum
-	const WEIGHTS := [0.02, 0.06, 0.13, 0.34, 2.46, 0.34, 0.13, 0.06, 0.02]
+	var sums := PackedVector3Array()
+	sums.resize(BAR_SIZE)
+	var weights := PackedFloat32Array()
+	weights.resize(BAR_SIZE)
+	var index := 0
+	for y in height:
+		var py := 1.0 - (y + 0.5) * 2.0 / height
+		for x in width:
+			var point := Vector2((x + 0.5) * 2.0 / width - 1.0, py)
+			var weight := (maxf(absf(point.x), absf(point.y)) - (1.0 - BORDER_SHARE)) / BORDER_SHARE
+			if weight > 0.0:
+				var at := border_coordinate(point) * BAR_SIZE - 0.5
+				var first := int(floor(at))
+				var share := at - first
+				var colour := Vector3(px[index], px[index + 1], px[index + 2]) * weight
+				var a := posmod(first, BAR_SIZE)
+				var b := posmod(first + 1, BAR_SIZE)
+				sums[a] += colour * (1.0 - share); weights[a] += weight * (1.0 - share)
+				sums[b] += colour * share; weights[b] += weight * share
+			index += 3
 	var out := PackedVector3Array()
 	out.resize(BAR_SIZE)
-	for i in BAR_SIZE:
-		var x := (i + 0.5) / BAR_SIZE
+	for entry in BAR_SIZE:
 		var sum := Vector3.ZERO
-		for k in range(-4, 5):
-			sum += bar_lookup(smooth, x + k / 32.0, true) * WEIGHTS[k + 4]
-		out[i] = sum * 0.280898869037628173828125
+		var total := 0.0
+		for offset in range(1 - BAR_BLUR.size(), BAR_BLUR.size()):
+			var from := posmod(entry + offset, BAR_SIZE)
+			var blur: float = BAR_BLUR[absi(offset)]
+			sum += sums[from] * blur; total += weights[from] * blur
+		out[entry] = sum / total if total > 0.0 else Vector3.ZERO
 	return out
 
 
@@ -198,12 +167,19 @@ static func scale_lut_image(scale: Color, resolution: int) -> Image:
 				data[at + 2] = int(round(encoded[b * 3 + 2] * 255.0))
 	return Image.create_from_data(width, resolution, false, Image.FORMAT_RGB8, data)
 
-## Halo units past the picture's edge that the glow quad has to cover for a reach: the flat
-## falloff is (1 - px) / (1 + K d), with the same K and px as the shader.
-static func halo_margin(reach: float, slider: float) -> float:
-	var k := reach * ((1.0 - slider) * 3.5 - 14.5) + 16.0
-	var px := 0.4 - 0.1 * reach
-	return clampf(((1.0 - px) / HALO_CUTOFF - 1.0) / k, 1.5, MAX_HALO_MARGIN)
+
+## The falloff's peak and width for a reach; the shader takes them as they are.
+static func halo_profile(reach: float) -> Vector2:
+	var amount := clampf(reach, 0.0, 1.0)
+	return Vector2(lerpf(HALO_PEAK.x, HALO_PEAK.y, pow(amount, HALO_PEAK_EASE)),
+		HALO_WIDTH * (1.0 + HALO_WIDEN * pow(amount, HALO_WIDEN_EASE)))
+
+
+## How far past the picture's edge the glow mesh has to reach: where the falloff meets the cutoff.
+static func halo_margin(reach: float) -> float:
+	var profile := halo_profile(reach)
+	var distance := profile.y * pow(pow(profile.x / HALO_CUTOFF, HALO_POWER) - 1.0, 1.0 / HALO_POWER)
+	return clampf(distance, HALO_MARGIN_LIMITS.x, HALO_MARGIN_LIMITS.y)
 
 
 static func halo_strength(brightness: float) -> float:

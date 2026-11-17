@@ -7,6 +7,7 @@ const FilmSampler := preload("res://scripts/environments/cinema_film_light.gd")
 const ScreenEdit := preload("res://scripts/environments/private_beach_screen_edit.gd")
 const BeachMovement := preload("res://scripts/environments/private_beach_locomotion.gd")
 const BeachLog := preload("res://scripts/diagnostic_log.gd")
+const XrFloor := preload("res://scripts/xr_floor.gd")
 signal screen_committed(parameters: Dictionary)
 signal view_committed(view: Dictionary)
 signal hours_committed(hours: float)
@@ -243,8 +244,9 @@ func _viewer_mouth() -> Vector3:
 func _tracking_ready() -> bool:
 	return _head_tracked()
 
+## Head height above the real floor; a runtime without one is taken as a standing viewer.
 func _tracked_height() -> float:
-	return _camera.global_position.y-_rig.global_position.y
+	return _camera.global_position.y-_rig.global_position.y+XrFloor.offset()
 
 func _land(floor_position: Vector3,heading: float) -> void:
 	var before := _rig.global_transform

@@ -4,6 +4,11 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.18.1.1 — 2026-11-18
+
+- Rewrite the screen mood light's halo, room colour, smoothing and floor shadow with formulas written for this project, tuned to stay close to the earlier look. The contributor of [PR #9](https://github.com/zerochocobo/Thru3D-Media-Player/pull/9) reported in [PR #11](https://github.com/zerochocobo/Thru3D-Media-Player/pull/11) that those parts of the 0.18.0 implementation were derived from another player's decompiled shaders; they have been removed.
+- On OpenXR runtimes without a tracked floor, the beach and imported scenes place the viewer at standing height. Controllers that offer only the basic profile can hold the trigger to move and tap it to show the controls.
+
 ## 0.18.1 — 2026-11-17
 
 - Add Thunder Cloud Drive (Beta) with one-time sign-in, directory browsing, and original-quality playback. Improve pagination and link renewal for supported media.
