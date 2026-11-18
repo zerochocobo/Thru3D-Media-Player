@@ -26,9 +26,10 @@ class Host extends RefCounted:
 	var pair := {}
 	var revision_id := 0
 	var acknowledge := true
-	func revise_mpv_video(id: int, _stereo: bool, _alpha: bool, _profile: String, target: int, _depth: bool, _tb: bool, _exact: bool) -> int:
-		revisions.append([id, target]); return revision_id
-	func set_mpv_playing(_id: int, _playing: bool) -> void: pass
+	var playing: Array = []
+	func revise_mpv_video(id: int, _stereo: bool, _alpha: bool, _profile: String, target: int, _depth: bool, _tb: bool, exact: bool) -> int:
+		revisions.append([id, target, exact]); return revision_id
+	func set_mpv_playing(_id: int, value: bool) -> void: playing.append(value)
 	func set_mpv_audio(_id: int, _volume: float, _muted: bool, _track: int) -> void: pass
 	func close_mpv_video(_id: int) -> void: pass
 	func claim_mpv_pair(_id: int, _token: int) -> String: return JSON.stringify(pair)
@@ -54,7 +55,7 @@ func reset(main: Node3D, host: RefCounted, position: int = 30000, duration: int 
 	main.video.media.begin(7); main.video.media.state = "playing"
 	main.video.media.playback = {"details": {"seekable": "yes"}}
 	main.video.control.observe(position, duration); main.video.requested_play = true
-	main.video.geometry = 0; main.video._layer_session = false
+	main.video.geometry = 0; main.video._layer_session = true; main.video.seek_mode = "speed"
 	main.video._binding.ticket.clear(); host.revisions.clear(); host.revision_id = 0; host.acknowledge = true
 	main.video_menu._reset_navigation(); main.video_menu.dismiss()
 	main.display.preview = true; main.photo_active = false
@@ -142,11 +143,11 @@ func run() -> void:
 				var right := Vector2(direction, 0) if hand == "right_hand" else Vector2.ZERO
 				tick(main, left, right)
 				var step: int = 10000 * direction
-				check(host.revisions.is_empty() and video.control.display_position_ms() == 30000 and main.seek_feedback.target_ms == 30000 + step,
-					"A short push only previews the shared default step: %s/%s/%s" % [geometry, hand, direction])
+				check(host.revisions.size() == 1 and host.revisions[0][1] == 30000 + step and main.seek_feedback.target_ms == 30000 + step,
+					"A short push jumps the shared default step at once: %s/%s/%s" % [geometry, hand, direction])
 				check(overlay.visible and overlay.clock.text.contains(Feedback.time(30000 + step)) and not menu.visible, "Hidden transport has passive progress feedback")
 				tick(main, Vector2.ZERO, Vector2.ZERO)
-				check(host.revisions.size() == 1 and host.revisions[0][1] == 30000 + step and main.seek_feedback.phase == "waiting", "Release submits exactly one absolute target")
+				check(host.revisions.size() == 1 and main.seek_feedback.phase == "waiting", "Releasing a tap waits for its frame without a second request")
 				tick(main, Vector2.ZERO, Vector2.ZERO)
 				check(host.revisions.size() == 1 and overlay.visible, "Waiting never resubmits or disappears before a frame")
 	# Exercise both default and saved/remapped paths with the same non-default preference.
@@ -162,11 +163,11 @@ func run() -> void:
 					var left := Vector2(direction, 0) if hand == "left_hand" else Vector2.ZERO
 					var right := Vector2(direction, 0) if hand == "right_hand" else Vector2.ZERO
 					tick(main, left, right)
-					check(main.seek_feedback.target_ms == 100000 + direction * seconds * 1000 and host.revisions.is_empty(), "Both input paths preview the configured step on either hand")
+					check(main.seek_feedback.target_ms == 100000 + direction * seconds * 1000 and host.revisions.size() == 1, "Both input paths jump the configured step on either hand")
 					for frame in 9: tick(main, left, right)
 					check(main.seek_feedback.target_ms == 100000 + direction * seconds * 2000, "Holding repeats the configured step")
 					tick(main, Vector2.ZERO, Vector2.ZERO)
-					check(host.revisions.size() == 1 and host.revisions[0][1] == 100000 + direction * seconds * 2000, "Release submits the accumulated configured target once")
+					check(host.revisions.size() == 2 and host.revisions[1][1] == 100000 + direction * seconds * 2000, "Release submits the accumulated configured target once")
 		for id in ["back10", "back20", "forward10", "forward20"]:
 			reset(main, host, 100000)
 			main._execute_shortcut(id)
@@ -175,11 +176,11 @@ func run() -> void:
 	reset(main, host)
 	tick(main, Vector2.ZERO, Vector2(1, 0))
 	for frame in 19: tick(main, Vector2.ZERO, Vector2(1, 0))
-	check(main.seek_feedback.target_ms == 70000 and host.revisions.is_empty(), "One second hold adds the initial step and three stable repeats without decoding")
+	check(main.seek_feedback.target_ms == 70000 and host.revisions.size() == 1, "One second hold adds the initial step and three stable repeats; a remote source decodes only the first")
 	video.control.observe(35000, 300000)
 	check(main.seek_feedback.origin_ms == 30000 and main.seek_feedback.snapshot().delta_ms == 40000, "Continuing playback cannot drift the preview origin")
 	tick(main, Vector2.ZERO, Vector2.ZERO)
-	check(host.revisions.size() == 1 and video.control.target_ms == 70000, "Long hold commits its final target once")
+	check(host.revisions.size() == 2 and video.control.target_ms == 70000, "Long hold commits its final target once")
 	main._on_stick_seek_presented(video.control.sequence - 1, 1000)
 	check(main.seek_feedback.phase == "waiting", "An old request cannot complete the current preview")
 	host.acknowledge = false; present(main, host, 68000)
@@ -205,29 +206,29 @@ func run() -> void:
 	check(main.seek_feedback.phase == "done", "New-session first frame confirms the same seek")
 	reset(main, host)
 	tick(main, Vector2.ZERO, Vector2(1, 0)); tick(main, Vector2.ZERO, Vector2.ZERO)
-	tick(main, Vector2.ZERO, Vector2(1, 0))
 	var old_request: int = video.control.sequence
+	tick(main, Vector2.ZERO, Vector2(1, 0))
 	video.media.begin(8); main._update_seek_feedback(0)
 	check(main.seek_feedback.phase == "preview" and main.seek_feedback.target_ms == 50000, "Earlier decoder replacement cannot cancel a newer unsubmitted gesture")
 	main._on_stick_seek_presented(old_request, 39000)
-	check(main.seek_feedback.phase == "preview", "Older presented frame cannot complete a newer preview")
+	check(main.seek_feedback.phase == "preview" and not main.seek_feedback.landed, "Older presented frame cannot complete a newer preview")
 	tick(main, Vector2.ZERO, Vector2.ZERO)
 	check(video.control.target_ms == 50000 and video.control.sequence == old_request + 1, "New gesture commits independently of earlier decoder replacement")
 	reset(main, host)
 	tick(main, Vector2.ZERO, Vector2(1, 0), 5.0)
-	check(main.seek_feedback.target_ms == 40000 and host.revisions.is_empty(), "One stalled frame cannot accumulate an uncontrolled jump")
+	check(main.seek_feedback.target_ms == 40000 and host.revisions.size() == 1, "One stalled frame cannot accumulate an uncontrolled jump")
 	for boundary in [[5000, -1, 0], [295000, 1, 299999]]:
 		reset(main, host, boundary[0])
 		for frame in 30: tick(main, Vector2(boundary[1], 0), Vector2.ZERO)
 		check(main.seek_feedback.target_ms == boundary[2] and main.seek_feedback.snapshot().delta_ms == boundary[2] - boundary[0], "Clamped limits and displayed offset use actual bounds")
-		check(host.revisions.is_empty(), "Holding at a boundary cannot repeatedly seek")
+		check(host.revisions.size() == 1, "Holding at a boundary cannot repeatedly seek")
 	reset(main, host, 0)
 	tick(main, Vector2(-1, 0), Vector2.ZERO); tick(main, Vector2.ZERO, Vector2.ZERO)
 	check(host.revisions.is_empty() and not overlay.visible, "A zero-change boundary release does not rebuffer")
 	reset(main, host); main._show_player_menu()
 	tick(main, Vector2.ZERO, Vector2(1, 0))
 	check(not overlay.visible and menu._elapsed.text == "00:40" and menu._seek_origin.visible and menu._status.text.contains("+00:10"), "Visible transport reuses timeline, original marker and concise offset")
-	check(menu._duration.text == "05:00" and host.revisions.is_empty(), "Transport retains total duration without decoding during preview")
+	check(menu._duration.text == "05:00" and host.revisions.size() == 1, "Transport retains total duration while the first jump decodes")
 	var refreshes := menu.value_refreshes
 	tick(main, Vector2.ZERO, Vector2(1, 0)); tick(main, Vector2.ZERO, Vector2(1, 0))
 	check(menu.value_refreshes == refreshes, "Unchanged held target does not repaint the transport every XR frame")
@@ -239,19 +240,19 @@ func run() -> void:
 		reset(main, host); main._show_player_menu(); tick(main, Vector2.ZERO, Vector2(1, 0))
 		menu.set(capture, "left_hand"); tick(main, Vector2.ZERO, Vector2(1, 0)); menu.set(capture, "")
 		tick(main, Vector2.ZERO, Vector2.ZERO)
-		check(main.seek_feedback.phase.is_empty() and host.revisions.is_empty(), "Pointer capture cancels an uncommitted preview: " + capture)
+		check(main.seek_feedback.phase.is_empty() and host.revisions.size() == 1, "Pointer capture ends the gesture at its first jump: " + capture)
 	for popup in ["_subtitle_open", "_mode_open"]:
 		reset(main, host); main._show_player_menu(); tick(main, Vector2.ZERO, Vector2(1, 0))
 		menu.set(popup, true); tick(main, Vector2.ZERO, Vector2(1, 0)); menu.set(popup, false)
 		tick(main, Vector2.ZERO, Vector2(1, 0)); tick(main, Vector2.ZERO, Vector2.ZERO)
-		check(host.revisions.is_empty() and main.seek_feedback.phase.is_empty(), "Popup cancels preview and still requires recenter: " + popup)
+		check(host.revisions.size() == 1 and main.seek_feedback.phase.is_empty(), "Popup ends the gesture at its first jump and still requires recenter: " + popup)
 	reset(main, host); tick(main, Vector2.ZERO, Vector2(1, 0))
 	main.display.preview = false; main.display.session_state = "session_visible"
 	tick(main, Vector2.ZERO, Vector2(1, 0)); main.display.preview = true
 	tick(main, Vector2.ZERO, Vector2.ZERO)
-	check(host.revisions.is_empty() and main.seek_feedback.phase.is_empty(), "Focus loss cancels rather than commits")
+	check(host.revisions.size() == 1 and main.seek_feedback.phase.is_empty(), "Focus loss ends the gesture without a further request")
 	reset(main, host); tick(main, Vector2.ZERO, Vector2(1, 0)); tick(main, Vector2.ZERO, Vector2(NAN, 0)); tick(main, Vector2.ZERO, Vector2.ZERO)
-	check(host.revisions.is_empty() and main.seek_feedback.phase.is_empty(), "Invalid axes cannot submit a preview")
+	check(host.revisions.size() == 1 and main.seek_feedback.phase.is_empty(), "Invalid axes cannot submit a further target")
 	reset(main, host); tick(main, Vector2(1, 0), Vector2(-1, 0))
 	check(main.seek_feedback.owner == "left_hand" and main.seek_feedback.target_ms == 40000, "Two simultaneous hands deterministically keep the first preview owner")
 	tick(main, Vector2.ZERO, Vector2(-1, 0)); tick(main, Vector2.ZERO, Vector2.ZERO)
@@ -261,9 +262,9 @@ func run() -> void:
 		check(main.controller_bindings.assign("forward10", Bindings.bind("left_hand", input), false, true).ok, "Custom seek axis can be assigned")
 		var stick := Vector2.RIGHT if input == "stick_right" else Vector2(0, 1)
 		for frame in 10: tick(main, stick, Vector2.ZERO)
-		check(main.seek_feedback.target_ms == 50000 and host.revisions.is_empty(), "Remapped seeks share deferred repeat semantics: " + input)
+		check(main.seek_feedback.target_ms == 50000 and host.revisions.size() == 1, "Remapped seeks share repeat semantics: " + input)
 		tick(main, Vector2.ZERO, Vector2.ZERO)
-		check(host.revisions.size() == 1 and host.revisions[0][1] == 50000, "Custom seek axis submits once on release")
+		check(host.revisions.size() == 2 and host.revisions[1][1] == 50000, "Custom seek axis submits its final target on release")
 	for cleanup in ["closed", "failed", "source", "external_seek", "photo"]:
 		reset(main, host); tick(main, Vector2.ZERO, Vector2(1, 0)); tick(main, Vector2.ZERO, Vector2.ZERO)
 		match cleanup:
@@ -273,6 +274,79 @@ func run() -> void:
 			"photo": main.photo_active = true
 		main._update_seek_feedback(0)
 		check(main.seek_feedback.phase.is_empty() and not overlay.visible, "Obsolete feedback clears on " + cleanup)
+	check(Feedback.multiplier(0.4) == 1 and Feedback.multiplier(1.9) == 1 and Feedback.multiplier(2.15) == 3 and Feedback.multiplier(4.15) == 6, "Held repeats grow in stages")
+	reset(main, host, 30000, 3000000)
+	for frame in 51: tick(main, Vector2.ZERO, Vector2(1, 0))
+	check(main.seek_feedback.target_ms == 30000 + 14 * 10000 and host.revisions.size() == 1, "Two and a half seconds of hold covers seven single and two triple repeats")
+	# A local file scrubs: each landed frame releases the next keyframe request.
+	reset(main, host); video.local_uri = "file:///fixture/movie.mp4"; video._layer_session = true; host.revision_id = 8; host.playing.clear()
+	video.disc.before_open(null, video.local_uri, false)
+	check(video.scrub_live(), "An ordinary opened file is not mistaken for a disc")
+	tick(main, Vector2.ZERO, Vector2(1, 0))
+	check(host.revisions.size() == 1 and host.revisions[0][1] == 40000, "Local push jumps at once")
+	for frame in 9: tick(main, Vector2.ZERO, Vector2(1, 0))
+	check(main.seek_feedback.target_ms == 50000 and host.revisions.size() == 1, "A frame still owed holds back the next scrub request")
+	present(main, host, 39500)
+	check(main.seek_feedback.phase == "preview" and main.seek_feedback.landed and host.playing.back() == false, "A scrub frame lands still while the stick is held")
+	tick(main, Vector2.ZERO, Vector2(1, 0), 0.01)
+	check(host.revisions.size() == 2 and host.revisions[1][1] == 50000 and host.revisions[1][2] == false, "The landed frame releases the newest target as a keyframe request")
+	for frame in 10: tick(main, Vector2.ZERO, Vector2(1, 0))
+	check(main.seek_feedback.target_ms == 70000 and host.revisions.size() == 2, "Targets passed over while decoding are never requested")
+	present(main, host, 49000)
+	tick(main, Vector2.ZERO, Vector2.ZERO)
+	check(host.revisions.size() == 3 and host.revisions[2][1] == 70000 and main.seek_feedback.phase == "waiting", "Release commits the final target")
+	present(main, host, 69000)
+	check(main.seek_feedback.phase == "done" and main.seek_feedback.target_ms == 69000 and host.playing.back() == true, "The final frame resumes playback")
+	reset(main, host); video.local_uri = "file:///fixture/movie.mp4"; video._layer_session = true; host.revision_id = 8; host.playing.clear()
+	tick(main, Vector2.ZERO, Vector2(1, 0)); present(main, host, 39000)
+	check(host.playing.back() == false, "A tap's frame waits for the stick")
+	tick(main, Vector2.ZERO, Vector2.ZERO)
+	check(host.revisions.size() == 1 and main.seek_feedback.phase == "done" and host.playing.back() == true, "Releasing onto a landed frame resumes without another request")
+	reset(main, host); video.local_uri = "file:///fixture/movie.mp4"; video._layer_session = true; host.revision_id = 8; video.seek_mode = "exact"
+	tick(main, Vector2.ZERO, Vector2(1, 0))
+	check(host.revisions[0][2] == false, "A local push shows a keyframe first even in precise mode")
+	tick(main, Vector2.ZERO, Vector2.ZERO)
+	check(host.revisions.size() == 2 and host.revisions[1] == [8, 40000, true] and main.seek_feedback.phase == "waiting", "Releasing a precise tap refines its target")
+	present(main, host, 40000)
+	check(main.seek_feedback.phase == "done", "The refined frame completes the tap")
+	reset(main, host); host.revision_id = 8; video.seek_mode = "exact"
+	tick(main, Vector2.ZERO, Vector2(1, 0)); tick(main, Vector2.ZERO, Vector2.ZERO)
+	check(host.revisions.size() == 1 and host.revisions[0][2] == true, "A remote precise tap stays one precise request")
+	reset(main, host); video.local_uri = "file:///fixture/movie.mp4"; video._layer_session = true; host.revision_id = 8; video.seek_mode = "exact"
+	tick(main, Vector2.ZERO, Vector2(1, 0))
+	present(main, host, 38000)
+	for frame in 9: tick(main, Vector2.ZERO, Vector2(1, 0))
+	check(host.revisions.size() == 2 and host.revisions[1][2] == false, "Held steps scrub by keyframe")
+	present(main, host, 48000); tick(main, Vector2.ZERO, Vector2.ZERO)
+	check(host.revisions.size() == 3 and host.revisions[2] == [8, 50000, true], "Precise mode refines the same target on release")
+	for blocker in ["narration", "listening", "disc", "iso", "eye_buffer"]:
+		reset(main, host); video.local_uri = "file:///fixture/movie.iso" if blocker == "iso" else "file:///fixture/movie.mp4"; host.revision_id = 8
+		video._layer_session = blocker != "eye_buffer"
+		match blocker:
+			"narration": video.narration.enabled = true
+			"listening": video.listening.enabled = true
+			"disc": video.disc.uri = video.local_uri; video.disc.playing = 0
+		# Fragile or costly seeks keep the single request on release; a disc only loses the scrub.
+		var deferred: bool = blocker in ["narration", "listening", "eye_buffer"]
+		tick(main, Vector2.ZERO, Vector2(1, 0))
+		check(host.revisions.size() == (0 if deferred else 1), "The push " + ("waits" if deferred else "jumps") + " with " + blocker)
+		if not deferred: present(main, host, 39000)
+		for frame in 12: tick(main, Vector2.ZERO, Vector2(1, 0))
+		check(main.seek_feedback.target_ms > 40000 and host.revisions.size() == (0 if deferred else 1) and (deferred or host.playing.back() == false),
+			"A held stick does not scrub with " + blocker)
+		tick(main, Vector2.ZERO, Vector2.ZERO)
+		check(host.revisions.size() == (1 if deferred else 2) and host.revisions.back()[1] == main.seek_feedback.target_ms, "Release seeks once with " + blocker)
+		video.narration.enabled = false; video.listening.enabled = false; video.disc.reset()
+	reset(main, host); video.local_uri = "file:///fixture/movie.mp4"; video._layer_session = true
+	check(video.scrub_live(), "Plain layer playback of a local file scrubs")
+	for effect in ["alpha_requested", "depth_requested"]:
+		video.set(effect, true)
+		check(not video.scrub_live(), "A held stick does not scrub with " + effect)
+		video.set(effect, false)
+	reset(main, host); video.local_uri = "file:///fixture/movie.mp4"; video._layer_session = true; host.revision_id = 8; host.playing.clear()
+	tick(main, Vector2.ZERO, Vector2(1, 0)); present(main, host, 39000)
+	main.stick_controls.suspend(); main._update_seek_feedback(0)
+	check(main.seek_feedback.phase.is_empty() and host.playing.back() == true, "A cancelled hold cannot leave playback paused")
 	reset(main, host)
 	video.media.playback.details.seekable = "no"
 	tick(main, Vector2.ZERO, Vector2(1, 0)); tick(main, Vector2.ZERO, Vector2.ZERO)

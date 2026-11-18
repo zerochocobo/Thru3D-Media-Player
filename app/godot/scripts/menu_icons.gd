@@ -168,6 +168,7 @@ const PATHS := {
 	"arrow_up": '<path d="M6 15L12 9 18 15"/>',
 	"arrow_down": '<path d="M6 9L12 15 18 9"/>',
 	"photo_autoplay": '<path d="M7 4H19A2 2 0 0 1 21 6V16"/><rect x="3" y="8" width="14" height="12" rx="2"/><path d="M8 11L13 14 8 17Z" fill="white" stroke="none"/>',
+	"gamepad": '<path d="M7 7H17Q22 7 22 13V15Q22 19 19 19Q17 19 15.5 16H8.5Q7 19 5 19Q2 19 2 15V13Q2 7 7 7Z"/><path d="M6.5 10V14M4.5 12H8.5"/><circle cx="16" cy="11" r="0.9" fill="white"/><circle cx="18.5" cy="13.5" r="0.9" fill="white"/>',
 	"keyboard": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M6 9H7M11 9H12M16 9H17M6 12H7M11 12H12M16 12H17M7 16H17"/>',
 	"keyboard_hide": '<rect x="3" y="3" width="18" height="11" rx="2"/><path d="M6 7H7M11 7H12M16 7H17M7 11H17M8 18L12 22 16 18"/>',
 	"previous": '<path d="M15 6L9 12 15 18"/>',

@@ -4,6 +4,7 @@ const Windows := preload("res://scripts/video_pip.gd")
 const Binding := preload("res://scripts/pair_texture_binding.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
 const Layer := preload("res://scripts/web_browser_layer.gd")
+const QiyuController := preload("res://scripts/qiyu_controller.gd")
 var geometry := 0
 var stereo_sbs := false
 var top_bottom := false
@@ -101,6 +102,7 @@ func tick() -> void:
 		window.image_mode = true; window.live_source = true; window.panorama = false
 		window.image_material.shader = load("res://shaders/airplay_mirror.gdshader")
 		window.image_material.set_shader_parameter("video_texture", texture)
+		window.image_material.set_shader_parameter("decode_srgb", QiyuController.runtime and QiyuController.page_decode)
 		window.source_muted = bool(data.get("muted", false))
 		window.set_compositor(layer != null); window.frame.visible = false; window.refresh()
 	if epoch > 0 and pip.windows.has(1):

@@ -157,10 +157,16 @@ const Thru3DBilibili = (() => {
   // Parse an inline JSON assignment as data; never evaluate site script or getters.
   const assignment = (document, name) => {
     let count = 0, size = 0;
+    // Large UGC collections embed every episode in videoData. Read their bounded
+    // SSR envelope, then remember() retains only the current public part map.
+    // Keep the smaller limit for playinfo and other assignments.
+    const stateEnvelope = name === '__INITIAL_STATE__';
+    const scriptLimit = (stateEnvelope ? 8 : 2) * 1024 * 1024;
+    const scanLimit = (stateEnvelope ? 12 : 4) * 1024 * 1024;
     for (const script of document.querySelectorAll('script:not([src])')) {
       const text = script.textContent || '';
-      if (++count > 128 || (size += text.length) > 4 * 1024 * 1024) return null;
-      if (text.length > 2 * 1024 * 1024) continue;
+      if (++count > 128 || (size += text.length) > scanLimit) return null;
+      if (text.length > scriptLimit) continue;
       const marker = new RegExp('(?:^|[;\\s])(?:window\\.|(?:const|let|var)\\s+)' + name + '\\s*=\\s*').exec(text);
       if (!marker) continue;
       const start = marker.index + marker[0].length;

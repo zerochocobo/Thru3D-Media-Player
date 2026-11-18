@@ -494,6 +494,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
     @UsedByGodot fun cancel_photo(id: Int) { readingPages.cancel(id); archives.cancelPage(id); photos.cancel(id); photoPreloads.cancel(id) }
     @UsedByGodot fun release_photo(id: Int) { photos.release(id); photoPreloads.release(id) }
+    /** The request's 2D-to-3D depth map may stay on disk for a later opening of the same picture. */
+    @UsedByGodot fun keep_photo_depth(id: Int, allowed: Boolean) { photos.keepDepth(id, allowed); photoPreloads.keepDepth(id, allowed) }
     @UsedByGodot fun discard_photo_depth(id: Int) { photos.discardDepth(id); photoPreloads.discardDepth(id) }
     @UsedByGodot fun prepare_photo_portrait(id: Int, token: Int, strength: Double): Boolean = !closed.get() && photos.portrait(id,token,strength.toFloat())
     @UsedByGodot fun prepare_preloaded_photo_portrait(id: Int, token: Int, strength: Double): Boolean = !closed.get() &&
@@ -531,12 +533,14 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
             JSONObject().put("files", files).put("bytes", bytes).toString()
         }.getOrDefault("{}")
     }
-    @UsedByGodot fun clear_photo_cache(): Boolean {
+    @UsedByGodot fun clear_photo_cache(): Boolean = clearPhotoCache(false)
+    /** [leftovers]: only what a previous process left behind, at start; kept depth maps stay. */
+    private fun clearPhotoCache(leftovers: Boolean): Boolean {
         if (closed.get()) return false
         val app = activity?.applicationContext ?: return false
         return runCatching {
             synchronized(PhotoCache.lock) {
-                PhotoCache.clear(app.cacheDir, photos.cacheDirectories() + photoPreloads.cacheDirectories() + photoPreviews.cacheDirectories() + pipImages.cacheDirectories() + archives.cacheDirectories() + pdfs.cacheDirectories() + readingPages.files())
+                PhotoCache.clear(app.cacheDir, photos.cacheDirectories() + photoPreloads.cacheDirectories() + photoPreviews.cacheDirectories() + pipImages.cacheDirectories() + archives.cacheDirectories() + pdfs.cacheDirectories() + readingPages.files(), leftovers)
             }
             true
         }.getOrElse { Log.w("QuestPhotoCache", "Photo cache cleanup failed", it); false }
@@ -567,6 +571,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         SignalInfo("android_lifecycle", String::class.java),
         SignalInfo("rvm_warmup", String::class.java),
         SignalInfo("diagnostic_log", String::class.java),
+        SignalInfo("external_input", String::class.java),
         SignalInfo("pip_image_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("background_image_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_ready", Int::class.javaObjectType, String::class.java),
@@ -1125,7 +1130,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
 
     // Android can resume before Godot registers the plugin's native signals.
-    override fun onGodotSetupCompleted() { activity?.let { CrashRecords.start(it); WebBrowserDepthBridge.install(it) }; WebBrowserTextureBridge.install { runOnRenderThread(it) }; signalsReady = true; clear_photo_cache(); runCatching { panoramaOriginals.prepare() } }
+    override fun onGodotSetupCompleted() { activity?.let { CrashRecords.start(it); WebBrowserDepthBridge.install(it); ExternalInputProbe.install(it) { payload -> if (signalsReady && !closed.get()) emitSignal("external_input", payload) } }; WebBrowserTextureBridge.install { runOnRenderThread(it) }; signalsReady = true; clearPhotoCache(true); runCatching { panoramaOriginals.prepare() } }
     override fun onMainPause() { CrashRecords.foreground(false); if (!closed.get()) { sources.serverPlaybackPaused(); webBrowser.action("pause"); listeningTasks.foreground(false); readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
     override fun onMainResume() { CrashRecords.foreground(true); if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; listeningTasks.foreground(true); readingPages.foreground(true); dlnaForeground(true); systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
     override fun onMainDestroy() { close() }
@@ -1136,6 +1141,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         webVideoResolver.close()
         webBrowser.close()
         WebBrowserDepthBridge.closeAll()
+        activity?.let { ExternalInputProbe.close(it) }
         if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); airplayReceiver.close(); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); sceneFiles.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); backgroundImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

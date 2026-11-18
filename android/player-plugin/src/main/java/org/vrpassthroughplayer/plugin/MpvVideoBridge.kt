@@ -1865,9 +1865,16 @@ internal class MpvVideoBridge(
     fun freeze(id: Int, token: Long, request: Int): Boolean {
         val session = sessions[id] ?: return false
         if (session.host.layer) return false // the layer surface keeps showing its frame until the next one
-        if (request <= 0 || !freezePending.compareAndSet(false, true)) return false
+        if (request <= 0 || !freezePending.compareAndSet(false, true)) {
+            android.util.Log.w("QuestPlayer", "Frame freeze refused in session $id: another capture is pending")
+            return false
+        }
         synchronized(session.lock) {
-            if (!active(session) || !session.display.pin(token)) { freezePending.set(false); return false }
+            if (!active(session) || !session.display.pin(token)) {
+                android.util.Log.w("QuestPlayer", "Frame freeze refused in session $id: active=${active(session)} " +
+                    "drawn=${session.display.drawn(token)} owned=${session.display.owns(token)}")
+                freezePending.set(false); return false
+            }
         }
         try {
             render(Runnable { synchronized(session.lock) {

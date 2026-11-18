@@ -8,11 +8,13 @@ import java.nio.file.LinkOption.NOFOLLOW_LINKS
 internal object PhotoCache {
     val lock = Any()
     private val names = listOf("photos", "photo-preloads", "photo-gallery", "pip-images", "comic-pages", "pdf-pages", "pdf-sources")
+    // Kept between runs: the user's cache cleanup and its size count include them, the cleanup at start does not.
+    private val lasting = listOf(PhotoDepthStore.NAME)
 
     fun usage(cache: File): Pair<Long, Long> = synchronized(lock) {
         var count = 0L
         var bytes = 0L
-        for (name in names) {
+        for (name in names + lasting) {
             val root = File(cache, name).toPath()
             if (!Files.isDirectory(root, NOFOLLOW_LINKS)) continue
             Files.walk(root).use { paths -> paths.forEach { path ->
@@ -25,9 +27,9 @@ internal object PhotoCache {
         count to bytes
     }
 
-    fun clear(cache: File, protected: Set<File>) = synchronized(lock) {
+    fun clear(cache: File, protected: Set<File>, leftovers: Boolean = false) = synchronized(lock) {
         val active = protected.map { it.absoluteFile.toPath().normalize() }.toSet()
-        for (name in names) {
+        for (name in if (leftovers) names else names + lasting) {
             val root = File(cache, name).absoluteFile.toPath().normalize()
             // An archive owns its original cache and extracted pages as one live session.
             if (root in active) continue

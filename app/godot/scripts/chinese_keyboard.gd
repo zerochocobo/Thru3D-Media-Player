@@ -25,6 +25,10 @@ var _lexicon_ready := false
 var title_move := Move.new()
 var head_provider: Callable
 var placement: Variant = null
+## Menus drawn in the eye buffer (main.gd): the keyboard opens over the web page, whose tile draws at
+## priority 25 and hid the typed text (QIYU user, 2026-11-18). Its own layer covers the page elsewhere.
+var lifted := false
+const LIFT := 32
 
 func _ready() -> void:
 	super._ready()
@@ -162,7 +166,21 @@ func refresh() -> void:
 	for button in _buttons:
 		for child in button.node.get_children():
 			if child is Label3D: set_label_size(child, KEY_FONT_SIZE)
+	if lifted: _lift(self, {})
 	composition_changed.emit()
+
+func _lift(node: Node, seen: Dictionary) -> void:
+	if node.has_meta("menu_pointer"): return
+	if node is Label3D:
+		if node.get_meta("menu_lifted", -1) != node.render_priority:
+			node.render_priority += LIFT; node.outline_render_priority += LIFT
+			node.set_meta("menu_lifted", node.render_priority)
+	elif node is GeometryInstance3D and node.material_override and not seen.has(node.material_override):
+		var material: Material = node.material_override
+		seen[material] = true
+		if material.get_meta("menu_lifted", -1) != material.render_priority:
+			material.render_priority += LIFT; material.set_meta("menu_lifted", material.render_priority)
+	for child in node.get_children(): _lift(child, seen)
 
 func _icon_key(target: int, icon: String, centre: Vector2, size: Vector2, enabled: bool = true, selected: bool = false) -> void:
 	_button(target, "", centre, size, enabled, "", selected)

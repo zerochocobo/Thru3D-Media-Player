@@ -43,8 +43,11 @@ static func load_quality(settings: ConfigFile) -> int:
 		return 0 if scale <= 1.0 else (1 if scale < 1.2 else 2)
 	return DEFAULT
 
-static func render_scale(choice: int, low_end: bool) -> float:
-	if choice == AUTO: return SCALES[0 if low_end else TIER_DEFAULT]
+## QIYU keeps its menus in the eye buffer, whose 1440 recommended size left text soft (user, 2026-11-18).
+const QIYU_AUTO := 2
+
+static func render_scale(choice: int, low_end: bool, qiyu: bool = false) -> float:
+	if choice == AUTO: return SCALES[QIYU_AUTO if qiyu else (0 if low_end else TIER_DEFAULT)]
 	return SCALES[clampi(choice, 0, SCALES.size() - 1)]
 
 ## Adreno 6xx and older (XR2 Gen1 / XR2+) are low end; 7xx (XR2 Gen2) and unknown GPUs are not.

@@ -12,6 +12,7 @@
 #include <MNN/Tensor.hpp>
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
+#include <dlfcn.h>
 #include <sys/system_properties.h>
 #include <jni.h>
 #include <algorithm>
@@ -31,11 +32,16 @@
 
 // MNN fork (tools/mnn/patch_mnn_vrpp.py): GPU priority of OpenCL runtimes created next on this thread.
 extern "C" void vrpp_set_cl_priority(int priority);
+// The same for the queue of Vulkan devices: 0 asks for a LOW global-priority queue, -1 the default.
+extern "C" void vrpp_set_vk_priority(int priority);
 
 namespace {
 constexpr const char* kModelAsset = "depth-mnn/depth.mnn";
 constexpr const char* kCompatibleModelAsset = "depth-mnn/depth_compat.mnn";
 constexpr const char* kPhotoModelAsset = "depth-mnn/photo_depth.mnn";
+// Same network for the Vulkan fallback: MNN's Vulkan backend places the OpenCL graph's LayerNorm
+// and batched attention products on the CPU (see prepare_depth_mnn.py --photo --vulkan).
+constexpr const char* kPhotoVulkanModelAsset = "depth-mnn/photo_depth_vulkan.mnn";
 
 void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
@@ -117,6 +123,18 @@ std::string cache_path(const void* model, size_t bytes, const std::string& direc
     return directory + (quest::mnn_uses_vulkan() ? "/mnn_depth_vulkan_fp32_" : "/mnn_depth_fp16_") + tag + "_m" + std::to_string(gpu_mode(photo)) + ".cache";
 }
 
+// Changes with every installation: Android loads this library from a directory named anew for
+// each install or update, so a recorded audit belongs to one installed build.
+std::string build_tag() {
+    Dl_info own{};
+    const char* path = dladdr(reinterpret_cast<const void*>(&fail), &own) != 0 ? own.dli_fname : nullptr;
+    uint64_t hash = 1469598103934665603ull;
+    for (const char* c = path ? path : __DATE__ " " __TIME__; *c; ++c) hash = (hash ^ static_cast<unsigned char>(*c)) * 1099511628211ull;
+    char tag[17];
+    snprintf(tag, sizeof(tag), "%016llx", static_cast<unsigned long long>(hash));
+    return tag;
+}
+
 struct Depth final {
     std::shared_ptr<MNN::Interpreter> net;
     MNN::Session* session = nullptr;
@@ -157,8 +175,13 @@ struct Depth final {
         // Throughput, frame age and XR pacing are measured together; priority alone
         // does not establish that the 30 Hz target is met.
         vrpp_set_cl_priority(depth_priority(photo));
+        // Vulkan: only the photo model yields. On the default queue its 3 s inference held the
+        // player at 4-10 of 72 fps on Quest 2; LOW kept 63-71 fps for a 5.4 s inference. Video
+        // depth keeps the default queue, where LOW cost depth updates (2026-11-09).
+        vrpp_set_vk_priority(photo ? depth_priority(true) : -1);
         session = net->createSession(config);
         vrpp_set_cl_priority(-1);
+        vrpp_set_vk_priority(-1);
         require(session != nullptr, "MNN depth GPU session creation failed");
         MNNForwardType main = MNN_FORWARD_CPU;
         net->getSessionInfo(session, MNN::Interpreter::BACKENDS, &main);
@@ -171,7 +194,18 @@ struct Depth final {
         src_host.reset(new MNN::Tensor(src, MNN::Tensor::CAFFE));
         out_host.reset(new MNN::Tensor(out, MNN::Tensor::CAFFE));
         std::memset(src_host->host<float>(), 0, src_host->size());
-        audit();
+        // The LOW-priority Vulkan photo model takes 5 s a run on Quest 2, and the audit is one more
+        // run before the first picture. Placement depends on this library, the model and the device:
+        // one passed audit per installed build is recorded beside the program cache.
+        // (Auditing the first real inference instead returned a constant map: do not read the
+        // output of a callback run on Vulkan.)
+        const std::string placed = photo && quest::mnn_uses_vulkan() && !cache.empty() ? cache + "." + build_tag() + ".placed" : "";
+        std::ifstream recorded(placed);
+        if (placed.empty() || !(recorded >> gpu_ops) || gpu_ops <= 0) {
+            gpu_ops = 0;
+            audit();
+            if (!placed.empty()) std::ofstream(placed) << gpu_ops;
+        }
         if (!cache.empty()) net->updateCacheFile(session);
         prepare_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     }
@@ -360,7 +394,7 @@ Java_org_vrpassthroughplayer_plugin_DepthNative_describe(JNIEnv* env, jclass, jl
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_DepthNative_createPhoto(JNIEnv* env, jclass, jobject assets, jstring directory) {
     try {
-        const auto model = open_model(env, assets, kPhotoModelAsset);
+        const auto model = open_model(env, assets, quest::mnn_uses_vulkan() ? kPhotoVulkanModelAsset : kPhotoModelAsset);
         const void* data = AAsset_getBuffer(model.get());
         const auto bytes = static_cast<size_t>(AAsset_getLength64(model.get()));
         auto depth = std::make_shared<Depth>(data, bytes, cache_path(data, bytes, text(env, directory), true), true);

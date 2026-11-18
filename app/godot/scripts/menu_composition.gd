@@ -119,6 +119,8 @@ var dirty := true
 var geometry_dirty := true
 var eye_mask := 0
 var fallback_reason := "not_configured"
+## Keep every menu in the eye buffer (QIYU factory runtime); read before configure().
+var eye_buffer_only := false
 var repaints := 0
 var _painted_ms := 0
 var _last_menu: Node3D
@@ -142,10 +144,10 @@ func configure(target_origin: Node3D, target_camera: Camera3D, target_display: R
 	menus = target_menus.duplicate(); low_end = is_low_end; force_capture = host_capture
 	xr = XRServer.find_interface("OpenXR")
 	var probe := OpenXRCompositionLayerQuad.new()
-	enabled = host_capture or (xr != null and xr.is_initialized() and xr.get_view_count() == 2 and probe.is_natively_supported())
+	enabled = host_capture or (not eye_buffer_only and xr != null and xr.is_initialized() and xr.get_view_count() == 2 and probe.is_natively_supported())
 	probe.free()
 	if not enabled:
-		fallback_reason = "native_quad_unavailable"
+		fallback_reason = "eye_buffer_only" if eye_buffer_only else "native_quad_unavailable"
 		set_process(false)
 		return
 	if not host_capture:

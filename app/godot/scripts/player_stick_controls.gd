@@ -12,6 +12,10 @@ var active_hands := {}
 ## Last polling decision per hand; observational only, consumed by exported input diagnostics.
 var diagnostic_routes := {}
 
+## A push counts along one axis within about 27 degrees of it; a true diagonal stays unassigned.
+static func cardinal(along: float, across: float) -> bool:
+	return absf(along) > 0.6 and absf(across) < absf(along) * 0.5
+
 ## UI captures own the input until each stick returns to center.
 func suspend() -> void:
 	left_latched = true
@@ -57,11 +61,11 @@ func poll(left: Vector2, right: Vector2, zoom: bool = false) -> Array[Dictionary
 		# Cardinal pushes only: a diagonal does nothing (a stray diagonal once swapped the eyes).
 		# Left up/down is the volume (up also unmutes); mute lives on the menu's volume slider.
 		var action: Dictionary = {}
-		if absf(stick.x) > 0.75 and absf(stick.y) < 0.3:
+		if cardinal(stick.x, stick.y):
 			var direction := 1 if stick.x > 0 else -1
 			# Main applies the shared configured step; this layer only resolves input direction.
 			action = {"operation": "seek", "hand": hand, "direction": direction}
-		elif absf(stick.y) > 0.75 and absf(stick.x) < 0.3:
+		elif cardinal(stick.y, stick.x):
 			action = {"operation": "volume", "direction": 1 if stick.y > 0 else -1}
 		if not action.is_empty():
 			diagnostic_routes[hand] = "routed." + str(action.operation)
@@ -94,7 +98,7 @@ func poll_mapped(left: Vector2, right: Vector2, resolver: Callable) -> Array[Dic
 			continue
 		var input: String = str(mapped_continuous.get(hand, {}).get("input", ""))
 		if input.is_empty():
-			if absf(stick.x) > 0.75 and absf(stick.y) < 0.3: input = "stick_right" if stick.x > 0 else "stick_left"
+			if cardinal(stick.x, stick.y): input = "stick_right" if stick.x > 0 else "stick_left"
 			elif absf(stick.y) >= absf(stick.x): input = "stick_up" if stick.y > 0 else "stick_down"
 		if input.is_empty(): continue
 		var resolved: Dictionary = resolver.call(hand + "_hand", input)
@@ -121,7 +125,7 @@ func poll_mapped(left: Vector2, right: Vector2, resolver: Callable) -> Array[Dic
 				actions.append(resolved)
 				diagnostic_routes[hand] = "routed.shortcut:" + str(resolved.id)
 				active_hands[hand] = true
-		elif not latched and (absf(stick.x) > 0.75 and absf(stick.y) < 0.3 or absf(stick.y) > 0.75 and absf(stick.x) < 0.3):
+		elif not latched and (cardinal(stick.x, stick.y) or cardinal(stick.y, stick.x)):
 			if hand == "left": left_latched = true
 			else: right_latched = true
 			actions.append(resolved)

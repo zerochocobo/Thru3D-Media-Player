@@ -511,6 +511,10 @@ try {
     if ($photoDepthManifest.width -ne 518 -or $photoDepthManifest.height -ne 518 -or $photoDepthManifest.usage -ne 'photo') { throw 'Photo depth model profile differs.' }
     $requiredModels = @(@('rvm-mnn/rvm.mnn', $mnnManifest.mnn_sha256), @('depth-mnn/depth.mnn', $depthManifest.mnn_sha256), @('depth-mnn/photo_depth.mnn', $photoDepthManifest.mnn_sha256))
     $requiredModels += ,@('depth-mnn/depth_compat.mnn', $compatibleDepthManifest.mnn_sha256)
+    # Headsets without OpenCL (Quest 2) load the photo graph rewritten for MNN's Vulkan backend.
+    $photoVulkanManifest = Get-Content (Join-Path $workspace 'android\player-plugin\src\main\assets\depth-mnn\photo_vulkan_manifest.json') -Raw | ConvertFrom-Json
+    if ($photoVulkanManifest.width -ne 518 -or $photoVulkanManifest.height -ne 518 -or $photoVulkanManifest.usage -ne 'photo' -or $photoVulkanManifest.mnn_file -ne 'photo_depth_vulkan.mnn') { throw 'Vulkan photo depth model profile differs.' }
+    $requiredModels += ,@('depth-mnn/photo_depth_vulkan.mnn', $photoVulkanManifest.mnn_sha256)
     if ($IncludeDiagnostics) { $requiredModels += ,@('rvm-mnn/rvm_quality.mnn', $mnnManifest.quality_mnn_sha256) }
     foreach ($model in $requiredModels) {
         $entry = $apkArchive.GetEntry('assets/' + $model[0])

@@ -20,6 +20,11 @@
       "path": "depth-mnn/depth_compat.mnn",
       "bytes": 12794216,
       "sha256": "fe012ae0a47e471922194b6eb03d86660d84d1f3ac3f030543d2ec7333274fb2"
+    },
+    {
+      "path": "depth-mnn/photo_depth_vulkan.mnn",
+      "bytes": 49741472,
+      "sha256": "9092b1bfaed69d1eca3a5803bcf14f7548e5ec3c8e4631f53fd4ba6fd850359e"
     }
   ],
   "manifests": {
@@ -212,6 +217,29 @@
       "global_context": "learned softmax (not mean approximation)",
       "frozen_onnx_sha256": "026c34b82504d591d6941fd5da664ccf94fe42594dcffa244874bf46e07c5fdf",
       "mnn_sha256": "fe012ae0a47e471922194b6eb03d86660d84d1f3ac3f030543d2ec7333274fb2"
+    },
+    "photo-depth-vulkan-mnn": {
+      "schema_version": 2,
+      "backend": "MNN 3.6.1 Vulkan",
+      "model": "Depth Anything V2 Small",
+      "head": "late-upsample",
+      "license": "Apache-2.0",
+      "source_onnx": "models\\source\\depth\\depth_anything_v2_small.onnx",
+      "source_sha256": "afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c",
+      "input": "src float32 1x3xHxW RGB 0..1 (ImageNet normalization folded)",
+      "output": "depth float32 1x1xHxW relative inverse depth (larger = nearer)",
+      "width": 518,
+      "height": 518,
+      "frozen_onnx_sha256": "6ff6bd298b0e65c062549564506f5320b6d7f64df6373015f0ef82dc0686fe7b",
+      "mnn_sha256": "9092b1bfaed69d1eca3a5803bcf14f7548e5ec3c8e4631f53fd4ba6fd850359e",
+      "mnn_file": "photo_depth_vulkan.mnn",
+      "usage": "photo",
+      "dynamic_ops_left": [
+        "Gather",
+        "Resize"
+      ],
+      "frozen_vs_source_rel_max": 5.024228357797256e-06,
+      "mnn_fp16_weights_vs_frozen_rel_max": 0.005823842715471983
     }
   }
 }

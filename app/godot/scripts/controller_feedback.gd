@@ -16,6 +16,8 @@ const SETTLE_SECONDS := 0.3
 const MAX_SAMPLE_GAP := 0.1
 signal woken(hand: String, reason: String)
 var hands := {}
+## Hands aimed by the head (external keyboard/gamepad): a reticle dot, never a beam from the eyes.
+var beamless := {}
 
 func _state(hand: String) -> Dictionary:
 	if not hands.has(hand):
@@ -112,13 +114,14 @@ func update_hand(hand: String, pose: Variant, ray: Variant, point: Variant, enga
 	var offset := endpoint - origin
 	var length := offset.length()
 	if length < 0.001: _hide(state); return state.opacity
-	nodes.line.visible = true
+	var head := bool(beamless.get(hand, false))
+	nodes.line.visible = not head
 	PointerRay.draw(nodes.line, origin, endpoint)
 	var color := Color(1.0, 0.73, 0.24) if engaged else Color(0.85, 0.94, 1.0)
 	nodes.line.material_override.set_shader_parameter("ray_color", Color(color, pointer_opacity * (0.5 if hit else 0.3)))
 	for key in ["rim", "dot"]:
-		nodes[key].visible = hit
-		if hit:
+		nodes[key].visible = hit or head
+		if hit or head:
 			nodes[key].global_position = endpoint - offset / length * 0.008
 			nodes[key].scale = Vector3.ONE * clampf(length * 0.0055, 0.006, 0.4) * (1.65 if key == "rim" else 1.0)
 			nodes[key].material_override.albedo_color = Color(Color(0.025, 0.035, 0.045) if key == "rim" else color, pointer_opacity)

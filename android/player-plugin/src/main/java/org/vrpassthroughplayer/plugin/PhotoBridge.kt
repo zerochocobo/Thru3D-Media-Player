@@ -79,6 +79,9 @@ internal class PhotoBridge(
         @Volatile var cancelled = false
     }
     private val depthJobs = ConcurrentHashMap<Int, DepthJob>()
+    // Requests whose depth map may be kept between openings (history policy, decided by the caller).
+    private val keptDepth: MutableSet<Int> = ConcurrentHashMap.newKeySet()
+    fun keepDepth(id: Int, allowed: Boolean) { if (allowed && !closed) keptDepth.add(id) else keptDepth.remove(id) }
     private class PortraitJob(val id: Int, val token: Int, val source: PhotoSource, val strength: Float, val background: Boolean, val rotation: Int) {
         @Volatile var cancelled = false
     }
@@ -342,6 +345,7 @@ internal class PhotoBridge(
         if(animationId==id)closeAnimation()
         depthJobs.remove(id)?.cancelled = true
         portraitJobs.entries.filter { it.value.id == id }.forEach { it.value.cancelled = true; portraitJobs.remove(it.key) }
+        keptDepth.remove(id)
         files.remove(id)?.release()
     }
     fun cancelDepth() = synchronized(PhotoCache.lock) {
@@ -369,6 +373,7 @@ internal class PhotoBridge(
         target.closeAnimation()
         val source = files.remove(id) ?: return@synchronized false
         target.files[id] = source
+        if (keptDepth.remove(id)) target.keptDepth.add(id)
         target.current.set(id)
         target.connection?.disconnect()
         depthJobs.remove(id)?.let { job -> job.owner = target; job.background = false; target.depthJobs[id] = job }
@@ -449,14 +454,29 @@ internal class PhotoBridge(
                 val metadata = File(source.parentFile, "depth.json")
                 val cached = if (target.length() == w.toLong()*h*4 && metadata.isFile)
                     runCatching { JSONObject(metadata.readText()).takeIf { it.optString("photo_cache") == "da2-518-stretch-v2" } }.getOrNull() else null
+                val leftEye = job.source.nativeStereo && job.sceneToken > 0
+                // An animation's frame snapshot is not the file a later opening would hash.
+                val store = if (cached == null && snapshot == null && id in job.owner.keptDepth) PhotoDepthStore(app.cacheDir) else null
+                val key = store?.key(source, "da2-518-stretch-v2" + if (leftEye) "-left" else "")
+                checkDepth()
+                val kept = if (store != null && key != null) store.get(key, w, h) else null
                 val result: JSONObject
                 if (cached != null) {
                     near.put(target.readBytes()); near.rewind()
                     result = cached.put("depth_cached",true).put("model_reused",false)
+                } else if (kept != null) {
+                    // A picture seen before: no model session, no GPU time.
+                    near.put(kept.near); near.rewind()
+                    val bytes = ByteArray(near.remaining()); near.get(bytes); near.rewind()
+                    target.writeBytes(bytes)
+                    result = JSONObject().put("state","ready").put("path",target.path).put("width",w).put("height",h)
+                        .put("photo_cache","da2-518-stretch-v2").put("rect",org.json.JSONArray(kept.rect.map { it.toDouble() }))
+                    metadata.writeText(result.toString())
+                    result.put("depth_cached",true).put("depth_kept",true).put("model_reused",false)
                 } else {
                     stage(id,"input")
                     val inputStarted = System.nanoTime()
-                    val input = PhotoDepthInput.prepare(source, selectLeftEye = job.source.nativeStereo && job.sceneToken > 0)
+                    val input = PhotoDepthInput.prepare(source, selectLeftEye = leftEye)
                     val inputMs = (System.nanoTime() - inputStarted) / 1_000_000.0
                     val content = input.content
                     checkDepth()
@@ -478,6 +498,10 @@ internal class PhotoBridge(
                     result.put("path",target.path).put("width",w).put("height",h).put("photo_cache","da2-518-stretch-v2")
                         .put("rect",org.json.JSONArray(listOf(content.x.toDouble()/w,content.y.toDouble()/h,content.width.toDouble()/w,content.height.toDouble()/h)))
                     metadata.writeText(result.toString())
+                    if (store != null && key != null) {
+                        val rect = result.getJSONArray("rect")
+                        store.put(key, near, w, h, FloatArray(4) { rect.getDouble(it).toFloat() })
+                    }
                 }
                 checkDepth()
                 if (stereo) {
@@ -496,7 +520,7 @@ internal class PhotoBridge(
                     // Once a result is committed, a strength retry must enqueue fresh pair work.
                     job.owner.depthJobs.remove(id,job)
                     job.owner.stage(id,"ready")
-                    android.util.Log.i("QuestPhotoDepth", "request=$id cached=${cached != null} reused=${result.optBoolean("model_reused")} total_ms=${result.optDouble("total_ms")} " +
+                    android.util.Log.i("QuestPhotoDepth", "request=$id cached=${cached != null} kept=${kept != null} reused=${result.optBoolean("model_reused")} total_ms=${result.optDouble("total_ms")} " +
                         "input_ms=${result.optDouble("input_ms")} depth_ms=${result.optDouble("depth_ms")} priority=${result.optJSONObject("runtime")?.optInt("priority",-1)} " +
                         "stereo_ms=${result.optDouble("stereo_total_ms")} stereo_gpu_us=${result.optLong("stereo_render_us")}")
                     if (job.sceneToken > 0) result.put("scene_token",job.sceneToken)

@@ -73,6 +73,45 @@ func _run() -> void:
 	Privacy.vault = Protected.new()
 	expect(trace.snapshot().recording == false and trace.recent.is_empty(), "Protected viewing does not expose an earlier input ring")
 	Privacy.vault = null
+	# External keyboards, gamepads, and the PICO head-control key (vendor code 1001).
+	trace.clear()
+	trace.external(0, {"kind": "key", "layer": "android", "action": "down", "code": "1001", "device": 3})
+	trace.external(1, {"kind": "key", "layer": "android", "action": "up", "code": "1001", "device": 3})
+	trace.external(2, {"kind": "unknown", "layer": "android"})
+	expect(trace.external_seen.get("android/key/1001") == 2 and trace.recent.size() == 2 and trace.recent[0].kind == "external_key", "Unknown vendor keys keep their numeric code and both edges")
+	var typed := InputEventKey.new()
+	typed.keycode = KEY_A; typed.physical_keycode = KEY_A; typed.unicode = 97; typed.pressed = true
+	trace.godot_input(3, typed)
+	var typed_event: Dictionary = trace.recent.back()
+	expect(typed_event.code == "printable" and typed_event.keycode == 0 and typed_event.physical == 0 and not JSON.stringify(typed_event).contains("97"), "Typed text never reaches input evidence")
+	var chord := InputEventKey.new()
+	chord.keycode = KEY_3; chord.physical_keycode = KEY_3; chord.ctrl_pressed = true; chord.pressed = true
+	trace.godot_input(3, chord)
+	expect(trace.recent.back().code == "printable" and trace.recent.back().keycode == 0, "A modifier chord without unicode still withholds the character")
+	trace.recent.pop_back()
+	var arrow := InputEventKey.new()
+	arrow.keycode = KEY_LEFT; arrow.pressed = true
+	trace.godot_input(4, arrow)
+	arrow.echo = true
+	trace.godot_input(5, arrow)
+	expect(trace.recent.back().code == "Left" and trace.recent.size() == 4, "Control keys are named; key repeat is not an extra press")
+	var pad := InputEventJoypadButton.new()
+	pad.button_index = JOY_BUTTON_A; pad.pressed = true; pad.device = 1
+	trace.godot_input(6, pad)
+	expect(trace.recent.back().code == "joy_0" and trace.recent.back().device == 1, "Gamepad buttons record index and device")
+	var stick := InputEventJoypadMotion.new()
+	stick.device = 1; stick.axis = JOY_AXIS_LEFT_X
+	for value in [0.1, 0.7, 0.55, 0.45, 0.62, 0.3, -0.9]:
+		stick.axis_value = value; trace.godot_input(7, stick)
+	var states := trace.recent.filter(func(event): return event.kind == "external_axis").map(func(event): return event.state)
+	expect(states == [1, 0, -1], "Axis thresholds use hysteresis instead of logging noise: %s" % [states])
+	trace.joypad_connection(8, 1, true, "guid", true)
+	expect(trace.snapshot().external_seen.has("godot/device/added"), "Gamepad connection is exported")
+	Privacy.mode = Privacy.LOCAL
+	trace.external(9, {"kind": "key", "layer": "android", "action": "down", "code": "1001"})
+	trace.godot_input(10, pad)
+	expect(trace.recent.is_empty() and trace.external_seen.is_empty(), "Private history mode records no external input")
+	Privacy.mode = Privacy.ALL
 	var controls := Sticks.new()
 	controls.suspend(); controls.poll(Vector2.RIGHT, Vector2.ZERO)
 	expect(controls.diagnostic_routes.left == "blocked.wait_for_center", "Suspension reports the required return to centre")

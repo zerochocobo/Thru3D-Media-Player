@@ -1,6 +1,7 @@
 extends RefCounted
 ## Display-only grading. Stored custom values survive selecting another preset.
 const PRESETS := ["Original", "Warm", "Cool", "Custom"]
+const QiyuController := preload("res://scripts/qiyu_controller.gd")
 const DEFAULTS := {"temperature": 6500.0, "tint": 0.0, "exposure": 0.0, "contrast": 1.0,
 	"gamma": 1.0, "saturation": 1.0, "red_gain": 1.0, "green_gain": 1.0, "blue_gain": 1.0,
 	"red_gamma": 1.0, "green_gamma": 1.0, "blue_gamma": 1.0,
@@ -147,6 +148,7 @@ func apply(material: ShaderMaterial) -> void:
 	if not material: return
 	var p := values()
 	material.set_shader_parameter("grade_enabled", preset != "Original")
+	material.set_shader_parameter("display_decode", QiyuController.runtime and QiyuController.page_decode)
 	material.set_shader_parameter("grade_gain", gain())
 	material.set_shader_parameter("grade_gamma", Vector3(p.red_gamma, p.green_gamma, p.blue_gamma) * p.gamma)
 	material.set_shader_parameter("grade_offset", Vector3(p.red_offset, p.green_offset, p.blue_offset))

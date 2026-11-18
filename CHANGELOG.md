@@ -4,10 +4,13 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
-## 0.18.1.1 — 2026-11-18
+## 0.18.2 — 2026-11-19
 
 - Rewrite the screen mood light's halo, room colour, smoothing and floor shadow with formulas written for this project, tuned to stay close to the earlier look. The contributor of [PR #9](https://github.com/zerochocobo/Thru3D-Media-Player/pull/9) reported in [PR #11](https://github.com/zerochocobo/Thru3D-Media-Player/pull/11) that those parts of the 0.18.0 implementation were derived from another player's decompiled shaders; they have been removed.
-- On OpenXR runtimes without a tracked floor, the beach and imported scenes place the viewer at standing height. Controllers that offer only the basic profile can hold the trigger to move and tap it to show the controls.
+- Add configurable external keyboard and gamepad controls, with head aiming when tracked controllers are unavailable. Keep the head cursor responsive while turning.
+- Improve QIYU controller input and OpenXR eye-buffer rendering for compatible videos, photos, browser effects and AirPlay. Without a tracked floor, beach and imported scenes use standing height; basic-profile controllers support trigger movement and controls.
+- Add a Vulkan-specific photo depth graph and lower-priority GPU scheduling. Reuse saved depth maps for previously viewed photos under the photo-cache setting, and validate the Vulkan model once per installation.
+- Improve precise seeking and held-stick scrubbing for ordinary compositor video playback, including fallback when paused-frame capture fails. Handle larger Bilibili collection data and defer XR lifecycle work until EGL resumes.
 
 ## 0.18.1 — 2026-11-17
 

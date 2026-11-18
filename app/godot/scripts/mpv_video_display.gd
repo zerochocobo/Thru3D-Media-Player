@@ -391,6 +391,8 @@ var _thumbnail_result: Dictionary = {}
 var _library_cover := ""
 var _freeze_sequence := 0
 var _freeze_request := 0
+## The pending seek's frame capture failed: it goes ahead without a held picture.
+var _freeze_skipped := false
 var _seek_trace: Array[Dictionary] = []
 var _open_trace: Array[Dictionary] = []
 var _debug_seek_delay_until_ms := 0
@@ -429,6 +431,8 @@ var _hdr_blocked_uri := ""
 var _layer_generation := 0 # video_layer.generation the layer session's surface belongs to
 ## A seek on the layer: its surface keeps the last frame, so it stays shown until the target arrives.
 var _layer_seek_hold := false
+## A held seek stick shows each landed frame still; playback resumes with the release.
+var _scrub_hold := false
 var _hole_material: ShaderMaterial
 var _alignment_border: ShaderMaterial
 var video_layer_shown := false # main renders the eye buffers transparent while true
@@ -1201,6 +1205,7 @@ func close_video() -> void:
 	_pending_pair = {}
 	_pending_revision = {}
 	_freeze_request = 0
+	_freeze_skipped = false
 	_debug_seek_delay_until_ms = 0
 	_waiting_first = false
 	_audio_pending = false
@@ -1319,15 +1324,18 @@ func _request_revision(position_ms: int = -1, mode: String = "", source_reset: b
 
 func _start_seek_freeze() -> bool:
 	if _layer_session: return false # the layer surface keeps its frame until the new one
+	if _freeze_skipped:
+		_freeze_skipped = false
+		return false
 	# Capture exactly once before seek/flush; rapid requests share this frame.
 	if _freeze_request == 0 and not _binding.ticket.is_empty() and not _is_frozen():
 		var capable := Engine.has_singleton("QuestPlayer") or platform.has_method("freeze_mpv_pair")
 		if capable:
 			_freeze_sequence += 1
 			_freeze_request = _freeze_sequence
-			if not platform.freeze_mpv_pair(media.session_id, int(_binding.ticket.slot_token), _freeze_request):
-				_abort_frozen_seek("Frame capture request rejected")
-			return true
+			if platform.freeze_mpv_pair(media.session_id, int(_binding.ticket.slot_token), _freeze_request): return true
+			_freeze_request = 0
+			_freeze_failed("Frame capture request rejected")
 	return false
 
 func _is_frozen() -> bool:
@@ -1342,19 +1350,19 @@ func _seek_event(stage: String) -> void:
 	if _seek_trace.size() > 64: _seek_trace.pop_front()
 	_write_debug_report()
 
-func _abort_frozen_seek(reason: String) -> void:
-	var source_reset: bool = _pending_revision.get("source_reset", false)
-	_freeze_request = 0
-	_pending_revision = {}
-	_waiting_first = false
-	control.reject()
-	picker_error = reason
-	# A failed display capture cancels the user's seek, but the native source
-	# boundary still invalidated this processing scope. Do not resume its old gate.
-	if source_reset: _request_revision(-1, "", true)
-	else: _set_backend_playing(media.session_id, requested_play)
+## The held picture only covers the gap until the new frame. Without it the seek still goes
+## ahead: cancelling it left the viewer at the old position with a playback failure shown.
+func _freeze_failed(reason: String) -> void:
+	DiagnosticLog.record("mpv_seek_freeze_failed", {"reason": reason, "session_id": media.session_id,
+		"ticket_session": int(_binding.ticket.get("session_id", 0)), "slot_token": int(_binding.ticket.get("slot_token", 0)),
+		"frame_id": int(_binding.ticket.get("frame_id", 0)), "playing": requested_play, "target_ms": control.target_ms})
 	_seek_event("capture_failed")
-	changed.emit()
+
+func _seek_unfrozen(reason: String) -> void:
+	_freeze_request = 0
+	_freeze_skipped = true
+	_freeze_failed(reason)
+	_try_revision()
 
 func _on_frozen_pair(id: int, payload: String) -> void:
 	var report: Variant = JSON.parse_string(payload)
@@ -1369,7 +1377,7 @@ func _on_frozen_pair(id: int, payload: String) -> void:
 		if int(report.get("request_id", 0)) == _freeze_request: _freeze_request = 0
 		return
 	if report.get("state") != "ready":
-		_abort_frozen_seek(str(report.get("error", "Frame capture failed")))
+		_seek_unfrozen(str(report.get("error", "Frame capture failed")))
 		return
 	# Preserve visibility, shader parameters and effect state during replacement.
 	var previous := _binding.unbind()
@@ -1377,7 +1385,7 @@ func _on_frozen_pair(id: int, payload: String) -> void:
 		_binding.bind(material, previous)
 		_sync_portrait()
 		platform.release_mpv_frozen_frame(int(pair.frozen_frame_id))
-		_abort_frozen_seek("Frozen video frame could not be bound")
+		_seek_unfrozen("Frozen video frame could not be bound")
 		return
 	platform.detach_mpv_pair(int(previous.session_id), int(previous.slot_token))
 	_sync_portrait()
@@ -1633,8 +1641,33 @@ func toggle_play() -> void:
 	if not requested_play:
 		_record_history(true)
 	if platform and media.accepts(media.session_id):
-		_set_backend_playing(media.session_id, requested_play and not _waiting_first and not mode_transition.active())
+		_set_backend_playing(media.session_id, requested_play and not _waiting_first and not mode_transition.active() and not _scrub_hold)
 	changed.emit()
+
+## The seek stick jumps on its push only in plain compositor-layer playback, whose surface
+## keeps its picture across a seek. The eye buffers capture a frame before every seek, and a
+## capture right after a landed frame can fail and cancel the seek (Quest 2); Alpha rebuilds
+## its model, and narration and live interpretation restart, on every seek. Those keep the
+## single seek on release.
+func scrub_push() -> bool:
+	if not _layer_session or alpha_requested or depth_requested: return false
+	return not (NarrationSettings.FEATURE_ENABLED and narration.enabled) and not listening.enabled
+
+## A held stick may also ask for a frame per step where a seek costs a local read and nothing
+## else; a disc title seeks through its own container.
+func scrub_live() -> bool:
+	if not scrub_push(): return false
+	if not (ModeMemory.Privacy.is_local(local_uri) or local_uri.begins_with("smb://")): return false
+	# disc.uri names every opened file; only a disc reports the title it plays.
+	return disc.playing < 0 and not disc.menu_session and not MediaUri.filename(local_uri).to_lower().ends_with(".iso")
+
+func set_scrub_hold(held: bool) -> void:
+	if held == _scrub_hold: return
+	_scrub_hold = held
+	# A request still in flight resumes playback itself when its frame arrives.
+	if not held and requested_play and platform and media.accepts(media.session_id) and not _waiting_first \
+		and not mode_transition.active() and not control.pending and control.in_flight == 0:
+		_set_backend_playing(media.session_id, true)
 
 func pause_for_voice_clone() -> void:
 	pause_playback()
@@ -3036,7 +3069,7 @@ func _present_pending() -> void:
 			if control.first_frame(actual_position_ms): seek_presented.emit(seek_request, actual_position_ms)
 		else:
 			control.observe(actual_position_ms, control.duration_ms)
-		if not mode_transition.active(): _set_backend_playing(media.session_id, requested_play)
+		if not mode_transition.active(): _set_backend_playing(media.session_id, requested_play and not _scrub_hold)
 	else:
 		control.observe(int(int(claimed.pts_us) / 1000), control.duration_ms)
 	if media.frame_counter == 1:
@@ -3281,7 +3314,8 @@ func loading_caption() -> String:
 	if NarrationSettings.FEATURE_ENABLED and requested_play and bool(media.playback.get("narration", {}).get("startup_hold", false)):
 		return I18n.t("Preparing narration…")
 	var buffering := requested_play and str(media.playback.get("details", {}).get("paused_for_cache", "no")) == "yes"
-	if not _waiting_first and not buffering: return ""
+	# Scrub steps of a held stick each wait for a frame; they are not a loading state.
+	if (not _waiting_first or _scrub_hold) and not buffering: return ""
 	var status: Dictionary = _loading_status.duplicate()
 	status.elapsed_ms = Time.get_ticks_msec() - (_buffering_started_ms if buffering and not _waiting_first else _loading_started_ms)
 	if buffering and not _waiting_first: status.phase = "buffering"

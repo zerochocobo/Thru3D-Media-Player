@@ -16,10 +16,11 @@ class BridgeProbe extends RefCounted:
 	var detached: Array = []
 	var released: Array = []
 	var busy := false
+	var refuse_capture := false
 	func set_mpv_playing(_id: int, _play: bool) -> void: pass
 	func freeze_mpv_pair(id: int, token: int, request: int) -> bool:
 		captures.append([id, token, request])
-		return true
+		return not refuse_capture
 	func revise_mpv_video(id: int, _stereo: bool, _alpha: bool, _profile: String, target: int, _depth: bool, _tb: bool, _exact: bool = false) -> int:
 		revisions.append([id, target])
 		return -1 if busy else id + 1
@@ -81,8 +82,23 @@ func _initialize() -> void:
 	video.requested_play = false
 	video.seek_absolute(10000)
 	video._on_frozen_pair(4, JSON.stringify({"request_id": video._freeze_request, "state": "failed", "error": "allocation failed"}))
-	check(video.panel.visible and not video._waiting_first and video._pending_revision.is_empty() and not video.requested_play,
-		"Capture failure cancels the seek and preserves the user's paused original frame")
+	check(bridge.revisions.back() == [4, 10000] and video.media.session_id == 5 and video._waiting_first and not video._is_frozen(),
+		"Capture failure still seeks, without a held picture")
+	check(video.picker_error.is_empty() and not video.requested_play and video._freeze_request == 0 and not video._freeze_skipped,
+		"Capture failure reports no playback error, keeps the pause and leaves the next seek its capture")
+	video._waiting_first = false; video.control.reject()
+	video._binding.bind(video.material, {"session_id": 5, "slot_token": 30})
+	var captured := bridge.captures.size()
+	video.seek_absolute(20000)
+	check(bridge.captures.size() == captured + 1 and bridge.revisions.back() == [4, 10000], "The seek after a failed capture holds its picture again")
+	video._on_frozen_pair(5, JSON.stringify({"request_id": video._freeze_request, "state": "ready", "pair": {"session_id": 5, "slot_token": 30, "frozen_frame_id": 79}}))
+	check(bridge.revisions.back() == [5, 20000] and video._is_frozen(), "A later capture works as before")
+	video._waiting_first = false; video.control.reject(); video._unbind()
+	video._binding.bind(video.material, {"session_id": 6, "slot_token": 40})
+	bridge.refuse_capture = true
+	video.seek_absolute(30000)
+	check(bridge.revisions.back() == [6, 30000] and video.picker_error.is_empty() and video._freeze_request == 0, "A refused capture request seeks at once")
+	bridge.refuse_capture = false
 	video._unbind()
 	video.platform = null
 	video.panel.free()

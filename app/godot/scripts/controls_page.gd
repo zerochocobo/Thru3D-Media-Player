@@ -1,6 +1,7 @@
 extends RefCounted
 const UiTheme := preload("res://scripts/ui_theme.gd")
 const Bindings := preload("res://scripts/controller_bindings.gd")
+const ExternalInput := preload("res://scripts/external_input.gd")
 const Demo := preload("res://scripts/gesture_demo.gd")
 const I18n := preload("res://scripts/i18n.gd")
 static var INK: Color:
@@ -10,6 +11,9 @@ const FILTER := 7010
 const RESET_ALL := 7011
 const SWAP := 7057
 const CANCEL := 7058
+const CLEAR_KEY := 7059
+const MODES := ["Controllers", "Gestures", "Combinations", "Key mapping"]
+const MAPPING := 3
 const REPLAY := 7070
 const PINCH_HAND := 7071
 const PINCH_HANDS := ["left_hand", "right_hand", "both"]
@@ -25,6 +29,9 @@ const GESTURES := [
 	{"title": "Drag video picture", "kind": "drag", "scope": "Video", "hint": "Hold the pinch and move"}]
 var menu: Node3D
 var bindings := Bindings.new()
+var external := ExternalInput.new()
+## Standard controller slot waiting for an external key; "" when not capturing.
+var capture_slot := ""
 var mode := 0
 var all_actions := false
 var selected_gesture := 0
@@ -39,15 +46,29 @@ func active() -> bool:
 	return menu.visible and menu.section == menu.Section.SETTINGS and menu.tab == menu.CONTROLS_TAB
 
 func reset() -> void:
-	pending.clear(); selection.clear(); notice = ""
+	pending.clear(); selection.clear(); notice = ""; capture_slot = ""
 
 func modal() -> bool:
-	return not pending.is_empty() or not menu.choices.opened.is_empty()
+	return not pending.is_empty() or not menu.choices.opened.is_empty() or not capture_slot.is_empty()
+
+func capturing() -> bool:
+	return active() and mode == MAPPING and not capture_slot.is_empty()
+
+## The next external key or button binds to the waiting slot. A stick slot waits for a stick.
+func capture(source: String) -> bool:
+	if not capturing() or not ExternalInput.accepts(capture_slot, source): return false
+	external.assign(capture_slot, source); save(); reset(); menu.refresh()
+	return true
 
 func items() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	if mode == 1:
 		result.assign(GESTURES); return result
+	if mode == MAPPING:
+		for slot in ExternalInput.slots():
+			result.append({"slot": slot, "title": ExternalInput.slot_name(slot),
+				"scope": "Left hand" if slot.begins_with("left_hand") else "Right hand"})
+		return result
 	if mode == 0:
 		for fixed in [{"title": "Menu selection", "fixed": "Ray + trigger", "scope": "Menus"},
 			{"title": "Show / hide controls", "fixed": "Menu / trigger tap", "scope": "All media"},
@@ -86,14 +107,18 @@ func action(target: int) -> bool:
 	if mode == 1 and target in range(PINCH_HAND, PINCH_HAND + 3):
 		bindings.pinch_hand = PINCH_HANDS[target - PINCH_HAND]
 		save(); menu.refresh(); return true
-	if target in range(MODE, MODE + 3):
+	if target in range(MODE, MODE + MODES.size()):
 		menu.choices.reset(); mode = target - MODE; menu.scroll = 0; reset(); menu.refresh(); return true
 	if target == FILTER:
 		menu.choices.reset(); all_actions = not all_actions; menu.scroll = 0; reset(); menu.refresh(); return true
 	if target == RESET_ALL:
 		menu.choices.reset()
 		if notice != "Restore all bindings?": reset(); notice = "Restore all bindings?"; menu._draw(); return true
-		bindings.restore_all(); save(); reset(); menu.refresh(); return true
+		if mode == MAPPING: external.restore_all()
+		else: bindings.restore_all()
+		save(); reset(); menu.refresh(); return true
+	if target == CLEAR_KEY and not capture_slot.is_empty():
+		external.clear(capture_slot); save(); reset(); menu.refresh(); return true
 	if target == CANCEL:
 		menu.choices.reset(); reset(); menu.refresh(); return true
 	if target == SWAP and not pending.is_empty() and pending.can_swap:
@@ -111,6 +136,8 @@ func action(target: int) -> bool:
 			selected_gesture = index; menu._draw(); return true
 		var row: Dictionary = rows[index]
 		if row.has("fixed"): return true
+		if row.has("slot"):
+			capture_slot = row.slot; notice = ""; menu.refresh(); return true
 		# Build only this row's choices, and keep just one dialog alive.
 		selection = scope_field() if row.has("move_scope") else binding_field(row.id)
 		menu.choices.opened = str(selection.key); menu.choices.offset = 0
@@ -153,7 +180,9 @@ func commit(id: String, candidate: Dictionary) -> void:
 				"can_swap": bindings.swap_binding(id, candidate, mode == 2, false).ok}
 			notice = "Binding in use"
 
-func save() -> void: menu.setting_changed.emit("controller_bindings", bindings.snapshot())
+func save() -> void:
+	if mode == MAPPING: menu.setting_changed.emit("external_bindings", external.snapshot())
+	else: menu.setting_changed.emit("controller_bindings", bindings.snapshot())
 
 func combination_hint() -> String:
 	return I18n.t("Grip + trigger") + (" + ?" if I18n.language == "en" else "＋?")
@@ -198,8 +227,8 @@ func draw() -> void:
 			menu.choices.present(selection, Vector2.ZERO, Vector2(-0.55, 0.37))
 			draw_selection(); menu._update_highlights(); return
 		selection.clear()
-	for i in 3:
-		menu._button(MODE + i, I18n.t(["Controllers", "Gestures", "Combinations"][i]), Vector2(-0.31 + i * 0.29, 0.35), Vector2(0.275, 0.065), true, "", mode == i)
+	for i in MODES.size():
+		menu._button(MODE + i, I18n.t(MODES[i]), Vector2(-0.38 + i * 0.25, 0.35), Vector2(0.235, 0.065), true, "", mode == i)
 		menu.set_label_size(menu._buttons.back().node.get_child(0), 18)
 	if mode == 1:
 		label("Picture gesture hand", Vector2(-0.51, 0.265), 18, INK, menu, 0.49)
@@ -213,10 +242,18 @@ func draw() -> void:
 		if mode == 0 and pending.is_empty():
 			menu._button(FILTER, I18n.t("All actions" if not all_actions else "Common actions"), Vector2(0.59, -0.50), Vector2(0.36, 0.06))
 			menu.set_label_size(menu._buttons.back().node.get_child(0), menu.TEXT_BODY)
-		header("Context", Vector2(-0.48, 0.235))
-		header("Action", Vector2(-0.245, 0.235))
-		var binding_title := I18n.t("Binding") + (" · " + combination_hint() if mode == 2 else "")
-		header(binding_title, Vector2(0.24, 0.235), 0.49, false)
+		if mode == MAPPING:
+			# Connected keyboards and gamepads light up; the list itself always shows the mapping.
+			for index in 2:
+				var kind: String = ["keyboard", "gamepad"][index]
+				menu._icon(kind, Vector3(0.58 + index * 0.085, 0.35, 0.006), 0.055, menu.ACCENT if external.connected(kind) else Color(menu.MUTED, 0.45))
+			header("Standard controller", Vector2(-0.365, 0.235), 0.42)
+			header("External input", Vector2(0.24, 0.235), 0.49)
+		else:
+			header("Context", Vector2(-0.48, 0.235))
+			header("Action", Vector2(-0.245, 0.235))
+			var binding_title := I18n.t("Binding") + (" · " + combination_hint() if mode == 2 else "")
+			header(binding_title, Vector2(0.24, 0.235), 0.49, false)
 	var rows := items()
 	menu._list = Node3D.new(); menu.add_child(menu._list); menu._decorations.append(menu._list)
 	for slot in mini(menu._drawn_slots(), rows.size() - menu._first_line()):
@@ -239,12 +276,16 @@ func draw() -> void:
 			if row.has("fixed"):
 				label(row.fixed, Vector2(0.12, 0), 18, INK, node, 0.49)
 			else:
-				var text: String = I18n.t({"panel": "This panel", "media": "Picture + controls", "all": "All interfaces"}.get(bindings.move_scope, "This panel")) if row.has("move_scope") else binding_summary(row.id)
+				var text: String
+				if row.has("slot"): text = external.summary(row.slot)
+				elif row.has("move_scope"): text = I18n.t({"panel": "This panel", "media": "Picture + controls", "all": "All interfaces"}.get(bindings.move_scope, "This panel"))
+				else: text = binding_summary(row.id)
 				var value := label(text, Vector2(0.12, 0), menu.TEXT_BODY, INK, node, 0.49, false)
 				button.hover_labels.append(value)
-				menu._select_face(button, value, Vector2(0.347, 0), Vector2(0.49, 0.059))
+				# A mapping row is not a dropdown: choosing it waits for the next external key.
+				if not row.has("slot"): menu._select_face(button, value, Vector2(0.347, 0), Vector2(0.49, 0.059))
 				if value.text != text: menu._tips[target] = text
-				button["choice_key"] = SCOPE_KEY if row.has("move_scope") else BINDING_KEY + row.id
+				if not row.has("slot"): button["choice_key"] = SCOPE_KEY if row.has("move_scope") else BINDING_KEY + row.id
 	if mode == 1: draw_gesture()
 	elif not notice.is_empty() and pending.is_empty():
 		label(notice, Vector2(-0.48, -0.50), menu.TEXT_AUX, menu.ACCENT, menu, 0.64)
@@ -260,6 +301,7 @@ func draw() -> void:
 	menu._place_list()
 	menu.choices.finish()
 	if not pending.is_empty(): draw_conflict()
+	if not capture_slot.is_empty(): draw_capture()
 	menu._update_highlights()
 
 func draw_selection() -> void:
@@ -329,6 +371,25 @@ func draw_conflict() -> void:
 	conflict_label(I18n.t("Swap these bindings?" if pending.can_swap else "Choose another button"), -0.07, 18)
 	for index in 2:
 		menu._button([CANCEL, SWAP][index], I18n.t(["Cancel", "Swap bindings"][index]), Vector2(-0.09 + index * 0.42, -0.205), Vector2(0.38, 0.065), index == 0 or pending.can_swap)
+		var button: Dictionary = menu._buttons.back()
+		button.node.position.z = 0.045; button.node.material_override.render_priority = 31
+		var text: Label3D = button.node.get_child(0)
+		menu.set_label_size(text, 18); text.render_priority = 32
+
+## Waiting for the external key: the slot, its current keys, and clear / cancel.
+func draw_capture() -> void:
+	for button in menu._buttons:
+		if menu._row_target(button.target) or button.target == RESET_ALL: button.enabled = false
+	var panel: MeshInstance3D = menu._decoration(Vector2(1.36, 0.44), Vector2(0.12, -0.04), menu.PANEL)
+	panel.position.z = 0.034; panel.material_override.render_priority = 30
+	var hand := I18n.t("Left hand" if capture_slot.begins_with("left_hand") else "Right hand")
+	conflict_label(hand + " · " + ExternalInput.slot_name(capture_slot), 0.11, menu.TEXT_TITLE)
+	var detected: bool = external.connected("keyboard") or external.connected("gamepad")
+	# Keys still bind without a detected device: a missed report must not trap the dialog.
+	conflict_label(I18n.t("Press a key or button" if detected else "No external device detected"), 0.03, 18)
+	conflict_label(external.summary(capture_slot), -0.04, 18)
+	for index in 2:
+		menu._button([CLEAR_KEY, CANCEL][index], I18n.t(["Unassigned", "Cancel"][index]), Vector2(-0.09 + index * 0.42, -0.165), Vector2(0.38, 0.065))
 		var button: Dictionary = menu._buttons.back()
 		button.node.position.z = 0.045; button.node.material_override.render_priority = 31
 		var text: Label3D = button.node.get_child(0)

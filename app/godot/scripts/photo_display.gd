@@ -674,6 +674,10 @@ func _refresh_rotated_depth() -> void:
 	_apply_geometry()
 	if not _depth_busy: depth_error = "3D unavailable"
 
+## A viewed picture's depth map may stay on disk where the history policy records the picture.
+func _keep_depth(id: int, uri: String) -> void:
+	if Methods.supports(platform, "keep_photo_depth"): platform.keep_photo_depth(id, preload("res://scripts/media_privacy.gd").cache_allowed(uri))
+
 func select_image(target: int, direction: int = 0) -> bool:
 	if target < 0 or target >= queue.size(): return false
 	# Manual switches use the chosen transition too; while autoplay runs they keep its window.
@@ -793,6 +797,7 @@ func _select(target: int, direction: int = 0, outgoing: MeshInstance3D = null) -
 	_request = platform.open_photo(str(item.uri)) if platform else _serial
 	if _request <= 0:
 		loading = false; error = "Image unavailable"; _restore_display(); changed.emit(); return false
+	_keep_depth(_request, str(item.uri))
 	if not platform:
 		var path := MediaUri.decode_path(str(item.uri).trim_prefix("file://"))
 		if not path.is_absolute_path():
@@ -1356,6 +1361,7 @@ func _pump_prefetch() -> void:
 		_prefetch_sequence += 1
 		var id: int = platform.preload_photo(uri) if platform else -_prefetch_sequence
 		if platform and id <= 0: _prefetch_failed[target] = true; continue
+		_keep_depth(id, uri)
 		_prefetched[target] = {"id": id, "decoded": false}
 		_prefetch_request = id
 		if not platform:

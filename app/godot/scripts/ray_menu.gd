@@ -117,6 +117,9 @@ static func text_width(text: String, logical_size: int) -> float:
 var _buttons: Array[Dictionary] = []
 var _labels: Array[Label3D] = []
 var _hover: Dictionary = {}
+## Hands whose ray comes from the head (external keyboard/gamepad): no beam, only the dot,
+## which stays at the menu's depth as the gaze reticle when nothing is hit.
+var head_pointers: Dictionary = {}
 var _pointers: Dictionary = {}
 var _decorations: Array[Node3D] = []
 ## Modal surfaces stop rays in the gaps between their controls.
@@ -422,8 +425,10 @@ func update_move_pointer(hand: String, origin: Vector3, point: Vector3, tracked:
 
 func _draw_pointer(hand: String, origin: Vector3, endpoint: Vector3, valid: bool, hit: bool) -> void:
 	var pointer := _pointer(hand)
-	pointer.line.visible = valid
-	pointer.dot.visible = valid and hit
+	var head := bool(head_pointers.get(hand, false))
+	# A beam leaving the point between the eyes reads as a different streak in each eye.
+	pointer.line.visible = valid and not head
+	pointer.dot.visible = valid and (hit or head)
 	if valid:
 		var mono := not _mono_pointer_projection().is_empty()
 		var tip := to_local(endpoint)
@@ -433,6 +438,8 @@ func _draw_pointer(hand: String, origin: Vector3, endpoint: Vector3, valid: bool
 		PointerRay.draw(pointer.line, origin, to_global(line_tip))
 		if hit:
 			pointer.dot.position = tip if mono else tip + Vector3(0, 0, 0.008)
+		elif head:
+			pointer.dot.position = to_local(origin + (endpoint - origin).normalized() * origin.distance_to(global_position))
 
 func cancel_pointer(hand: String) -> void:
 	app_actions.cancel_hand(hand)
@@ -778,7 +785,7 @@ func apply_scene_overlay() -> void:
 func _apply_overlay_node(node: Node) -> void:
 	# Pointers already bypass depth. Their mono shader is owned by the capture,
 	# not the cinema overlay's shader save/restore cycle.
-	if node.has_meta("menu_pointer"): return
+	if node.has_meta("menu_pointer") or node.has_meta("menu_overlay_own"): return
 	if node is Label3D:
 		if scene_overlay:
 			if not node.has_meta("menu_original_label_depth"): node.set_meta("menu_original_label_depth", node.no_depth_test)

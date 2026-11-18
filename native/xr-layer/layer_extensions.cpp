@@ -4,6 +4,7 @@
 // Desktop editors load the same entry as an empty stub (no OpenXR runtime, nothing to request).
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include "gdextension_interface.h"
 #include "layer_extensions.h"
 
@@ -27,6 +28,31 @@ constexpr const char* kColorScaleBias = "XR_KHR_composition_layer_color_scale_bi
 constexpr const char* kQiyuPassthrough = "XR_QIYU_passthrough";
 // OpenXRExtensionWrapper.register_extension_wrapper() in Godot 4.7's extension API.
 constexpr GDExtensionInt kRegisterHash = 3218959716;
+// OpenXRInteractionProfileMetadata.register_interaction_profile() and register_io_path() (4.7).
+constexpr GDExtensionInt kRegisterProfileHash = 254767734;
+constexpr GDExtensionInt kRegisterIoPathHash = 3443511926;
+
+// The QIYU runtime binds its controllers only through its own profile; offered nothing else it falls
+// back to khr/simple_controller (trigger only, user logs 2026-11-18). Godot suggests the action map
+// before any script runs, so the profile's metadata has to come from this wrapper; the action map
+// lists it with the Touch bindings. Subpaths are those oxr_verify_qiyu_touch_controller_subpath
+// accepts (libmonado-service.so, QIYIVR 21.0.0); requiring the extension keeps other runtimes away.
+constexpr const char* kQiyuProfile = "/interaction_profiles/qiyu/touch_controller";
+enum IoType : int64_t { kBool = 0, kFloat = 1, kVector2 = 2, kPose = 3, kHaptic = 4 };
+struct IoPath { const char* hand; const char* sub; IoType type; };
+constexpr IoPath kQiyuIoPaths[] = {
+    {"left", "input/x/click", kBool}, {"left", "input/x/touch", kBool},
+    {"left", "input/y/click", kBool}, {"left", "input/y/touch", kBool},
+    {"left", "input/menu/click", kBool},
+    {"right", "input/a/click", kBool}, {"right", "input/a/touch", kBool},
+    {"right", "input/b/click", kBool}, {"right", "input/b/touch", kBool},
+    {"right", "input/system/click", kBool},
+    {nullptr, "input/squeeze/value", kFloat}, {nullptr, "input/trigger/value", kFloat},
+    {nullptr, "input/trigger/touch", kBool}, {nullptr, "input/thumbstick", kVector2},
+    {nullptr, "input/thumbstick/click", kBool}, {nullptr, "input/thumbstick/touch", kBool},
+    {nullptr, "input/thumbrest/touch", kBool}, {nullptr, "input/grip/pose", kPose},
+    {nullptr, "input/aim/pose", kPose}, {nullptr, "output/haptic", kHaptic},
+};
 
 // Written by Godot when it creates the instance.
 bool color_scale_bias = false;
@@ -49,6 +75,7 @@ GDExtensionInterfaceClassdbRegisterExtensionClass4 register_class = nullptr;
 Name class_name{};
 Name parent_name{};
 Name requested_name{};
+Name metadata_name{};
 int instance_tag = 0; // the extension instance: the class keeps no per-object state
 
 Name name(const char* text) {
@@ -67,7 +94,9 @@ void free_instance(void*, GDExtensionClassInstancePtr) {}
 
 void* virtual_data(void*, GDExtensionConstStringNamePtr method, uint32_t) {
     // StringNames are interned: the same text shares one pointer.
-    return std::memcmp(method, &requested_name, sizeof(Name)) == 0 ? &requested_name : nullptr;
+    if (std::memcmp(method, &requested_name, sizeof(Name)) == 0) return &requested_name;
+    if (std::memcmp(method, &metadata_name, sizeof(Name)) == 0) return &metadata_name;
+    return nullptr;
 }
 
 void request(GDExtensionTypePtr result, const char* extension, bool* enabled) {
@@ -86,9 +115,50 @@ void request(GDExtensionTypePtr result, const char* extension, bool* enabled) {
     variant_destroy(&key);
 }
 
+struct Texts {
+    Text values[5]{};
+    int count = 0;
+    GDExtensionConstTypePtr add(const char* text) {
+        string_new(&values[count], text);
+        return &values[count++];
+    }
+    ~Texts() { for (int i = 0; i < count; ++i) destructor(GDEXTENSION_VARIANT_TYPE_STRING)(&values[i]); }
+};
+
+void register_qiyu_profile(GDExtensionObjectPtr metadata) {
+    Name owner = name("OpenXRInteractionProfileMetadata");
+    Name profile_method = name("register_interaction_profile");
+    Name io_method = name("register_io_path");
+    GDExtensionMethodBindPtr profile_bind = method_bind(&owner, &profile_method, kRegisterProfileHash);
+    GDExtensionMethodBindPtr io_bind = method_bind(&owner, &io_method, kRegisterIoPathHash);
+    if (!metadata || !profile_bind || !io_bind) return;
+    {
+        Texts texts;
+        GDExtensionConstTypePtr args[] = {texts.add("QIYU touch controller"), texts.add(kQiyuProfile), texts.add(kQiyuPassthrough)};
+        ptrcall(profile_bind, metadata, args, nullptr);
+    }
+    for (const char* hand : {"left", "right"}) {
+        const std::string top = std::string("/user/hand/") + hand;
+        for (const IoPath& io : kQiyuIoPaths) {
+            if (io.hand && std::strcmp(io.hand, hand) != 0) continue;
+            const std::string path = top + "/" + io.sub;
+            Texts texts;
+            int64_t type = io.type;
+            GDExtensionConstTypePtr args[] = {texts.add(kQiyuProfile), texts.add(io.sub), texts.add(top.c_str()),
+                texts.add(path.c_str()), texts.add(kQiyuPassthrough), &type};
+            ptrcall(io_bind, metadata, args, nullptr);
+        }
+    }
+}
+
 // _get_requested_extensions(xr_version) -> Dictionary {name: pointer to the bool Godot sets}.
 // All optional: Godot enables only those the runtime offers.
-void call_virtual(GDExtensionClassInstancePtr, GDExtensionConstStringNamePtr, void*, const GDExtensionConstTypePtr*, GDExtensionTypePtr result) {
+// _on_register_metadata(metadata): Object arguments arrive as pointers to the object pointer.
+void call_virtual(GDExtensionClassInstancePtr, GDExtensionConstStringNamePtr, void* method, const GDExtensionConstTypePtr* args, GDExtensionTypePtr result) {
+    if (method == &metadata_name) {
+        register_qiyu_profile(*static_cast<const GDExtensionObjectPtr*>(args[0]));
+        return;
+    }
     request(result, kColorScaleBias, &color_scale_bias);
     request(result, kQiyuPassthrough, &qiyu_passthrough);
 }
@@ -102,6 +172,7 @@ void initialize(void*, GDExtensionInitializationLevel level) {
     class_name = name("Thru3DLayerExtensions");
     parent_name = name("OpenXRExtensionWrapper");
     requested_name = name("_get_requested_extensions");
+    metadata_name = name("_on_register_metadata");
     GDExtensionClassCreationInfo4 info{};
     info.is_exposed = false;
     info.create_instance_func = create_instance;

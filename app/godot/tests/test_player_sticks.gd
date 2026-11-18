@@ -52,6 +52,7 @@ func _initialize() -> void:
 		controls.poll(Vector2.ZERO, Vector2.ZERO)
 		main._apply_stick_actions(controls.poll(stick, stick))
 	check(video.calls.is_empty(), "Diagonals on either stick do nothing: no eye swap, no subtitle switch")
+	check(Controls.cardinal(.7, .3) and Controls.cardinal(-.65, -.2) and not Controls.cardinal(.9, .5) and not Controls.cardinal(.55, 0), "A slightly tilted firm push counts; a diagonal or a light push does not")
 	controls.poll(Vector2.ZERO, Vector2.ZERO)
 	main._apply_stick_actions(controls.poll(Vector2.ZERO, Vector2(-.99, 0)))
 	check(video.calls.back() == ["seek", -10000], "Centered then left resumes ordinary seek")

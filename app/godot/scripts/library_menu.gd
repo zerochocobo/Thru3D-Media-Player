@@ -745,8 +745,9 @@ func attach_platform(value: Object) -> void:
 	file_actions.sync_platform()
 	if platform and platform.has_signal("media_list") and not platform.is_connected("media_list", _on_media_list):
 		platform.connect("media_list", _on_media_list)
+	# Deferred: a resume refresh must not build meshes before the GL context is current (see Main).
 	if platform and platform.has_signal("android_lifecycle") and not platform.is_connected("android_lifecycle", _on_android_lifecycle):
-		platform.connect("android_lifecycle", _on_android_lifecycle)
+		platform.connect("android_lifecycle", _on_android_lifecycle, CONNECT_DEFERRED)
 	if PlatformMethods.supports(platform, "media_local_refresh_storage"):
 		platform.media_local_refresh_storage()
 
@@ -2263,6 +2264,18 @@ func _rebuild_rows() -> void:
 				var scale_row := _choice_row("Render scale", "display_quality", int(settings.get("display_quality", Quality.DEFAULT)),
 					quality_choices, true, "Restart to apply" if settings.get("display_quality_pending", false) else "")
 				scale_row.info = Quality.SCALE_INFO; rows.append(scale_row)
+				if settings.get("qiyu", false):
+					var menu_row := _choice_row("Sharp menus", "qiyu_menu_eye_buffer", bool(settings.get("qiyu_menu_eye_buffer", true)),
+						[{"value": false, "label": "Off"}, {"value": true, "label": "On"}], true,
+						"Restart to apply" if settings.get("qiyu_menu_eye_buffer_pending", false) else "")
+					menu_row.info = "Draw menus with the scene at the render scale instead of as separate layers."
+					for option in menu_row.choices: option.hint = menu_row.info
+					rows.append(menu_row)
+					var color_row := _choice_row("Color correction", "qiyu_page_color", bool(settings.get("qiyu_page_color", true)),
+						[{"value": false, "label": "Off"}, {"value": true, "label": "On"}], true)
+					color_row.info = "Tone down washed-out bright pages, videos and photos."
+					for option in color_row.choices: option.hint = color_row.info
+					rows.append(color_row)
 				var refresh_choices: Array = []
 				for cap in Quality.refresh_choices(bool(settings.get("low_end_gpu", false))):
 					refresh_choices.append({"value": cap, "label": Quality.REFRESH_NAMES[cap], "hint": Quality.REFRESH_HINTS[cap]})
@@ -2975,7 +2988,7 @@ func navigate_back() -> bool:
 		file_actions.action(FileActions.CANCEL)
 	elif not choices.opened.is_empty():
 		choices.reset(); controls_page.selection.clear(); refresh()
-	elif not controls_page.pending.is_empty() or not controls_page.notice.is_empty():
+	elif not controls_page.pending.is_empty() or not controls_page.notice.is_empty() or not controls_page.capture_slot.is_empty():
 		controls_page.action(ControlsPage.CANCEL)
 	elif account_panel.active():
 		if account_panel.view == "web" and account_panel.data.get("web", {}).get("editing", false):

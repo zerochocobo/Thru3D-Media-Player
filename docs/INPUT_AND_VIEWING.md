@@ -35,3 +35,7 @@ HDR to SDR can be enabled or disabled globally. The initial setting is Off on Me
 ## Stereo focus, captions and photo grading in 0.17.11
 
 Supported immersive stereo video offers automatic focus. Captions can stay fixed or follow the view with a movement threshold. Photo color settings can be saved for individual images and follow the per-file settings privacy preference.
+
+## External controls in 0.18.2
+
+External keyboards and gamepads can map actions to standard controller controls in Settings > Controls. Head aiming provides a cursor without tracked controllers. QIYU controller bindings and floorless OpenXR standing height are supported; availability depends on the runtime.

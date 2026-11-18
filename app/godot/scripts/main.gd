@@ -19,6 +19,8 @@ const AlphaEdge := preload("res://scripts/alpha_edge.gd")
 const StickControls := preload("res://scripts/player_stick_controls.gd")
 const HandPointer := preload("res://scripts/hand_pointer.gd")
 const XrFloor := preload("res://scripts/xr_floor.gd")
+const QiyuController := preload("res://scripts/qiyu_controller.gd")
+const WebBrowserPage := preload("res://scripts/web_browser_page.gd")
 const InputVisuals := preload("res://scripts/input_visuals.gd")
 const ControllerDiagnostics := preload("res://scripts/controller_diagnostics.gd")
 var controller_diagnostics := ControllerDiagnostics.new()
@@ -58,6 +60,7 @@ const FpsOverlay := preload("res://scripts/fps_overlay.gd")
 const PlaybackStatusOverlay := preload("res://scripts/playback_status_overlay.gd")
 const SeekFeedback := preload("res://scripts/seek_feedback.gd")
 const SeekStep := preload("res://scripts/seek_step.gd")
+const SeekPolicy := preload("res://scripts/seek_policy.gd")
 const SeekOverlay := preload("res://scripts/seek_overlay.gd")
 const Background := preload("res://scripts/app_background.gd")
 const CinemaEnvironment := preload("res://scripts/environments/cinema_environment.gd")
@@ -103,6 +106,7 @@ var _cinema_stick_waiting_for_neutral := true
 var _cinema_stick_hand := "right_hand"
 var _scene_move_hint_until := 0
 var _cinema_menu_overlays := {}
+var _menus_over_scene := false
 var _scene_import_menu_overlays := {}
 var _cinema_viewing_preview := false
 var _cinema_gesture_hint := ""
@@ -122,6 +126,7 @@ var _subtitle_browse_secondary := false
 var _subtitle_browse_session := 0
 const ViewFollow := preload("res://scripts/view_follow.gd")
 const ControllerBindings := preload("res://scripts/controller_bindings.gd")
+const ExternalInput := preload("res://scripts/external_input.gd")
 const InterfaceMove := preload("res://scripts/interface_move.gd")
 const MenuComposition := preload("res://scripts/menu_composition.gd")
 const PlaybackMenuDepth := preload("res://scripts/playback_menu_depth.gd")
@@ -137,6 +142,18 @@ var screen_rotation_control: Node3D
 var _screen_rotation_mouse_position: Variant
 var menu_composition: Node
 var controller_bindings := ControllerBindings.new()
+var external_input := ExternalInput.new()
+## True while an external key drives the controller routing: no tracked controller is required.
+var _external_press := false
+## Head pointer: with an external keyboard/gamepad in recent use and no controller ray, the view
+## centre aims for the right hand. Controllers win at once; hand rays wait until the external
+## input has been idle for HEAD_POINTER_IDLE_MS (hands rest on the keyboard or gamepad).
+const HEAD_POINTER_HAND := "right_hand"
+const HEAD_POINTER_IDLE_MS := 120000
+var _external_used_ms := -HEAD_POINTER_IDLE_MS
+var _head_rays := {}
+## External slot -> the hand its press went to, so the release reaches the same hand.
+var _external_routes := {}
 var interface_move := InterfaceMove.new()
 var _controller_consumed := {}
 const RVM_PROFILES := ["256x144", "384x216", "512x288", "256x256", "384x384", "512x512", "320x320"]
@@ -348,6 +365,7 @@ func _ready() -> void:
 			video.pip.close_protected_documents(favorites))
 	favorites.lock_changed.connect(_on_favorites_lock_changed)
 	controller_bindings.restore(settings.get_value("input", "controller_bindings", {}))
+	external_input.restore(settings.get_value("input", "external_bindings", {}))
 	I18n.use(str(settings.get_value("ui", "language", "auto")))
 	ChineseInput.configure(bool(settings.get_value("ui", ChineseInput.app_setting_key(), false)))
 	ChineseInput.configure_browser(str(settings.get_value("ui", "web_keyboard", "builtin")))
@@ -380,11 +398,17 @@ func _ready() -> void:
 	display_quality = Quality.load_quality(settings)
 	if gpu_adapter.is_empty(): gpu_adapter = RenderingServer.get_video_adapter_name()
 	low_end_gpu = Quality.is_low_end_gpu(gpu_adapter)
-	display.render_scale = Quality.render_scale(display_quality, low_end_gpu)
+	if not desktop and Engine.has_singleton("QuestPlayer"): QiyuController.register(Engine.get_singleton("QuestPlayer"))
+	QiyuController.page_decode = bool(settings.get_value("qiyu", "page_color", true))
+	display.render_scale = Quality.render_scale(display_quality, low_end_gpu, QiyuController.runtime)
 	_apply_memory_mode(null)
 	# Older GPUs (Quest 2, Neo3) take the cheaper 2x pass.
 	if low_end_gpu: display.eye_msaa = Viewport.MSAA_2X
 	display.configure(get_viewport(), world.environment, XRServer.find_interface("OpenXR"), desktop)
+	# QIYU's STAGE space disagrees with its own view poses once the user sets a floor height (head
+	# -1.09 m, eyes +0.98 m; user log 2026-11-18). LOCAL ignores that setting; XrFloor then adds
+	# the standing eye height exactly as on first boot, which the user reported correct.
+	if QiyuController.runtime and display.xr: display.xr.set_play_area_mode(XRInterface.XR_PLAY_AREA_SITTING)
 	display.attach_backdrop(camera)
 	input_visuals = InputVisuals.new()
 	input_visuals.name = "InputVisuals"
@@ -491,6 +515,7 @@ func _ready() -> void:
 	recent_menu.browse_memory = directory_browse_memory
 	recent_menu.restore_directory_position = bool(settings.get_value("library", "restore_position", true))
 	recent_menu.controls_page.bindings = controller_bindings
+	recent_menu.controls_page.external = external_input
 	recent_menu.catalog = video.recent_files
 	recent_menu.collections.store = favorites
 	recent_menu.file_actions.load(settings.get_value("library", "orders", {}))
@@ -543,6 +568,10 @@ func _ready() -> void:
 		recent_menu.attach_platform(plugin)
 		plugin.connect("mpv_debug_command", _on_display_debug_command)
 		if plugin.has_signal("diagnostic_log"): plugin.connect("diagnostic_log", _on_diagnostic_log)
+		# Deferred like every pause-sensitive plugin signal: see the capabilities_ready note below.
+		if plugin.has_signal("external_input"): plugin.connect("external_input", _on_external_input, CONNECT_DEFERRED)
+		Input.joy_connection_changed.connect(func(device: int, connected: bool) -> void:
+			controller_diagnostics.joypad_connection(Time.get_ticks_msec(), device, connected, Input.get_joy_guid(device), Input.is_joy_known(device)))
 		_apply_memory_mode(plugin)
 		if PlatformMethods.supports(plugin, "set_mpv_alpha_fps"):
 			plugin.set_mpv_alpha_fps(_alpha_fps())
@@ -616,14 +645,34 @@ func _ready() -> void:
 	if OS.is_debug_build(): # capture-density experiments; applies at launch
 		menu_composition.debug_pixel_scale = float(settings.get_value("debug", "menu_layer_scale", 0.0))
 		menu_composition.debug_bands = bool(settings.get_value("debug", "menu_layer_bands", false))
+	# QIYU's Monado composites any extra layer through a scratch image at its recommended 1440 view
+	# size before distortion, and has no layer filter settings: quad menus are resampled twice. In
+	# the eye buffer they ride the single-projection fast path at the raised QIYU render scale.
+	menu_composition.eye_buffer_only = QiyuController.runtime and bool(settings.get_value("qiyu", "menu_eye_buffer", true))
 	menu_composition.configure(origin, camera, display, [recent_menu, video_menu, photo_menu, music_menu, scenery_menu], low_end_gpu)
 	menu_composition.register_companion(vr_passthrough_menu)
 	menu_composition.register_companion(ChineseInput.ensure(origin))
+	# Menus drawn into the eye buffer (QIYU's sharp menus, or no quad layers) met the scenery's depth
+	# and the web page's tile: seats hid them and the page covered the keyboard (QIYU user,
+	# 2026-11-18). Composition layers always draw above both; keep these above too.
+	_menus_over_scene = not desktop and not menu_composition.enabled
+	if _menus_over_scene:
+		WebBrowserPage.over_scene = true
+		ChineseInput.ensure(origin).lifted = true
+		for menu in [recent_menu, video_menu, photo_menu, music_menu, scenery_menu, ChineseInput.ensure(origin)]:
+			menu.set_scene_overlay(true)
 	ChineseInput.head_provider = _head_pose
 	ChineseInput.on_open = _on_chinese_keyboard_opened
-	recent_menu.web_browser.configure_quality(low_end_gpu, str(settings.get_value("web", "clarity", "")))
+	recent_menu.web_browser.configure_quality(low_end_gpu, str(settings.get_value("web", "clarity", "high" if QiyuController.runtime else "")))
+	if QiyuController.runtime:
+		DiagnosticLog.record("qiyu_display", {"menu_eye_buffer": menu_composition.eye_buffer_only,
+			"menu_layers": menu_composition.enabled, "menu_fallback": menu_composition.fallback_reason,
+			"menus_over_scene": _menus_over_scene,
+			"page_color": QiyuController.page_decode, "web_clarity": recent_menu.web_browser.clarity,
+			"display_quality": display_quality, "render_scale": display.render_scale})
 	recent_menu.web_browser.window_created = func(window):
 		menu_composition.register_companion(window)
+		if _menus_over_scene: window.set_scene_overlay(true)
 		_connect_session_controls(window.effect_controls)
 	menu_composition.register_companion(disc_menu_bar)
 	photo_magazine_controls = PhotoMagazineControls.new(); add_child(photo_magazine_controls)
@@ -700,8 +749,12 @@ func _ready() -> void:
 		_sync_server_report_interval()
 		if PlatformMethods.supports(platform_plugin, "set_ui_language"):
 			platform_plugin.set_ui_language(I18n.choice)
-		platform_plugin.connect("capabilities_ready", _on_capabilities_ready)
-		platform_plugin.connect("android_lifecycle", _on_android_lifecycle)
+		# Plugin signals run on Godot's GL thread through GLSurfaceView's event queue, which drains
+		# before the EGL context is current again after a pause. A menu refresh there creates mesh
+		# buffers that silently stay 0 and the next draw reads vertices from address 0 (Quest 2
+		# resume crash with a menu open). Deferred handlers run in the main loop with the context.
+		platform_plugin.connect("capabilities_ready", _on_capabilities_ready, CONNECT_DEFERRED)
+		platform_plugin.connect("android_lifecycle", _on_android_lifecycle, CONNECT_DEFERRED)
 		platform_plugin.connect("rvm_benchmark_result", _on_rvm_result)
 		for kind in ["state", "frame", "error"]:
 			platform_plugin.connect("controlled_" + kind, _on_controlled_event.bind(kind))
@@ -734,6 +787,69 @@ func _ready() -> void:
 	# Source distribution: private capture automation is excluded.
 
 ## Desktop preview: dragging with the mouse moves the picture, the wheel zooms immersive views.
+## Evidence for external keyboards/gamepads only; desktop builds use the keyboard as a dev tool.
+## External keyboards and gamepads stand in for the standard controllers on the headset.
+## Desktop builds keep the keyboard as a development tool.
+func _input(event: InputEvent) -> void:
+	if OS.get_name() != "Android" or not (event is InputEventKey or event is InputEventJoypadButton or event is InputEventJoypadMotion): return
+	controller_diagnostics.godot_input(Time.get_ticks_msec(), event)
+	if recent_menu and recent_menu.controls_page.capturing():
+		var source := external_input.capture_source(event)
+		if not source.is_empty(): recent_menu.controls_page.capture(source)
+		get_viewport().set_input_as_handled(); return
+	# Typing into the in-app keyboard keeps every key.
+	if event is InputEventKey and ChineseInput.active(): return
+	var changes := external_input.feed(event)
+	if not changes.is_empty() or (event is InputEventJoypadMotion and absf(event.axis_value) > 0.5): _external_used_ms = Time.get_ticks_msec()
+	_apply_external(changes)
+	if not changes.is_empty() or event is InputEventJoypadMotion: get_viewport().set_input_as_handled()
+
+func _on_external_input(payload: String) -> void:
+	var data: Variant = JSON.parse_string(payload)
+	if not data is Dictionary: return
+	controller_diagnostics.external(Time.get_ticks_msec(), data)
+	if data.get("kind") == "device" and data.get("layer") == "android":
+		if external_input.note_device(data) and recent_menu and recent_menu.controls_page.active() and recent_menu.controls_page.mode == recent_menu.ControlsPage.MAPPING:
+			recent_menu.refresh()
+		return
+	# Keys Godot cannot name (media play/pause, PICO head control 1001) only arrive from Android.
+	if data.get("kind") != "key" or data.get("layer") != "android" or not data.has("keycode"): return
+	var code := int(data.keycode)
+	if not ExternalInput.ANDROID_KEYS.has(code): return
+	var pressed: bool = data.get("action") == "down"
+	if recent_menu and recent_menu.controls_page.capturing():
+		if pressed: recent_menu.controls_page.capture("android:%d" % code)
+		return
+	_external_used_ms = Time.get_ticks_msec()
+	_apply_external(external_input.feed_android(code, pressed))
+
+func _apply_external(changes: Array[Dictionary]) -> void:
+	for change in changes:
+		var slot: String = change.slot
+		var input := slot.get_slice("/", 1)
+		# Directions feed _stick(); a second source on a held slot neither presses nor releases it.
+		if input in ExternalInput.DIRECTIONS: continue
+		if change.pressed and external_input.held.values().count(slot) > 1: continue
+		if not change.pressed and external_input.slot_held(slot): continue
+		var hand := slot.get_slice("/", 0)
+		# Either trigger clicks where the head pointer aims; the release follows its press.
+		if change.pressed:
+			if input == "trigger_click" and _head_pointer_active(): hand = HEAD_POINTER_HAND
+			_external_routes[slot] = hand
+		else: hand = _external_routes.get(slot, hand); _external_routes.erase(slot)
+		_external_press = true
+		if change.pressed: _on_controller_button(input, hand)
+		else: _on_controller_release(input, hand)
+		_external_press = false
+
+## Releases every controller input an external key still holds (pause, rebinding).
+func _release_external() -> void:
+	var releases: Array[Dictionary] = []
+	for slot in external_input.held.values():
+		if not releases.any(func(change): return change.slot == slot): releases.append({"slot": slot, "pressed": false})
+	external_input.release_all()
+	_apply_external(releases)
+
 func _unhandled_input(event: InputEvent) -> void:
 	if _vr_passthrough_active(): return
 	if _cinema_desktop_input(event): return
@@ -779,6 +895,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			_save_screen()
 
 func _unhandled_key_input(event: InputEvent) -> void:
+	# Desktop development shortcuts (Tab, T, R...): an external keyboard on the headset must not
+	# reach them; it drives the standard controllers through _input instead.
+	if OS.get_name() == "Android": return
 	if _vr_passthrough_active(): return
 	if _cinema_interaction_owns() and not _active_menu() and event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
@@ -999,6 +1118,8 @@ func _on_pointer_release(action: String, hand: String) -> void:
 		ray[1] if ray != null else Vector3.ZERO, ray != null)
 
 func _on_controller_button(action: String, hand: String = "") -> void:
+	# A real controller click hands aiming back to the controllers at once.
+	if not _external_press and action in ControllerBindings.BUTTONS: _external_used_ms = -HEAD_POINTER_IDLE_MS
 	var context := _controller_input_context(hand) if ControllerDiagnostics.enabled() and action in ControllerDiagnostics.BUTTONS else {}
 	var route := _route_controller_button(action, hand)
 	controller_diagnostics.button(Time.get_ticks_msec(), hand, action, true, route, context)
@@ -1911,11 +2032,9 @@ func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> String
 		var valid := display.preview or _debug_sticks.has(hand) or (controller != null and controller.get_is_active() and controller.get_has_tracking_data() and _controller_allowed(hand))
 		if not valid or (not seek_feedback.action_id.is_empty() and _axis_binding(hand, seek_feedback.input).get("id", "") != seek_feedback.action_id):
 			stick_controls.suspend()
-		elif seek_feedback.poll(left if hand == "left_hand" else right, delta):
-			# Install the expected sequence before seek_absolute emits synchronous changed events.
-			seek_feedback.sequence = video.control.sequence + 1
-			if not video.seek_absolute(seek_feedback.target_ms): seek_feedback.clear()
-			_update_seek_feedback(0.0)
+		else:
+			seek_feedback.poll(left if hand == "left_hand" else right, delta)
+	_submit_stick_seek()
 	if seek_feedback.phase == "preview" and _stick_diagnostic_routes.get(seek_feedback.owner, "") == "blocked.wait_for_center":
 		_stick_diagnostic_routes[seek_feedback.owner] = "routed.seek_preview"
 	if menu == player_menu and menu != null:
@@ -2017,6 +2136,10 @@ func _stick(controller: XRController3D) -> Vector2:
 	if injected != null:
 		_controller_raw_sticks[hand] = injected; _controller_stick_blocks.erase(hand)
 		return injected
+	var external := external_input.stick(hand)
+	if external != Vector2.ZERO and _input_focused() and not hand_lock.blocked(hand):
+		_controller_raw_sticks[hand] = external; _controller_stick_blocks.erase(hand)
+		return external
 	var raw := controller.get_vector2("primary") if controller else Vector2.ZERO
 	if controller: _controller_raw_sticks[hand] = raw
 	_controller_stick_blocks.erase(hand)
@@ -2042,6 +2165,7 @@ func _input_focused() -> bool:
 
 func _controller_allowed(hand: String) -> bool:
 	if not _input_focused(): return false
+	if _external_press: return true
 	# Query current data too: XR input signals may arrive before our process callback.
 	return not HandPointer.is_optical(_hand_tracker(hand)) and not HandPointer.is_hand_profile(_hand_action_tracker(hand)) \
 		and not (hand_pointers.has(hand) and hand_pointers[hand].source == "hand")
@@ -2533,6 +2657,27 @@ func _eye() -> Vector3:
 	return Vector3(0, 1.6, 0)
 
 func _ray(hand: String) -> Variant:
+	var ray: Variant = _device_ray(hand)
+	var head := false
+	if hand in ControllerBindings.HANDS and _head_pointer_active() and (ray == null or _hand_ray(hand)):
+		ray = _head_ray() if hand == HEAD_POINTER_HAND else null
+		head = ray != null
+	_head_rays[hand] = head
+	return ray
+
+func _hand_ray(hand: String) -> bool:
+	return hand_pointers.has(hand) and hand_pointers[hand].source == "hand"
+
+func _head_pointer_active() -> bool:
+	return not display.preview and _input_focused() and not hand_lock.blocked(HEAD_POINTER_HAND) \
+		and Time.get_ticks_msec() - _external_used_ms < HEAD_POINTER_IDLE_MS
+
+func _head_ray() -> Variant:
+	var pose: Variant = _head_pose()
+	if not pose is Transform3D: return null
+	return [pose.origin, -pose.basis.z]
+
+func _device_ray(hand: String) -> Variant:
 	if hand_lock.blocked(hand): return null
 	if not _input_focused(): return null
 	if hand == "mouse":
@@ -2581,6 +2726,11 @@ func _update_controller_feedback(delta: float) -> void:
 	var alphas := {}
 	for hand in ControllerBindings.HANDS:
 		var pose: Variant = _move_pose(hand) if focused else null
+		# The head aims for the right hand: its pose and turns count as pointer activity, so the
+		# reticle and the transport fade on the same idle rules as a controller that stopped moving.
+		var head: Variant = _head_pose() if focused and pose == null and hand == HEAD_POINTER_HAND and _head_pointer_active() else null
+		if head is Transform3D: pose = head
+		controller_feedback.beamless[hand] = head is Transform3D
 		# XR can cancel tracking while the trigger is down, then omit its release
 		# signal. Reconcile the physical idle state before testing another sky hit.
 		var controller := left_controller if hand == "left_hand" else right_controller
@@ -2631,7 +2781,7 @@ func _update_controller_feedback(delta: float) -> void:
 		var screen_aim: Variant = _beach_screen_aim(hand, ray, menu)
 		if screen_aim != null: point = screen_aim; world_pointer = true
 		alphas[hand] = controller_feedback.update_hand(hand, pose, ray, point, engaged, menu != null, delta,
-			world_pointer, _controller_activity(hand) if pose != null and feedback_visible else {}, false, pointer_engaged,
+			world_pointer, ({"position": head.origin, "direction": -head.basis.z} if head is Transform3D else _controller_activity(hand)) if pose != null and feedback_visible else {}, false, pointer_engaged,
 			feedback_visible or screen_aim != null, photo_active or screen_aim != null)
 		if menu and not photo_active and pose != null:
 			_menu_touched_ms = maxi(_menu_touched_ms, Time.get_ticks_msec() - int(controller_feedback.activity_age(hand) * 1000.0))
@@ -3174,6 +3324,7 @@ func _update_menu_pointer(hand: String, pressed: bool = false) -> bool:
 	if not menu or hand not in ["left_hand", "right_hand"]:
 		return false
 	var ray: Variant = _ray(hand)
+	menu.head_pointers[hand] = _head_rays.get(hand, false)
 	var tracked := ray != null
 	var origin: Vector3 = ray[0] if tracked else Vector3.ZERO
 	var direction: Vector3 = ray[1] if tracked else Vector3.ZERO
@@ -4629,6 +4780,10 @@ func _library_settings() -> Dictionary:
 		"color_theme": UiTheme.current,
 		"playback_menu_depth": PlaybackMenuDepth.load_mode(settings),
 		"stick_seek_overlay": bool(settings.get_value("ui", "stick_seek_overlay", true)),
+		"qiyu": QiyuController.runtime,
+		QiyuController.MENU_KEY: bool(settings.get_value("qiyu", "menu_eye_buffer", true)),
+		QiyuController.MENU_KEY + "_pending": menu_composition != null and menu_composition.eye_buffer_only != bool(settings.get_value("qiyu", "menu_eye_buffer", true)),
+		QiyuController.COLOR_KEY: QiyuController.page_decode,
 		"bar_transparency": float(settings.get_value("ui", "bar_transparency", 14.0)),
 		"library_backdrop": str(settings.get_value("ui", "library_backdrop", "slideshow")),
 		ServerPlayback.INTERVAL_KEY: ServerPlayback.load_interval(settings),
@@ -4642,7 +4797,7 @@ func _library_settings() -> Dictionary:
 		"show_status_info": bool(settings.get_value("ui", "show_status_info", true)),
 		"hand_model": str(settings.get_value("ui", "hand_model", "auto")),
 		"show_fps": fps_overlay != null and fps_overlay.visible,
-		"display_quality": display_quality, "display_quality_pending": not is_equal_approx(display.render_scale, Quality.render_scale(display_quality, low_end_gpu)),
+		"display_quality": display_quality, "display_quality_pending": not is_equal_approx(display.render_scale, Quality.render_scale(display_quality, low_end_gpu, QiyuController.runtime)),
 		"sharpness": Quality.load_video_sharpness(settings),
 		"supersampling": Quality.load_supersampling(settings, low_end_gpu),
 		"refresh_cap": Quality.load_refresh_cap(settings, low_end_gpu), "low_end_gpu": low_end_gpu,
@@ -4739,6 +4894,10 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			settings.save(settings_path)
 			_sync_server_report_interval()
 		"narration_voice_manager": video.narration.global_voice_command(value)
+		"external_bindings":
+			_release_external()
+			external_input.restore(value)
+			settings.set_value("input", "external_bindings", external_input.snapshot()); settings.save(settings_path)
 		"controller_bindings":
 			controller_bindings.restore(value)
 			interface_move.cancel(); _grab.clear(); photo_hands.cancel(); stick_controls.suspend()
@@ -4931,6 +5090,13 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			settings.set_value("video", "ambient_light", relight_wanted)
 			settings.save(settings_path)
 			DiagnosticLog.record("passthrough_relight", {"enabled": bool(value)})
+		QiyuController.MENU_KEY:
+			settings.set_value("qiyu", "menu_eye_buffer", bool(value))
+			settings.save(settings_path)
+		QiyuController.COLOR_KEY:
+			QiyuController.page_decode = bool(value)
+			settings.set_value("qiyu", "page_color", QiyuController.page_decode)
+			settings.save(settings_path)
 		"stick_seek_overlay":
 			settings.set_value("ui", "stick_seek_overlay", bool(value))
 			settings.save(settings_path)
@@ -6822,8 +6988,9 @@ func _on_android_lifecycle(event: String) -> void:
 	Log.record("android_lifecycle", {"event": event})
 	if event == "resume":
 		request_capabilities()
-	elif event == "pause" and video:
-		video.checkpoint_playback()
+	elif event == "pause":
+		_release_external()
+		if video: video.checkpoint_playback()
 
 ## Periodic only while debug tooling is active or the diagnostics panel shows; otherwise a
 ## queued state change is written once the minimum gap has passed.
@@ -7114,13 +7281,31 @@ func _stick_seek_sample() -> Dictionary:
 	var details: Dictionary = video.media.playback.get("details", {})
 	return {"active": video.cast_allows("seek") and video.media.accepts(video.media.session_id) and video.picker_error.is_empty() and details.get("seekable", "yes") != "no",
 		"uri": video.local_uri, "session": video.media.session_id, "sequence": video.control.sequence,
+		"push": video.scrub_push(), "live": video.scrub_live(),
 		"position_ms": video.control.display_position_ms(), "duration_ms": video.control.duration_ms}
 
 func _begin_stick_seek(hand: String, input: String, step: int, id: String = "") -> void:
 	seek_feedback.begin(_stick_seek_sample(), hand, input, step, id)
+	_submit_stick_seek()
+
+## The release uses the viewer's seek precision. Held steps are keyframe scrubs, one at a
+## time, so a slow source shows fewer of them instead of queueing; on a live source the push
+## is one too, so a precise seek's decode cannot hold the picture back while the stick is held.
+func _submit_stick_seek() -> void:
+	if not video or seek_feedback.phase not in ["preview", "waiting"]: return
+	var exact: bool = SeekPolicy.normalize(video.seek_mode) == SeekPolicy.EXACT or video.bookmark_loop.active
+	if seek_feedback.wants_submit(video.control.pending or video.control.in_flight > 0, exact):
+		var scrub: bool = seek_feedback.phase == "preview" and not video.bookmark_loop.active and (seek_feedback.requests > 0 or seek_feedback.live)
+		# Install the expected sequence before seek_absolute emits synchronous changed events.
+		seek_feedback.submitted(video.control.sequence + 1, scrub)
+		if not video.seek_absolute(seek_feedback.target_ms, SeekPolicy.SPEED if scrub else ""): seek_feedback.clear()
+	else:
+		seek_feedback.settle()
+	_update_seek_feedback(0.0)
 
 func _update_seek_feedback(delta: float) -> void:
 	seek_feedback.sync(_stick_seek_sample(), delta)
+	if video: video.set_scrub_hold(seek_feedback.phase == "preview")
 	if seek_overlay: seek_overlay.refresh()
 
 func _on_stick_seek_presented(request: int, position_ms: int) -> void:

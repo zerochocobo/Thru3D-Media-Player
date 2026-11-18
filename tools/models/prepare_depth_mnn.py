@@ -214,6 +214,73 @@ def split_attention_heads(model):
     return rewritten
 
 
+def keep_layer_norm_ops(model):
+    """MNN's Vulkan image backend has no LayerNorm kernel and the converter fuses the exported
+    ReduceMean/Sub/Pow/... chain into one. Squaring with Mul(x, x) instead of Pow(x, 2) keeps the
+    chain as reductions and elementwise ops, which that backend runs."""
+    inits = {i.name: i for i in model.graph.initializer}
+    rewritten = 0
+    for node in model.graph.node:
+        if node.op_type == 'Pow' and '/norm' in node.name and node.input[1] in inits and \
+                float(numpy_helper.to_array(inits[node.input[1]])) == 2.0:
+            node.op_type = 'Mul'
+            node.input[1] = node.input[0]
+            rewritten += 1
+    return rewritten
+
+
+def split_attention_matmul(model, heads=6):
+    """After split_attention_heads. The [1, heads, N, d] attention products become MNN loops that
+    its Vulkan image backend places on the CPU; it does run 2D MatMul. Same values per head, all 2D:
+    slice q, k and v [N, d] from the fused projection [N, 3*heads*d], softmax(q k^T) v, and join the
+    heads' columns into the [N, heads*d] tensor the output projection reads."""
+    graph = model.graph
+    by_name = {n.name: n for n in graph.node}
+    inits = {i.name: i for i in graph.initializer}
+    rewritten = 0
+    for block in range(len([n for n in graph.node if n.name.endswith('/attn/Softmax')])):
+        prefix, base = f'/blocks.{block}/attn/', f'_blocks.{block}_attn_Reshape'
+        projection = by_name[base + '_slice0'].input[0]
+        _, _, count, dim = numpy_helper.to_array(inits[base + '_heads']).tolist()
+        if count != heads:
+            raise SystemExit(f'Attention block {block} has {count} heads, expected {heads}')
+        merged = [n for n in graph.node if n.op_type == 'Reshape' and n.input[0] == by_name[prefix + 'Transpose_2'].output[0]]
+        if len(merged) != 1:
+            raise SystemExit(f'Attention block {block} output is not one flattening Reshape')
+        old = [by_name[f'{base}_{kind}{part}'] for part in range(3) for kind in ('slice', 'heads', 't')] + \
+              [by_name[prefix + name] for name in ('Mul', 'Transpose_1', 'MatMul', 'Softmax', 'MatMul_1', 'Transpose_2')] + merged
+        scale = by_name[prefix + 'Mul'].input[1]
+        tag = f'_blocks.{block}_attn_head'
+        graph.initializer.append(numpy_helper.from_array(np.array([1], np.int64), tag + '_axis'))
+        nodes, outputs = [], []
+        for head in range(heads):
+            parts = []
+            for part in range(3):
+                start = (part * heads + head) * dim
+                graph.initializer.extend([numpy_helper.from_array(np.array([start], np.int64), f'{tag}{head}_s{part}'),
+                                          numpy_helper.from_array(np.array([start + dim], np.int64), f'{tag}{head}_e{part}')])
+                nodes.append(helper.make_node('Slice', [projection, f'{tag}{head}_s{part}', f'{tag}{head}_e{part}', tag + '_axis'],
+                                              [f'{tag}{head}_p{part}'], name=f'{tag}{head}_slice{part}'))
+                parts.append(f'{tag}{head}_p{part}')
+            name = f'{tag}{head}'
+            nodes += [
+                helper.make_node('Mul', [parts[0], scale], [name + '_q'], name=name + '_scale'),
+                helper.make_node('Transpose', [parts[1]], [name + '_kt'], perm=[1, 0], name=name + '_kt'),
+                helper.make_node('MatMul', [name + '_q', name + '_kt'], [name + '_scores'], name=name + '_scores'),
+                helper.make_node('Softmax', [name + '_scores'], [name + '_weights'], axis=-1, name=name + '_softmax'),
+                helper.make_node('MatMul', [name + '_weights', parts[2]], [name + '_out'], name=name + '_out'),
+            ]
+            outputs.append(name + '_out')
+        nodes.append(helper.make_node('Concat', outputs, list(merged[0].output), axis=1, name=tag + '_join'))
+        position = list(graph.node).index(old[0])
+        for node in old:
+            graph.node.remove(node)
+        for offset, node in enumerate(nodes):
+            graph.node.insert(position + offset, node)
+        rewritten += 1
+    return rewritten
+
+
 def check_frozen(frozen_path, width, height):
     reference = ort.InferenceSession(source_model().SerializeToString(), providers=['CPUExecutionProvider'])
     frozen = ort.InferenceSession(str(frozen_path), providers=['CPUExecutionProvider'])
@@ -253,8 +320,11 @@ def main():
     parser.add_argument('--height', type=int, default=HEIGHT)
     parser.add_argument('--install', action='store_true', help='copy the verified model into the plugin assets')
     parser.add_argument('--photo', action='store_true', help='build the independent 518x518 still-photo model; never replace the video asset')
+    parser.add_argument('--vulkan', action='store_true', help='with --photo: build the separate graph for headsets whose GPU backend is Vulkan; never replace the OpenCL photo asset')
     args = parser.parse_args()
     width, height = args.width, args.height
+    if args.vulkan and not args.photo:
+        raise SystemExit('--vulkan builds the still-photo model only: pass --photo')
     if args.photo:
         width, height = 518, 518
     elif width <= 0 or height <= 0 or width % 14 or height % 14 or width % 2 or height % 2 or width > 512 or height > 512:
@@ -267,6 +337,13 @@ def main():
     blocks = split_attention_heads(frozen)
     if blocks != 12:
         raise SystemExit(f'Expected 12 attention blocks to split, found {blocks}')
+    if args.vulkan:
+        # Quest 2 (Adreno 650, Vulkan FP32, 2026-11-18): every op on the GPU, 3.1 s a photo, within 1.2%
+        # of the frozen graph's largest value; the OpenCL asset placed 52 LayerNorm/attention ops on the CPU.
+        key += '_vulkan'
+        norms, products = keep_layer_norm_ops(frozen), split_attention_matmul(frozen)
+        if norms != 25 or products != 12:
+            raise SystemExit(f'Expected 25 layer norms and 12 attention blocks for Vulkan, found {norms} and {products}')
     frozen_path = OUT / f'depth_{key}.onnx'
     onnx.save(frozen, str(frozen_path))
     frozen_error = check_frozen(frozen_path, width, height)
@@ -280,19 +357,30 @@ def main():
     mnn_error = check_mnn(mnn_path, frozen_path, width, height)
     if mnn_error > 0.02:  # FP16 weights; relative to the largest output value
         raise SystemExit(f'MNN depth model differs from the frozen graph: {mnn_error}')
-    manifest = dict(schema_version=2, backend='MNN 3.6.1 OpenCL', model='Depth Anything V2 Small', head='late-upsample',
+    mnn_file = 'photo_depth_vulkan.mnn' if args.vulkan else 'photo_depth.mnn' if args.photo else 'depth.mnn'
+    manifest = dict(schema_version=2, backend='MNN 3.6.1 Vulkan' if args.vulkan else 'MNN 3.6.1 OpenCL', model='Depth Anything V2 Small', head='late-upsample',
                     license='Apache-2.0', source_onnx=str(SOURCE.relative_to(ROOT)), source_sha256=sha(SOURCE),
                     input='src float32 1x3xHxW RGB 0..1 (ImageNet normalization folded)',
                     output='depth float32 1x1xHxW relative inverse depth (larger = nearer)',
                     width=width, height=height, frozen_onnx_sha256=sha(frozen_path), mnn_sha256=sha(mnn_path),
-                    mnn_file='photo_depth.mnn' if args.photo else 'depth.mnn', usage='photo' if args.photo else 'video', dynamic_ops_left=leftovers,
+                    mnn_file=mnn_file, usage='photo' if args.photo else 'video', dynamic_ops_left=leftovers,
                     frozen_vs_source_rel_max=frozen_error, mnn_fp16_weights_vs_frozen_rel_max=mnn_error)
     (OUT / f'manifest_{key}.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     print(json.dumps(manifest, indent=2))
     if args.install:
         ASSETS.mkdir(parents=True, exist_ok=True)
         (ASSETS / manifest['mnn_file']).write_bytes(mnn_path.read_bytes())
-        (ASSETS / ('photo_manifest.json' if args.photo else 'manifest.json')).write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+        manifest_file = 'photo_vulkan_manifest.json' if args.vulkan else 'photo_manifest.json' if args.photo else 'manifest.json'
+        (ASSETS / manifest_file).write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+        if args.vulkan:
+            # The committed catalog lets a source checkout import and verify the ignored weights.
+            catalog_path = ROOT / 'models/manifest/runtime-assets.json'
+            catalog = json.loads(catalog_path.read_text(encoding='utf-8'))
+            asset_path = 'depth-mnn/' + mnn_file
+            catalog['assets'] = [entry for entry in catalog['assets'] if entry['path'] != asset_path]
+            catalog['assets'].append(dict(path=asset_path, bytes=mnn_path.stat().st_size, sha256=manifest['mnn_sha256']))
+            catalog['manifests']['photo-depth-vulkan-mnn'] = manifest
+            catalog_path.write_text(json.dumps(catalog, indent=2) + '\n', encoding='utf-8')
         (ASSETS / 'LICENSE-DepthAnythingV2-Small.txt').write_bytes(
             (ROOT / 'models/licenses/DepthAnythingV2_Apache-2.0.txt').read_bytes())
         print(f'Installed depth model {manifest["mnn_sha256"][:12]} -> {ASSETS}')

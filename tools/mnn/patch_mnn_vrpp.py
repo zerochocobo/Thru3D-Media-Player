@@ -136,6 +136,54 @@ static void vrppClInitFailure(const char* stage, cl_int error) {
         MNN_ASSERT(platforms.size() > 0);''')
 
 
+def patch_vulkan_priority(device):
+    """A LOW global-priority queue for work that must not hold back XR frames.
+
+    Quest 2 (no OpenCL, Vulkan FP32): the 518x518 photo model on the default queue left the
+    player at 4-10 fps of 72 for its 3.1 s; on a LOW queue the player kept 63-71 fps and the
+    inference took 5.4 s. Video depth keeps the default queue: there LOW cost throughput.
+    The request is per thread, as vrpp_set_cl_priority; a refused LOW queue retries the default."""
+    replace_once(device, '#include <algorithm>', """#include <algorithm>
+#include <cstring>
+#if defined(__ANDROID__)
+#include <sys/system_properties.h>
+#endif
+// VRPP: a device created on this thread right after vrpp_set_vk_priority(0) asks for a LOW
+// global-priority queue. -1 restores the default; debug.vrpp.vulkan.priority = low forces LOW.
+static thread_local int vrppVkPriorityOverride = -1;
+extern "C" void vrpp_set_vk_priority(int priority) { vrppVkPriorityOverride = priority; }
+static bool vrppVkLowPriority() {
+    if (vrppVkPriorityOverride >= 0) return vrppVkPriorityOverride == 0;
+#if defined(__ANDROID__)
+    char value[PROP_VALUE_MAX] = {0};
+    return __system_property_get("debug.vrpp.vulkan.priority", value) > 0 && strcmp(value, "low") == 0;
+#else
+    return false;
+#endif
+}""")
+    replace_once(device, '    // Configure VK_KHR_portability_subset', """    VkDeviceQueueGlobalPriorityCreateInfoEXT vrppPriority{VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_EXT};
+    vrppPriority.globalPriority = VK_QUEUE_GLOBAL_PRIORITY_LOW_EXT;
+    if (vrppVkLowPriority() && _hasExtension(availableDeviceExtensions, "VK_EXT_global_priority")) {
+        deviceExtensions.push_back("VK_EXT_global_priority");
+        queueCreateInfo.pNext = &vrppPriority;
+    }
+
+    // Configure VK_KHR_portability_subset""")
+    replace_once(device, '    CALL_VK(vkCreateDevice(mPhysicalDevice, &deviceCreateInfo, nullptr, &mDevice));', """    auto vrppResult = vkCreateDevice(mPhysicalDevice, &deviceCreateInfo, nullptr, &mDevice);
+    if (vrppResult != VK_SUCCESS && queueCreateInfo.pNext != nullptr) {
+        MNN_ERROR("VRPP Vulkan LOW priority rejected (%d); retrying default GPU queue\\n", vrppResult);
+        queueCreateInfo.pNext = nullptr;
+        deviceExtensions.erase(std::remove_if(deviceExtensions.begin(), deviceExtensions.end(),
+            [](const char* name) { return strcmp(name, "VK_EXT_global_priority") == 0; }), deviceExtensions.end());
+        deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
+        deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions.data();
+        mDevice = VK_NULL_HANDLE;
+        vrppResult = vkCreateDevice(mPhysicalDevice, &deviceCreateInfo, nullptr, &mDevice);
+    }
+    MNN_VK_CHECK(vrppResult);
+    MNN_PRINT("VRPP Vulkan queue priority: %s\\n", queueCreateInfo.pNext ? "low" : "default");""")
+
+
 def main():
     pristine, fork = Path(sys.argv[1]), Path(sys.argv[2])
     if fork.exists():
@@ -217,6 +265,7 @@ static int vrppPriority() {
         '''                cl_queue_properties prop[] = {CL_QUEUE_PRIORITY_KHR, (cl_queue_properties)(vrppPriority() == 2 ? CL_QUEUE_PRIORITY_HIGH_KHR
                     : vrppPriority() == 1 ? CL_QUEUE_PRIORITY_MED_KHR : CL_QUEUE_PRIORITY_LOW_KHR),''')
     patch_opencl_initialization(runtime)
+    patch_vulkan_priority(fork / 'source/backend/vulkan/component/VulkanDevice.cpp')
     for name in ('ConvExecution.cpp', 'ConvWinograd.cpp', 'DepthwiseConvExecution.cpp'):
         path = image / name
         text = path.read_text(encoding='utf-8')

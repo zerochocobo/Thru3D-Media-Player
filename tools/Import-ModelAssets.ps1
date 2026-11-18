@@ -7,7 +7,7 @@ if (-not $VerifyOnly -and -not $FromDirectory) { throw 'Pass -FromDirectory with
 $sourceRoot = if ($VerifyOnly) { $assetRoot } else { (Resolve-Path -LiteralPath $FromDirectory).Path }
 # Verify the complete input before copying any file. The catalog is committed metadata.
 foreach ($asset in $catalog.assets) {
-    if ($asset.path -notmatch '^(rvm-mnn/rvm\.mnn|depth-mnn/(depth|depth_compat|photo_depth)\.mnn)$') { throw 'Unexpected model asset path.' }
+    if ($asset.path -notmatch '^(rvm-mnn/rvm\.mnn|depth-mnn/(depth|depth_compat|photo_depth|photo_depth_vulkan)\.mnn)$') { throw 'Unexpected model asset path.' }
     $source = Join-Path $sourceRoot $asset.path
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing model: $($asset.path). See docs/MODELS.md." }
     if ((Get-Item -LiteralPath $source).Length -ne $asset.bytes -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -ne $asset.sha256) {
@@ -29,6 +29,9 @@ if ($VerifyOnly) {
     $photoManifest = Get-Content (Join-Path $assetRoot 'depth-mnn/photo_manifest.json') -Raw | ConvertFrom-Json
     $photoRecord = @($catalog.assets | Where-Object { $_.path -eq 'depth-mnn/photo_depth.mnn' })[0]
     if ($photoManifest.mnn_sha256 -ne $photoRecord.sha256 -or $photoManifest.width -ne 518 -or $photoManifest.height -ne 518) { throw 'Photo model manifest mismatch.' }
+    $photoVulkanManifest = Get-Content (Join-Path $assetRoot 'depth-mnn/photo_vulkan_manifest.json') -Raw | ConvertFrom-Json
+    $photoVulkanRecord = @($catalog.assets | Where-Object { $_.path -eq 'depth-mnn/photo_depth_vulkan.mnn' })[0]
+    if ($photoVulkanManifest.mnn_sha256 -ne $photoVulkanRecord.sha256 -or $photoVulkanManifest.width -ne 518 -or $photoVulkanManifest.height -ne 518) { throw 'Vulkan photo model manifest mismatch.' }
     & (Join-Path $workspace 'tools/Assert-VideoDepthModels.ps1') -Workspace $workspace
     Write-Output 'Version-matched runtime model assets verified.'
     return
@@ -45,6 +48,7 @@ foreach ($name in @('rvm-mnn', 'depth-mnn')) {
     $catalog.manifests.$name | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $assetRoot "$name/manifest.json") -Encoding utf8
 }
 $catalog.manifests.'photo-depth-mnn' | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $assetRoot 'depth-mnn/photo_manifest.json') -Encoding utf8
+$catalog.manifests.'photo-depth-vulkan-mnn' | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $assetRoot 'depth-mnn/photo_vulkan_manifest.json') -Encoding utf8
 $catalog.manifests.'depth-compat-mnn' | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $assetRoot 'depth-mnn/compat_manifest.json') -Encoding utf8
 $rvmLicense = Join-Path $workspace 'models/licenses/RVM_GPL-3.0.txt'
 $rvmRoot = Join-Path $assetRoot 'rvm'

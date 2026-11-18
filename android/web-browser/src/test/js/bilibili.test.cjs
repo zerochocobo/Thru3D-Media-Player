@@ -98,13 +98,34 @@ test('document-start observer retains only public part mapping when SSR script r
   assert.equal(reader.initial(document, page), null);
   const value = { cid: 12345, user: { token: 'must-not-be-exported' }, videoData: { bvid: identity.id, aid: 1, cid: 12345,
     pages: [{ page: 1, cid: 12345, duration: 120 }, { page: 2, cid: 67890, duration: 240 }] } };
+  // Real 928-episode collection embeds >3 MiB of unrelated episode metadata.
+  value.videoData.ugc_season = { sections: [{ episodes: Array.from({ length: 928 }, () => ({ desc: 'x'.repeat(3500) })) }] };
   const node = { nodeName: 'SCRIPT', textContent: `window.__INITIAL_STATE__=${JSON.stringify(value)};(function(){throw 'never execute'})();` };
+  assert.ok(node.textContent.length > 3 * 1024 * 1024);
   mutation([{ target: document, addedNodes: [], removedNodes: [node] }]);
   events.DOMContentLoaded(); assert.equal(disconnected, true);
   const result = reader.initial(document, page + '?p=2');
   assert.equal(result.identity.cid, '67890'); assert.equal(result.identity.expected_duration, 240);
   assert.ok(!JSON.stringify(result).includes('must-not-be-exported'));
+  assert.ok(!JSON.stringify(result).includes('ugc_season'));
+  assert.ok(JSON.stringify(result).length < 1024);
   events.pagehide({ persisted: false }); assert.equal(reader.initial(document, page), null);
+});
+
+test('large collection SSR keeps bounded parsing and exact video identity', () => {
+  const state = { cid: 12345, videoData: { bvid: identity.id, aid: 1, cid: 12345,
+    pages: [{ page: 1, cid: 12345, duration: 120 }], collection: 'x'.repeat(3 * 1024 * 1024) } };
+  const document = { querySelectorAll: () => [
+    { textContent: `window.__INITIAL_STATE__=${JSON.stringify(state)};throw new Error('never execute');` },
+    { textContent: `window.__playinfo__=${JSON.stringify(raw())};` }] };
+  assert.equal(api.initial(document, page).data.cid, '12345');
+  assert.equal(api.initial(document, page.replace('BV1234567890', 'BVabcdefghij')), null);
+  state.videoData.collection = 'x'.repeat(8 * 1024 * 1024);
+  assert.equal(api.initial(document, page), null);
+  state.videoData.collection = 'x'.repeat(3 * 1024 * 1024);
+  const scripts = document.querySelectorAll();
+  document.querySelectorAll = () => [{ textContent: ' '.repeat(10 * 1024 * 1024) }, ...scripts];
+  assert.equal(api.initial(document, page), null);
 });
 const event = () => { const listeners = []; return { listeners, addListener(fn, filter, flags) { listeners.push({ fn, filter, flags }); },
   fire(d) { listeners.forEach(({ fn }) => fn(d)); } }; };

@@ -45,9 +45,15 @@ class PairDisplayGateTest {
     @Test fun pinnedObserverSurvivesDetachAndClosingUntilExplicitRelease() {
         val gate = PairDisplayGate(scope)
         gate.offer(pair(1)); gate.claim(1)
-        assertFalse(gate.pin(1)); assertTrue(gate.acknowledge(1)); assertTrue(gate.pin(1)); assertFalse(gate.pin(1))
+        assertFalse(gate.pin(1)); assertTrue(gate.acknowledge(1)); assertTrue(gate.pin(1))
         assertTrue(gate.detach(1)); assertTrue(gate.owns(1)); assertEquals(1, gate.heldClaims())
         gate.close(); assertFalse(gate.pin(1)); assertTrue(gate.owns(1)); assertTrue(gate.unpin(1))
         assertFalse(gate.owns(1)); assertEquals(0, gate.heldClaims()); assertFalse(gate.unpin(1))
+        // The screen light samples the displayed pair while a seek captures it: both hold it.
+        val shared = PairDisplayGate(scope)
+        assertNull(shared.offer(pair(1))); shared.claim(1); assertTrue(shared.acknowledge(1))
+        assertTrue(shared.pin(1)); assertTrue(shared.pin(1)); assertTrue(shared.detach(1))
+        assertTrue(shared.unpin(1)); assertTrue(shared.owns(1)); assertEquals(1, shared.heldClaims())
+        assertTrue(shared.unpin(1)); assertFalse(shared.owns(1)); assertFalse(shared.unpin(1))
     }
 }

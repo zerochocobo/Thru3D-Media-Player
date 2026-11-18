@@ -95,6 +95,15 @@ func run() -> void:
 		await shot(viewport, menu, output.path_join(language + "-combination.png"))
 		check(str(menu.controls_page.selection.prefix).ends_with("?") and str(menu.controls_page.selection.prefix) == menu.controls_page.combination_hint(), "Dialog identifies the missing third chord input")
 		await pointer_shot(viewport, camera, menu, "left_hand/stick_up", output.path_join(language + "-combination-pointer.png"))
+		menu.choices.reset(); menu.controls_page.reset(); menu.controls_page.mode = 3; menu.scroll = 0; menu.refresh()
+		check_headers(menu)
+		await shot(viewport, menu, output.path_join(language + "-key-mapping.png"))
+		menu.controls_page.external.note_device({"kind": "device", "event": "added", "device": 7, "source": ["keyboard"], "external": true, "virtual": false, "keyboard": "alphabetic"})
+		menu.refresh()
+		await shot(viewport, menu, output.path_join(language + "-key-mapping-keyboard.png"))
+		menu.controls_page.action(Menu.ROW_BASE + 1)
+		check(menu.controls_page.capturing(), "Key mapping row waits for a key: " + language)
+		await shot(viewport, menu, output.path_join(language + "-key-mapping-capture.png"))
 		menu.choices.reset(); menu.controls_page.reset(); menu.controls_page.mode = 1; menu.scroll = 0; menu.refresh()
 		for index in [0, 2, 4]:
 			menu.controls_page.selected_gesture = index; menu._draw()
@@ -212,8 +221,9 @@ func count_node(node: Node, counts: Dictionary) -> void:
 
 func check_headers(menu: Node3D) -> void:
 	var expected: Array[String] = [I18n.t("Context"), I18n.t("Action"), I18n.t("Binding") + (" · " + menu.controls_page.combination_hint() if menu.controls_page.mode == 2 else "")]
+	if menu.controls_page.mode == 3: expected = [I18n.t("Standard controller"), I18n.t("External input")]
 	var headers: Array = menu._labels.filter(func(caption): return caption.text in expected)
-	check(headers.size() == 3 and headers.all(func(caption): return caption.font_size == menu.TEXT_TITLE * menu.TEXT_RASTER_SCALE and caption.modulate == menu.ControlsPage.INK and caption.font == menu.ui_bold_font()), "Both tables use white bold headers distinct from body text")
+	check(headers.size() == expected.size() and headers.all(func(caption): return caption.font_size == menu.TEXT_TITLE * menu.TEXT_RASTER_SCALE and caption.modulate == menu.ControlsPage.INK and caption.font == menu.ui_bold_font()), "Both tables use white bold headers distinct from body text")
 	if menu.controls_page.mode == 2: check(expected[2].ends_with("?"), "Combination table includes the missing third input")
 
 func amber_pixels(image: Image, point: Vector2, radius: int) -> int:

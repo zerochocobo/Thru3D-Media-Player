@@ -12,6 +12,7 @@ external-model-assets/
   depth-mnn/depth.mnn   ZipDepth video comparison profile, 512×288 input
   depth-mnn/depth_compat.mnn   ZipDepth video default on every headset, 384×224 input
   depth-mnn/photo_depth.mnn   Independent still-photo Depth Anything V2 Small, 518×518 input
+  depth-mnn/photo_depth_vulkan.mnn   The same photo network for headsets whose GPU backend is Vulkan
 ```
 
 Import without trusting the supplied files' own metadata:
@@ -126,3 +127,7 @@ OpenCL remains preferred; when runtime initialization fails, use MNN Vulkan and 
 The refreshment runtime now loads `res://environments/private_beach/straw-sip.wav` and `res://environments/private_beach/skewer-chew.wav`. These generated audio inputs are deliberately not published with the source, alongside the rest of the private scenery payload. They are required external resources, not optional source files: provide version-matched licensed audio/import mappings before packaging. Assert-PrivateBeachPackaged.ps1 requires both entries; do not suppress that gate or add dummy sounds to claim a complete build. This Git tree alone does not supply the beach assets.
 
 这两份拟音属于须另行提供的沙滩资源，继续排除；正常完整打包必须校验，不以假音频或关闭门禁代替。
+
+## Vulkan photos in 0.18.2
+
+The separate `depth-mnn/photo_depth_vulkan.mnn` graph supports photo depth on Vulkan. Its size and SHA-256 are pinned in `models/manifest/runtime-assets.json`; supply it separately through the model import workflow. Photo inference uses a lower-priority GPU queue. Previously viewed photo depth maps can be retained under the photo-cache setting. No weights or user photo caches are included in public Git. This extends the earlier video/browser fallback; support still requires device-specific validation.
