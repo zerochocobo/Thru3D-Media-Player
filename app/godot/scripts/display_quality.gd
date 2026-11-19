@@ -1,7 +1,9 @@
 extends RefCounted
 
-const NAMES := ["Standard", "Enhanced", "High"]
-const SCALES := [1.0, 1.1, 1.25]
+const NAMES := ["×1.0", "×1.1", "×1.25", "×1.33", "×1.5"]
+## Very high and Ultra: QIYU's 1440 recommended eye buffer sits well below its panels (user,
+## 2026-11-19: 1920 and 2160 still look sharper than 1800); offered on every headset.
+const SCALES := [1.0, 1.1, 1.25, 4.0 / 3.0, 1.5]
 ## -1 follows the device tier: Standard on low-end GPUs, Enhanced elsewhere.
 const AUTO := -1
 const DEFAULT := AUTO
@@ -25,8 +27,13 @@ const DEFAULT_SUPERSAMPLING := 1
 
 ## Settings hover text: one sentence per setting, the numbers on each choice.
 const SCALE_INFO := "Eye-buffer resolution for the 3D scene and shader-drawn media; normal video, photos and menus are unaffected."
-const SCALE_HINTS := ["×1.0 per axis", "×1.1 per axis (1.21× pixels)", "×1.25 per axis (1.56× pixels)"]
+const SCALE_HINTS := ["Headset's recommended eye-buffer size",
+	"1.21× pixels",
+	"1.56× pixels · QIYU 1440 → 1800 per eye",
+	"1.78× pixels · QIYU 1440 → 1920 per eye",
+	"2.25× pixels · QIYU 1440 → 2160 per eye · highest GPU load"]
 const SCALE_AUTO_HINT := "×1.0 on Quest 2 / PICO Neo3 class GPUs, ×1.1 otherwise"
+const QIYU_SCALE_AUTO_HINT := "×1.25 per axis on QIYU"
 const SUPERSAMPLING_INFO := "Compositor filtering of video and photo layers when scaled down; reduces shimmer."
 const SUPERSAMPLING_HINTS := ["No filtering, lowest GPU cost", "System normal supersampling", "Stronger filtering, higher GPU cost"]
 const SHARPNESS_INFO := "Edge sharpening for video and photos, independent of supersampling."

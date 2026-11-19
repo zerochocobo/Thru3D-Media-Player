@@ -13,8 +13,12 @@ const NAMES := {"temperature": "Temperature", "tint": "Tint", "exposure": "Expos
 	"gamma": "Gamma (shadow lift)", "saturation": "Saturation", "red_gain": "Red gain", "green_gain": "Green gain", "blue_gain": "Blue gain",
 	"red_gamma": "Red gamma", "green_gamma": "Green gamma", "blue_gamma": "Blue gamma",
 	"red_offset": "Red offset", "green_offset": "Green offset", "blue_offset": "Blue offset"}
+## The controls a compositor layer cannot carry as a scale and bias. Video applies them in picture
+## quality mode; while that mode is available but off they are locked, shown but without effect.
+const CURVES := ["gamma", "saturation", "red_gamma", "green_gamma", "blue_gamma"]
 var preset := "Original"
 var custom: Dictionary = DEFAULTS.duplicate()
+var curves_locked := false
 
 static func limits(key: String) -> Vector3:
 	match key:
@@ -64,11 +68,17 @@ func restore(data: Variant) -> void:
 func snapshot() -> Dictionary:
 	return {"preset": preset, "custom": custom.duplicate()}
 
-func values() -> Dictionary:
-	if preset == "Custom": return custom.duplicate()
-	var result := DEFAULTS.duplicate()
-	result.temperature = {"Warm": 4000.0, "Cool": 8000.0}.get(preset, 6500.0)
+## The grade in effect, or with stored the values as saved (what the sliders show while locked).
+func values(stored: bool = false) -> Dictionary:
+	var result := custom.duplicate() if preset == "Custom" else DEFAULTS.duplicate()
+	if preset != "Custom": result.temperature = {"Warm": 4000.0, "Cool": 8000.0}.get(preset, 6500.0)
+	if curves_locked and not stored:
+		for key in CURVES: result[key] = DEFAULTS[key]
 	return result
+
+## A saved look that uses gamma or saturation.
+func uses_curves() -> bool:
+	return preset == "Custom" and CURVES.any(func(key): return not is_equal_approx(float(custom[key]), float(DEFAULTS[key])))
 
 func select(name: String) -> void:
 	if name in PRESETS: preset = name
@@ -76,7 +86,7 @@ func select(name: String) -> void:
 func adjust(key: String, value: Variant) -> void:
 	if not DEFAULTS.has(key): return
 	# The first edit starts from the visible preset, then becomes the remembered custom look.
-	if preset != "Custom": custom = values()
+	if preset != "Custom": custom = values(true)
 	preset = "Custom"
 	custom[key] = clean(key, value)
 
@@ -86,7 +96,7 @@ func reset_custom() -> void:
 
 func reset_page(page: int) -> bool:
 	if page < 0 or page >= PAGES.size(): return false
-	if preset != "Custom": custom = values()
+	if preset != "Custom": custom = values(true)
 	for key in PAGES[page]: custom[key] = DEFAULTS[key]
 	preset = "Custom"
 	return true

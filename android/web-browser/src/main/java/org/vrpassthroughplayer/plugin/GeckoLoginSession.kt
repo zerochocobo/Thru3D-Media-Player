@@ -37,6 +37,8 @@ class GeckoLoginSession(private val host: () -> Activity?, private val desktopOn
     private var input: LoginInput? = null
     @Volatile private var editor: InputConnection? = null
     private var editing = false
+    private var keyboardEpoch = 0L
+    private var keyboardLatin = false
     @Volatile private var paused = false
     private var desktop = desktopOnly || initialDesktop
     private var progress = 0
@@ -128,6 +130,30 @@ class GeckoLoginSession(private val host: () -> Activity?, private val desktopOn
                 (activity.window.decorView as ViewGroup).addView(view, ViewGroup.LayoutParams(1, 1))
                 current.textInput.setView(view)
             }
+            // With the player's keyboard (WebBrowser.captureKeyboardEditor), fields are edited through
+            // a private connection and the system IME is never asked for.
+            current.textInput.setDelegate(null)
+            val system = current.textInput.delegate
+            current.textInput.setDelegate(object : GeckoSession.TextInputDelegate {
+                private fun custom(s: GeckoSession) = GeckoLoginSurfaceBridge.customKeyboard && s === session && !closed
+                private fun blur() { editor = null; editing = false; publish() }
+                override fun restartInput(s: GeckoSession, reason: Int) {
+                    if (!custom(s)) { system.restartInput(s, reason); return }
+                    if (reason == GeckoSession.TextInputDelegate.RESTART_REASON_BLUR) blur() else captureEditor(s)
+                }
+                override fun showSoftInput(s: GeckoSession) { if (custom(s)) captureEditor(s) else system.showSoftInput(s) }
+                override fun hideSoftInput(s: GeckoSession) { if (custom(s)) blur() else system.hideSoftInput(s) }
+                override fun updateSelection(s: GeckoSession, start: Int, end: Int, composingStart: Int, composingEnd: Int) {
+                    if (!custom(s)) system.updateSelection(s, start, end, composingStart, composingEnd)
+                }
+                override fun updateExtractedText(s: GeckoSession, request: android.view.inputmethod.ExtractedTextRequest,
+                                                 text: android.view.inputmethod.ExtractedText) {
+                    if (!custom(s)) system.updateExtractedText(s, request, text)
+                }
+                override fun updateCursorAnchorInfo(s: GeckoSession, info: android.view.inputmethod.CursorAnchorInfo) {
+                    if (!custom(s)) system.updateCursorAnchorInfo(s, info)
+                }
+            })
             if (verification == null) permitted(url, true)?.let { load.open(it) }
             else verification.attach(runtime, current) { success ->
                 dispatch {
@@ -164,7 +190,7 @@ class GeckoLoginSession(private val host: () -> Activity?, private val desktopOn
                 releaseDisplay(); surface = null; needsSurface = true; load.resize(); loading = true
             }
             "keyboard_close" -> { current.setFocused(false); hideInput() }
-            "text", "paste", "backspace", "enter" -> edit(command, text)
+            "text", "paste", "backspace", "enter", "left", "right" -> edit(command, text)
         }
         publish()
     }
@@ -264,10 +290,11 @@ class GeckoLoginSession(private val host: () -> Activity?, private val desktopOn
 
     private inner class LoginInput(owner: Activity) : View(owner) {
         init { isFocusable = true; isFocusableInTouchMode = true; importantForAutofill = IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS }
-        override fun onCheckIsTextEditor() = true
+        override fun onCheckIsTextEditor() = !GeckoLoginSurfaceBridge.customKeyboard
         // Android 24+ uses View's handler, as GeckoView does. Inherit its nullable
         // result: IME deactivation can query this view after it has been detached.
         override fun onCreateInputConnection(info: EditorInfo): InputConnection? {
+            if (GeckoLoginSurfaceBridge.customKeyboard) return null // Only captureEditor connects.
             val epoch = navigation
             val connection = session?.textInput?.onCreateInputConnection(info)
             ui.post { if (!closed && !paused && epoch == navigation) { editor = connection; editing = connection != null && info.inputType != 0; publish() } }
@@ -276,6 +303,21 @@ class GeckoLoginSession(private val host: () -> Activity?, private val desktopOn
         override fun onKeyPreIme(code: Int, event: KeyEvent) = session?.textInput?.onKeyPreIme(code, event) ?: false
         override fun onKeyDown(code: Int, event: KeyEvent) = session?.textInput?.onKeyDown(code, event) ?: false
         override fun onKeyUp(code: Int, event: KeyEvent) = session?.textInput?.onKeyUp(code, event) ?: false
+    }
+    private fun captureEditor(current: GeckoSession) {
+        if (closed || paused || session !== current) return
+        val info = EditorInfo()
+        val connection = current.textInput.onCreateInputConnection(info)
+        editing = connection != null && info.inputType != 0
+        editor = if (editing) connection else null
+        // Same rule as WebBrowser's keyboard_latin: accounts, passwords and addresses start in Latin.
+        val variation = info.inputType and android.text.InputType.TYPE_MASK_VARIATION
+        keyboardLatin = (info.inputType and android.text.InputType.TYPE_MASK_CLASS) != android.text.InputType.TYPE_CLASS_TEXT ||
+            variation in setOf(android.text.InputType.TYPE_TEXT_VARIATION_URI, android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+                android.text.InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS, android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD,
+                android.text.InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD, android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD)
+        if (editing) keyboardEpoch++
+        publish()
     }
     private fun hideInput() {
         val old = editor; editor = null; editing = false
@@ -293,7 +335,12 @@ class GeckoLoginSession(private val host: () -> Activity?, private val desktopOn
             if (closed || paused || navigation != epoch || editor !== connection) return@post
             when (command) {
                 "text", "paste" -> if ('\u0000' !in value) connection.commitText(value, 1)
-                "backspace" -> connection.deleteSurroundingTextInCodePoints(1, 0)
+                "backspace" -> if (!connection.getSelectedText(0).isNullOrEmpty()) connection.commitText("", 1)
+                    else connection.deleteSurroundingTextInCodePoints(1, 0)
+                "left", "right" -> {
+                    val code = if (command == "left") KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
+                    connection.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code)); connection.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
+                }
                 "enter" -> { connection.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER)); connection.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER)) }
             }
         }
@@ -306,7 +353,7 @@ class GeckoLoginSession(private val host: () -> Activity?, private val desktopOn
             .put("pixel_units", units).put("generation", generation).put("attached", display != null)
             .put("needs_surface", needsSurface).put("progress", progress).put("loading", loading)
             .put("load_error_category", loadErrorCategory).put("load_error_code", loadErrorCode)
-            .put("failed", failed).put("editing", editing && downTime == 0L).put("system_keyboard", true).put("navigation", navigation)
+            .put("failed", failed).put("editing", editing && downTime == 0L).put("system_keyboard", !GeckoLoginSurfaceBridge.customKeyboard).put("keyboard_epoch", keyboardEpoch).put("keyboard_latin", keyboardLatin).put("navigation", navigation)
             .apply { if (diagnostics) put("input_probe", JSONObject().put("down", pointerDowns).put("up", pointerUps)
                 .put("cancel", pointerCancels).put("ignored", pointerIgnored).put("drop", lastPointerDrop)
                 .put("held", downTime != 0L).put("paused", paused).put("down_result", lastDownResult)) }.toString()

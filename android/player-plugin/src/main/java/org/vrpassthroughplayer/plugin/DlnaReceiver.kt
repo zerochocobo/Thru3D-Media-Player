@@ -56,6 +56,7 @@ internal class DlnaReceiver(val udn: String, val name: String = "Thru3D", val re
                     Thread({ discover(socket) }, "Thru3D-SSDP").apply { isDaemon = true; start() }
                     announce("ssdp:alive")
                 }
+                note("listening on ${network?.name} port ${listener.localPort} discovery=$discovery")
                 timer.scheduleWithFixedDelay({ runCatching { announce("ssdp:alive") } }, 30, 30, TimeUnit.SECONDS)
                 notifier.scheduleWithFixedDelay({ runCatching { notifySubscribers() } }, 0, 500, TimeUnit.MILLISECONDS)
                 while (running.get()) {
@@ -64,7 +65,8 @@ internal class DlnaReceiver(val udn: String, val name: String = "Thru3D", val re
                     try { workers.execute { client.use { handle(it) }; connections.remove(client) } }
                     catch (_: java.util.concurrent.RejectedExecutionException) { connections.remove(client); client.close() }
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                note(warning = true, text = "receiver stopped ${e.javaClass.simpleName}")
                 if (running.get()) failure = "DLNA receiver unavailable"
             } finally { close() }
         }, "Thru3D-DLNA").apply { isDaemon = true; start() }
@@ -140,7 +142,7 @@ internal class DlnaReceiver(val udn: String, val name: String = "Thru3D", val re
             val payload = ByteArray(length); var offset = 0
             while (offset < length) { remaining(); val n = input.read(payload, offset, length - offset); require(n > 0); offset += n }
             val path = request[1]; val method = request[0]; val peer = client.inetAddress.hostAddress!!
-            if (method == "GET" && path == "/device.xml") { respond(client, 200, description()); return }
+            if (method == "GET" && path == "/device.xml") { note("description requested"); respond(client, 200, description()); return }
             val service = SERVICES.firstOrNull { path == "/$it.xml" || path == "/$it/control" || path == "/$it/event" }
             if (service == null) { respond(client, 404); return }
             if (method == "GET" && path == "/$service.xml") { respond(client, 200, scpd(service)); return }
@@ -161,10 +163,12 @@ internal class DlnaReceiver(val udn: String, val name: String = "Thru3D", val re
                 // Controllers add vendor arguments (Bilibili: SourceId, ExtendData) or omit optional
                 // metadata. Pass only declared inputs; each action validates the values it needs.
                 val declared = actions(service).getValue(soap[1]).filter { it.direction == "in" && args.containsKey(it.name) }.associate { it.name to args.getValue(it.name) }
+                // Action names only: URIs and metadata may carry account tokens.
+                if (soap[1] !in setOf("GetPositionInfo", "GetTransportInfo", "GetVolume", "GetMute")) note("action ${soap[1]}")
                 val result = renderer.action(service, soap[1], declared, peer).entries.joinToString("") { "<${it.key}>${DlnaRenderer.escape(it.value)}</${it.key}>" }
                 respond(client, 200, envelope("<u:${soap[1]}Response xmlns:u=\"${soap[0]}\">$result</u:${soap[1]}Response>"))
-            } catch (e: DlnaRenderer.Fault) { respond(client, 500, fault(e.code, e.message)) }
-            catch (_: Exception) { respond(client, 500, fault(402, "Invalid Args")) }
+            } catch (e: DlnaRenderer.Fault) { note(warning = true, text = "fault ${e.code} ${e.message}"); respond(client, 500, fault(e.code, e.message)) }
+            catch (e: Exception) { note(warning = true, text = "action failed ${e.javaClass.simpleName}"); respond(client, 500, fault(402, "Invalid Args")) }
         } catch (_: Exception) { runCatching { respond(client, 400) } }
     }
     private fun subscribe(client: Socket, service: String, method: String, headers: Map<String, String>, peer: String) {
@@ -211,6 +215,12 @@ internal class DlnaReceiver(val udn: String, val name: String = "Thru3D", val re
         }
     }
     private fun description(): String = "<?xml version=\"1.0\"?><root xmlns=\"urn:schemas-upnp-org:device-1-0\"><specVersion><major>1</major><minor>0</minor></specVersion><device><deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType><friendlyName>${DlnaRenderer.escape(name)}</friendlyName><manufacturer>Thru3D</manufacturer><modelName>Thru3D Player</modelName><UDN>$udn</UDN><serviceList>" + SERVICES.joinToString("") { "<service><serviceType>${serviceType(it)}</serviceType><serviceId>urn:upnp-org:serviceId:$it</serviceId><SCPDURL>/$it.xml</SCPDURL><controlURL>/$it/control</controlURL><eventSubURL>/$it/event</eventSubURL></service>" } + "</serviceList></device></root>"
+    /** Logcat. The JVM unit tests run without android.util.Log (its stubs throw), and a log line must
+     * not stop the receiver there. */
+    private fun note(text: String, warning: Boolean = false) {
+        runCatching { if (warning) android.util.Log.w("DlnaReceiver", text) else android.util.Log.i("DlnaReceiver", text) }
+    }
+
     companion object {
         private val GROUP = InetAddress.getByName("239.255.255.250")
         val SERVICES = listOf("AVTransport", "RenderingControl", "ConnectionManager")

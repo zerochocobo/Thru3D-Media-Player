@@ -142,8 +142,15 @@ internal class MediaSources(
         return id
     }
     fun smbCancelBrowse() = smbBrowseRequests.cancel()
-    private fun smbFailure(error: Throwable) = JSONObject().put("state", "error")
-        .put("error", error.message ?: error.javaClass.simpleName).put("auth_required", SmbClientPolicy.needsCredentials(error))
+    private fun smbFailure(error: Throwable): JSONObject {
+        // Types and NT status only: messages can name hosts, shares and paths.
+        val chain = generateSequence(error) { it.cause }.take(4).joinToString(" <- ") { cause ->
+            cause.javaClass.simpleName + ((cause as? org.codelibs.jcifs.smb.impl.SmbException)?.let { " 0x" + Integer.toHexString(it.ntStatus) } ?: "")
+        }
+        android.util.Log.w("ThruSmb", "failure $chain")
+        return JSONObject().put("state", "error")
+            .put("error", error.message ?: error.javaClass.simpleName).put("auth_required", SmbClientPolicy.needsCredentials(error))
+    }
     fun smbBrowse(serverId: String, path: String, subtitlesOnly: Boolean = false): Int {
         val id = nextId()
         fun reply(result: JSONObject) = result.put("source", "smb").put("server_id", serverId).put("path", path).toString()

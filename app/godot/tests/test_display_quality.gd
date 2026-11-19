@@ -64,7 +64,7 @@ func _run() -> void:
 	check(watch_rows.size() == 1 and watch_rows[0].get("swatches", false) and watch_rows[0].choices.size() == 5,
 		"Display offers five inline watch color swatches")
 	var watch_index: int = main.recent_menu.rows.find(watch_rows[0])
-	check(main.recent_menu.rows[watch_index - 1].key == "show_fps", "Watch color sits directly below Show FPS")
+	check(main.recent_menu.rows[watch_index - 1].key == "color_theme", "Watch color follows the interface palette")
 	main.recent_menu._set_scroll(main.recent_menu._max_scroll())
 	for option in Palette.OPTIONS:
 		var target := -1
@@ -82,25 +82,29 @@ func _run() -> void:
 				"All dial, control and projection materials share " + option.value)
 	main.recent_menu._set_scroll(0)
 	var rows: Array = main.recent_menu.rows.filter(func(row): return row.has("key") and row.key != "watch_color")
-	check(rows.size() == 7 and rows[0].choices.size() == 4 and rows[0].choices[0].value == Quality.AUTO
-		and rows[1].key == "refresh_cap" and rows[1].value == Quality.DEFAULT_REFRESH_CAP
-		and rows[2].key == "supersampling" and rows[2].choices.size() == 3 and rows[2].value == 1
-		and rows[3].key == "sharpness" and rows[3].choices.size() == 3 and rows[4].key == "show_fps",
-		"Render scale, playback refresh rate, supersampling (off/normal/quality) and sharpness each occupy one field, followed by the FPS display")
+	check(rows.map(func(row): return row.key) == ["color_theme", "hand_model", "display_quality", "refresh_cap", "supersampling", "sharpness", "show_status_info", "show_fps", "playback_menu_depth", "stick_seek_overlay"],
+		"Display groups appearance, render quality, status and playback overlays in order")
+	var fields := {}
+	for row in rows: fields[row.key] = row
+	check(fields.display_quality.choices.size() == Quality.SCALES.size() + 1 and fields.display_quality.choices[0].value == Quality.AUTO
+		and fields.refresh_cap.value == Quality.DEFAULT_REFRESH_CAP
+		and fields.supersampling.choices.size() == 3 and fields.supersampling.value == 1
+		and fields.sharpness.choices.size() == 3,
+		"Render scale, refresh, supersampling and sharpness retain their choices and defaults")
 	check(rows[-2].key == "playback_menu_depth" and rows[-2].choices.size() == 3 and rows[-2].value == "default",
 		"Experimental VR playback control depth keeps its unchanged default above progress visibility")
 	check(rows.back().key == "stick_seek_overlay" and rows.back().value and not rows.back().get("switch", false) and rows.back().choices.size() == 2,
 		"Thumbstick progress visibility is the final Display row and defaults on")
-	var refresh_values: Array = rows[1].choices.map(func(option): return option.value)
+	var refresh_values: Array = fields.refresh_cap.choices.map(func(option): return option.value)
 	var expected_caps: Array = Quality.refresh_choices(main.low_end_gpu)
-	check(refresh_values == expected_caps and rows[1].choices.all(func(option): return str(option.label).contains("Hz") and not str(option.get("hint", "")).is_empty()),
+	check(refresh_values == expected_caps and fields.refresh_cap.choices.all(func(option): return str(option.label).contains("Hz") and not str(option.get("hint", "")).is_empty()),
 		"Refresh choices name their rate in Hz and explain the trade-off")
 	var explained := 0
 	for button in main.recent_menu._buttons:
 		var tip := str(main.recent_menu._tips.get(button.target, ""))
 		if tip in [I18n.t(Quality.SCALE_INFO), I18n.t(Quality.REFRESH_INFO), I18n.t(Quality.SUPERSAMPLING_INFO), I18n.t(Quality.SHARPNESS_INFO)] and not button.enabled and button.get("hover_disabled", false): explained += 1
 	check(explained == 4, "Pointing at the render scale, refresh rate, supersampling and sharpness titles explains them without making the rows clickable")
-	check(rows[3].choices.all(func(option): return not str(option.get("hint", "")).is_empty())
+	check(fields.sharpness.choices.all(func(option): return not str(option.get("hint", "")).is_empty())
 		and main.recent_menu._tips.values().has(I18n.t(Quality.SHARPNESS_HINTS[2])), "Each sharpness choice has a technical hint")
 	main._on_setting_changed("display_quality",2)
 	main._on_setting_changed("sharpness",0.6)
@@ -132,8 +136,12 @@ func _run() -> void:
 	check(main.video.material.get_shader_parameter("sharpness") == 0.0, "Off restores neutral shader")
 	var host := HostProbe.new()
 	main.platform_plugin = host
-	main.recent_menu._activate(main.recent_menu.RESTART_APP)
-	main.recent_menu._activate(main.recent_menu.RESTART_APP)
+	main.recent_menu._activate_hit({"target": main.recent_menu.RESTART_APP, "hand": "right_hand"})
+	check(host.requests.is_empty(), "Restart waits for a separate confirming press")
+	main.recent_menu.app_actions.release("right_hand")
+	main.recent_menu._activate_hit({"target": main.recent_menu.RESTART_APP, "hand": "right_hand"})
+	main.recent_menu.app_actions.release("right_hand")
+	await process_frame; await process_frame; await process_frame
 	check(host.requests == [true], "Restart button calls Android once and saves settings")
 	main.platform_plugin = null
 	main.recent_menu.dismiss(); main.queue_free()
@@ -148,7 +156,14 @@ func _run() -> void:
 	check(not main._library_settings().display_quality_pending, "Restart clears pending label")
 	check(not main.low_end_gpu and main.video.sharpness == 0.0, "Desktop renderer is not low end and keeps the saved sharpness")
 	main.platform_plugin = host
-	main.recent_menu._activate(main.recent_menu.QUIT_APP)
+	main.recent_menu.section = main.recent_menu.Section.SETTINGS
+	main.recent_menu.refresh()
+	main.recent_menu._activate_hit({"target": main.recent_menu.QUIT_APP, "hand": "right_hand"})
+	check(host.requests == [true], "Close waits for a separate confirming press")
+	main.recent_menu.app_actions.release("right_hand")
+	main.recent_menu._activate_hit({"target": main.recent_menu.QUIT_APP, "hand": "right_hand"})
+	main.recent_menu.app_actions.release("right_hand")
+	await process_frame; await process_frame; await process_frame
 	check(host.requests == [true, false], "Close button requests actual application exit")
 	main.platform_plugin = null
 	main.recent_menu.dismiss(); main.queue_free()

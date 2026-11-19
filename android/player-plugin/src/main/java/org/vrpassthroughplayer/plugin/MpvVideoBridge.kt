@@ -147,6 +147,8 @@ internal class MpvVideoBridge(
         @Volatile var fanout: LayerFanout? = null
         /** GPU copy prototype (debug: setprop debug.vrpp.layer.copy 1): frames drawn into the layer surface. */
         @Volatile var copy: LayerCopy? = null
+        /** Picture quality mode was asked for when this file opened (plain layer playback only). */
+        @Volatile var quality = false
         /** The memory saver as it was when this source opened. */
         @Volatile var memorySaver = false
         /** Where this host's decoder writes for the layer: the GPU copy (Alpha) or the debug hand-off. */
@@ -357,6 +359,9 @@ internal class MpvVideoBridge(
     fun captureAudioFlush(id: Int){sessions[id]?.host?.narration?.captureFlush()}
     /** User setting: decoded color width cap for sources opened from now on (0 = source size). */
     @Volatile var outputWidthCap = 0
+    /** Picture quality mode for the files opened next: plain layer playback goes through the layer copy,
+     * which sharpens and grades it (LayerCopy). Alpha and 2D to 3D are unaffected. */
+    @Volatile var pictureQuality = false
     /** Memory saver (low-memory headsets or the user's choice), for sources opened from now on: Alpha
      * holds packed copies instead of decoder buffers and keeps a smaller network cache. */
     @Volatile var memorySaver = false
@@ -421,6 +426,7 @@ internal class MpvVideoBridge(
             layer && hardware && !depth && (!alpha || alphaLayer), alphaLayer && layer && hardware)
         host.playbackLayout = preparedView?.layout
         host.memorySaver = memorySaver
+        host.quality = pictureQuality && host.layerRequested && !alpha
         host.discPlaylist = discPlaylist
         host.networkLease = preparedView?.url
         host.interleaveCheckStarted = preparedView != null
@@ -565,12 +571,22 @@ internal class MpvVideoBridge(
                                 host.layer = host.layerSurface != null
                                 if (!host.layer) layerSurfaceLease.release(host) {}
                                 // Alpha on the layer always copies: the hand-off made the decoder allocate a buffer per frame.
-                                if (host.layer && (host.debugCopy || host.alphaLayer)) host.copy = runCatching {
+                                // Where the output cap shrinks the picture the copy reports it (scaled_down) and Godot
+                                // turns the mode off for the file: the decoder's own surface shows more than that copy.
+                                val quality = host.quality
+                                if (host.layer && (host.debugCopy || host.alphaLayer || quality)) host.copy = runCatching {
                                     LayerCopy(host.layerSurface!!, surfaceWidth, surfaceHeight, host.copyFlip, holdable = host.alphaLayer,
                                         heldLimit = debugInt("debug.vrpp.layer.held", 8).coerceIn(2, 12),
                                         // The output resolution setting caps the compositor window as it caps the RGBA frames.
                                         maxOutputWidth = debugInt("debug.vrpp.layer.window_max", host.maxWidth),
-                                        compact = debugProperty("debug.vrpp.layer.compact").let { if (BuildConfig.DEBUG && it.isNotEmpty()) it == "1" else host.memorySaver })
+                                        compact = debugProperty("debug.vrpp.layer.compact").let { if (BuildConfig.DEBUG && it.isNotEmpty()) it == "1" else host.memorySaver },
+                                        quality = quality,
+                                        // Debug A/B of the copy's parts, plain playback only (Alpha keeps the 8-bit copy).
+                                        deep = !host.alphaLayer && debugInt("debug.vrpp.layer.deep", 0) == 1,
+                                        sharpen = if (host.alphaLayer) 0f else debugInt("debug.vrpp.layer.sharpen", 0).coerceIn(0, 100) / 100f,
+                                        windowDegrees = debugInt("debug.vrpp.layer.window", 0).coerceIn(0, 180).toFloat(),
+                                        budgetMs = debugInt("debug.vrpp.layer.budget", (LayerCopy.DEFAULT_BUDGET_MS * 10).toInt()).coerceIn(10, 200) / 10.0,
+                                        tint = debugInt("debug.vrpp.layer.tint", 0) == 1)
                                         .also { it.keepFrames = host.alphaLayer }
                                 }.onFailure { android.util.Log.w("QuestPlayer", "Layer copy unavailable", it) }.getOrNull()
                                 if (host.layer && host.copy == null && host.debugFanout) host.fanout = runCatching {
@@ -1709,13 +1725,20 @@ internal class MpvVideoBridge(
         if (session.alpha && !session.stereo && session.portraitFailed)
             pair.put("source_layout", "mono").put("presentation_mode", "portrait_flat").put("portrait_fallback", "shape_unavailable")
         if (session.depth) textRegions(session, pair)
-        // Stretch: no native stereo pair; the video shader samples the color through the near map instead.
-        if (session.depth && pair.optBoolean("depth_ran") && !depthStretch) {
-            val stereo = RenderBridgeNative.warp(session.renderer, token, session.depthShift, session.depthConvergence)
-            if (stereo > 0) pair.put("warp_texture_id", stereo) else pair.remove("warp_texture_id")
+        // Without a native pair (stretch on older GPUs) the video shader samples the color through the near map.
+        if (session.depth && pair.optBoolean("depth_ran")) {
+            val stereo = stereoPair(session, token)
+            if (stereo > 0) {
+                val size = RenderBridgeNative.warpSize(session.renderer)
+                pair.put("warp_texture_id", stereo).put("warp_width", size[0]).put("warp_height", size[1])
+            } else pair.remove("warp_texture_id")
         }
         session.alphaUploads[token] = Alpha(pair, left, right, portraitPending)
     }
+    /** The held color's native stereo pair: the fill warp, or edge stretching. */
+    private fun stereoPair(session: Session, token: Long): Int =
+        if (depthStretch) RenderBridgeNative.stretch(session.renderer, token, session.depthShift, session.depthConvergence)
+        else RenderBridgeNative.warp(session.renderer, token, session.depthShift, session.depthConvergence)
     private fun preparePortrait(session: Session, pair: JSONObject) {
         val token = pair.getLong("slot_token")
         val residual = session.portraitDepth?.frame(session.renderer, token, pair, session.portraitDepthAllowed == true, alphaFps)
@@ -1820,7 +1843,7 @@ internal class MpvVideoBridge(
                 held.forEach { (token,pair) ->
                     pair.put("depth_text_regions",org.json.JSONArray()).put("depth_text_weights",org.json.JSONArray()).put("text_protection_error","")
                     if(pair.optInt("warp_texture_id")>0)
-                        RenderBridgeNative.warp(session.renderer,token,session.depthShift,session.depthConvergence)
+                        stereoPair(session,token)
                 }
             }
             if(session.host.handle>0&&!session.host.layer)MpvSourceNative.requestFrame(session.host.handle)
@@ -1841,7 +1864,7 @@ internal class MpvVideoBridge(
                     // Both views read the limited near texture: re-limit it before any rewarp.
                     RenderBridgeNative.limitNear(session.renderer, token, session.depthShift)
                     if (pair.optInt("warp_texture_id") > 0)
-                        RenderBridgeNative.warp(session.renderer, token, session.depthShift, session.depthConvergence)
+                        stereoPair(session, token)
                 }.onFailure { android.util.Log.w("QuestPlayer", "Depth view refresh failed", it) }
             }
         } })

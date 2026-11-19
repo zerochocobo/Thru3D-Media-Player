@@ -52,3 +52,7 @@ Offline pinyin dictionary: pinned rime-pinyin-simp source, AUTHORS and Apache-2.
 ## Unity type-tree strings
 
 The common string offsets in native/unity-scene/common_strings.inc were checked against the public AssetStudio table. The matching portion is accompanied by the [AssetStudio MIT license](unity-scene/AssetStudio-LICENSE.txt). [Reference table](https://github.com/Perfare/AssetStudio/blob/d158e864b556b5970709c2a52e47944d53aa98a2/AssetStudio/CommonString.cs)
+
+## AMD FidelityFX FSR 1
+
+Picture quality mode adapts AMD FidelityFX FSR 1 EASU and RCAS under MIT. See the [source and modification notice](fidelityfx-fsr/NOTICE.md) and [full license](fidelityfx-fsr/LICENSE.txt).

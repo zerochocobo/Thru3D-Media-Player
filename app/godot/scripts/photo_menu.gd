@@ -524,7 +524,7 @@ func _draw_color_grade() -> void:
 	_set_backdrop(Vector2(1.55, height), Vector2(0, top + 0.07 - height / 2))
 	_button(PHOTO_ADJUST_BACK, "", Vector2(-0.66, top), Vector2(0.09, 0.065), true, "up")
 	_button(CLOSE, "", Vector2(0.66, top), Vector2(0.09, 0.065), true, "close")
-	_label(I18n.t("Color grading"), Vector3(0, top, 0.004), TEXT_PAGE_TITLE).font = ui_bold_font()
+	_label(I18n.t("Color & brightness"), Vector3(0, top, 0.004), TEXT_PAGE_TITLE).font = ui_bold_font()
 	var enabled: bool = _grade_target_ready()
 	var preset_width := 1.40 / Grade.PRESETS.size()
 	for i in Grade.PRESETS.size():
@@ -608,7 +608,7 @@ func _draw_panel() -> void:
 		var title := _label(I18n.t(DepthPosition.TITLE), Vector3(-0.50, -0.09, 0.004), TEXT_BODY)
 		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		_draw_depth_position_field(Vector2(0.18, -0.09), 0.66)
-	_button(PHOTO_COLOR, I18n.t("Color grading") + "  " + I18n.t(str(_state.get("color_grade", {}).get("preset", "Original"))), Vector2(0, -0.10 - extra), Vector2(1.01, 0.08), _state.get("has_image", false), "light")
+	_button(PHOTO_COLOR, I18n.t("Color & brightness") + "  " + I18n.t(str(_state.get("color_grade", {}).get("preset", "Original"))), Vector2(0, -0.10 - extra), Vector2(1.01, 0.08), _state.get("has_image", false), "light")
 	_tips[PHOTO_COLOR] = I18n.t("Saved for this image only")
 	extra += GRADE_ROW
 	_photo_background_button(PHOTO_BACKGROUND, "Set as image background", Vector2(-0.26, -0.10 - extra), Vector2(0.49, 0.08))

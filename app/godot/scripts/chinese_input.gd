@@ -1,6 +1,7 @@
 extends RefCounted
 const I18n := preload("res://scripts/i18n.gd")
 const Keyboard := preload("res://scripts/chinese_keyboard.gd")
+const QiyuController := preload("res://scripts/qiyu_controller.gd")
 static var selected := false
 static var quest := OS.has_feature("quest")
 static var pico := OS.has_feature("pico")
@@ -26,8 +27,10 @@ static func app_setting_key() -> String:
 
 static func enabled() -> bool: return selected and available()
 ## Generic Android OpenXR runtimes may not composite the system IME in VR.
-static func browser_choice_available() -> bool: return is_generic_openxr()
+## QIYU shows no system IME in VR: its pages always use the in-app keyboard (system_text_input.gd).
+static func browser_choice_available() -> bool: return is_generic_openxr() and not QiyuController.runtime
 static func browser_enabled() -> bool:
+	if QiyuController.runtime: return true
 	if browser_choice_available(): return browser_keyboard == "builtin"
 	return _quest_available() and selected
 static func active() -> bool: return is_instance_valid(popup) and popup.visible

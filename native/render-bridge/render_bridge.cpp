@@ -438,6 +438,66 @@ constexpr const char* warp_frame_oes = R"(#version 300 es
 precision highp float; precision highp int;
 uniform samplerExternalOES source;
 )";
+// Edge stretching ("stretch", the default video 2D->3D view) as a stereo pair: the video shader's
+// inverse warp (video_rvm_pair.gdshader depth_parallax), rendered once per video frame so the pair
+// can go to the compositor layer instead of being resampled into both eye buffers each display frame.
+constexpr const char* stretch_frame_body = R"(
+uniform highp sampler2D near_map; // R8 pair mask (linear sampler); the left half is the (limited) near map
+uniform vec2 uv_scale;
+uniform ivec2 size;     // eye width/height of the pair
+uniform ivec2 model;
+uniform vec4 content;   // model = content.xy + uv * content.zw
+uniform float shift;    // eye-width fraction between nearest and farthest
+uniform float convergence;
+uniform vec2 footprint; // quarter output pixel in source UV when the pair is scaled down, else zero
+uniform bool four_taps;
+uniform int text_count;
+uniform vec4 text_weights0;
+uniform vec4 text_weights1;
+uniform vec4 text_regions[8];
+out vec4 result;
+// One filtered tap over the left half, clamped to the model's own centres (as the shader's filter_linear).
+float near_at(vec2 uv) {
+    vec2 m = vec2(model);
+    vec2 q = clamp(content.xy + uv * content.zw, vec2(0.5) / m, vec2(1.0) - vec2(0.5) / m);
+    float n = texture(near_map, vec2(q.x * 0.5, q.y)).r;
+    vec2 feather = vec2(2.0) / vec2(size);
+    vec2 padding = vec2(abs(shift) * 0.5 * max(convergence, 1.0 - convergence), feather.y);
+    float weight = 0.0;
+    for (int i = 0; i < 8; ++i) {
+        if (i >= text_count) break;
+        vec4 r = text_regions[i] + vec4(-padding, padding);
+        vec2 d = min(uv - r.xy, r.zw - uv);
+        vec2 s = smoothstep(vec2(0.0), feather, d);
+        weight = max(weight, s.x * s.y * (i < 4 ? text_weights0[i] : text_weights1[i - 4]));
+    }
+    return mix(n, convergence, weight);
+}
+vec3 colour(vec2 p) {
+    if (!four_taps || (footprint.x <= 0.0 && footprint.y <= 0.0)) return texture(source, p * uv_scale).rgb;
+    return 0.25 * (texture(source, (p - footprint) * uv_scale).rgb
+        + texture(source, (p + vec2(footprint.x, -footprint.y)) * uv_scale).rgb
+        + texture(source, (p + vec2(-footprint.x, footprint.y)) * uv_scale).rgb
+        + texture(source, (p + footprint) * uv_scale).rgb);
+}
+void main() {
+    ivec2 o = ivec2(gl_FragCoord.xy);
+    int view = o.x >= size.x ? 1 : 0;
+    vec2 shown = vec2((float(o.x - view * size.x) + 0.5) / float(size.x), (float(o.y) + 0.5) / float(size.y));
+    float side = view == 0 ? 1.0 : -1.0; // left eye: near content moves right, in front of the screen
+    float k = shift * 0.5;
+    float a = shown.x - side * (1.0 - convergence) * k, b = shown.x + side * convergence * k;
+    float lo = min(a, b), hi = max(a, b);
+    vec2 p = shown;
+    for (int i = 0; i < 6; i++) {
+        p.x = 0.5 * (lo + hi);
+        if (p.x + side * (near_at(p) - convergence) * k > shown.x) { hi = p.x; } else { lo = p.x; }
+    }
+    p.x = 0.5 * (lo + hi);
+    p.x = shown.x - side * (near_at(p) - convergence) * k;
+    vec2 half_texel = vec2(0.5) / vec2(size);
+    result = vec4(colour(clamp(p, half_texel, vec2(1.0) - half_texel)), 1.0);
+})";
 GLuint shader(GLenum kind, const char* source) {
     const GLuint id = glCreateShader(kind);
     glShaderSource(id, 1, &source, nullptr); glCompileShader(id);
@@ -725,6 +785,13 @@ struct Bridge final {
     GLuint warp_keys = 0, warp_map = 0;
     GLuint warp_clear_prog = 0, warp_scatter_prog = 0, warp_classify_prog = 0, warp_frame_2d_prog = 0, warp_frame_oes_prog = 0;
     bool warp_failed = false;
+    // Video pair eye size: the fill warp keeps the source size, edge stretching may scale it.
+    int warp_width = 0, warp_height = 0;
+    // Native edge stretching: on for Adreno 7xx and newer (Quest 3 4K60: 56.5-57.7 video fps against 58.5-58.7
+    // in the eye buffers); XR2 Gen 1 class GPUs keep the shader. `setprop debug.vrpp.stretch.native 0|1` overrides.
+    GLuint stretch_2d_prog = 0, stretch_oes_prog = 0, stretch_sampler = 0;
+    int stretch_native = -1, stretch_taps = 4; // debug.vrpp.stretch.taps 1: one colour tap when scaled
+    uint64_t stretch_frames = 0;
     std::vector<unsigned char> map_near; // near map the current `warp_map` was built from
     float map_half = -1.f, map_convergence = -1.f;
     std::vector<float> map_text, map_text_weights;
@@ -829,7 +896,9 @@ struct Bridge final {
         if (freeze_oes) glDeleteProgram(freeze_oes);
         if (warp_keys) glDeleteBuffers(1, &warp_keys);
         if (warp_map) glDeleteTextures(1, &warp_map);
-        for (GLuint prog : {warp_clear_prog, warp_scatter_prog, warp_classify_prog, warp_frame_2d_prog, warp_frame_oes_prog})
+        if (stretch_sampler) glDeleteSamplers(1, &stretch_sampler);
+        for (GLuint prog : {warp_clear_prog, warp_scatter_prog, warp_classify_prog, warp_frame_2d_prog, warp_frame_oes_prog,
+                            stretch_2d_prog, stretch_oes_prog})
             if (prog) glDeleteProgram(prog);
     }
     static void release_decoder(Slot& slot) {
@@ -1259,11 +1328,106 @@ struct Bridge final {
     // 2D->3D: renders the held color's stereo pair from its just-uploaded near map. shift is the
     // eye-width fraction of the full parallax, convergence the near value left on the screen plane.
     // Returns 0 when this GL or source cannot run it (the display keeps its shader parallax).
+    // Edge-stretching pair eye size: the source scaled to fit 2560x2160 (`setprop debug.vrpp.warp.max_width N`
+    // for A/B, read once per bridge).
+    void video_warp_size() {
+        if (warp_width) return;
+        int cap = 2560;
+        char value[PROP_VALUE_MAX] = {};
+        if (__system_property_get("debug.vrpp.warp.max_width", value) > 0) cap = std::clamp(atoi(value), 640, 7680);
+        const double scale = std::min({1.0, static_cast<double>(cap) / width, 2160.0 / height});
+        warp_width = std::max(2, static_cast<int>(std::lround(width * scale)) & ~1);
+        warp_height = std::max(2, static_cast<int>(std::lround(height * scale)) & ~1);
+    }
+    // Edge stretching as a stereo pair of the held color (see stretch_frame_body). 0: not enabled here.
+    GLuint stretch(jlong token, float shift, float convergence) {
+        current();
+        if (stretch_native < 0) {
+            char value[PROP_VALUE_MAX] = {};
+            if (__system_property_get("debug.vrpp.stretch.native", value) > 0 && (value[0] == '0' || value[0] == '1')) {
+                stretch_native = value[0] == '1';
+            } else {
+                const auto* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+                const char* digits = renderer ? std::strpbrk(renderer, "0123456789") : nullptr;
+                stretch_native = renderer && std::strstr(renderer, "Adreno") && digits && atoi(digits) >= 700;
+            }
+            if (__system_property_get("debug.vrpp.stretch.taps", value) > 0 && std::strcmp(value, "1") == 0) stretch_taps = 1;
+        }
+        if (!stretch_native || warp_failed || layout != 0) return 0;
+        auto& slot = find(token);
+        if (slot.phase != Phase::held || (!slot.alpha_fence && !slot.alpha_valid) || slot.near.empty())
+            throw std::runtime_error("2D->3D stretch requires a held color with a fresh near map");
+        video_warp_size();
+        const int W = warp_width, H = warp_height;
+        State state;
+        GLint unit1_2d = 0, unit1_sampler = 0;
+        glActiveTexture(GL_TEXTURE1); glGetIntegerv(GL_TEXTURE_BINDING_2D, &unit1_2d); glGetIntegerv(GL_SAMPLER_BINDING, &unit1_sampler);
+        glBindSampler(1, 0); glActiveTexture(GL_TEXTURE0);
+        try {
+            if (!stretch_oes_prog) {
+                stretch_2d_prog = program((std::string(warp_frame_2d) + stretch_frame_body).c_str());
+                stretch_oes_prog = program((std::string(warp_frame_oes) + stretch_frame_body).c_str());
+                glGenSamplers(1, &stretch_sampler);
+                glSamplerParameteri(stretch_sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glSamplerParameteri(stretch_sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glSamplerParameteri(stretch_sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glSamplerParameteri(stretch_sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            }
+            if (!slot.warp) {
+                image(slot.warp, W * 2, H);
+                if (glGetError() != GL_NO_ERROR) throw std::runtime_error("2D->3D stretch allocation GL error");
+            }
+            frame_timer.start();
+            target(slot.warp, W * 2, H);
+            const GLuint prog = slot.decoder_texture ? stretch_oes_prog : stretch_2d_prog;
+            glUseProgram(prog);
+            if (slot.decoder_texture) {
+                glBindTexture(GL_TEXTURE_EXTERNAL_OES, slot.decoder_texture);
+                glUniform2f(glGetUniformLocation(prog, "uv_scale"), slot.uv_scale[0], slot.uv_scale[1]);
+            } else {
+                glBindTexture(GL_TEXTURE_2D, slot.source());
+                glUniform2f(glGetUniformLocation(prog, "uv_scale"), 1.f, 1.f);
+            }
+            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, slot.alpha); glBindSampler(1, stretch_sampler);
+            glActiveTexture(GL_TEXTURE0);
+            glUniform1i(glGetUniformLocation(prog, "source"), 0); glUniform1i(glGetUniformLocation(prog, "near_map"), 1);
+            glUniform1i(glGetUniformLocation(prog, "four_taps"), stretch_taps == 4 ? 1 : 0);
+            glUniform2i(glGetUniformLocation(prog, "size"), W, H);
+            glUniform2i(glGetUniformLocation(prog, "model"), input_width, input_height);
+            glUniform4fv(glGetUniformLocation(prog, "content"), 1, content_rect.data());
+            glUniform1f(glGetUniformLocation(prog, "shift"), shift);
+            glUniform1f(glGetUniformLocation(prog, "convergence"), convergence);
+            glUniform2f(glGetUniformLocation(prog, "footprint"), W < width ? 0.25f / W : 0.f, H < height ? 0.25f / H : 0.f);
+            const auto& regions = slot.text_regions;
+            glUniform1i(glGetUniformLocation(prog, "text_count"), static_cast<int>(regions.size() / 4));
+            if (!regions.empty()) glUniform4fv(glGetUniformLocation(prog, "text_regions"), static_cast<GLsizei>(regions.size() / 4), regions.data());
+            std::array<float, 8> opacity; opacity.fill(1.f);
+            std::copy(slot.text_weights.begin(), slot.text_weights.end(), opacity.begin());
+            glUniform4fv(glGetUniformLocation(prog, "text_weights0"), 1, opacity.data());
+            glUniform4fv(glGetUniformLocation(prog, "text_weights1"), 1, opacity.data() + 4);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            frame_timer.stop();
+            if (glGetError() != GL_NO_ERROR) throw std::runtime_error("2D->3D stretch GL error");
+            if (slot.alpha_fence) glDeleteSync(slot.alpha_fence);
+            slot.alpha_fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+            if (!slot.alpha_fence) throw std::runtime_error("2D->3D stretch fence unavailable");
+            glFlush();
+            stretch_frames++;
+        } catch (const std::exception& failure) {
+            warp_failed = true;
+            __android_log_print(ANDROID_LOG_WARN, "QuestRenderBridge", "2D->3D stretch unavailable: %s", failure.what());
+        }
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(unit1_2d));
+        glBindSampler(1, static_cast<GLuint>(unit1_sampler)); glActiveTexture(GL_TEXTURE0);
+        while (glGetError() != GL_NO_ERROR) {}
+        return warp_failed ? 0 : slot.warp;
+    }
     GLuint warp(jlong token, float shift, float convergence, GLuint matte = 0, const float* matte_content = nullptr) {
         current(); auto& slot = find(token);
         if (slot.phase != Phase::held || (!slot.alpha_fence && !slot.alpha_valid) || slot.near.empty())
             throw std::runtime_error("2D->3D warp requires a held color with a fresh near map");
         if (warp_failed || layout != 0 || width > 2560 || height > 2160) return 0;
+        warp_width = width; warp_height = height;
         State state;
         GLint unit1_2d = 0, unit1_sampler = 0, ssbo = 0, ssbo0 = 0, image0 = 0;
         glActiveTexture(GL_TEXTURE1); glGetIntegerv(GL_TEXTURE_BINDING_2D, &unit1_2d); glGetIntegerv(GL_SAMPLER_BINDING, &unit1_sampler);
@@ -1561,11 +1725,12 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_freezePair(JNIEnv* env, j
             throw std::runtime_error("Freeze requires one complete held display pair and no previous snapshot");
         const bool warp = warped == JNI_TRUE;
         if (warp && !slot.warp) throw std::runtime_error("Frozen stereo warp unavailable");
-        const int width = b.width * (warp ? 2 : 1);
+        const int width = warp ? b.warp_width * 2 : b.width;
+        const int height = warp ? b.warp_height : b.height;
         const auto started = std::chrono::steady_clock::now();
         State state;
         auto frozen = std::make_unique<FrozenFrame>();
-        image(frozen->color, width, b.height);
+        image(frozen->color, width, height);
         image(frozen->alpha, b.input_width * 2, b.input_height, GL_R8);
         glBindFramebuffer(GL_FRAMEBUFFER, b.fbo); glBindVertexArray(b.vao); glActiveTexture(GL_TEXTURE0);
         auto copy = [&](GLuint source, GLenum target, GLuint destination, int w, int h, GLuint prog) {
@@ -1581,8 +1746,8 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_freezePair(JNIEnv* env, j
         };
         if (!warp && slot.decoder_texture) {
             if (!b.freeze_oes) b.freeze_oes = program(freeze_oes_fragment);
-            copy(slot.decoder_texture, GL_TEXTURE_EXTERNAL_OES, frozen->color, width, b.height, b.freeze_oes);
-        } else copy(warp ? slot.warp : slot.source(), GL_TEXTURE_2D, frozen->color, width, b.height, b.copy_2d);
+            copy(slot.decoder_texture, GL_TEXTURE_EXTERNAL_OES, frozen->color, width, height, b.freeze_oes);
+        } else copy(warp ? slot.warp : slot.source(), GL_TEXTURE_2D, frozen->color, width, height, b.copy_2d);
         copy(slot.alpha, GL_TEXTURE_2D, frozen->alpha, b.input_width * 2, b.input_height, b.copy_2d);
         if (slot.portrait_valid && !warp) {
             image(frozen->portrait, b.input_width, b.input_height, GL_R8);
@@ -1593,7 +1758,7 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_freezePair(JNIEnv* env, j
         glFinish(); check_gl("Freeze frame GPU completion");
         if (sequence == std::numeric_limits<jlong>::max()) throw std::runtime_error("Frozen handle space exhausted");
         const jlong handle = ++sequence;
-        const jlong values[] = {handle, frozen->color, frozen->alpha, width, b.height,
+        const jlong values[] = {handle, frozen->color, frozen->alpha, width, height,
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count(), frozen->portrait};
         auto result = env->NewLongArray(7);
         if (!result) return nullptr;
@@ -1928,6 +2093,24 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_warp(JNIEnv* env, jclass,
             throw std::runtime_error("2D->3D warp parameters invalid");
         std::lock_guard<std::mutex> guard(registry_mutex); return static_cast<jint>(find(id).warp(token, shift, convergence));
     } catch (const std::exception& e) { error(env, e.what()); return 0; }
+}
+extern "C" JNIEXPORT jint JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_stretch(JNIEnv* env, jclass, jlong id, jlong token, jfloat shift, jfloat convergence) {
+    try {
+        if (!std::isfinite(shift) || !std::isfinite(convergence) || shift < 0.f || shift > 0.2f || convergence < 0.f || convergence > 1.f)
+            throw std::runtime_error("2D->3D stretch parameters invalid");
+        std::lock_guard<std::mutex> guard(registry_mutex); return static_cast<jint>(find(id).stretch(token, shift, convergence));
+    } catch (const std::exception& e) { error(env, e.what()); return 0; }
+}
+extern "C" JNIEXPORT jintArray JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_warpSize(JNIEnv* env, jclass, jlong id) {
+    try {
+        std::lock_guard<std::mutex> guard(registry_mutex); auto& bridge = find(id);
+        const jint values[] = {bridge.warp_width * 2, bridge.warp_height};
+        auto result = env->NewIntArray(2);
+        if (result) env->SetIntArrayRegion(result, 0, 2, values);
+        return result;
+    } catch (const std::exception& e) { error(env, e.what()); return nullptr; }
 }
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_alphaReady(JNIEnv* env, jclass, jlong id, jlong token) {

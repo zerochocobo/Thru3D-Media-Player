@@ -16,9 +16,13 @@ var _decoder_color: ExternalTexture
 var alpha_rid := RID()
 var portrait_rid := RID()
 var ticket: Dictionary = {}
-## 2D->3D: the bridge rendered this mono frame's stereo pair (side by side, 2W x H); it is shown
+## 2D->3D: the bridge rendered this mono frame's stereo pair (side by side, warp_size); it is shown
 ## instead of the color, with no shader parallax.
 var warped := false
+
+## Both eyes of a warped pair: large sources are scaled to the bridge's realtime budget.
+static func warp_size(pair: Dictionary) -> Vector2i:
+	return Vector2i(int(pair.get("warp_width", int(pair.width) * 2)), int(pair.get("warp_height", pair.height)))
 
 ## The picture of a layer pair is on the compositor's video layer: nothing to bind here.
 var layer := false
@@ -86,7 +90,7 @@ func bind(target: ShaderMaterial, pair: Dictionary) -> bool:
 		return false
 	if warped:
 		color_rid = RenderingServer.texture_create_from_native_handle(RenderingServer.TEXTURE_TYPE_2D,
-			Image.FORMAT_RGBA8, int(pair.warp_texture_id), int(pair.width) * 2, int(pair.height), 1)
+			Image.FORMAT_RGBA8, int(pair.warp_texture_id), warp_size(pair).x, warp_size(pair).y, 1)
 	elif not decoder:
 		color_rid = RenderingServer.texture_create_from_native_handle(RenderingServer.TEXTURE_TYPE_2D,
 			Image.FORMAT_RGBA8, int(pair.color_texture_id), int(pair.width), int(pair.height), 1)
@@ -105,7 +109,7 @@ func bind(target: ShaderMaterial, pair: Dictionary) -> bool:
 	if warped:
 		ticket.stereo_sbs = true
 		ticket.color_target = "texture"
-	material.set_shader_parameter("source_size", Vector2(int(pair.width) * (2 if warped else 1), pair.height))
+	material.set_shader_parameter("source_size", Vector2(warp_size(pair)) if warped else Vector2(pair.width, pair.height))
 	material.set_shader_parameter("model_size", Vector2(pair.input_width, pair.input_height))
 	material.set_shader_parameter("model_content_rect", Vector4(rect[0], rect[1], rect[2], rect[3]))
 	material.set_shader_parameter("stereo_sbs", bool(pair.stereo_sbs) or warped)

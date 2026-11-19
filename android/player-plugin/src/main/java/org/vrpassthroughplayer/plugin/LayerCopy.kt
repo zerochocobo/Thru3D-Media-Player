@@ -32,7 +32,14 @@ import java.util.concurrent.atomic.AtomicLong
  */
 internal class LayerCopy(private val target: Surface, width: Int, height: Int, private val flip: Boolean = true,
                          private val holdable: Boolean = false, private val heldLimit: Int = HELD_LIMIT,
-                         private val maxOutputWidth: Int = 0, private val compact: Boolean = false) : LayerFrames {
+                         private val maxOutputWidth: Int = 0, private val compact: Boolean = false,
+                         /** Picture quality mode: 10 bits a channel with the source's HDR colour space, the
+                          * player's sharpening around where the head looks and its colour grade ([picture]).
+                          * Debug: [deep] alone, a fixed [sharpen] 0..1, [windowDegrees] as the window's half angle
+                          * (0 sizes it by [budgetMs] of GPU time a frame) and [tint] to mark the window. */
+                         private val quality: Boolean = false, deep: Boolean = false, private val sharpen: Float = 0f,
+                         private val windowDegrees: Float = 0f, private val budgetMs: Double = DEFAULT_BUDGET_MS,
+                         private val tint: Boolean = false) : LayerFrames {
     private val thread = HandlerThread("LayerCopy").apply { start() }
     private val handler = Handler(thread.looper)
     private val reader = ImageReader.newInstance(width, height, ImageFormat.PRIVATE,
@@ -43,6 +50,24 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
     private var config: EGLConfig? = null
     private var window: EGLSurface = EGL14.EGL_NO_SURFACE
     private var windowSize = 0 to 0
+    private var windowDataSpace = 0 // copy thread: the HDR colour space set on the window (0: none)
+    @Volatile private var gpuMs = 0.0
+    @Volatile private var sourceDataSpace = 0
+    @Volatile private var halfDegrees = if (windowDegrees > 0f) windowDegrees else START_DEGREES
+    private var sinceResize = 0 // copy thread: draws since the window last changed size
+    private val area = FloatArray(8) // copy thread
+    private val grade = FloatArray(11) // copy thread
+    @Volatile private var deep = deep || quality // false again where the display offers no 10-bit surface
+    @Volatile private var strength = 0f // the sharpening drawn last
+    private var working = false // copy thread: the last draw denoised, enlarged or sharpened inside the window
+    // Picture quality mode keeps the frame on show (copy thread) and draws it again when the settings or the
+    // head's direction change with no new frame coming: a paused picture follows the menu and the head.
+    private var shown: Held? = null
+    private var shownLook: FloatArray? = null
+    private var shownFocus: FloatArray? = null
+    private val redraw = Runnable { redrawShown() }
+    @Volatile private var scaledDown = false
+    @Volatile private var enlarged = false
     private class Held(val image: Image?, val sequence: Long, val arrivedMs: Long,
                        val slot: Int = -1, val outWidth: Int = 0, val outHeight: Int = 0) // slot: a packed copy
     private val freeSlots = ArrayDeque<Int>() // copy thread: packed copies made and free
@@ -118,15 +143,54 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
         while (held.isNotEmpty() && now - held.peekFirst()!!.arrivedMs >= delayMs) draw(held.removeFirst())
     }
 
+    /** Draws the frame on show again if what it was drawn with has changed, and looks again later. */
+    private fun redrawShown() {
+        val frame = shown ?: return
+        if (closed) return
+        val now = focus
+        val before = shownFocus
+        // Half a degree: less is the head's tremor, and the window's edge is a soft one.
+        val moved = now != null && (before == null || before.size != now.size || now.indices.any { it >= 4 && now[it] != before[it] } ||
+            Math.abs(now[0] - before[0]) > now[2] * 0.5f || Math.abs(now[1] - before[1]) > now[3] * 0.5f)
+        if (picture !== shownLook || (moved && working) || (now != null && before == null)) draw(frame)
+        else handler.postDelayed(redraw, IDLE_MS)
+    }
+
     /** The visible size of [image] and the window size it is drawn at. */
     private fun sizes(image: Image): IntArray {
         val crop = image.cropRect
         val w = crop.width().takeIf { it > 0 } ?: image.width
         val h = crop.height().takeIf { it > 0 } ?: image.height
         // The compositor surface may be narrower than the video (memory): the copy scales it down.
-        val outW = if (maxOutputWidth in 1 until w) maxOutputWidth else w
-        val outH = if (outW == w) h else (h.toLong() * outW / w).toInt() and 1.inv()
+        var outW = if (maxOutputWidth in 1 until w) maxOutputWidth else w
+        var outH = if (outW == w) h else (h.toLong() * outW / w).toInt() and 1.inv()
+        // Super resolution: picture quality mode enlarges a low-resolution source; the draw then runs EASU
+        // before RCAS. Never past the output cap, which is there for this headset's memory.
+        if (outW == w) enlargedSize(w, h)?.takeIf { maxOutputWidth <= 0 || it.first <= maxOutputWidth }?.let { outW = it.first; outH = it.second }
+        scaledDown = outW < w; enlarged = outW > w
         return intArrayOf(w, h, outW, outH)
+    }
+
+    /** The size super resolution shows a [w] x [h] frame at, or null to leave it (mpv_video_display.gd's
+     * upscale_size holds the same rule for the menu). Each eye's picture grows to fit the box for its kind:
+     * a flat picture 4K (its long side 3840, as many pixels as 3840 x 2160), a VR180 eye 2880 x 2880, a
+     * VR360 eye 5760 x 2880; and the whole frame stays within the pixels of an 8K VR frame, which lets a
+     * 3840 x 3840 top-bottom 360 picture (a common older format) reach 5760 x 5760. */
+    private fun enlargedSize(w: Int, h: Int): Pair<Int, Int>? {
+        val look = picture ?: return null
+        if (!quality || look.size < 17 || look[13] < 0.5f) return null
+        val moderate = look[13] < 1.5f // twice the size at most, where EASU is at its best
+        val eyeW = w.toDouble() / (if (look[15] > 1.5f) 2 else 1)
+        val eyeH = h.toDouble() / (if (look[16] > 1.5f) 2 else 1)
+        var scale = when (look[14].toInt()) {
+            0 -> minOf(FLAT_LONG / maxOf(eyeW, eyeH), Math.sqrt(FLAT_PIXELS / (eyeW * eyeH)))
+            1 -> minOf(VR180_EYE / eyeW, VR180_EYE / eyeH)
+            else -> minOf(VR360_EYE_WIDTH / eyeW, VR360_EYE_HEIGHT / eyeH)
+        }
+        scale = minOf(scale, Math.sqrt(FRAME_PIXELS / (w.toDouble() * h)))
+        if (moderate) scale = minOf(scale, 2.0)
+        if (scale < MIN_ENLARGEMENT) return null
+        return (Math.round(w * scale).toInt() and 1.inv()) to (Math.round(h * scale).toInt() and 1.inv())
     }
 
     /** Memory saver: packs [image] into a free slot, returns its buffer to the decoder (the newest
@@ -191,11 +255,25 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
             val (w, h, outW, outH) = sizes(image)
             lastSize = "${w}x$h of ${image.width}x${image.height} to ${outW}x$outH"
             if (!ensureWindow(outW, outH)) return
+            if (deep || quality) tagDataSpace(image)
             val buffer = image.hardwareBuffer ?: return
             val started = SystemClock.elapsedRealtimeNanos()
             try {
                 if (android.os.Build.VERSION.SDK_INT >= 31) bufferIds.add(buffer.id)
-                if (!VideoLayerNative.blitBuffer(buffer, w, h, image.width, image.height, outW, outH, flip)) { failed.incrementAndGet(); return }
+                val look = picture
+                shownLook = look; shownFocus = focus
+                // Without a direction yet the whole 8K frame would be worked on: a negative strength waits for one.
+                val amount = if (sharpen > 0f) sharpen else if (!quality) 0f else if (focus == null) -1f else look?.get(0) ?: 0f
+                val denoising = quality && look != null && look.size >= 19 && look[18] > 0f
+                strength = maxOf(amount, 0f)
+                working = amount >= 0f && (amount > 0f || denoising || outW > w)
+                val graded = if (quality && look != null && look.size >= 13 && look[1] > 0.5f) grade.also { look.copyInto(it, 0, 2, 13) } else null
+                if (!VideoLayerNative.blitBuffer(buffer, w, h, image.width, image.height, outW, outH, flip, quality || amount > 0f,
+                        amount, if (working) window() else null, graded, if (denoising) look!![17] else 0f, if (denoising) look!![18] else 0f)) {
+                    failed.incrementAndGet(); return
+                }
+                gpuMs = VideoLayerNative.blitGpuMs()
+                resizeWindow()
             } finally { buffer.close() }
             if (EGL14.eglSwapBuffers(display, window)) { drawn.incrementAndGet(); presented = frame.sequence }
             else { failed.incrementAndGet(); lastError = "swap 0x" + Integer.toHexString(EGL14.eglGetError()) }
@@ -204,18 +282,65 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
         } catch (failure: Throwable) {
             failed.incrementAndGet(); lastError = failure.toString().take(160)
         } finally {
-            image.close() // the buffer goes back to the decoder
+            // The buffer goes back to the decoder: at once, or when the next frame has taken its place.
+            if (quality && !hold && !closed) {
+                if (shown !== frame) { shown?.image?.close(); shown = frame }
+                handler.removeCallbacks(redraw); handler.postDelayed(redraw, IDLE_MS)
+            } else {
+                if (shown !== frame) shown?.image?.close()
+                shown = null
+                image.close()
+            }
         }
+    }
+
+    /** The sharpening window around the head's direction, or null for the whole frame (no direction
+     * reported yet, or a window wide enough to cover a 180 degree picture). */
+    private fun window(): FloatArray? {
+        val focus = focus ?: return null
+        if (halfDegrees >= FULL_DEGREES) return null
+        area[0] = focus[0]; area[1] = focus[1]
+        area[2] = focus[2] * halfDegrees; area[3] = focus[3] * halfDegrees
+        val layout = focus[4].toInt()
+        area[4] = if (layout == 1) 2f else 1f; area[5] = if (layout == 2) 2f else 1f
+        area[6] = focus[5]; area[7] = if (tint) 1f else 0f
+        return area
+    }
+
+    /** Sized by cost: the copy's GPU time is smoothed over about a second, so one step each half second. */
+    private fun resizeWindow() {
+        if (!working || windowDegrees > 0f || gpuMs <= 0.0 || ++sinceResize < RESIZE_DRAWS) return
+        sinceResize = 0
+        halfDegrees = when {
+            gpuMs > budgetMs -> halfDegrees * 0.9f
+            gpuMs < budgetMs * 0.9 -> halfDegrees * 1.06f
+            else -> halfDegrees
+        }.coerceIn(MIN_DEGREES, FULL_DEGREES)
+    }
+
+    /** HDR10 and HLG frames keep their primaries and transfer on the window (full range RGB), so the
+     * compositor converts the copy as it converts the decoder's own surface. SDR stays untagged. */
+    private fun tagDataSpace(image: Image) {
+        if (android.os.Build.VERSION.SDK_INT < 33) return
+        val source = image.dataSpace
+        val transfer = source and TRANSFER_MASK
+        val wanted = if (transfer == TRANSFER_ST2084 || transfer == TRANSFER_HLG) (source and STANDARD_MASK) or transfer or RANGE_FULL else 0
+        sourceDataSpace = source
+        if (wanted == windowDataSpace) return
+        if (wanted != 0 && !VideoLayerNative.setWindowDataSpace(target, wanted)) lastError = "setBuffersDataSpace"
+        windowDataSpace = wanted
     }
 
     private fun setUp() {
         display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
         val version = IntArray(2)
         if (!EGL14.eglInitialize(display, version, 0, version, 1)) { lastError = "eglInitialize"; return }
-        val attributes = intArrayOf(EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8, EGL14.EGL_ALPHA_SIZE, 8,
-            EGL14.EGL_RENDERABLE_TYPE, EGLExt.EGL_OPENGL_ES3_BIT_KHR, EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT, EGL14.EGL_NONE)
         val configs = arrayOfNulls<EGLConfig>(1); val count = IntArray(1)
-        if (!EGL14.eglChooseConfig(display, attributes, 0, configs, 0, 1, count, 0) || count[0] == 0) { lastError = "eglChooseConfig"; return }
+        fun choose(bits: Int, alpha: Int) = EGL14.eglChooseConfig(display, intArrayOf(EGL14.EGL_RED_SIZE, bits, EGL14.EGL_GREEN_SIZE, bits,
+            EGL14.EGL_BLUE_SIZE, bits, EGL14.EGL_ALPHA_SIZE, alpha, EGL14.EGL_RENDERABLE_TYPE, EGLExt.EGL_OPENGL_ES3_BIT_KHR,
+            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT, EGL14.EGL_NONE), 0, configs, 0, 1, count, 0) && count[0] > 0
+        if (deep && !choose(10, 2)) deep = false
+        if (!deep && !choose(8, 8)) { lastError = "eglChooseConfig"; return }
         config = configs[0]
         context = EGL14.eglCreateContext(display, config, EGL14.EGL_NO_CONTEXT,
             intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 3, EGL14.EGL_NONE), 0)
@@ -229,7 +354,8 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
             EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
             EGL14.eglDestroySurface(display, window); window = EGL14.EGL_NO_SURFACE
         }
-        if (!VideoLayerNative.setWindowGeometry(target, w, h)) { lastError = "setBuffersGeometry"; return false }
+        if (!VideoLayerNative.setWindowGeometry(target, w, h, deep)) { lastError = "setBuffersGeometry"; return false }
+        windowDataSpace = 0
         window = EGL14.eglCreateWindowSurface(display, config, target, intArrayOf(EGL14.EGL_NONE), 0)
         if (window == EGL14.EGL_NO_SURFACE) { lastError = "eglCreateWindowSurface 0x" + Integer.toHexString(EGL14.eglGetError()); return false }
         if (!EGL14.eglMakeCurrent(display, window, window, context)) { lastError = "eglMakeCurrent"; return false }
@@ -255,6 +381,9 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
     override fun stats(): JSONObject = JSONObject().put("arrived", arrived.get()).put("drawn", drawn.get()).put("failed", failed.get())
         .put("early", early.get()).put("held_limit", heldLimit).put("compact", compact).put("packed_slots", packedSlots).put("skipped", skipped.get()).put("max_fps", maxFps).put("hold", hold).put("delay_ms", delayMs).put("blend_delay_ms", blendDelayMs).put("presented", presented)
         .put("distinct_buffers", bufferIds.size).put("draw_ms", drawMs).put("size", lastSize).put("error", lastError)
+        .put("gpu_ms", gpuMs).put("scaled_down", scaledDown).put("enlarged", enlarged).put("quality", quality).put("deep", deep).put("sharpen", strength.toDouble()).put("budget_ms", budgetMs)
+        .put("window_degrees", halfDegrees.toDouble()).put("focus", focus?.let { "%.3f,%.3f".format(it[0], it[1]) } ?: "")
+        .put("data_space", windowDataSpace).put("source_data_space", sourceDataSpace)
 
     /** Waits (up to a second) for the copy thread to let go of the compositor surface, which its owner
      * destroys next. */
@@ -265,6 +394,8 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
         handler.post {
             handler.removeCallbacksAndMessages(this)
             while (held.isNotEmpty()) runCatching { held.removeFirst().image?.close() }
+            handler.removeCallbacks(redraw)
+            runCatching { shown?.image?.close() }; shown = null
             synchronized(this) { latest?.release(); latest = null }
             if (context != EGL14.EGL_NO_CONTEXT) {
                 if (window != EGL14.EGL_NO_SURFACE) EGL14.eglMakeCurrent(display, window, window, context)
@@ -293,5 +424,34 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
         private const val MAX_DELAY_MS = 250L
         private const val MARGIN_MS = 20.0
         private const val UNCAPPED_FPS = 60 // frames a second to budget for when no Alpha rate is set
+        // Quest 3, 10-bit 8K60 at 120 Hz: windows of 45 to 60 degrees (4.4 to 5.2 ms a frame) held 115 to 117 FPS.
+        // A 3.5 ms budget shrank the window under 20 degrees, sharpening little more than the centre.
+        const val DEFAULT_BUDGET_MS = 5.0
+        private const val START_DEGREES = 40f
+        private const val MIN_DEGREES = 30f
+        private const val FULL_DEGREES = 100f
+        private const val RESIZE_DRAWS = 30
+        private const val IDLE_MS = 50L // without a frame for this long, the one on show is looked at again
+        /** Where the head looks in one eye's picture (Godot, every frame): u, v, UV per degree across and
+         * down, layout (0 one picture, 1 side by side, 2 top and bottom), 1 when longitude wraps. */
+        @Volatile var focus: FloatArray? = null
+        /** The player's picture settings (Godot, when they change): sharpening 0..1, 1 when graded, then the
+         * grade's gain, gamma and offset per channel, contrast and saturation; then super resolution:
+         * its level (0 off, 1 moderate, 2 maximum), the picture's kind (0 flat, 1 VR180, 2 VR360) and its
+         * eyes across and down; then the denoising's step in source pixels and its tolerance (0: off). */
+        @Volatile var picture: FloatArray? = null
+        private const val FLAT_LONG = 3840.0
+        private const val FLAT_PIXELS = 3840.0 * 2160.0
+        private const val VR180_EYE = 2880.0
+        private const val VR360_EYE_WIDTH = 5760.0
+        private const val VR360_EYE_HEIGHT = 2880.0
+        private const val FRAME_PIXELS = 8192.0 * 4096.0
+        private const val MIN_ENLARGEMENT = 1.15 // less than this is not worth a second pass
+        // android.hardware.DataSpace bit fields.
+        private const val STANDARD_MASK = 63 shl 16
+        private const val TRANSFER_MASK = 31 shl 22
+        private const val TRANSFER_ST2084 = 7 shl 22
+        private const val TRANSFER_HLG = 8 shl 22
+        private const val RANGE_FULL = 1 shl 27
     }
 }

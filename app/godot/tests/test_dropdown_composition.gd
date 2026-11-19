@@ -46,7 +46,7 @@ func verify(capture: Node, library: Node3D, tag: String, fixed_sizes: Array) -> 
 	var options: Array = library._buttons.filter(func(button):
 		var item: Dictionary = library.choices.targets.get(button.target, {})
 		return item.get("kind", "") == "choose" and item.get("key", "") == "display_quality")
-	check(options.size() == 4, tag + " has all render scale choices")
+	check(options.size() == library.Quality.SCALES.size() + 1, tag + " has all render scale choices")
 
 func render_captures(capture: Node, folder: String = "captures") -> void:
 	# Optional actual OpenGL texture check; headless CI still checks the full interaction matrix.

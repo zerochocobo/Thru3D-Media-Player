@@ -1,9 +1,12 @@
 extends RefCounted
 const ChineseInput := preload("res://scripts/chinese_input.gd")
+const QiyuController := preload("res://scripts/qiyu_controller.gd")
 const CUSTOM_CONTEXTS := ["cloud_search", "media_server_search", "web_library_search", "web_library_title", "subtitle_filter",
 	"voice-name", "background_name", "file_rename", "playlist_name", "smb_name", "smb_user", "account_name", "account_username", "archive_password"]
 const OPENXR_CUSTOM_CONTEXTS := ["smb_user", "file_rename", "playlist_name"]
 const LATIN_CONTEXTS := ["smb_user", "account_username", "archive_password"]
+## Addresses start in Latin wherever the in-app keyboard edits them.
+const ADDRESS_CONTEXTS := ["web_browser", "web_home", "web_video", "web_library_url", "smb_host", "dlna_host", "dlna_port"]
 ## A standard engine editor supplies Unicode, selection and IME composition.
 ## Android's engine bridge opens the installed system keyboard; OpenXR has no
 ## portable keyboard API. The 3D menu displays the draft, not another key layout.
@@ -17,7 +20,12 @@ var cancelled: Callable
 var custom := false
 var current: Callable
 
+## QIYU shows no system IME in VR (user, 2026-11-19: web sign-in fields took no input): every
+## field uses the in-app keyboard there, without its switch to the invisible system keyboard.
+static func system_keyboard_hidden() -> bool: return QiyuController.runtime
+
 static func uses_custom(tag: String) -> bool:
+	if system_keyboard_hidden(): return true
 	if not ChineseInput.enabled(): return false
 	return tag in (OPENXR_CUSTOM_CONTEXTS if ChineseInput.is_generic_openxr() else CUSTOM_CONTEXTS)
 
@@ -68,11 +76,12 @@ func _focus(id: int) -> void:
 	if custom:
 		# The ray popup owns keys; retain the standard editor's caret/selection model.
 		if not _custom_alive(id): return
-		var start_latin := context in LATIN_CONTEXTS and not (context == "smb_user" and ChineseInput.is_generic_openxr())
+		var start_latin := (context in LATIN_CONTEXTS and not (context == "smb_user" and ChineseInput.is_generic_openxr())) 			or context in ADDRESS_CONTEXTS or editor.secret
 		ChineseInput.open(host, keyboard_id(),
 			func(operation, value): return _custom_action(operation, value) if _custom_alive(id) else false,
 			func(): return _custom_alive(id),
-			func(): return ("•".repeat(editor.text.length()) if editor.secret else editor.text).insert(editor.caret_column, "│"), start_latin, true)
+			func(): return ("•".repeat(editor.text.length()) if editor.secret else editor.text).insert(editor.caret_column, "│"), start_latin,
+			not system_keyboard_hidden())
 		return
 	editor.grab_focus()
 	editor.edit()

@@ -130,6 +130,11 @@ var cadence_supported := false
 ## The compositor shows an HDR10/HLG decoder surface as SDR itself: Quest 3, 2026-11-13, close to the
 ## SDR reference and better than MPV's conversion. PICO shows it washed out (user report).
 var hdr_surface := false
+## Picture quality mode (the layer copy sharpens and grades the picture): a 10-bit copy tagged with the
+## source's colour space matches the decoder's own surface on the Meta compositor (Quest 3, 2026-11-19).
+## Offered on every runtime (unverified beyond Meta's): where HDR to SDR converts, an HDR file is off the
+## layer and the mode works on MPV's SDR frames, so the compositor's reading of the tag does not matter.
+var picture_quality := false
 var cadence_enabled := true
 var _cadence_ms := -CADENCE_INTERVAL_MS
 
@@ -242,6 +247,7 @@ func update_session() -> void:
 	_surface_flip = _surface_vertical_flip(runtime_name, driver, pico_build, system_name)
 	cadence_supported = cadence_runtime(runtime_name, pico_build)
 	hdr_surface = hdr_surface_runtime(runtime_name, pico_build)
+	picture_quality = true
 	_sent_count = -1
 	DiagnosticLog.record("video_layer_bound", {"bound": bound, "types": _types, "vertical_flip": _flip,
 		"surface_vertical_flip": _surface_flip, "runtime": runtime_name, "system": system_name,
@@ -364,10 +370,12 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 	var sbs: bool = surface.stereo_sbs if stereo < 0 else stereo == 1
 	var top_bottom: bool = surface.top_bottom and stereo < 0
 	var viewing: int = int(surface.get("viewing_eye")) if not processed and surface.stereo_sbs and surface.get("viewing_eye") != null else 0
+	# Picture quality mode: the layer copy has sharpened and graded the decoder's picture already.
+	var baked: bool = surface.has_method("layer_picture_baked") and surface.layer_picture_baked(source_kind)
 	var filters := 0
 	if _settings:
 		filters = [0, NORMAL_SUPER_SAMPLING, QUALITY_SUPER_SAMPLING][clampi(supersampling, 0, 2)]
-		if not processed:
+		if not processed and not baked:
 			if surface.sharpness >= 0.4: filters |= QUALITY_SHARPENING
 			elif surface.sharpness > 0.0: filters |= NORMAL_SHARPENING
 	var panel: MeshInstance3D = surface.panel
@@ -460,7 +468,7 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 		if debug_image_layout != -2: values[17] = debug_image_layout
 		values[18] = filters
 		values[19] = source_kind
-		var color: Dictionary = {"scale": Vector3.ONE, "bias": Vector3.ZERO} if processed else _color_terms(surface)
+		var color: Dictionary = {"scale": Vector3.ONE, "bias": Vector3.ZERO} if processed or baked else _color_terms(surface)
 		values[20] = color.scale.x; values[21] = color.scale.y; values[22] = color.scale.z
 		values[23] = color.bias.x; values[24] = color.bias.y; values[25] = color.bias.z
 		values[26] = PICTURE_SLOT

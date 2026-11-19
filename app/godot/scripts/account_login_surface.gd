@@ -3,6 +3,8 @@ extends Node3D
 const Layer := preload("res://scripts/web_browser_layer.gd")
 const Page := preload("res://scripts/web_browser_page.gd")
 const HOLE := preload("res://shaders/web_browser_hole.gdshader")
+const ChineseInput := preload("res://scripts/chinese_input.gd")
+const I18n := preload("res://scripts/i18n.gd")
 var target: WeakRef
 var bridge: JavaClass
 var layer: RefCounted
@@ -13,6 +15,8 @@ var attached := false
 var pixels := Vector2i.ZERO
 var retry_at := 0
 var status := ""
+var _keyboard_mode := -1
+var _keyboard_seen := 0
 
 func configure(menu: Node) -> void: target = weakref(menu)
 static func pixel_size(info: Dictionary) -> Vector2i:
@@ -33,6 +37,7 @@ func _ready() -> void:
 	set_meta("menu_eye_buffer", true)
 
 func _release() -> bool:
+	_close_keyboard()
 	if hole: hole.visible = false
 	if not layer: return true
 	layer.hide()
@@ -55,6 +60,7 @@ func _process(_delta: float) -> void:
 	var info: Dictionary = panel.data.get("web", {})
 	if not menu.is_visible_in_tree() or not panel.web_gecko() or panel.paused or str(info.get("surface_id", "")).is_empty():
 		_release(); return
+	_sync_keyboard(menu, panel, info)
 	var desired := pixel_size(info)
 	var next_id := str(info.surface_id)
 	var recreate: bool = int(info.get("generation", 0)) == generation and info.get("needs_surface", false)
@@ -65,7 +71,9 @@ func _process(_delta: float) -> void:
 		layer = Page.new() if page else Layer.new(); pixels = desired; identity = next_id
 		if not layer.create(5, pixels):
 			layer = null; status = "surface_unavailable"; retry_at = Time.get_ticks_msec() + 1000; return
-		if page: hole.material_override = layer.material
+		if page:
+			# The page keeps updating this material: a menu overlay must not swap in a copy.
+			hole.material_override = layer.material; hole.set_meta("menu_overlay_own", true)
 		menu.set_meta("menu_browser_layer", true)
 	if not attached:
 		generation += 1
@@ -80,5 +88,35 @@ func _process(_delta: float) -> void:
 		status = ""
 	else:
 		layer.hide(); hole.visible = false
+
+## Generic OpenXR runtimes (QIYU) may not show the system IME in VR: as in the browser
+## (web_browser_panel.gd), the player's keyboard types into the focused login field.
+## Quest and PICO keep the system keyboard.
+func _sync_keyboard(menu: Node, panel: RefCounted, info: Dictionary) -> void:
+	var mode := int(ChineseInput.is_generic_openxr() and ChineseInput.browser_enabled())
+	if mode != _keyboard_mode:
+		_keyboard_mode = mode
+		bridge.keyboardMode(bool(mode)); JavaClassWrapper.get_exception()
+	var epoch := int(info.get("keyboard_epoch", 0))
+	if not mode or not info.get("editing", false) or epoch <= 0:
+		_close_keyboard(); return
+	if epoch == _keyboard_seen and ChineseInput.active(): return
+	_keyboard_seen = epoch
+	var surface_id := str(info.get("surface_id", ""))
+	var current := func() -> bool:
+		var web: Dictionary = panel.data.get("web", {})
+		return str(web.get("surface_id", "")) == surface_id and web.get("editing", false)
+	ChineseInput.open(menu, "account_web", func(operation: String, value: String) -> bool:
+		if not current.call(): return false
+		match operation:
+			"close": panel.web_action("keyboard_close")
+			"text", "backspace", "enter", "left", "right": panel.web_action(operation, Vector2.ZERO, value)
+			_: return false
+		return true,
+		current, Callable(), bool(info.get("keyboard_latin", false)) or I18n.language != "zh")
+
+func _close_keyboard() -> void:
+	_keyboard_seen = 0
+	if ChineseInput.active() and ChineseInput.popup.owner_id == "account_web": ChineseInput.close("account_web")
 
 func _exit_tree() -> void: _release()

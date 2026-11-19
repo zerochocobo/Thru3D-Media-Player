@@ -205,8 +205,22 @@ const SETTINGS_TILE := 560
 const ALPHA_GROUP := 458
 const PORTRAIT_SIZE := 459
 const DEPTH_POSITION := 460
+const PICTURE_SHARPNESS := 461
+## The 2D to 3D settings fold under one header above Alpha's, closed each time like it.
+const DEPTH_GROUP := 462
+const DEPTH_GROUP_SETTINGS := ["video_auto_3d", "depth_render"]
+const PICTURE_QUALITY_HINT := "Sharper picture, with gamma and saturation adjustable. Uses more battery and the headset runs warmer. Turn off AI portrait passthrough and 2D to 3D first. The picture pauses briefly when switching."
+const PICTURE_QUALITY_BLOCKERS := {"alpha": "Unavailable while AI portrait passthrough is on", "3d": "Unavailable while 2D to 3D is on",
+	"source": "Unavailable for this video"}
+const PICTURE_LOCKED_HINT := "Turn on Picture quality mode to adjust"
+## Super resolution describes what it does to the video on show: its size and the size it becomes.
+const PICTURE_UPSCALE_HINT := "Shows low-resolution video enlarged, with cleaner edges: flat video below 4K to 4K, VR video below 6K to 6K. Uses more battery and the headset runs warmer; sharpening then covers the centre of your view only."
+const PICTURE_UPSCALE_LEVELS := {1: "Balanced: this video is shown enlarged from %d×%d to %d×%d, twice its size at most. Cleaner edges at a lighter load than Maximum.", 2: "Maximum: this video is shown enlarged from %d×%d to %d×%d. The cleanest edges; uses more battery and the headset runs warmer."}
+const PICTURE_DENOISE_HINT := "Evens out compression noise and blotches before sharpening; suits old and low-bitrate video. Set too high it wipes out fine detail such as skin and fabric."
+const PICTURE_UPSCALE_FULL := {false: "This video is already %d×%d: flat video is enlarged up to 4K, so there is nothing to enlarge.", true: "This video is already %d×%d: VR video is enlarged up to 6K, so there is nothing to enlarge."}
 ## The three Alpha sliders fold under one header, as in the library's video settings; closed each time.
 var _alpha_expanded := false
+var _depth_expanded := false
 const EYE_BUFFER_NOTE := 7000
 const POPUP_WIDTH := 1.10
 const POPUP_BOTTOM := 0.285
@@ -221,10 +235,14 @@ const TABS := ["Playback", "Settings", "Info"]
 const OPERATIONS := [
 	["recent", "previous_video", "play", "next_video", "alpha", "projection", "stereo", "stop", "recenter", "mute", "subtitles",
 		"audio", "depth"],
-	["color_grade", "loop", "seek_mode", "hdr_to_sdr", "stereo_view", "video_auto_3d", "depth_render"],
+	["color_grade", "loop", "seek_mode", "hdr_to_sdr", "stereo_view", "video_auto_3d", "depth_render",
+		"alpha_keep_background", "show_status_info", "show_fps"],
 	["capabilities"]]
-const HEADINGS := ["Color grading", "Playback mode", "Video time positioning", HdrToSdr.TITLE, "Stereo viewing", VideoAuto3D.TITLE, "2D to 3D effect"]
-const SETTING_ICONS := ["light", "loop", "history", "quality", "eyes", "depth", "depth"]
+const HEADINGS := ["Color & brightness", "Playback mode", "Video time positioning", HdrToSdr.TITLE, "Stereo viewing", VideoAuto3D.TITLE, "2D to 3D effect",
+	"Keep background during passthrough", "Show status information", "Show FPS"]
+const SETTING_ICONS := ["light", "loop", "history", "quality", "eyes", "depth", "depth", "keep_background", "status_info", "frame_rate"]
+## Plain on/off tiles: display choices of the player itself, on offer whatever is playing or cast.
+const SWITCH_SETTINGS := ["alpha_keep_background", "show_status_info", "show_fps"]
 const PLAYBACK_MODE_ICONS := {"single": "play", "repeat_one": "repeat_one", "sequence": "sequence", "repeat_all": "repeat_all", "shuffle": "shuffle"}
 const PLAYBACK_MODE_TIPS := {
 	"single": "Single video: stop after the current video.",
@@ -309,6 +327,7 @@ var _seek_hand := ""
 var _seek_start := -1
 var _seek_preview := -1
 var _grade_page := 0
+var _grade_lock_drawn := false
 var _adjust_hand := ""
 var _adjust_target := -1
 var _adjust_rows := {}
@@ -602,6 +621,7 @@ func dismiss() -> void:
 	_finish_adjustment()
 	_adjustment = ""
 	_alpha_expanded = false
+	_depth_expanded = false
 	_subtitle_open = false
 	_subtitle_detail = ""
 	_subtitle_files_open = false
@@ -624,6 +644,7 @@ func _reset_navigation() -> void:
 	_finish_adjustment()
 	_adjustment = ""
 	_alpha_expanded = false
+	_depth_expanded = false
 	_subtitle_open = false
 	_subtitle_detail = ""
 	_subtitle_files_open = false
@@ -657,6 +678,9 @@ func refresh_values() -> void:
 	_state["bar_transparency"] = bar_transparency
 	if _depth_open and _depth_boost_available() and _state.get("depth_requested", false) and float(_state.get("depth_strength", 0.0)) > DepthStrength.MAX and not _depth_boost:
 		_depth_boost = true
+		refresh()
+		return
+	if _adjustment == "color_grade" and _grade_lock_drawn != bool(_state.get("grade_curves_locked", false)) and _adjust_hand.is_empty():
 		refresh()
 		return
 	if _adjustment in ["screen", "stereo_view"] and _settings_drawn != _settings_key():
@@ -2150,22 +2174,28 @@ func _draw_panel() -> void:
 	var tiles: Array = []
 	for index in operations.size():
 		var operation: String = operations[index]
-		if not _cast_allowed(operation): continue
+		if operation not in SWITCH_SETTINGS and not _cast_allowed(operation): continue
 		if section == 2 and not str(_state.get("error", "")).is_empty(): continue
 		if operation == "stereo_view" and not _state.get("stereo", false): continue
-		# Keep the default and rendering choices together even when mono hides Stereo viewing.
-		if operation == "video_auto_3d" and tiles.size() % 2 != 0: tiles.append(-1)
+		if section == 1 and operation in DEPTH_GROUP_SETTINGS: continue # under the 2D to 3D header
 		tiles.append(index)
 	var tile_rows := ceili(tiles.size() / 2.0)
 	var alpha_fps: bool = section == 1 and _enabled("alpha")
 	var depth_position_setting: bool = section == 1 and _cast_allowed(DepthPosition.KEY)
-	var height := 0.12 + tile_rows * 0.105 + (0.430 + ((0.085 + (0.355 if _alpha_expanded else 0.0)) if alpha_fps else 0.0) if section == 1 else 0.36)
-	if depth_position_setting: height += 0.085
+	var height := 0.12 + tile_rows * 0.105 + (0.175 + ((0.085 + (0.355 if _alpha_expanded else 0.0)) if alpha_fps else 0.0) if section == 1 else 0.36)
+	var depth_rows: Array = DEPTH_GROUP_SETTINGS.filter(_cast_allowed) if section == 1 else []
+	var depth_group: bool = depth_position_setting or not depth_rows.is_empty()
+	if depth_group: height += 0.085 + ((depth_rows.size() + (1 if depth_position_setting else 0)) * 0.085 if _depth_expanded else 0.0)
 	if alpha_fps and _alpha_expanded and _state.get("portrait_requested", false): height += 0.17
 	if alpha_fps and _state.get("flat_passthrough_requested", false): height += 0.17
+	var picture_rows: bool = section == 1 and _state.get("picture_quality_supported", false)
+	if picture_rows: height += 0.34
 	var top := _settings_frame(height)
 	_draw_settings_tabs(top - 0.055)
 	var y := top - 0.165
+	if picture_rows:
+		_picture_quality_rows(top - 0.14)
+		y -= 0.34
 	for shown in tiles.size():
 		var index: int = tiles[shown]
 		if index < 0: continue
@@ -2196,16 +2226,25 @@ func _draw_panel() -> void:
 			choices.field(node, choice, Vector2(0.055, -0.017), 0.36, 0.04)
 	y -= tile_rows * 0.105 + 0.02
 	if section == 1:
-		if depth_position_setting:
-			_adjustment_row(DEPTH_POSITION, DepthPosition.KEY, DepthPosition.TITLE, DepthPosition.LIMITS, y)
-			_tips[DEPTH_POSITION] = I18n.t(DepthPosition.HINT)
-			_slider_tick(DEPTH_POSITION, 0, "0", y)
-			y -= 0.085
 		if _cast_allowed("playback_speed"):
 			_adjustment_row(453, "playback_speed", "Playback speed", Vector3(0.25, 3.0, 0.05), y)
 			_slider_tick(453, 1.0, "1×", y)
-		y -= 0.085
-		_keep_background_row(y)
+		if depth_group:
+			y -= 0.085
+			_group_header(DEPTH_GROUP, "2D to 3D", _depth_expanded, y)
+		if depth_group and _depth_expanded:
+			for operation in depth_rows:
+				y -= 0.085
+				var title := _label(I18n.t(HEADINGS[OPERATIONS[1].find(operation)]), Vector3(-0.50, y, 0.004), TEXT_BODY)
+				title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+				var choice: Dictionary = _setting_choices(operation)
+				if choice.is_empty(): title.modulate = MUTED
+				else: choices.field(null, choice, Vector2(0.21, y), 0.46, 0.05)
+			if depth_position_setting:
+				y -= 0.085
+				_adjustment_row(DEPTH_POSITION, DepthPosition.KEY, DepthPosition.TITLE, DepthPosition.LIMITS, y)
+				_tips[DEPTH_POSITION] = I18n.t(DepthPosition.HINT)
+				_slider_tick(DEPTH_POSITION, 0, "0", y)
 		if alpha_fps:
 			y -= 0.085
 			_alpha_group_header(y)
@@ -2243,17 +2282,6 @@ func _draw_panel() -> void:
 				detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 				choices.field(null, {"key": "portrait_enhanced", "value": _state.get("portrait_enhanced", false),
 					"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}, Vector2(0.21, y), 0.46, 0.05)
-		y -= 0.085
-		var status := _label(I18n.t("Show status information"), Vector3(-0.50, y, 0.004), TEXT_BODY)
-		status.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		choices.field(null, {"key": "show_status_info", "value": _state.get("show_status_info", true),
-			"hint": "Show subtitle, narration and loading status in the upper left.",
-			"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}, Vector2(0.21, y), 0.46, 0.05)
-		y -= 0.085
-		var fps := _label(I18n.t("Show FPS"), Vector3(-0.50, y, 0.004), TEXT_BODY)
-		fps.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		choices.field(null, {"key": "show_fps", "value": _state.get("show_fps", false),
-			"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}, Vector2(0.21, y), 0.46, 0.05)
 		_refresh_adjustments()
 	_panel_status = _label(_status_text(), Vector3(0, POPUP_BOTTOM + 0.03, 0.004), TEXT_AUX)
 	_panel_status.modulate = MUTED
@@ -2301,18 +2329,86 @@ func _error_text_height(text: String, logical_size: int) -> float:
 	return ui_font().get_multiline_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, 0.98 / TEXT_PIXEL_SIZE,
 		logical_size * TEXT_RASTER_SCALE, -1, TextServer.BREAK_MANDATORY | TextServer.BREAK_WORD_BOUND | TextServer.BREAK_ADAPTIVE).y * TEXT_PIXEL_SIZE
 
+## Picture quality mode leads the settings: its switch, then what it brings: sharpening (0 leaves the
+## rest on its own), super resolution for low-resolution sources and denoising.
+func _picture_quality_rows(y: float) -> void:
+	var available: bool = _state.get("picture_quality_available", false)
+	var on: bool = available and _state.get("picture_quality", false)
+	var heading := _label(I18n.t("Picture quality mode"), Vector3(-0.50, y, 0.004), TEXT_BODY)
+	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	choices.field(null, {"key": "picture_quality", "value": on, "switch": true, "choices": [], "hint": PICTURE_QUALITY_HINT}, Vector2(0.395, y), 0.09, 0.05)
+	if not available:
+		var toggle: Dictionary = _buttons.back()
+		toggle.enabled = false
+		toggle["hover_disabled"] = true
+		_tips[toggle.target] = I18n.t(PICTURE_QUALITY_BLOCKERS.get(str(_state.get("picture_quality_blocker", "")), PICTURE_QUALITY_BLOCKERS.source))
+	_adjustment_row(PICTURE_SHARPNESS, "picture_sharpness", "Sharpness", Vector3(0, 500, 5), y - 0.085)
+	_slider_tick(PICTURE_SHARPNESS, 100, "100%", y - 0.085)
+	if not on: _lock_row(PICTURE_SHARPNESS, y - 0.085)
+	var fits: bool = _state.get("picture_upscale_available", true)
+	var sizes: Dictionary = _state.get("picture_upscale_sizes", {})
+	var source: Vector2i = sizes.get("source", Vector2i.ZERO)
+	var levels: Array = [{"value": 0, "label": "Off", "hint": PICTURE_UPSCALE_HINT}]
+	for level in [1, 2]:
+		var target: Vector2i = sizes.get("moderate" if level == 1 else "maximum", Vector2i.ZERO)
+		levels.append({"value": level, "label": "Balanced" if level == 1 else "Maximum",
+			"hint": I18n.t(PICTURE_UPSCALE_LEVELS[level]) % [source.x, source.y, target.x, target.y] if source.x > 0 and target.x > source.x else PICTURE_UPSCALE_HINT})
+	var full := I18n.t(PICTURE_UPSCALE_FULL[bool(sizes.get("vr", false))]) % [source.x, source.y] if on and not fits else ""
+	_picture_choice_row("Super resolution", "picture_upscale", int(_state.get("picture_upscale", 0)) if on and fits else 0, levels, y - 0.17, on, full)
+	_picture_choice_row("Denoise", "picture_denoise", int(_state.get("picture_denoise", 0)) if on else 0,
+		[{"value": 0, "label": "Off"}, {"value": 1, "label": "Low"}, {"value": 2, "label": "Medium"}, {"value": 3, "label": "High"}].map(
+			func(option): option["hint"] = PICTURE_DENOISE_HINT; return option), y - 0.255, on, "")
+
+## One of the mode's choices in a row: locked with the mode off, and greyed with a reason (unavailable)
+## when this video has no use for it.
+func _picture_choice_row(title: String, key: String, value: int, options: Array, y: float, on: bool, unavailable: String) -> void:
+	var heading := _label(I18n.t(title), Vector3(-0.50, y, 0.004), TEXT_BODY)
+	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	var first := _buttons.size()
+	choices.field(null, {"key": key, "value": value, "compact": true, "choices": options}, Vector2(0.21, y), 0.46, 0.05)
+	if on and unavailable.is_empty(): return
+	for index in range(first, _buttons.size()):
+		var button: Dictionary = _buttons[index]
+		button.enabled = false
+		button["hover_disabled"] = true
+		_tips[button.target] = I18n.t(PICTURE_LOCKED_HINT) if not on else unavailable
+	if not on:
+		heading.modulate = MUTED
+		_icon("lock", Vector3(_slider_geometry().reset_x, y, 0.006), 0.028, MUTED)
+
+## A slider that waits for picture quality mode: its value stays on show, without a knob to take.
+func _lock_row(target: int, y: float) -> void:
+	var row: Dictionary = _adjust_rows[target]
+	row.button.enabled = false
+	row.button["hover_disabled"] = true
+	row.knob.visible = false
+	row.label.modulate = MUTED
+	_tips[target] = I18n.t(PICTURE_LOCKED_HINT)
+	# The lock takes the reset's place: a locked slider has nothing to reset.
+	if row.has("reset"):
+		row.reset.enabled = false
+		row.reset.node.visible = false
+	_icon("lock", Vector3(_slider_geometry().reset_x, y, 0.006), 0.028, MUTED)
+
+func _grade_locked(key: String) -> bool:
+	return key in EYE_BUFFER_GRADES and _state.get("grade_curves_locked", false)
+
+## The photo menu's own row for it; the player shows it as a settings tile.
 func _keep_background_row(y: float) -> void:
 	var heading := _label(I18n.t("Keep background during passthrough"), Vector3(-0.50, y, 0.004), TEXT_BODY)
 	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	choices.field(null, {"key": "alpha_keep_background", "value": _state.get("alpha_keep_background", false),
-		"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}, Vector2(0.21, y), 0.46, 0.05)
+	choices.field(null, _setting_choices("alpha_keep_background"), Vector2(0.21, y), 0.46, 0.05)
 
 func _alpha_group_header(y: float) -> void:
-	_button(ALPHA_GROUP, "", Vector2(0, y), Vector2(1.02, 0.06))
+	_group_header(ALPHA_GROUP, "AI portrait passthrough (Alpha)", _alpha_expanded, y)
+
+## A row that folds the settings beneath it.
+func _group_header(target: int, title: String, expanded: bool, y: float) -> void:
+	_button(target, "", Vector2(0, y), Vector2(1.02, 0.06))
 	var node: MeshInstance3D = _buttons.back().node
-	var title := _label(I18n.t("AI portrait passthrough (Alpha)"), Vector3(-0.50, 0, 0.004), TEXT_BODY, node)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	_icon("chevron_down" if _alpha_expanded else "next", Vector3(0.475, 0, 0.004), 0.034, MUTED, node)
+	var caption := _label(I18n.t(title), Vector3(-0.50, 0, 0.004), TEXT_BODY, node)
+	caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_icon("chevron_down" if expanded else "next", Vector3(0.475, 0, 0.004), 0.034, MUTED, node)
 
 ## Settings tiles drawn with a choice field keep their value label empty: the field shows the value.
 func _choice_tile(target: int) -> bool:
@@ -2329,11 +2425,24 @@ func _settings_key() -> String:
 		_state.get("screen_edit_locked", false), _state.get("screen_default_locked", false), _state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("screen_scene_curve", true), _state.get("cinema_lights", "auto"),
 		_state.get("screen_curve_modes_available", false), _state.get("screen_curve_mode", "horizontal"),
 		_state.get("video_aspect_preset", "original"), _state.get("video_aspect_locked", false), _state.get("depth_requested", false),
-		_state.get("error", ""), _state.get("error_report", {}), _state.get("usb_takeover_offer", false), _alpha_expanded])
+		_state.get("error", ""), _state.get("error_report", {}), _state.get("usb_takeover_offer", false), _alpha_expanded, _depth_expanded,
+		_state.get("picture_quality", false), _state.get("picture_quality_available", false), _state.get("picture_quality_supported", false),
+		_state.get("picture_quality_blocker", ""), _state.get("picture_upscale", 0), _state.get("picture_denoise", 0), _state.get("picture_upscale_available", true),
+		_state.get("picture_upscale_sizes", {})])
 
 func _setting_choices(operation: String) -> Dictionary:
 	if not _enabled(operation): return {}
 	match operation:
+		"alpha_keep_background":
+			return {"key": "alpha_keep_background", "value": _state.get("alpha_keep_background", false),
+				"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}
+		"show_status_info":
+			return {"key": "show_status_info", "value": _state.get("show_status_info", true),
+				"hint": "Show subtitle, narration and loading status in the upper left.",
+				"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}
+		"show_fps":
+			return {"key": "show_fps", "value": _state.get("show_fps", false),
+				"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}
 		"video_auto_3d":
 			return VideoAuto3D.choice(bool(_state.get("video_auto_3d", false)))
 		# The same global choice as Settings > Video.
@@ -2453,6 +2562,8 @@ func _activate(target: int) -> void:
 	_pip_open = false
 	if target == ALPHA_GROUP:
 		_alpha_expanded = not _alpha_expanded; refresh(); return
+	if target == DEPTH_GROUP:
+		_depth_expanded = not _depth_expanded; refresh(); return
 	if target == SPACE_LOCK:
 		action_requested.emit("space_lock"); return
 	if target == WATCH:
@@ -2809,6 +2920,7 @@ func _busy_ring(parent: Node3D, diameter: float) -> MeshInstance3D:
 	return preload("res://scripts/ui_busy_ring.gd").create(parent,diameter,ACCENT)
 
 func _enabled(operation: String) -> bool:
+	if operation in SWITCH_SETTINGS: return true
 	if not _cast_allowed(operation): return false
 	var has_video: bool = _state.get("has_video", false)
 	match operation:
@@ -3101,7 +3213,7 @@ func _draw_adjustments() -> void:
 	if _adjustment != "color_grade": return
 	var keys: Array = Grade.PAGES[_grade_page]
 	var top := _settings_frame(0.30 + keys.size() * 0.075 + 0.09)
-	_settings_heading("Color grading", top)
+	_settings_heading("Color & brightness", top)
 	var preset_width := 1.0 / Grade.PRESETS.size()
 	for i in Grade.PRESETS.size():
 		_button(410 + i, I18n.t(Grade.PRESETS[i]), Vector2(-0.5 + (i + 0.5) * preset_width, top - 0.125), Vector2(preset_width - 0.02, 0.058))
@@ -3111,8 +3223,10 @@ func _draw_adjustments() -> void:
 		_button(430 + i, I18n.t(["Basic", "RGB gain", "RGB gamma / offset"][i]), Vector2(-0.335 + i * 0.335, top - 0.195), Vector2(0.32, 0.05))
 		set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
 		if i == _grade_page: _buttons.back().base_color = SELECTED
+	_grade_lock_drawn = _state.get("grade_curves_locked", false)
 	for i in keys.size():
 		_adjustment_row(450 + i, keys[i], Grade.NAMES[keys[i]], Grade.limits(keys[i]), top - 0.275 - i * 0.075)
+		if _grade_locked(keys[i]): _lock_row(450 + i, top - 0.275 - i * 0.075)
 	var bottom := top - 0.275 - keys.size() * 0.075 - 0.005
 	_button(GRADE_PAGE_RESET, I18n.t("Reset page"), Vector2(-0.2, bottom), Vector2(0.36, 0.055), _grade_page_needs_reset())
 	set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
@@ -3252,11 +3366,14 @@ func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: 
 ## runtime lacks colour scale/bias.
 func _leaves_layer(key: String) -> bool:
 	if not Grade.DEFAULTS.has(key): return false
+	# Picture quality mode carries the whole grade on the layer; while off it locks what the layer cannot.
+	if _state.get("picture_quality_available", false) and (_state.get("picture_quality", false) or key in EYE_BUFFER_GRADES): return false
 	return key in EYE_BUFFER_GRADES or not _state.get("grade_on_layer", true)
 
 func _adjustment_default(key: String) -> Variant:
 	if key == DepthPosition.KEY: return 0.0
 	if key == "bar_transparency": return 14.0
+	if key == "picture_sharpness": return 100.0
 	if Grade.DEFAULTS.has(key): return Grade.DEFAULTS[key]
 	return {"screen_distance": Surface.SCREEN_DISTANCE, "screen_scale": 100.0, "cinema_picture_size": 100.0, "video_aspect_factor": 1.0,
 		"screen_curve": 0.0,
@@ -3334,6 +3451,7 @@ func _refresh_adjustments() -> void:
 		var position: bool = row.key == "subtitle_position"
 		var defaults := {"screen_curve": 0.0, "screen_scale": 100.0, "cinema_picture_size": 100.0, "screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0, "stereo_horizontal": 0.0, "stereo_vertical": 0.0}
 		defaults["bar_transparency"] = 14.0
+		defaults["picture_sharpness"] = 100.0
 		defaults["stereo_focus"] = FOCUS_DEFAULT
 		defaults[DepthPosition.KEY] = 0.0
 		for key in Surface.ImmersiveAdjustments.KEYS: defaults[key] = 0.0
@@ -3358,7 +3476,7 @@ func _refresh_adjustments() -> void:
 		row.label.text = "%.1f m" % value if distance else ("%+.0f°" % value if position else ("%d K" % value if row.key == "temperature" else ("%+.2f EV" % value if row.key == "exposure" else "%.3f" % Grade.shown(row.key, value))))
 		if row.key == "screen_distance" and value < 10: row.label.text = "%.2f m" % value
 		if row.key == "portrait_distance" and value < 10: row.label.text = "%.2f m" % value
-		if row.key in ["screen_scale", "cinema_picture_size", "portrait_scale"]: row.label.text = "%d%%" % roundi(value)
+		if row.key in ["screen_scale", "cinema_picture_size", "portrait_scale", "picture_sharpness"]: row.label.text = "%d%%" % roundi(value)
 		elif row.key == "screen_curve": row.label.text = _curve_caption(value)
 		elif row.key == "screen_rotation": row.label.text = "%+.0f°" % value if value != 0 else "0°"
 		elif row.key == "playback_speed": row.label.text = "%.2f×" % value

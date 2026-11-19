@@ -93,6 +93,7 @@ func run() -> void:
 		menu.state_provider = func(): return state.duplicate()
 		root.add_child(menu); menu.set_process(false); menu.toggle()
 		menu.section = 1
+		menu._depth_expanded = true # the position slider sits under the 2D to 3D header
 		menu.refresh()
 		if not is_photo:
 			menu.adjustment_requested.connect(main._on_playback_adjustment)

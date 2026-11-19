@@ -9,10 +9,8 @@ const PlatformMethods := preload("res://scripts/platform_methods.gd")
 
 ## The instance runs on the QIYU factory runtime (it enabled XR_QIYU_passthrough).
 static var runtime := false
-## Settings rows shown on QIYU only (section "qiyu"): menus in the eye buffer (applies at launch)
-## and the browser page's sRGB decode (applies live).
-const MENU_KEY := "qiyu_menu_eye_buffer"
-const COLOR_KEY := "qiyu_page_color"
+## QIYU draws menus in the eye buffer and decodes its washed-out pictures (pages, video, photos,
+## AirPlay); both always on since the user feedback of 2026-11-19, so no longer settings.
 static var page_decode := true
 
 static func register(platform: Object) -> void:

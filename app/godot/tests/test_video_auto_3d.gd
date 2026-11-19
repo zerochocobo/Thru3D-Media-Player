@@ -46,10 +46,12 @@ func _run() -> void:
 	check(row_keys.find("video_auto_3d") >= 0 and row_keys.find("video_auto_3d") + 1 == row_keys.find("depth_render"), "Global default directly precedes its effect setting")
 	check(not library.rows[row_keys.find("video_auto_3d")].has("hint"), "Tooltip is not repeated as permanent explanatory text")
 	for stereo in [false, true]:
-		video.stereo_sbs = stereo; menu.refresh()
-		var default_tile: Dictionary = menu._buttons.filter(func(b): return b.target == Menu.SETTINGS_TILE + Menu.OPERATIONS[1].find("video_auto_3d"))[0]
-		var effect_tile: Dictionary = menu._buttons.filter(func(b): return b.target == Menu.SETTINGS_TILE + Menu.OPERATIONS[1].find("depth_render"))[0]
-		check(is_equal_approx(default_tile.rect.position.y, effect_tile.rect.position.y) and default_tile.rect.position.x < effect_tile.rect.position.x, "Related 3D settings share one row for mono and stereo")
+		video.stereo_sbs = stereo; menu._depth_expanded = false; menu.refresh()
+		var folded: Array = menu.choices.targets.values().map(func(target): return target.get("key", ""))
+		check("video_auto_3d" not in folded and "depth_render" not in folded and menu._buttons.any(func(b): return b.target == Menu.DEPTH_GROUP), "The 3D settings fold under their header")
+		menu._depth_expanded = true; menu.refresh()
+		var shown: Array = menu.choices.targets.values().map(func(target): return target.get("key", ""))
+		check(shown.find("video_auto_3d") >= 0 and shown.find("video_auto_3d") < shown.find("depth_render"), "The default precedes its effect under the header for mono and stereo")
 	video.stereo_sbs = false; menu.refresh()
 	check(choose(library, true) and video.default_auto_depth, "Library ray enables the shared video default")
 	check(not video.depth_requested and not video.auto_depth and main.settings.get_value("effects", "auto_3d"), "Changing default preserves the current video and photo preference")

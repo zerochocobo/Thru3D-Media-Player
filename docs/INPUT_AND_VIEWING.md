@@ -39,3 +39,9 @@ Supported immersive stereo video offers automatic focus. Captions can stay fixed
 ## External controls in 0.18.2
 
 External keyboards and gamepads can map actions to standard controller controls in Settings > Controls. Head aiming provides a cursor without tracked controllers. QIYU controller bindings and floorless OpenXR standing height are supported; availability depends on the runtime.
+
+## Picture controls in 0.18.3
+
+Picture quality mode adds 0-500% sharpening, denoising levels and FSR 1 super resolution for compatible video, including supported hardware and software decoding. It is offered on every runtime; the current playback path determines availability. Gamma and saturation controls unlock when the mode is on. Super resolution has its own level and depends on the source and display size. This does not guarantee recovery of source detail or support in every 3D/Alpha mode.
+
+Eye-buffer render scales now include x1.33 and x1.5 across headsets. Higher scales cost GPU time. Native compositor edge stretching for real-time 2D-to-3D is enabled by default on Adreno 7xx and newer; older GPUs retain the shader path. Paused video redraws after picture-setting or view-direction changes.

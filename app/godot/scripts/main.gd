@@ -18,6 +18,7 @@ const ServerPlayback := preload("res://scripts/media_server_playback.gd")
 const AlphaEdge := preload("res://scripts/alpha_edge.gd")
 const StickControls := preload("res://scripts/player_stick_controls.gd")
 const HandPointer := preload("res://scripts/hand_pointer.gd")
+const ControllerPresence := preload("res://scripts/controller_presence.gd")
 const XrFloor := preload("res://scripts/xr_floor.gd")
 const QiyuController := preload("res://scripts/qiyu_controller.gd")
 const WebBrowserPage := preload("res://scripts/web_browser_page.gd")
@@ -210,6 +211,7 @@ var rvm_status := "RVM benchmark not run"
 var right_controller: XRController3D
 var left_controller: XRController3D
 var hand_pointers := {}
+var controller_presence := ControllerPresence.new()
 var photo_hands := PhotoHandGestures.new()
 var photo_swipe := PhotoPalmSwipe.new()
 var memory_swipe := preload("res://scripts/memory_swipe.gd").new()
@@ -399,7 +401,6 @@ func _ready() -> void:
 	if gpu_adapter.is_empty(): gpu_adapter = RenderingServer.get_video_adapter_name()
 	low_end_gpu = Quality.is_low_end_gpu(gpu_adapter)
 	if not desktop and Engine.has_singleton("QuestPlayer"): QiyuController.register(Engine.get_singleton("QuestPlayer"))
-	QiyuController.page_decode = bool(settings.get_value("qiyu", "page_color", true))
 	display.render_scale = Quality.render_scale(display_quality, low_end_gpu, QiyuController.runtime)
 	_apply_memory_mode(null)
 	# Older GPUs (Quest 2, Neo3) take the cheaper 2x pass.
@@ -474,6 +475,16 @@ func _ready() -> void:
 	video.reuse_last_mode_changed.connect(_on_reuse_last_video_mode_changed)
 	_restore_subtitle_settings()
 	video.color_grade.restore(settings.get_value("video", "color_grade", {}))
+	video.picture_sharpness = float(settings.get_value("video", "picture_sharpness", 1.0))
+	# A look saved with gamma or saturation played in the eye buffers until now: the mode starts on for
+	# it, so the look stays and the picture returns to the compositor layer.
+	if not settings.has_section_key("video", "picture_quality"):
+		settings.set_value("video", "picture_quality", video.color_grade.uses_curves())
+	video.picture_quality = bool(settings.get_value("video", "picture_quality", false))
+	# Saved as a switch before it had levels: on was the maximum.
+	var upscale: Variant = settings.get_value("video", "picture_upscale", 0)
+	video.picture_upscale = (video.Upscale.MAXIMUM if upscale else video.Upscale.OFF) if upscale is bool else int(upscale)
+	video.picture_denoise = int(settings.get_value("video", "picture_denoise", 0))
 	_restore_flat_video_settings()
 	video.restore_screen_curve(settings, "screen")
 	add_child(video)
@@ -648,7 +659,7 @@ func _ready() -> void:
 	# QIYU's Monado composites any extra layer through a scratch image at its recommended 1440 view
 	# size before distortion, and has no layer filter settings: quad menus are resampled twice. In
 	# the eye buffer they ride the single-projection fast path at the raised QIYU render scale.
-	menu_composition.eye_buffer_only = QiyuController.runtime and bool(settings.get_value("qiyu", "menu_eye_buffer", true))
+	menu_composition.eye_buffer_only = QiyuController.runtime
 	menu_composition.configure(origin, camera, display, [recent_menu, video_menu, photo_menu, music_menu, scenery_menu], low_end_gpu)
 	menu_composition.register_companion(vr_passthrough_menu)
 	menu_composition.register_companion(ChineseInput.ensure(origin))
@@ -1120,6 +1131,7 @@ func _on_pointer_release(action: String, hand: String) -> void:
 func _on_controller_button(action: String, hand: String = "") -> void:
 	# A real controller click hands aiming back to the controllers at once.
 	if not _external_press and action in ControllerBindings.BUTTONS: _external_used_ms = -HEAD_POINTER_IDLE_MS
+	if not _external_press and hand != "": controller_presence.touch(hand)
 	var context := _controller_input_context(hand) if ControllerDiagnostics.enabled() and action in ControllerDiagnostics.BUTTONS else {}
 	var route := _route_controller_button(action, hand)
 	controller_diagnostics.button(Time.get_ticks_msec(), hand, action, true, route, context)
@@ -2151,7 +2163,9 @@ func _stick(controller: XRController3D) -> Vector2:
 		return Vector2.ZERO
 	return raw
 
+## A controller in use hides the optical hand the runtime still reports for it.
 func _hand_tracker(hand: String) -> XRHandTracker:
+	if controller_presence.engaged(hand): return null
 	return XRServer.get_tracker("/user/hand_tracker/" + ("left" if hand == "left_hand" else "right")) as XRHandTracker
 
 func _hand_action_tracker(hand: String) -> XRPositionalTracker:
@@ -2165,7 +2179,7 @@ func _input_focused() -> bool:
 
 func _controller_allowed(hand: String) -> bool:
 	if not _input_focused(): return false
-	if _external_press: return true
+	if _external_press or controller_presence.engaged(hand): return true
 	# Query current data too: XR input signals may arrive before our process callback.
 	return not HandPointer.is_optical(_hand_tracker(hand)) and not HandPointer.is_hand_profile(_hand_action_tracker(hand)) \
 		and not (hand_pointers.has(hand) and hand_pointers[hand].source == "hand")
@@ -2179,6 +2193,7 @@ func _controller_ray(hand: String) -> Variant:
 
 func _update_hand_input(delta: float) -> void:
 	var inputs := {}
+	for hand in ["left_hand", "right_hand"]: controller_presence.update(hand, delta)
 	var wave_enabled: bool = photo_active and photo.gallery.mode in [2, 3] and photo.gallery.focus < 0 and not photo.portrait_requested and not _active_menu() and _input_focused()
 	for hand in hand_pointers:
 		var sample := {}
@@ -2797,7 +2812,8 @@ func _update_controller_feedback(delta: float) -> void:
 			for hand in ["left_hand", "right_hand"]: alphas[hand] = 1.0
 		var hidden_hands := {}
 		for hand in ["left_hand", "right_hand"]: hidden_hands[hand] = hand_lock.blocked(hand)
-		input_visuals.update_visibility(focused, alphas, feedback_visible or watching, hidden_hands, _hand_models_visible())
+		input_visuals.update_visibility(focused, alphas, feedback_visible or watching, hidden_hands, _hand_models_visible(),
+			{"left_hand": controller_presence.engaged("left_hand"), "right_hand": controller_presence.engaged("right_hand")})
 
 func _menu_pointer_owned(menu: Node3D, hand: String) -> bool:
 	if menu == null: return false
@@ -4781,9 +4797,6 @@ func _library_settings() -> Dictionary:
 		"playback_menu_depth": PlaybackMenuDepth.load_mode(settings),
 		"stick_seek_overlay": bool(settings.get_value("ui", "stick_seek_overlay", true)),
 		"qiyu": QiyuController.runtime,
-		QiyuController.MENU_KEY: bool(settings.get_value("qiyu", "menu_eye_buffer", true)),
-		QiyuController.MENU_KEY + "_pending": menu_composition != null and menu_composition.eye_buffer_only != bool(settings.get_value("qiyu", "menu_eye_buffer", true)),
-		QiyuController.COLOR_KEY: QiyuController.page_decode,
 		"bar_transparency": float(settings.get_value("ui", "bar_transparency", 14.0)),
 		"library_backdrop": str(settings.get_value("ui", "library_backdrop", "slideshow")),
 		ServerPlayback.INTERVAL_KEY: ServerPlayback.load_interval(settings),
@@ -5090,13 +5103,6 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			settings.set_value("video", "ambient_light", relight_wanted)
 			settings.save(settings_path)
 			DiagnosticLog.record("passthrough_relight", {"enabled": bool(value)})
-		QiyuController.MENU_KEY:
-			settings.set_value("qiyu", "menu_eye_buffer", bool(value))
-			settings.save(settings_path)
-		QiyuController.COLOR_KEY:
-			QiyuController.page_decode = bool(value)
-			settings.set_value("qiyu", "page_color", QiyuController.page_decode)
-			settings.save(settings_path)
 		"stick_seek_overlay":
 			settings.set_value("ui", "stick_seek_overlay", bool(value))
 			settings.save(settings_path)
@@ -5335,6 +5341,16 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		if not photo_active and video: video.set_video_aspect_lock(bool(value))
 		return
 	if screen_edit_lock.guard(key): return
+	if key == "picture_quality":
+		if photo_active or not video: return
+		video.set_picture_quality(bool(value))
+		settings.set_value("video", "picture_quality", video.picture_quality); settings.save(settings_path)
+		return
+	if key in ["picture_upscale", "picture_denoise"]:
+		if photo_active or not video: return
+		video.set(key, int(value))
+		settings.set_value("video", key, int(video.get(key))); settings.save(settings_path)
+		return
 	if key == "depth_position":
 		if value is Dictionary:
 			if str(value.get("source_uri", "")) != video.local_uri: return
@@ -5635,7 +5651,13 @@ func _menu_state() -> Dictionary:
 		"subtitle_horizontal_position": video.subtitle_horizontal_position,
 		"subtitle_vertical_position": video.subtitle_vertical_position,
 		"subtitle_direction": video.subtitle_direction,
-		"grade_values": video.color_grade.values(),
+		"grade_values": video.color_grade.values(true), "grade_curves_locked": video.color_grade.curves_locked,
+		"picture_quality": video.picture_quality, "picture_quality_supported": video.picture_quality_supported(),
+		"picture_quality_available": video.picture_quality_available(), "picture_quality_blocker": video.picture_quality_blocker(),
+		"picture_sharpness": roundf(video.picture_sharpness * 100.0),
+		"picture_upscale": video.picture_upscale, "picture_upscale_available": video.picture_upscale_available(),
+		"picture_denoise": video.picture_denoise,
+		"picture_upscale_sizes": video.picture_upscale_sizes(),
 		# Options that leave the compositor layer carry a warning only where the layer exists.
 		"layer_available": video.video_layer != null and video.video_layer.available(),
 		"grade_on_layer": video.video_layer != null and video.video_layer.color_scale_bias,
@@ -7089,6 +7111,9 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 		return
 	if key == "bar_transparency":
 		_set_bar_transparency(float(value)); return
+	if key == "picture_sharpness":
+		if not photo_active and video: video.picture_sharpness = float(value) / 100.0
+		return
 	if key == "portrait_distance":
 		if photo_active or not portrait_screen.active or not is_finite(float(value)): return
 		_push_screen(clampf(float(value), video.DISTANCE_LIMITS.x, video.DISTANCE_LIMITS.y) - _surface_distance(video))
@@ -7231,6 +7256,7 @@ func _save_playback_adjustments() -> void:
 	_save_subtitle_centers()
 	settings.set_value("subtitles", "direction", video.subtitle_direction)
 	settings.set_value("video", "color_grade", video.color_grade.snapshot())
+	settings.set_value("video", "picture_sharpness", video.picture_sharpness)
 	settings.save(settings_path)
 
 func _fps_sample() -> Dictionary:
@@ -7590,6 +7616,14 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		if command.has("beach_probe") and beach_environment and beach_environment.beach: beach_environment.beach.debug_probe(command.beach_probe)
 		if command.has("beach_probe") and beach_environment and command.beach_probe.has("seat"): beach_environment._sit(str(command.beach_probe.seat))
 		if command.has("hold_controls"): _debug_hold_controls = bool(command.hold_controls)
+		# Picture quality mode and its grade for this run only (the copy joins at the next reopen).
+		if video and command.has("picture_quality"): video.set_picture_quality(bool(command.picture_quality))
+		if video and command.has("picture_sharpness"): video.picture_sharpness = float(command.picture_sharpness)
+		if video and command.has("picture_upscale"): video.picture_upscale = int(command.picture_upscale)
+		if video and command.has("picture_denoise"): video.picture_denoise = int(command.picture_denoise)
+		if video and command.get("grade") is Dictionary:
+			for key in command.grade: video.color_grade.adjust(str(key), command.grade[key])
+			video.color_grade.apply(video.material)
 		if command.has("relight"): _on_setting_changed("passthrough_relight", bool(command.relight))
 		if command.has("atmosphere") and atmosphere: atmosphere.command("image" if photo_active else "global", "theme", str(command.atmosphere))
 		for key in ["ambient_range", "ambient_brightness"]:

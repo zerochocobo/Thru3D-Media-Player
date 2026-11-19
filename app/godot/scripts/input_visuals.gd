@@ -81,11 +81,12 @@ func _ready() -> void:
 				entry.hand_mesh = mesh
 
 ## show_hand_models only hides the optical hand meshes; controllers and pointers stay.
-func update_visibility(focused: bool, controller_opacity: Dictionary = {}, interaction_visible: bool = true, hidden_hands: Dictionary = {}, show_hand_models: bool = true) -> void:
+## controllers_in_use draws the controller even while a mixed-mode runtime reports that optical hand.
+func update_visibility(focused: bool, controller_opacity: Dictionary = {}, interaction_visible: bool = true, hidden_hands: Dictionary = {}, show_hand_models: bool = true, controllers_in_use: Dictionary = {}) -> void:
 	for hand in hands:
 		var entry: Dictionary = hands[hand]
 		var tracker := XRServer.get_tracker("/user/hand_tracker/" + hand.trim_suffix("_hand")) as XRHandTracker
-		var optical := HandInput.is_optical(tracker)
+		var optical: bool = HandInput.is_optical(tracker) and not controllers_in_use.get(hand, false)
 		entry["focused"] = focused
 		entry["interaction_visible"] = interaction_visible
 		entry["optical"] = optical

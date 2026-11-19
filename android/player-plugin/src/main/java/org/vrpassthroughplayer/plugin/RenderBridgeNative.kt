@@ -85,6 +85,10 @@ internal object RenderBridgeNative {
     @JvmStatic external fun textRegions(handle: Long, token: Long, regions: FloatArray, weights: FloatArray)
     @JvmStatic external fun releaseTextInput(handle: Long)
     @JvmStatic external fun warp(handle: Long, token: Long, shift: Float, convergence: Float): Int
+    /** 2D->3D edge stretching as a stereo pair (Adreno 7xx and newer); 0: shader parallax. */
+    @JvmStatic external fun stretch(handle: Long, token: Long, shift: Float, convergence: Float): Int
+    /** The video stereo pair's size (both eyes); zero before the first pair. */
+    @JvmStatic external fun warpSize(handle: Long): IntArray
     /** Browser combined mode: warp matching color and matte together; output is premultiplied RGBA. */
     @JvmStatic external fun warpAlpha(handle: Long, token: Long, shift: Float, convergence: Float, matte: Int, content: FloatArray): Int
     @JvmStatic external fun alphaTexture(handle: Long, token: Long): Int

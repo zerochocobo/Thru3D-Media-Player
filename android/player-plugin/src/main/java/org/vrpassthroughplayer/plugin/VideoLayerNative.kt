@@ -49,12 +49,23 @@ internal object VideoLayerNative {
     /** Counts a released mask; [maskVersion] is what Godot polls before it shows the mask layer. */
     @JvmStatic external fun maskDrawn(): Long
     @JvmStatic external fun maskVersion(): Long
-    /** GPU copy prototype: the compositor surface's buffer size (RGBA8) before the copy's EGL surface. */
-    @JvmStatic external fun setWindowGeometry(surface: Surface, width: Int, height: Int): Boolean
+    /** GPU copy prototype: the compositor surface's buffer size before the copy's EGL surface; RGBA8, or
+     * 10 bits a channel when [deep]. */
+    @JvmStatic external fun setWindowGeometry(surface: Surface, width: Int, height: Int, deep: Boolean): Boolean
+    /** The ADataSpace the compositor reads the copy's buffers in (HDR), after the copy's EGL surface. */
+    @JvmStatic external fun setWindowDataSpace(surface: Surface, dataSpace: Int): Boolean
     /** Draws a decoder buffer's [width] x [height] picture over the current EGL surface of [outWidth] x
-     * [outHeight] (copy thread); flip puts its first row on top. */
+     * [outHeight] (copy thread); flip puts its first row on top. [quality] (picture quality mode):
+     * [sharpen] 0..1 sharpens it (RCAS), within [window] when given: centre u, v and half width, height in
+     * one eye's UV, eyes across and down, 1 when longitude wraps, 1 to tint the window (debug); [grade] is
+     * the colour grade: gain, gamma and offset per channel, contrast, saturation. A [denoiseTolerance]
+     * above 0 denoises first, its samples [denoiseStep] source pixels apart; a negative [sharpen] holds
+     * the window's work back while no direction is known. */
     @JvmStatic external fun blitBuffer(buffer: android.hardware.HardwareBuffer, width: Int, height: Int, bufferWidth: Int, bufferHeight: Int,
-                                       outWidth: Int, outHeight: Int, flip: Boolean): Boolean
+                                       outWidth: Int, outHeight: Int, flip: Boolean, quality: Boolean, sharpen: Float,
+                                       window: FloatArray?, grade: FloatArray?, denoiseStep: Float, denoiseTolerance: Float): Boolean
+    /** Smoothed GPU milliseconds of one [blitBuffer]; 0 without a timer or before its first result. */
+    @JvmStatic external fun blitGpuMs(): Double
     /** Memory saver: copies a decoder buffer into packed [slot] (luma + half-size chroma) at [outWidth] x
      * [outHeight] on the copy thread; the buffer is free for the decoder when this returns. */
     @JvmStatic external fun packBuffer(buffer: android.hardware.HardwareBuffer, width: Int, height: Int, bufferWidth: Int, bufferHeight: Int,
@@ -62,6 +73,11 @@ internal object VideoLayerNative {
     /** Draws packed [slot] over the current EGL surface (the layer window). */
     @JvmStatic external fun drawPacked(slot: Int): Boolean
     @JvmStatic external fun releaseBlit()
+    /** Picture quality mode on the picture layer: draws a GL texture of [sourceWidth] x [sourceHeight] into
+     * the acquired image of [slot], enlarged (EASU) when the image is larger, sharpened and graded as the
+     * layer copy does ([grade]: 11 values, or null). For frames a software decoder made. */
+    @JvmStatic external fun enhanceTexture(slot: Int, texture: Int, sourceWidth: Int, sourceHeight: Int, sharpen: Float, grade: FloatArray?,
+                                           denoiseStep: Float, denoiseTolerance: Float): Boolean
     @JvmStatic external fun releaseImage(slot: Int, mipmaps: Boolean): Boolean
     @JvmStatic external fun runtimeExtensions(): String
     /** Layers can carry a colour scale/bias (the colour grade) instead of leaving the compositor. */

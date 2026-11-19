@@ -208,6 +208,10 @@ const PATHS := {
 	"hand_unlocked": '<path d="M9 20H7L3 13Q2 10 4 10L6 13V5Q6 3 8 4V10V3Q9 1 11 3V10V4Q13 2 14 4V10V6Q16 4 17 6V10" stroke-width="1.5"/><rect x="11" y="15" width="11" height="8" rx="2"/><path d="M13 15V12A3.5 3.5 0 0 1 20 12"/>',
 	"lock": '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7A4 4 0 0 1 16 7V11"/>',
 	"unlock": '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7A4 4 0 0 1 15.5 5"/>',
+	# Player settings tiles: a person kept inside the picture's frame, a status card, a frame-rate dial.
+	"keep_background": '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="12" cy="10" r="2.5"/><path d="M7.5 20C7.5 16.8 9.5 15.3 12 15.3S16.5 16.8 16.5 20"/>',
+	"status_info": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 10H13M7 14H17"/>',
+	"frame_rate": '<path d="M4.5 17.5A8.5 8.5 0 1 1 19.5 17.5"/><path d="M12 14L16 8.5"/><circle cx="12" cy="14" r="1.2"/>',
 	"voice": '<circle cx="8" cy="8" r="3.5"/><path d="M2 21C2 15.5 14 15.5 14 21M17 6.5A4 4 0 0 1 17 12.5M20 4A8 8 0 0 1 20 15"/>'}
 static var _textures: Dictionary = {}
 

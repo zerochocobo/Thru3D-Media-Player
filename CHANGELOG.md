@@ -4,6 +4,13 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.18.3 — 2026-11-19
+
+- Add Picture quality mode for compatible hardware- and software-decoded video, with 0–500% sharpness, selectable denoising and FSR 1 super resolution. The setting is offered across runtimes; availability depends on the playback path. Gamma and saturation controls are unlocked when the mode is active.
+- Use native compositor-layer edge stretching for real-time 2D-to-3D by default on Adreno 7xx and newer GPUs. Older GPUs retain the shader path. Paused video redraws when picture settings or the viewing direction change.
+- Offer ×1.33 and ×1.5 eye-buffer render scales on every headset. QIYU keeps sharp menus and colour correction enabled automatically. Rename the dark background to Pure black.
+- Improve in-app keyboard input for QIYU text fields and generic OpenXR web sign-in. Prefer a controller in active use over optical hands in PICO mixed interaction, and keep the DLNA receiver running when Android logging is unavailable.
+
 ## 0.18.2 — 2026-11-19
 
 - Rewrite the screen mood light's halo, room colour, smoothing and floor shadow with formulas written for this project, tuned to stay close to the earlier look. The contributor of [PR #9](https://github.com/zerochocobo/Thru3D-Media-Player/pull/9) reported in [PR #11](https://github.com/zerochocobo/Thru3D-Media-Player/pull/11) that those parts of the 0.18.0 implementation were derived from another player's decompiled shaders; they have been removed.

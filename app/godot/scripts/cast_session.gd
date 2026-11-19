@@ -68,11 +68,19 @@ func _typing() -> bool:
 func busy() -> bool:
 	return host.video.media.accepts(host.video.media.session_id) or host.photo_active or (host.puzzle_game and host.puzzle_game.active) or host.recent_menu.voice_manager.opened
 
+## A held offer says why once per token: a sender that "does nothing" (QIYU user, 2026-11-19) left no trace.
+var _held := ""
+func _hold(reason: String) -> void:
+	var key := str(pending.get("token", 0)) + ":" + reason
+	if key == _held: return
+	_held = key
+	DiagnosticLog.record("cast_offer_held", {"token": int(pending.get("token", 0)), "reason": reason})
+
 func _present_offer() -> void:
-	if (host.video != null and host.video.vr_passthrough.active()): return
 	if pending.is_empty() or _presented == int(pending.token): return
-	if (host.puzzle_game and host.puzzle_game.active) or host.recent_menu.voice_manager.opened or _typing(): return
-	if host.recent_menu.has_pointer_capture() or (host.player_menu and host.player_menu.has_pointer_capture()): return
+	if (host.video != null and host.video.vr_passthrough.active()): _hold("ai_passthrough"); return
+	if (host.puzzle_game and host.puzzle_game.active) or host.recent_menu.voice_manager.opened or _typing(): _hold("editor_or_game"); return
+	if host.recent_menu.has_pointer_capture() or (host.player_menu and host.player_menu.has_pointer_capture()): _hold("pointer_capture"); return
 	var from_token := int(pending.get("from_token", 0))
 	if from_token > 0:
 		if from_token == token: accept()
@@ -80,6 +88,7 @@ func _present_offer() -> void:
 			platform.dlna_receiver_reject(int(pending.token)); pending = {}
 		return
 	_presented = int(pending.token)
+	DiagnosticLog.record("cast_offer", {"token": _presented, "busy": busy(), "follow_up": from_token > 0})
 	if not busy(): accept()
 	elif host.photo_active: host._show_full_library()
 	else: host._show_player_menu()
@@ -152,6 +161,7 @@ func accept() -> void:
 	# Independent editors/games must be closed by the user, never discarded by a LAN sender.
 	if (host.puzzle_game and host.puzzle_game.active) or host.recent_menu.voice_manager.opened or _typing(): return
 	var offer: Variant = JSON.parse_string(platform.dlna_receiver_accept(int(pending.token)))
+	DiagnosticLog.record("cast_accept", {"token": int(pending.token), "opened": offer is Dictionary and not offer.is_empty()})
 	pending = {}
 	if not offer is Dictionary or offer.is_empty(): return
 	_return_mirror()

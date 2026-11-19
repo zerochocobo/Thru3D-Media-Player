@@ -650,7 +650,8 @@ func _maybe_capture_thumbnail() -> void:
 			return
 		var stereo := bool(pair.get("stereo_sbs", false)) or binding.warped
 		var tb := stereo and bool(pair.get("top_bottom", false))
-		var eye := Vector2(float(pair.width) * (2.0 if binding.warped else 1.0) * (0.5 if stereo and not tb else 1.0), float(pair.height) * (0.5 if tb else 1.0))
+		var full := Vector2(Binding.warp_size(pair)) if binding.warped else Vector2(pair.width, pair.height)
+		var eye := Vector2(full.x * (0.5 if stereo and not tb else 1.0), full.y * (0.5 if tb else 1.0))
 		var scale: Array = pair.get("color_uv_scale", [1.0, 1.0])
 		image = await Thumbnails.capture(self, binding.color_texture(), str(binding.ticket.get("color_target", "")) == "external",
 			stereo, Thumbnails.crop_for(geometry, eye), Vector2(float(scale[0]), float(scale[1])), tb)
@@ -1060,6 +1061,10 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		platform.set_mpv_interleave_compat(network_interleave)
 	disc.before_open(platform, uri, not restore_mode, restore_mode and recent_files.lookup(uri).is_empty())
 	disc_menu.reset()
+	_quality_requested = layer and not _layer_alpha_host and _quality_wanted(uri)
+	if PlatformMethods.supports(platform, "set_layer_picture_quality"): platform.set_layer_picture_quality(_quality_requested)
+	_copy_picture = PackedFloat32Array(); _copy_focus = []
+	_sync_copy_picture()
 	var id: int = platform.open_mpv_video(uri, maxi(start_ms, 0), stereo_sbs, profile, alpha_requested, true, depth_requested,
 		stereo_sbs and top_bottom, SeekPolicy.normalize(seek_mode) == SeekPolicy.EXACT)
 	media.begin(id)
@@ -3406,6 +3411,7 @@ func _on_debug_command(id: int, payload: String) -> void:
 		_debug_next_report_us = 0
 		if _debug_benchmark:
 			geometry = int(command.get("projection", 0))
+			top_bottom = bool(command.get("top_bottom", false))
 		_debug_commands = []
 		_debug_pairs = []
 		_debug_portrait_shots.clear()
@@ -3920,6 +3926,7 @@ func layout_snapshot() -> Dictionary:
 		"depth_requested": depth_requested, "depth_enabled": depth_enabled, "depth_strength": depth_strength, "depth_position": depth_position, "auto_depth": auto_depth,
 		"screen_rotation": screen_rotation, "playback_speed": playback_speed,
 		"video_layer": {"shown": video_layer_shown, "surface": _layer_session, "picture_token": _picture_token,
+			"frame_picture": _frame_picture, "frame_quality": _frame_quality_drawn, "frame_picture_size": [_frame_picture_size.x, _frame_picture_size.y],
 			"warped": _binding.warped, "layers": video_layer.debug_layers() if video_layer else []},
 		"pip": pip.compositor.snapshot(),
 		"alpha_ready": alpha_ready(), "backend": "Android_libmpv", "loop_enabled": loop_enabled,
@@ -4282,7 +4289,7 @@ func _layer_presentation() -> bool:
 	return pip_ready and layer_enabled and video_layer != null and (not alpha_requested or _layer_alpha()) and not depth_requested and not packed_file \
 		and video_layer.capacity() >= (2 if stereo_sbs else 1) + 1 \
 		and (local_uri.is_empty() or local_uri != _layer_blocked_uri) \
-		and video_layer.grades(color_grade) and video_layer.supports_surface(self) \
+		and (_quality_wanted() or video_layer.grades(color_grade)) and video_layer.supports_surface(self) \
 		and (int(media.format.get("source_rotation_degrees", 0)) == 0 or _layer_turns())
 
 ## _layer_presentation() term by term, for the exported log when a layer session falls back.
@@ -4292,7 +4299,7 @@ func _layer_presentation_terms() -> Dictionary:
 		"alpha": alpha_requested, "layer_alpha": alpha_requested and _layer_alpha(), "depth": depth_requested,
 		"packed": packed_file, "capacity": video_layer.capacity() if video_layer else -1, "stereo": stereo_sbs,
 		"blocked_uri": not local_uri.is_empty() and local_uri == _layer_blocked_uri,
-		"grades": video_layer != null and video_layer.grades(color_grade),
+		"grades": video_layer != null and video_layer.grades(color_grade), "quality": _quality_wanted(),
 		"surface": video_layer != null and video_layer.supports_surface(self),
 		"rotation": int(media.format.get("source_rotation_degrees", 0)), "turns": _layer_turns()}
 
@@ -4302,7 +4309,8 @@ var _layer_return_attempt := ""
 var _layer_return_refused := ""
 func _layer_return_key() -> String:
 	return str([local_uri, color_grade.snapshot(), alpha_requested, depth_requested, stereo_sbs, top_bottom,
-		geometry, screen_curve, screen_rotation, packed_file, layer_enabled, pip.video_windows().size(), hdr_to_sdr_mode()])
+		geometry, screen_curve, screen_rotation, packed_file, layer_enabled, pip.video_windows().size(), hdr_to_sdr_mode(),
+		picture_quality])
 
 ## Alpha may stay on the layer: allowed by the platform, and the runtime blends layers by the mask
 ## (XR_FB_composition_layer_alpha_blend). Without that blend the video layer would show uncut, so
@@ -4324,7 +4332,7 @@ func layer_block_reason() -> String:
 	if packed_file: return "packed"
 	if not local_uri.is_empty() and local_uri == _layer_blocked_uri:
 		return "hdr" if local_uri == _hdr_blocked_uri else "decoder"
-	if not video_layer.grades(color_grade): return "color"
+	if not _quality_wanted() and not video_layer.grades(color_grade): return "color"
 	if not video_layer.supports_surface(self): return "shape"
 	return "wait"
 
@@ -4347,6 +4355,186 @@ func _layer_wanted() -> bool:
 	if cast_token > 0: return false # Keep frames available for effects without reopening the LAN source.
 	if video_layer: video_layer.update_session()
 	return video_layer != null and video_layer.available() and _layer_presentation()
+
+## Picture quality mode: plain layer playback goes through the plugin's layer copy, which sharpens the
+## picture where the head looks and applies the whole colour grade, so gamma and saturation no longer
+## take 8K off the compositor layer. The copy joins the decoder's path at open: switching reopens the file.
+var picture_quality := false
+## Sharpening of the mode as the slider shows it, 0 (none: the mode's other work stands on its own) to 5:
+## 1 is all RCAS gives without overshoot, and above it some users want the plainly oversharpened look.
+var picture_sharpness := 1.0:
+	set(value):
+		picture_sharpness = clampf(value, 0.0, 5.0) if is_finite(value) else 1.0
+
+## The layer copy's strength for a slider value. RCAS answers about as the 2.4th power of its amount
+## (Quest 3 captures: detail +0.6%, +7%, +34% at 0.1, 0.5, 1), so the slider's lower part takes the
+## root; above 1 the excess is passed on as it is and becomes overshoot.
+static func sharpen_strength(slider: float) -> float:
+	if slider <= 0.0: return 0.0
+	return pow(slider, 1.0 / 2.4) if slider <= 1.0 else slider
+## Super resolution within the mode: a low-resolution picture is enlarged (FSR 1 EASU before the
+## sharpening). Each eye's picture grows to fit the box for its kind: flat video 4K (long side 3840, as
+## many pixels as 3840 x 2160, so portrait and 4:3 pictures fit too), a VR180 eye 2880 x 2880 (6K side by
+## side), a VR360 eye 5760 x 2880. The whole frame stays within the pixels of an 8K VR frame, which lets a
+## 3840 x 3840 top-bottom 360 picture (a common older format) reach 5760 x 5760. LayerCopy.enlargedSize
+## is the same rule on the frames themselves. Its level: off, moderate (twice the size at most, where EASU
+## is at its best and the load stays lower) or maximum (all the way to the box).
+enum Upscale { OFF, MODERATE, MAXIMUM }
+var picture_upscale := Upscale.OFF:
+	set(value):
+		picture_upscale = clampi(int(value), Upscale.OFF, Upscale.MAXIMUM)
+## Denoising before any enlargement or sharpening, against compression noise that both would bring out
+## (old and low-bitrate video): off, or three strengths. Each is the distance between the samples in
+## source pixels and the colour tolerance, tuned on a 352 x 240 MPEG-2 DVD. Samples two pixels apart left a
+## fine crosshatch in flat colour (Quest 3 captures), so the strongest level widens the tolerance instead.
+const DENOISE := [Vector2.ZERO, Vector2(1.0, 0.0012), Vector2(1.5, 0.004), Vector2(1.5, 0.012)]
+var picture_denoise := 0:
+	set(value):
+		picture_denoise = clampi(int(value), 0, DENOISE.size() - 1)
+const UPSCALE_FLAT_LONG := 3840.0
+const UPSCALE_FLAT_PIXELS := 3840.0 * 2160.0
+const UPSCALE_VR180_EYE := 2880.0
+const UPSCALE_VR360_EYE := Vector2(5760.0, 2880.0)
+const UPSCALE_FRAME_PIXELS := 8192.0 * 4096.0
+const UPSCALE_MIN := 1.15 # less than this is not worth a second pass
+
+## The kind and the eyes come from the playback mode on show (projection and stereo layout), so a change
+## of mode changes the size at once; while a new file is still being recognised nothing is enlarged.
+## kind: 0 flat, 1 VR180, 2 VR360. Returns source when there is nothing to enlarge.
+static func upscale_size(source: Vector2i, kind: int, across: int, down: int, level: int = Upscale.MAXIMUM) -> Vector2i:
+	if level <= Upscale.OFF: return source
+	if source.x <= 0 or source.y <= 0: return source
+	var eye := Vector2(source) / Vector2(across, down)
+	var scale := minf(UPSCALE_VR360_EYE.x / eye.x, UPSCALE_VR360_EYE.y / eye.y)
+	if kind == 0: scale = minf(UPSCALE_FLAT_LONG / maxf(eye.x, eye.y), sqrt(UPSCALE_FLAT_PIXELS / (eye.x * eye.y)))
+	elif kind == 1: scale = minf(UPSCALE_VR180_EYE / eye.x, UPSCALE_VR180_EYE / eye.y)
+	scale = minf(scale, sqrt(UPSCALE_FRAME_PIXELS / (float(source.x) * source.y)))
+	if level == Upscale.MODERATE: scale = minf(scale, 2.0)
+	if scale < UPSCALE_MIN: return source
+	return Vector2i(roundi(source.x * scale) & ~1, roundi(source.y * scale) & ~1)
+
+func _upscale_kind() -> int:
+	return 0 if geometry == Geometry.Geometry.FLAT else (2 if geometry == Geometry.Geometry.EQUIRECT_360 else 1)
+
+## For the menu: the source's size, the sizes each level of super resolution shows it at (the source's
+## own when there is nothing to enlarge) and whether it is a VR picture. Zero sizes: not known yet.
+func picture_upscale_sizes() -> Dictionary:
+	var source := Vector2i(int(media.format.get("width", 0)), int(media.format.get("height", 0)))
+	var across := 2 if stereo_sbs and not top_bottom else 1
+	var down := 2 if stereo_sbs and top_bottom else 1
+	return {"source": source, "moderate": upscale_size(source, _upscale_kind(), across, down, Upscale.MODERATE),
+		"maximum": upscale_size(source, _upscale_kind(), across, down, Upscale.MAXIMUM), "vr": geometry != Geometry.Geometry.FLAT}
+
+## The source has something to enlarge (unknown sizes count as that).
+func picture_upscale_available() -> bool:
+	var sizes := picture_upscale_sizes()
+	return sizes.source.x <= 0 or sizes.maximum != sizes.source
+
+var _quality_requested := false # the session on show was opened with the copy
+var _quality_refused_uri := ""
+var _copy_picture := PackedFloat32Array()
+var _copy_focus := []
+
+## The user's switch. A file the plugin refused before gets another try: the output cap may have changed.
+func set_picture_quality(enabled: bool) -> void:
+	picture_quality = enabled
+	_quality_refused_uri = ""
+
+## Why the mode cannot carry this playback, for the menu: "" when it can.
+func picture_quality_blocker() -> String:
+	if picture_quality_available(): return ""
+	if alpha_requested: return "alpha"
+	if depth_requested: return "3d"
+	return "source"
+
+func picture_quality_supported() -> bool:
+	return video_layer != null and video_layer.available() and video_layer.picture_quality and layer_enabled \
+		and PlatformMethods.supports(platform, "set_layer_picture_quality")
+
+## The mode can carry this playback: not Alpha, 2D to 3D or a fisheye remap, which draw the picture themselves.
+func picture_quality_available(uri: String = "") -> bool:
+	if uri.is_empty(): uri = local_uri
+	return picture_quality_supported() and not alpha_requested and not depth_requested and not packed_file \
+		and geometry != Geometry.Geometry.FISHEYE and (uri.is_empty() or (uri != _quality_refused_uri \
+		and (uri != _layer_blocked_uri or PlatformMethods.supports(platform, "enhance_layer_texture"))))
+
+func _quality_wanted(uri: String = "") -> bool:
+	return picture_quality and picture_quality_available(uri)
+
+func _quality_copying() -> bool:
+	var copy: Variant = media.playback.get("layer_copy")
+	return copy is Dictionary and bool(copy.get("quality", false)) and not bool(copy.get("scaled_down", false))
+
+## The picture on the layer is sharpened and graded already (see VideoLayer.layer_values): by the layer copy
+## on the decoder surface, or by the picture layer's own draw of a software-decoded frame.
+func layer_picture_baked(source_kind: int = VideoLayer.SURFACE) -> bool:
+	if source_kind == VideoLayer.SURFACE: return _layer_session and _quality_requested
+	return _frame_picture and _frame_quality_drawn
+
+## Picture quality mode for frames a software decoder made (a DVD's MPEG-2, Profile 5...): they never
+## pass the layer copy, so the picture layer draws them enlarged, sharpened and graded itself.
+func _frame_quality() -> bool:
+	return picture_quality and picture_quality_supported() and PlatformMethods.supports(platform, "enhance_layer_texture")
+var _frame_quality_drawn := false
+var _frame_picture_size := Vector2i.ZERO # what the picture layer was last drawn at, for the debug report
+var _frame_picture_look := []
+
+## Gamma and saturation wait for the mode wherever it could run; elsewhere the shader applies them as before.
+func _sync_picture_lock() -> void:
+	var locked := picture_quality_available() and not picture_quality
+	if locked == color_grade.curves_locked: return
+	color_grade.curves_locked = locked
+	color_grade.apply(material)
+
+## The mode's settings as the plugin takes them: sharpening, 1 when graded, the grade's gain, gamma and
+## offset per channel, contrast and saturation; then super resolution: its level, the kind and the eyes;
+## then the denoising's step and tolerance.
+func _picture_values() -> PackedFloat32Array:
+	var p := color_grade.values()
+	var gain := color_grade.gain()
+	return PackedFloat32Array([sharpen_strength(picture_sharpness), 0.0 if color_grade.preset == "Original" else 1.0, gain.x, gain.y, gain.z,
+		p.red_gamma * p.gamma, p.green_gamma * p.gamma, p.blue_gamma * p.gamma,
+		p.red_offset, p.green_offset, p.blue_offset, p.contrast, p.saturation,
+		float(picture_upscale) if _layout_pending == null else 0.0, _upscale_kind(), 2.0 if stereo_sbs and not top_bottom else 1.0,
+		2.0 if stereo_sbs and top_bottom else 1.0, DENOISE[picture_denoise].x, DENOISE[picture_denoise].y])
+
+## Sharpening and grade for the layer copy, sent when they change; it draws its frame again with them.
+func _sync_copy_picture() -> void:
+	if not _quality_requested or not PlatformMethods.supports(platform, "set_layer_copy_picture"): return
+	var values := _picture_values()
+	if values == _copy_picture: return
+	_copy_picture = values
+	platform.set_layer_copy_picture(values)
+
+## Where the head looks in one eye's picture, for the layer copy's sharpening window. Sent when it
+## moved; the copy thread uses it on its next draw.
+func _sync_copy_focus() -> void:
+	if not _quality_copying() or view_camera == null or not PlatformMethods.supports(platform, "set_layer_copy_focus"): return
+	var head := panel.global_transform.affine_inverse() * view_camera.global_transform
+	var from := head.origin
+	var along := -head.basis.z.normalized()
+	var at := Vector2(0.5, 0.5)
+	var per_degree := Vector2.ZERO
+	if geometry == Geometry.Geometry.FLAT:
+		if along.z > -0.0001: return
+		var hit := from + along * (-from.z / along.z)
+		at = Vector2(hit.x / _flat.size.x + 0.5, 0.5 - hit.y / _flat.size.y)
+		per_degree = Vector2.ONE * absf(from.z) * tan(deg_to_rad(1.0)) / _flat.size
+	else:
+		# The picture sphere is not centred on the head once zoomed or moved: where the gaze meets it.
+		var toward := from.dot(along)
+		var inside := toward * toward - from.length_squared() + SPHERE_RADIUS * SPHERE_RADIUS
+		if inside < 0.0: return
+		var hit := from + along * (sqrt(inside) - toward)
+		var span := TAU if geometry == Geometry.Geometry.EQUIRECT_360 else PI
+		at = Vector2(0.5 + atan2(hit.x, -hit.z) / span, 0.5 - asin(clampf(hit.y / SPHERE_RADIUS, -1.0, 1.0)) / PI)
+		per_degree = Vector2(deg_to_rad(1.0) / span, 1.0 / 180.0)
+	var layout := (2 if top_bottom else 1) if stereo_sbs else 0
+	var wraps := geometry == Geometry.Geometry.EQUIRECT_360
+	var sent := [at.snapped(Vector2(0.002, 0.002)), per_degree, layout, wraps]
+	if sent == _copy_focus: return
+	_copy_focus = sent
+	platform.set_layer_copy_focus(at.x, at.y, per_degree.x, per_degree.y, layout, wraps)
 
 func _origin() -> XROrigin3D:
 	return view_camera.get_parent() as XROrigin3D if view_camera else null
@@ -4433,6 +4621,7 @@ func _update_layer() -> void:
 		video_layer.hide(self); video_layer_shown = false; panel.visible = false
 		_subtitle_on_layer = false; _flat_subtitle_on_layer = false; _sync_subtitle_surface()
 		return
+	_sync_picture_lock()
 	var layer_settled: bool = _layer_session and media.accepts(media.session_id) and media.frame_counter > 0 \
 		and media.state != "failed" and _pending_revision.is_empty()
 	if layer_settled and not _layer_presentation():
@@ -4446,6 +4635,14 @@ func _update_layer() -> void:
 			_layer_return_refused = _layer_return_key()
 		return
 	if layer_settled: _layer_return_attempt = "" # the return held past its first frame
+	if layer_settled and captures.recording.is_empty() and _freeze_request == 0 and not _waiting_first:
+		if _quality_requested and presented_frames() >= 30 and not _quality_copying():
+			# The plugin kept the decoder's own surface (its output cap would shrink this file).
+			_quality_refused_uri = local_uri
+			Log.record("picture_quality_refused", {"width": int(media.playback.get("layer_surface_width", 0))})
+		if _quality_requested != _quality_wanted():
+			_reopen_at(-1, true, "picture_quality") # the copy joins or leaves the decoder's path only at open
+			return
 	if _layer_session and video_layer.generation != _layer_generation and media.accepts(media.session_id) \
 		and _pending_revision.is_empty():
 		_reopen_at(-1, true, "xr_session") # a new XR session replaced the swapchain MPV decodes into
@@ -4514,6 +4711,9 @@ func _update_layer() -> void:
 	if not shown:
 		_subtitle_on_layer = false; _flat_subtitle_on_layer = false
 	video_layer_shown = shown
+	if shown and _layer_session:
+		_sync_copy_focus()
+		_sync_copy_picture()
 	if not shown and not overlays_shown:
 		video_layer.hide(self)
 	if shown:
@@ -4747,7 +4947,7 @@ func _show_depth_picture(origin: XROrigin3D, extras: Array = []) -> bool:
 		or not video_layer.supports_surface(self) or not video_layer.grades(color_grade) \
 		or not PlatformMethods.supports(platform, "copy_layer_texture"):
 		return false
-	var size := Vector2i(int(ticket.width) * 2, int(ticket.height))
+	var size := Binding.warp_size(ticket)
 	var token := int(ticket.get("slot_token", 0))
 	if token != _picture_token or _picture_refresh > 0:
 		_picture_refresh = maxi(0, _picture_refresh - 1)
@@ -4775,14 +4975,21 @@ func _frame_picture_wanted() -> bool:
 		and str(ticket.get("color_target", "")) != "external" and int(ticket.get("color_texture_id", 0)) > 0 \
 		and not local_uri.is_empty() and local_uri == _layer_blocked_uri \
 		and layer_enabled and video_layer.available() and not alpha_requested and not depth_requested and not packed_file \
-		and video_layer.grades(color_grade) and video_layer.supports_surface(self) \
+		and (_frame_quality() or video_layer.grades(color_grade)) and video_layer.supports_surface(self) \
 		and PlatformMethods.supports(platform, "copy_layer_texture")
 
 func _show_frame_picture(origin: XROrigin3D, extras: Array) -> bool:
 	var ticket := _binding.ticket
-	var size := Vector2i(int(ticket.width), int(ticket.height))
+	var source := Vector2i(int(ticket.width), int(ticket.height))
 	var token := int(ticket.get("slot_token", 0))
-	if token != _picture_token:
+	# Picture quality mode draws the frame itself: enlarged where super resolution has room, sharpened and
+	# graded. Its settings redraw the frame on show, so a paused picture follows the sliders.
+	var quality := _frame_quality()
+	var look := _picture_values() if quality else PackedFloat32Array()
+	var size := upscale_size(source, _upscale_kind(), 2 if stereo_sbs and not top_bottom else 1, 2 if stereo_sbs and top_bottom else 1,
+		int(look[13])) if quality and look[13] > 0.5 else source
+	var stamp := [quality, size, look]
+	if token != _picture_token or stamp != _frame_picture_look:
 		# A runtime may refuse a large swapchain (XR2 Gen 1 headsets): this file stays in the eye buffers.
 		if not platform.create_layer_image(VideoLayer.PICTURE_SLOT, size.x, size.y, 1, false):
 			_frame_picture_failed = true
@@ -4793,12 +5000,17 @@ func _show_frame_picture(origin: XROrigin3D, extras: Array) -> bool:
 			video_layer.picture_size = Vector2(size)
 		if platform.acquire_layer_image(VideoLayer.PICTURE_SLOT) <= 0:
 			return false
-		var copied: bool = platform.copy_layer_texture(VideoLayer.PICTURE_SLOT, int(ticket.color_texture_id))
+		var copied: bool = platform.enhance_layer_texture(VideoLayer.PICTURE_SLOT, int(ticket.color_texture_id), source.x, source.y,
+			look[0], look.slice(2, 13) if look[1] > 0.5 else PackedFloat32Array(), look[17], look[18]) if quality \
+			else platform.copy_layer_texture(VideoLayer.PICTURE_SLOT, int(ticket.color_texture_id))
 		if not platform.release_layer_image(VideoLayer.PICTURE_SLOT, false) or not copied:
 			_frame_picture_failed = true
-			DiagnosticLog.record("frame_picture_failed", {"stage": "copy", "size": [size.x, size.y]})
+			DiagnosticLog.record("frame_picture_failed", {"stage": "enhance" if quality else "copy", "size": [size.x, size.y]})
 			return false
 		_picture_token = token
+		_frame_picture_look = stamp
+		_frame_quality_drawn = quality
+		_frame_picture_size = size
 	return video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(size), -1, Vector2.ZERO, Vector4(0, 0, 1, 1),
 		VideoLayer.OPAQUE, extras)
 

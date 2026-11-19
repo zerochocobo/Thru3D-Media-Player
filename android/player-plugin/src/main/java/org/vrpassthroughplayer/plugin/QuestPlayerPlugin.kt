@@ -854,6 +854,12 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun upload_layer_rows(slot: Int, y: Int, rows: Int, pixels: ByteArray, channels: Int): Boolean =
         runCatching { VideoLayerNative.uploadRows(slot, y, rows, pixels, channels) }.getOrDefault(false)
     @UsedByGodot fun copy_layer_texture(slot: Int, texture: Int): Boolean = runCatching { VideoLayerNative.copyTexture(slot, texture) }.getOrDefault(false)
+    /** Picture quality mode for a software-decoded frame: see [VideoLayerNative.enhanceTexture]. An empty
+     * [grade] leaves the colours as they are. */
+    @UsedByGodot fun enhance_layer_texture(slot: Int, texture: Int, sourceWidth: Int, sourceHeight: Int, sharpen: Float, grade: FloatArray,
+                                           denoiseStep: Float, denoiseTolerance: Float): Boolean =
+        runCatching { VideoLayerNative.enhanceTexture(slot, texture, sourceWidth, sourceHeight, sharpen, grade.takeIf { it.size >= 11 },
+            denoiseStep, denoiseTolerance) }.getOrDefault(false)
     @UsedByGodot fun video_layer_limits(): String = runCatching { VideoLayerNative.compositorLimits() }.getOrDefault("0 0 0")
     @UsedByGodot fun pip_compositor_metrics(): String = runCatching { VideoLayerNative.pipMetrics() }.getOrDefault("0 0 0 0 0")
     @UsedByGodot fun pip_compositor_samples(request: Boolean): String =
@@ -930,6 +936,21 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         if (closed.get() || !MpvSourceNative.supported()) return false
         if (android.os.Build.VERSION.SDK_INT >= 29) android.os.Trace.setCounter("T3D.vsyncAheadUs", (displayNs - System.nanoTime()) / 1000)
         return MpvSourceNative.setVsync(displayNs, periodNs, latchLeadNs)
+    }
+    /** Picture quality mode for the files opened next (see [MpvVideoBridge.pictureQuality]). */
+    @UsedByGodot fun set_layer_picture_quality(enabled: Boolean) { mpv.pictureQuality = enabled }
+    /** Its sharpening and colour grade, applied from the next video frame (see [LayerCopy.picture]). */
+    @UsedByGodot fun set_layer_copy_picture(values: FloatArray): Boolean {
+        if (closed.get() || values.size < 13 || values.any { !it.isFinite() }) return false
+        LayerCopy.picture = values.copyOf()
+        return true
+    }
+    /** Where the head looks in one eye's picture, for the layer copy's sharpening window (see
+     * [LayerCopy.focus]). */
+    @UsedByGodot fun set_layer_copy_focus(u: Float, v: Float, perDegreeU: Float, perDegreeV: Float, layout: Int, wraps: Boolean): Boolean {
+        if (closed.get()) return false
+        LayerCopy.focus = floatArrayOf(u, v, perDegreeU, perDegreeV, layout.toFloat(), if (wraps) 1f else 0f)
+        return true
     }
     @UsedByGodot fun set_mpv_narration(id: Int, options: String): Boolean = !closed.get() && mpv.setNarration(id, options)
     @UsedByGodot fun mpv_voice_clone_request(id: Int, options: String): Boolean = !closed.get() && mpv.voiceCloneRequest(id, options)

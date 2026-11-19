@@ -2258,24 +2258,13 @@ func _rebuild_rows() -> void:
 				rows.append(_choice_row("Hand model", "hand_model", str(settings.get("hand_model", "auto")),
 					[{"value": "auto", "label": "Auto", "hint": "Hidden in passthrough"}, {"value": "show", "label": "On"}, {"value": "hide", "label": "Off"}]))
 				rows.append({"title": I18n.t("Control bar transparency"), "icon": "settings", "setting": ["bar_transparency", true]})
-				var quality_choices: Array = [{"value": Quality.AUTO, "label": "Auto", "hint": Quality.SCALE_AUTO_HINT}]
+				var qiyu: bool = settings.get("qiyu", false)
+				var quality_choices: Array = [{"value": Quality.AUTO, "label": "Auto", "hint": Quality.QIYU_SCALE_AUTO_HINT if qiyu else Quality.SCALE_AUTO_HINT}]
 				for i in Quality.SCALES.size():
 					quality_choices.append({"value": i, "label": Quality.NAMES[i], "hint": Quality.SCALE_HINTS[i]})
 				var scale_row := _choice_row("Render scale", "display_quality", int(settings.get("display_quality", Quality.DEFAULT)),
 					quality_choices, true, "Restart to apply" if settings.get("display_quality_pending", false) else "")
 				scale_row.info = Quality.SCALE_INFO; rows.append(scale_row)
-				if settings.get("qiyu", false):
-					var menu_row := _choice_row("Sharp menus", "qiyu_menu_eye_buffer", bool(settings.get("qiyu_menu_eye_buffer", true)),
-						[{"value": false, "label": "Off"}, {"value": true, "label": "On"}], true,
-						"Restart to apply" if settings.get("qiyu_menu_eye_buffer_pending", false) else "")
-					menu_row.info = "Draw menus with the scene at the render scale instead of as separate layers."
-					for option in menu_row.choices: option.hint = menu_row.info
-					rows.append(menu_row)
-					var color_row := _choice_row("Color correction", "qiyu_page_color", bool(settings.get("qiyu_page_color", true)),
-						[{"value": false, "label": "Off"}, {"value": true, "label": "On"}], true)
-					color_row.info = "Tone down washed-out bright pages, videos and photos."
-					for option in color_row.choices: option.hint = color_row.info
-					rows.append(color_row)
 				var refresh_choices: Array = []
 				for cap in Quality.refresh_choices(bool(settings.get("low_end_gpu", false))):
 					refresh_choices.append({"value": cap, "label": Quality.REFRESH_NAMES[cap], "hint": Quality.REFRESH_HINTS[cap]})
@@ -4412,7 +4401,9 @@ func _draw_editor() -> void:
 		_button(SPACE, "␣", Vector2(0.15, y), Vector2(0.34, 0.085))
 		_button(BACKSPACE, "", Vector2(0.43, y), Vector2(0.18, 0.085), true, "backspace")
 	var actions := 0.10 if compact_input else -0.44
-	_button(EDITOR_SYSTEM_KEYBOARD, I18n.t("System input method"), Vector2(-0.25, actions), Vector2(0.57, 0.08), not _editor_busy(), "", true)
+	# QIYU shows no system IME in VR (system_text_input.gd).
+	if not SystemTextInput.system_keyboard_hidden():
+		_button(EDITOR_SYSTEM_KEYBOARD, I18n.t("System input method"), Vector2(-0.25, actions), Vector2(0.57, 0.08), not _editor_busy(), "", true)
 	_button(SAVE, "", Vector2(0.73, actions), Vector2(0.18, 0.08), not _editor_busy() and not str(_editor.get("host", "")).strip_edges().is_empty() and (not dlna_editor or not str(_editor.port).strip_edges().is_empty()), "check", true)
 	_button(CANCEL, "", Vector2(0.52, actions), Vector2(0.18, 0.08), true, "close")
 	if not str(_editor.id).is_empty():
