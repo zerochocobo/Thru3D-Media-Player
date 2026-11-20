@@ -478,18 +478,8 @@ func _ready() -> void:
 	video.last_mode_changed.connect(_on_last_video_mode_changed)
 	video.reuse_last_mode_changed.connect(_on_reuse_last_video_mode_changed)
 	_restore_subtitle_settings()
-	video.color_grade.restore(settings.get_value("video", "color_grade", {}))
-	video.picture_sharpness = float(settings.get_value("video", "picture_sharpness", video.SHARPNESS_DEFAULT))
 	video.alpha_copy_packed = memory_saver
-	# A look saved with gamma or saturation played in the eye buffers until now: the mode starts on for
-	# it, so the look stays and the picture returns to the compositor layer.
-	if not settings.has_section_key("video", "picture_quality"):
-		settings.set_value("video", "picture_quality", video.color_grade.uses_curves())
-	video.picture_quality = bool(settings.get_value("video", "picture_quality", false))
-	# Saved as a switch before it had levels: on was the maximum.
-	var upscale: Variant = settings.get_value("video", "picture_upscale", 0)
-	video.picture_upscale = (video.Upscale.MAXIMUM if upscale else video.Upscale.OFF) if upscale is bool else int(upscale)
-	video.picture_denoise = int(settings.get_value("video", "picture_denoise", 0))
+	video.load_picture_preferences(settings)
 	_restore_flat_video_settings()
 	video.restore_screen_curve(settings, "screen")
 	add_child(video)
@@ -623,7 +613,7 @@ func _ready() -> void:
 	player_menu.whisper_haptic.connect(_on_whisper_haptic)
 	player_menu.adjustment_requested.connect(_on_playback_adjustment)
 	player_menu.screen_lock_blocked.connect(func(hand: String): screen_edit_lock.deny(hand, "menu"))
-	player_menu.adjustment_committed.connect(_save_playback_adjustments)
+	player_menu.adjustment_committed.connect(_on_player_adjustment_committed)
 	player_menu.subtitle_requested.connect(video.set_subtitle_track)
 	player_menu.secondary_subtitle_requested.connect(video.dual_subtitles.select)
 	player_menu.subtitle_files_requested.connect(video.request_subtitle_files)
@@ -820,6 +810,10 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled(); return
 	# Typing into the in-app keyboard keeps every key.
 	if event is InputEventKey and ChineseInput.active(): return
+	# Android's system IME reaches a focused Godot editor as key events: each edit is replayed as
+	# backspaces plus the new text. Mapping Backspace to B dropped the backspaces, so every letter
+	# appended the whole word again. A release still reaches a slot pressed before editing began.
+	if event is InputEventKey and event.pressed and _text_editor_focused(): return
 	var changes := external_input.feed(event)
 	if not changes.is_empty() or (event is InputEventJoypadMotion and absf(event.axis_value) > 0.5): _external_used_ms = Time.get_ticks_msec()
 	_apply_external(changes)
@@ -862,6 +856,10 @@ func _apply_external(changes: Array[Dictionary]) -> void:
 		if change.pressed: _on_controller_button(input, hand)
 		else: _on_controller_release(input, hand)
 		_external_press = false
+
+func _text_editor_focused() -> bool:
+	var owner := get_viewport().gui_get_focus_owner() if is_inside_tree() else null
+	return owner is LineEdit or owner is TextEdit
 
 ## Releases every controller input an external key still holds (pause, rebinding).
 func _release_external() -> void:
@@ -1433,9 +1431,9 @@ func _execute_shortcut(id: String, hand: String = "right_hand", amount: float = 
 		"grade_next", "grade_previous":
 			var presets: Array = video.color_grade.PRESETS
 			var index: int = presets.find(video.color_grade.preset)
-			_on_playback_adjustment("grade_preset", presets[posmod(index + (1 if id == "grade_next" else -1), presets.size())]); _save_playback_adjustments()
+			video.preview_picture("grade_preset", presets[posmod(index + (1 if id == "grade_next" else -1), presets.size())]); video.commit_picture()
 		"temperature_up", "temperature_down":
-			_on_playback_adjustment("temperature", video.color_grade.values().temperature + (100 if id == "temperature_down" else -100)); _save_playback_adjustments()
+			video.preview_picture("temperature", video.color_grade.values().temperature + (100 if id == "temperature_down" else -100)); video.commit_picture()
 		"mute": video.toggle_mute()
 		"audio_next": video.cycle_audio_track(1)
 		"subtitle_next": video.cycle_subtitle_track(1)
@@ -3671,6 +3669,8 @@ func _relocate_file_records(old_uri: String, new_uri: String, title: String, siz
 	if not video.recent_files.save(): recent_menu.file_actions.rename.migration_failed = true
 	video.mode_memory.relocate(old_uri, new_uri)
 	if not video.mode_memory.save(): recent_menu.file_actions.rename.migration_failed = true
+	video.picture_memory.relocate(old_uri, new_uri)
+	if not video.picture_memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	video.track_memory.relocate(old_uri, new_uri)
 	if not video.track_memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	video.subtitle_layout_memory.relocate(old_uri, new_uri)
@@ -4843,7 +4843,9 @@ func _apply_memory_mode(plugin: Object) -> void:
 	if not plugin: return
 	if PlatformMethods.supports(plugin, "set_mpv_memory_saver"): plugin.set_mpv_memory_saver(memory_saver)
 	if video: video.alpha_copy_packed = memory_saver
-	plugin.set_mpv_output_width(Quality.output_width(Quality.load_output_choice(settings), low_end_gpu or memory_saver))
+	var output_cap := Quality.output_width(Quality.load_output_choice(settings), low_end_gpu or memory_saver, QiyuController.runtime)
+	if video: video.output_cap = output_cap
+	plugin.set_mpv_output_width(output_cap)
 
 func _restore_seek_settings() -> void:
 	video.seek_mode = video.SeekPolicy.normalize(settings.get_value("video", "seek_mode", video.SeekPolicy.SPEED))
@@ -5413,15 +5415,20 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		if not photo_active and video: video.set_video_aspect_lock(bool(value))
 		return
 	if screen_edit_lock.guard(key): return
-	if key == "picture_quality":
+	if key in ["picture_quality", "picture_upscale", "picture_denoise"]:
 		if photo_active or not video: return
-		video.set_picture_quality(bool(value))
-		settings.set_value("video", "picture_quality", video.picture_quality); settings.save(settings_path)
+		if not _picture_controls_current(): return
+		video.preview_picture(key, value, player_menu.editing_picture_defaults())
+		_commit_picture_adjustment()
 		return
-	if key in ["picture_upscale", "picture_denoise"]:
-		if photo_active or not video: return
-		video.set(key, int(value))
-		settings.set_value("video", key, int(video.get(key))); settings.save(settings_path)
+	if key == "reuse_last_picture":
+		if photo_active or not video or not _picture_controls_current(): return
+		video.set_reuse_last_picture(bool(value))
+		settings.set_value("video", "reuse_last_picture", video.reuse_last_picture)
+		settings.save(settings_path)
+		return
+	if key == "clear_current_picture":
+		if not photo_active and video and _picture_controls_current(): video.clear_current_picture()
 		return
 	if key == "depth_position":
 		if value is Dictionary:
@@ -5745,6 +5752,7 @@ func _menu_state() -> Dictionary:
 		"subtitle_files_revision": video.subtitle_files_revision,
 		"subtitle_files_state": video.subtitle_files_state, "subtitle_file_loading": video.subtitle_file_loading, "subtitle_file_error": video.subtitle_file_error,
 		"title": video.display_name, "source_size": "%s x %s" % [video.media.format.get("width", "?"), video.media.format.get("height", "?")],
+		"shown_picture": video.shown_picture(),
 		"codec": str(details.get("codec", "Unknown codec")) + (" · " + I18n.t("Software decoding") if video.software_decode_limited() else ""),
 		"position_ms": video.control.display_position_ms(), "duration_ms": video.control.duration_ms,
 		"seek_feedback": seek_feedback.snapshot(),
@@ -5763,6 +5771,12 @@ func _menu_state() -> Dictionary:
 	result["video_auto_3d"] = video.default_auto_depth
 	result["hdr_to_sdr"] = video.hdr_to_sdr_mode()
 	result["reuse_last_mode"] = video.reuse_last_mode
+	result["reuse_last_picture"] = video.reuse_last_picture
+	result["picture_source"] = video.picture_source
+	result["picture_open_id"] = video.picture_open_id
+	result["picture_defaults"] = video.picture_defaults
+	result["picture_inherit_available"] = video._picture_can_inherit()
+	result["picture_clear_available"] = video._picture_can_remember() and video.picture_source == "file"
 	result["depth_text_protection"] = false
 	result["watch_enabled"] = bool(settings.get_value("watch", "enabled", true))
 	result["capture"] = video.captures.snapshot()
@@ -7191,15 +7205,14 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 		if not photo_active and video.cast_allows(key): video.set_depth_position(value)
 		return
 	if not photo_active and video and not video.cast_allows(key): return
-	if not photo_active and video and key.begins_with("grade_") and not video.cast_allows("color_grade"): return
+	if Video.PictureMemory.is_adjustment(key):
+		if not photo_active and video and _picture_controls_current(): video.preview_picture(key, value, player_menu.editing_picture_defaults())
+		return
 	if key in ["video_aspect_preset", "video_aspect_factor"]:
 		if not photo_active and video and video.set_video_aspect(key, value): _sync_cinema_screen()
 		return
 	if key == "bar_transparency":
 		_set_bar_transparency(float(value)); return
-	if key == "picture_sharpness":
-		if not photo_active and video: video.picture_sharpness = float(value) / 100.0
-		return
 	if key == "portrait_distance":
 		if photo_active or not portrait_screen.active or not is_finite(float(value)): return
 		_push_screen(clampf(float(value), video.DISTANCE_LIMITS.x, video.DISTANCE_LIMITS.y) - _surface_distance(video))
@@ -7312,19 +7325,26 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 		video.set(key, float(value))
 	elif key == "subtitle_position":
 		video.subtitle_position = float(value)
-	elif key == "grade_preset":
-		video.color_grade.select(str(value))
-	elif key == "grade_reset":
-		video.color_grade.reset_custom()
-	elif key == "grade_reset_page":
-		video.color_grade.reset_page(int(value))
-	else:
-		video.color_grade.adjust(key, value)
-	video.color_grade.apply(video.material)
 
 func _save_subtitle_centers() -> void:
 	video.SubtitleDepth.save_centers(settings, video.subtitle_horizontal_center, video.subtitle_vertical_center)
 	video.SubtitleDepth.save_follow(settings, video.subtitle_follow_horizontal_offset, video.subtitle_follow_vertical_offset)
+
+func _picture_controls_current() -> bool:
+	return not player_menu.editing_picture() or player_menu.editing_picture_defaults() \
+		or player_menu.picture_controls_open_id == video.picture_open_id
+
+func _on_player_adjustment_committed() -> void:
+	if player_menu.editing_picture(): _commit_picture_adjustment()
+	else: _save_playback_adjustments()
+
+func _commit_picture_adjustment() -> void:
+	if player_menu.editing_picture_defaults():
+		if video.picture_defaults == video.picture_memory.load_defaults(settings): return
+		for key in video.picture_defaults: settings.set_value("video", key, video.picture_defaults[key])
+		settings.save(settings_path)
+	elif _picture_controls_current():
+		video.commit_picture()
 
 func _save_playback_adjustments() -> void:
 	video.commit_stereo_view()
@@ -7341,8 +7361,6 @@ func _save_playback_adjustments() -> void:
 	settings.set_value("subtitles", "distance", video.subtitle_distance)
 	_save_subtitle_centers()
 	settings.set_value("subtitles", "direction", video.subtitle_direction)
-	settings.set_value("video", "color_grade", video.color_grade.snapshot())
-	settings.set_value("video", "picture_sharpness", video.picture_sharpness)
 	settings.save(settings_path)
 
 func _fps_sample() -> Dictionary:
@@ -8069,6 +8087,7 @@ func _update_favorite_session() -> void:
 
 func _on_favorites_changed() -> void:
 	if _migrating_favorites: return
+	if video and favorites.protected: video.clear_last_picture()
 	_sync_native_privacy()
 	_migrate_protected_favorites()
 	_update_favorite_session()
@@ -8078,6 +8097,7 @@ func _on_favorites_changed() -> void:
 
 func _on_favorites_lock_changed() -> void:
 	if not favorites.locked: return
+	if video: video.clear_last_picture()
 	# Independent sampling must release its reader even when normal playback stays open.
 	if video: video.narration.global_voice_command({"operation": "close"})
 	if recent_menu:
@@ -8105,18 +8125,18 @@ func _migrate_protected_favorites() -> void:
 		var key := Video.ModeMemory.key_for(uri)
 		var success := true
 		var has_public_data := false
-		for memory in [video.mode_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory, photo.grade_memory]:
+		for memory in [video.mode_memory, video.picture_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory, photo.grade_memory]:
 			var memory_key: String = memory.entry_key(uri)
 			if memory.entries.has(memory_key):
 				has_public_data = true
 				success = favorites.private_remember(uri, memory.directory.get_file() + "/" + memory._value_field(), memory.entries[memory_key].get(memory._value_field(), {})) and success
 		if success and has_public_data: keys.append(key); ThumbnailCache.forget(uri)
 		if success and has_public_data:
-			for memory in [video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.grade_memory]:
+			for memory in [video.picture_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.grade_memory]:
 				var memory_key: String = memory.entry_key(uri)
 				if not keys.has(memory_key): keys.append(memory_key)
 	if not keys.is_empty():
-		for memory in [video.mode_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory, photo.grade_memory]:
+		for memory in [video.mode_memory, video.picture_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory, photo.grade_memory]:
 			if not memory.purge_keys(keys):
 				favorites.last_error = "Privacy cleanup failed"
 				if recent_menu: recent_menu.status = favorites.last_error
@@ -8158,7 +8178,8 @@ func _clear_file_settings(network_only: bool) -> void:
 	# Commit a held preview first, so a later pointer release cannot restore deleted settings.
 	video.commit_stereo_view()
 	if not network_only or not Privacy.is_local(video.local_uri): video.discard_file_settings()
-	for memory in [video.mode_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.audio_timing,
+	video.clear_last_picture(network_only)
+	for memory in [video.mode_memory, video.picture_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.audio_timing,
 			video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory, photo.grade_memory, atmosphere.memory]:
 		var keys: Array = memory.entries.keys()
 		if network_only:

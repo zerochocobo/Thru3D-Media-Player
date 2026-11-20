@@ -63,7 +63,8 @@ func run() -> void:
 	for language in ["zh", "zh_Hant", "en", "ja"]:
 		I18n.use(language)
 		for view in ["playback", "screen", "cinema", "color_grade", "stereo_view"]:
-			player.section = 1; player._adjustment = "" if view == "playback" else "screen" if view == "cinema" else view
+			player.section = 1; player._adjustment = "" if view == "playback" else "screen" if view == "cinema" else "picture" if view == "color_grade" else view
+			player._picture_tab = 1; player._picture_advanced = view == "color_grade"
 			state.screen_cinema = view == "cinema"; player.refresh()
 			await shot(player, language + "-player-" + view)
 	player.free()

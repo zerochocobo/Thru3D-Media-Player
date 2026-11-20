@@ -1,5 +1,6 @@
 extends SceneTree
 const Controls := preload("res://scripts/photo_magazine_controls.gd")
+const Geometry := preload("res://scripts/video_geometry.gd")
 const I18n := preload("res://scripts/i18n.gd")
 var checks := 0
 var failures: Array[String] = []
@@ -152,15 +153,24 @@ func interaction_checks() -> void:
 	app.photo.loading = true; controls.sync()
 	check(controls._buttons.all(func(b): return not b.enabled), "In-flight decode disables image actions")
 	app.photo.loading = false
-	app.photo.set_projection(3); aim(app.xr_camera.global_position + Vector3.FORWARD); reveal()
-	check(app.photo.screen_rotation == 0, "Planar rotation does not tilt a panorama")
-	check(button(Controls.ROTATE_IMAGE).is_empty() and not button(Controls.NEXT_IMAGE).is_empty(), "Panorama has navigation at a stable lower anchor")
-	var anchor: Transform3D = controls.global_transform
-	app.xr_camera.rotate_y(0.2); controls.sync()
-	check(controls.global_transform.is_equal_approx(anchor), "Panorama controls do not follow every head turn")
-	app.xr_camera.rotate_y(-0.2)
+	for projection in [Geometry.Geometry.HALF_EQUIRECT, Geometry.Geometry.FISHEYE, Geometry.Geometry.EQUIRECT_360]:
+		app.photo.set_projection(projection)
+		check(app.photo.screen_rotation == 0, "Planar rotation does not tilt an immersive photo")
+		var forward := aim(app.xr_camera.global_position + Vector3.FORWARD)
+		var old_button := aim(button(Controls.NEXT_IMAGE).node.global_position, "left_hand")
+		var now := Time.get_ticks_msec()
+		controls.sync(now); controls.sync(now + Controls.ENTER_MS + Controls.LEAVE_MS)
+		check(not controls.visible and controls.input_menu() == null, "Projection %d keeps the row hidden while pointing" % projection)
+		check(not controls.press_pointer("right_hand", forward[0], forward[1], true)
+			and not controls.press_pointer("left_hand", old_button[0], old_button[1], true), "Immersive photos release bottom-row input")
 	app.photo.set_projection(0)
 	check(app.photo.screen_rotation == 90, "Returning to flat presentation restores its rotation")
+	app.rays.clear(); aim(app.photo.panel.global_position)
+	var flat_since := Time.get_ticks_msec()
+	controls.sync(flat_since)
+	check(not controls.visible, "Returning to flat presentation starts a fresh wake dwell")
+	controls.sync(flat_since + Controls.ENTER_MS)
+	check(controls.visible, "Flat photo controls can wake again")
 	await open_photo(0)
 	for stereo in [1, 2]:
 		app.photo.set_stereo_layout(stereo)
@@ -175,6 +185,23 @@ func interaction_checks() -> void:
 	app.photo.gallery.visible = false; app.photo.panel.visible = true
 	tap(Controls.RETURN_TO_WALL); app.photo.gallery._process(1.0)
 	check(not app.photo.portrait_requested and app.photo.gallery.focus < 0, "Return exits portrait and closes the wall photo in one operation")
+	await open_photo(2)
+	aim(app.photo.panel.global_position); reveal()
+	var back := aim(button(Controls.RETURN_TO_WALL).node.global_position)
+	app.photo.set_projection(Geometry.Geometry.EQUIRECT_360); controls.sync()
+	check(not controls.visible and not controls.press_pointer("right_hand", back[0], back[1], true), "Expanded panorama hides and disables the attached wall return")
+	app._on_controller_button("menu_button", "left_hand")
+	var menu: Node3D = app.photo_menu
+	check(menu.visible, "The controller can still open the photo menu in a panorama")
+	for target in [menu.PHOTO_PREVIOUS, menu.PHOTO_NEXT, menu.PHOTO_RETURN]:
+		check(menu._buttons.any(func(item): return item.target == target and item.enabled), "The photo menu still offers action %d" % target)
+	var menu_back: Array = menu._buttons.filter(func(item): return item.target == menu.PHOTO_RETURN)
+	if not menu_back.is_empty():
+		aim(menu_back[0].node.global_position)
+		app._on_controller_button("trigger_click", "right_hand")
+		app._on_controller_release("trigger_click", "right_hand")
+		app.photo.gallery._process(1.0)
+	check(app.photo.gallery.focus < 0 and app.photo.gallery.overview(), "The photo menu returns an expanded panorama to its wall")
 
 func magazine_checks() -> void:
 	await open_photo(4)

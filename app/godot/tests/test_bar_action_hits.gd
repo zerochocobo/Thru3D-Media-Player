@@ -60,6 +60,23 @@ func run() -> void:
 	video.state_provider = func(): return state
 	video.visible = true; video.refresh()
 	inspect(video, "video")
+	state.bookmarks = [{"id": "marker", "position_ms": 1000}]
+	state.bookmark_revision = 1
+	video.refresh_values()
+	inspect(video, "video music and bookmark")
+	video.music_quick.expanded = true
+	video.refresh()
+	inspect(video, "video expanded music and bookmark")
+	video.music_quick.expanded = false
+	state.bookmarks = []
+	state.bookmark_undo = true
+	state.bookmark_revision = 2
+	video.refresh_values()
+	inspect(video, "video music and undo-only bookmark")
+	state.bookmark_undo = false
+	video.refresh_values()
+	check(control(video, Video.BookmarkMenu.LIST).is_empty(), "Expired undo hides the empty bookmark list")
+	check(is_equal_approx(control(video, Video.MUSIC_OPEN).rect.get_center().x, -0.42), "Music returns to its compact slot")
 	video.music_quick.expanded = true; video.refresh()
 	inspect(video, "video music expanded")
 	video.music_quick.expanded = false

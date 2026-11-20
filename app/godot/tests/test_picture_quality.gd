@@ -3,6 +3,7 @@ extends SceneTree
 const Grade := preload("res://scripts/color_grade.gd")
 const Main := preload("res://scripts/main.gd")
 const Menu := preload("res://scripts/player_menu.gd")
+const Video := preload("res://scripts/mpv_video_display.gd")
 const I18n := preload("res://scripts/i18n.gd")
 var failures: Array[String] = []
 func check(value: bool, message: String) -> void:
@@ -35,8 +36,7 @@ func _run() -> void:
 	saved.adjust("exposure", 0.5)
 	check(is_equal_approx(saved.custom.temperature, 4000.0), "The first edit while locked starts from the preset")
 
-	const Display := preload("res://scripts/mpv_video_display.gd")
-	const Video := Display
+	const Display := Video
 	check(Display.upscale_size(Vector2i(1280, 720), 0, 1, 1, Display.Upscale.MODERATE) == Vector2i(2560, 1440), "Moderate stops at twice the size")
 	check(Display.upscale_size(Vector2i(4096, 2048), 1, 2, 1, Display.Upscale.MODERATE) == Vector2i(5760, 2880), "Moderate equals maximum within twice the size")
 	check(Display.upscale_size(Vector2i(1280, 720), 0, 1, 1, Display.Upscale.OFF) == Vector2i(1280, 720), "Off enlarges nothing")
@@ -62,19 +62,62 @@ func _run() -> void:
 		check(size == case[4], "%s (got %s)" % [case[5], size])
 	var four_three: Vector2i = Display.upscale_size(Vector2i(1440, 1080), 0, 1, 1)
 	check(absf(four_three.x * four_three.y - 3840.0 * 2160.0) < 3840.0 * 2160.0 * 0.01 and four_three.x < 3840, "A 4:3 picture gets 4K's pixels, not its width")
+	# The layer copy's output cap (Quest 2, memory saver): enlarged up to it, not dropped past it.
+	check(Display.upscale_size(Vector2i(1920, 960), 1, 2, 1, Display.Upscale.MAXIMUM, 4096) == Vector2i(4096, 2048), "A 2K VR180 picture stops at the cap")
+	check(Display.upscale_size(Vector2i(4096, 2048), 1, 2, 1, Display.Upscale.MAXIMUM, 4096) == Vector2i(4096, 2048), "4K VR180 under a 4096 cap is not enlarged")
+	check(Display.upscale_size(Vector2i(3840, 1920), 1, 2, 1, Display.Upscale.MAXIMUM, 4096) == Vector2i(3840, 1920), "Less than the smallest worthwhile step under the cap is no enlargement")
+	check(Display.upscale_size(Vector2i(1920, 1080), 0, 1, 1, Display.Upscale.MAXIMUM, 4096) == Vector2i(3840, 2160), "1080p reaches 4K within the cap")
+	_picture_memory()
 	I18n.use("en")
 	var menu := Menu.new()
 	var state := {"has_video": true, "geometry": 1, "stereo": true, "layer_available": true, "grade_on_layer": true,
 		"picture_quality_supported": true, "picture_quality_available": true, "picture_quality": false, "picture_sharpness": 50.0,
-		"grade_curves_locked": true, "grade_values": Grade.DEFAULTS.duplicate(), "color_grade": {"preset": "Custom"}}
+		"grade_curves_locked": true, "grade_values": Grade.DEFAULTS.duplicate(), "color_grade": {"preset": "Custom"},
+		"picture_inherit_available": true}
 	menu.state_provider = func(): return state
+	menu.setting_requested.connect(func(key: String, value: Variant):
+		if key == "reuse_last_picture": state.reuse_last_picture = value
+		if key == "clear_current_picture": state.picture_clear_available = false)
 	root.add_child(menu)
 	menu.toggle()
-	menu.section = 1
+	for capture_shown in [false, true]:
+		for disc_shown in [false, true]:
+			state.capture = {"available": capture_shown}
+			state.disc_menu_available = disc_shown
+			menu.refresh_values()
+			var open_button: Dictionary = menu._buttons.filter(func(button): return button.target == Menu.PICTURE_OPEN)[0]
+			check(is_equal_approx(open_button.rect.get_center().x, 0.42 + 0.14 * (int(capture_shown) + int(disc_shown))),
+				"Picture shortcut follows capture and disc")
+	state.capture = {"available": false}
+	state.disc_menu_available = false
 	menu.refresh()
-	check(menu._adjust_rows.has(Menu.PICTURE_SHARPNESS), "The settings page shows the sharpness slider")
+	var shortcut: Dictionary = menu._buttons.filter(func(button): return button.target == Menu.PICTURE_OPEN)[0]
+	var origin: Vector3 = shortcut.node.global_position + menu.global_basis.z * 0.2
+	menu.press_pointer("right_hand", origin, -menu.global_basis.z, true)
+	menu.release_pointer("right_hand", origin, -menu.global_basis.z, true)
+	check(menu.editing_picture() and not menu.editing_picture_defaults(), "Picture shortcut opens the current video's editor")
+	check(menu._adjust_rows.has(Menu.PICTURE_SHARPNESS), "The quality tab shows the sharpness slider")
 	check(not menu._adjust_rows[Menu.PICTURE_SHARPNESS].button.enabled, "Sharpness is locked while the mode is off")
-	check("Picture quality mode" in menu.text_snapshot(), "The settings page names the mode")
+	check("Picture quality mode" in menu.text_snapshot(), "The picture panel names the mode")
+	I18n.use("zh"); menu.refresh()
+	check("画质调色" in menu.text_snapshot() and "沿用上次画面设置" in menu.text_snapshot(), "Localized panel shows the reuse control")
+	var toggle: Dictionary = menu._buttons.filter(func(button):
+		return menu.choices.targets.get(button.target, {}).get("key") == "reuse_last_picture")[0]
+	var toggle_ray: Vector3 = toggle.node.global_position + menu.global_basis.z * 0.2
+	menu.press_pointer("right_hand", toggle_ray, -menu.global_basis.z, true)
+	menu.release_pointer("right_hand", toggle_ray, -menu.global_basis.z, true)
+	check(state.get("reuse_last_picture", false), "Trigger activates the reuse switch in the footer")
+	state.picture_clear_available = true
+	state.picture_source = "file"
+	menu.refresh_values()
+	check("清除本片设置" in menu.text_snapshot(), "The footer exposes Clear without a submenu")
+	var clear: Dictionary = menu._buttons.filter(func(button): return button.target == Menu.PICTURE_CLEAR)[0]
+	check(not clear.rect.intersects(toggle.rect), "Clear and the reuse switch have distinct hit areas")
+	var clear_ray: Vector3 = clear.node.global_position + menu.global_basis.z * 0.2
+	menu.press_pointer("right_hand", clear_ray, -menu.global_basis.z, true)
+	menu.release_pointer("right_hand", clear_ray, -menu.global_basis.z, true)
+	check(not state.picture_clear_available, "One press of Clear reaches the current-video reset action")
+	I18n.use("en"); menu.refresh()
 	state.picture_quality = true
 	state.grade_curves_locked = false
 	menu.refresh()
@@ -109,9 +152,10 @@ func _run() -> void:
 	state.picture_quality_supported = true
 	state.picture_quality = false
 	state.grade_curves_locked = true
-	menu._adjustment = "color_grade"
-	menu._grade_page = 0
 	menu.refresh()
+	menu._activate(Menu.PICTURE_QUALITY_TAB + 1)
+	check(menu._adjust_rows.size() == 3 and "Picture quality mode" in menu.text_snapshot(), "Color shows three sliders and the shared quality switch")
+	menu._activate(Menu.PICTURE_ADVANCED)
 	var keys: Array = Grade.PAGES[0]
 	for index in keys.size():
 		var locked: bool = keys[index] in Grade.CURVES
@@ -121,9 +165,90 @@ func _run() -> void:
 	state.grade_curves_locked = false
 	menu.refresh()
 	check(menu._adjust_rows[450 + keys.find("gamma")].button.enabled and menu._leaves_layer("gamma"), "Without the mode gamma works as before, with its warning")
+	state.source_size = "1920 x 1080"
+	state.shown_picture = {"size": [3840, 2160], "upscaled": true, "reduced": false}
+	check("Picture: 3840 x 2160 | Super resolution" in menu._info_text(), "The info page shows the enlarged size")
+	state.shown_picture = {"size": [4096, 2048], "upscaled": false, "reduced": true}
+	check("Picture: 4096 x 2048 | Reduced to the output resolution" in menu._info_text(), "The info page shows a picture the cap made smaller")
+	state.shown_picture = {"size": [0, 0], "upscaled": false, "reduced": false}
+	check(not ("Picture:" in menu._info_text()), "Nothing shown yet: no picture line")
 	for failure in failures: printerr("FAIL: " + failure)
 	print("picture quality tests: %d failures" % failures.size())
 	quit(1 if not failures.is_empty() else 0)
+
+func _picture_memory() -> void:
+	var video := Video.new()
+	var privacy := Video.ModeMemory.Privacy
+	var previous_policy: String = privacy.file_settings
+	privacy.configure_file_settings(privacy.ALL)
+	var path := ProjectSettings.globalize_path("res://../../build/picture-test-%s" % Time.get_ticks_usec())
+	video.picture_memory = Video.PictureMemory.new(path)
+	var a := "file:///picture-test/A.mp4"
+	var b := "smb://picture-test/B.mp4"
+	var c := "dlna://picture-test/C.mp4"
+	var open_clip := func(uri: String, eligible := true) -> void:
+		video.local_uri = uri
+		video.media.begin(1)
+		video._open_picture(uri, eligible)
+	var presented := func() -> void:
+		video._picture_pending = false
+		video._remember_last_picture()
+	video.set_reuse_last_picture(true)
+	open_clip.call(a)
+	presented.call()
+	video.preview_picture("picture_quality", true)
+	video.preview_picture("picture_upscale", 2)
+	video.preview_picture("picture_sharpness", 100.0)
+	video.preview_picture("grade_preset", "Warm")
+	check(video.picture_memory.lookup(a).is_empty(), "Live preview does not write the file's configuration")
+	video.commit_picture()
+	var saved_a := video.picture_memory.lookup(a)
+	check(video.picture_source == "file" and saved_a.color_grade.preset == "Warm", "Commit stores the chosen settings for A")
+	open_clip.call(b)
+	check(video.picture_source == "last" and video.picture_snapshot() == saved_a, "B inherits the full configuration")
+	presented.call()
+	video.preview_picture("temperature", 4000.0)
+	video.commit_picture()
+	check(video.picture_memory.lookup(b).is_empty(), "A same-value edit on an inherited preset creates no record")
+	open_clip.call(c)
+	check(video.picture_upscale == 2 and video.picture_source == "last", "C still inherits upscaling choice from the presented B")
+	open_clip.call(b)
+	presented.call()
+	video.preview_picture("picture_sharpness", 150.0)
+	video.commit_picture()
+	var saved_b := video.picture_memory.lookup(b)
+	check(video.picture_source == "file" and saved_b.picture_sharpness == 1.5, "Editing B creates a separate file setting")
+	open_clip.call(c)
+	check(video.picture_sharpness == 1.5, "The next file inherits the explicitly edited B")
+	open_clip.call(a)
+	check(video.picture_source == "file" and video.picture_sharpness == 1.0, "A's saved setting wins over inheritance")
+	video.clear_current_picture()
+	check(video.picture_source == "default" and video.picture_memory.lookup(a).is_empty() and not video.picture_quality,
+		"Clearing A returns it to default without reusing the previous appearance")
+	open_clip.call(b, false)
+	check(video.picture_source == "default", "Temporary playback starts from defaults")
+	presented.call()
+	video.preview_picture("picture_sharpness", 175.0)
+	video.commit_picture()
+	check(video.picture_source == "session" and video.picture_memory.lookup(b) == saved_b,
+		"Temporary changes do not create or replace stored choices")
+	video.set_reuse_last_picture(false)
+	open_clip.call(c)
+	check(video.picture_source == "default" and video.picture_sharpness == Video.SHARPNESS_DEFAULT,
+		"After turning reuse off, an unconfigured clip opens with defaults")
+	privacy.configure_file_settings(privacy.NONE)
+	open_clip.call(b)
+	presented.call()
+	video.preview_picture("picture_sharpness", 135.0)
+	video.commit_picture()
+	check(video.picture_source == "session" and video.picture_memory.lookup(b).is_empty(), "Privacy prevents reads and writes")
+	privacy.configure_file_settings(previous_policy)
+	check(video.picture_memory.lookup(b) == saved_b, "Disabling file memory leaves existing data intact")
+	var restored := Video.PictureMemory.new(path)
+	restored.load_saved()
+	check(restored.lookup(a).is_empty() and restored.lookup(b) == saved_b and restored.lookup(c).is_empty(),
+		"Valid banks reload only explicitly saved and uncleared settings")
+	video.free()
 
 ## Each setting that keeps Alpha off the layer has its own explanation on the switch.
 func _alpha_blockers() -> void:

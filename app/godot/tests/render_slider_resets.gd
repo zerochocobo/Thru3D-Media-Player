@@ -23,15 +23,15 @@ func check(ok: bool, label: String) -> void:
 	if not ok: failures.append(label)
 func snapshot(name: String) -> void:
 	for frame in 2: await process_frame; await RenderingServer.frame_post_draw
-	if menu._adjustment == "color_grade":
+	if menu.editing_picture():
 		check(menu._preset_buttons.size() == 4 and not menu._preset_buttons.has("Daylight"), name + ": exactly four presets")
 	for button in menu._buttons:
-		if menu._adjustment == "color_grade" and button.target >= 410 and button.target < 410 + Grade.PRESETS.size():
+		if menu.editing_picture() and button.target >= 410 and button.target < 410 + Grade.PRESETS.size():
 			var caption: Label3D = button.node.get_child(0)
 			check(menu.text_width(caption.text, caption.font_size / menu.TEXT_RASTER_SCALE) < button.rect.size.x - 0.025, name + ": preset caption fits")
 			var point: Vector3 = button.node.to_global(Vector3(0, 0, 1))
 			check(menu.ray_hit(point, -button.node.global_basis.z).get("target") == button.target, name + ": preset ray target")
-		if menu._adjustment == "color_grade" and button.target in [440, Menu.GRADE_PAGE_RESET]:
+		if menu.editing_picture() and button.target in [440, Menu.GRADE_PAGE_RESET]:
 			var label: Label3D = button.node.get_child(0)
 			check(menu.text_width(label.text, label.font_size / menu.TEXT_RASTER_SCALE) < button.rect.size.x - 0.025, name + ": page/whole reset caption fits")
 		var reset: bool = button.has("reset_slider") or button.target == Menu.DEPTH_OFF or menu.choices.targets.get(button.target, {}).get("kind", "") == "reset"
@@ -40,7 +40,9 @@ func snapshot(name: String) -> void:
 		check(not button.enabled or menu.ray_hit(origin, -button.node.global_basis.z).get("target") == button.target, name + ": reset is reachable without touching another slider")
 		if button.has("reset_slider"):
 			var point: Vector3 = menu.to_local(button.node.global_position)
-			check(absf(point.x) + button.rect.size.x * 0.5 < menu._backdrop.mesh.size.x * 0.5, name + ": reset stays inside panel")
+			var extent: float = absf(point.x - Menu.PICTURE_PANEL_X) + button.rect.size.x * 0.5 if menu.editing_picture() else absf(point.x) + button.rect.size.x * 0.5
+			var width: float = Menu.PICTURE_PANEL_WIDTH if menu.editing_picture() else menu._backdrop.mesh.size.x
+			check(extent < width * 0.5, name + ": reset stays inside panel")
 		check(menu._tips.get(button.target) == I18n.t("Turn off 3D" if button.target == Menu.DEPTH_OFF else "Reset"), name + ": action tooltip is translated")
 	for slider in menu.choices.sliders.values():
 		check(menu.text_width(slider.label.text, 18) <= 0.125, name + ": subtitle/FPS value fits beside the reset icon")
@@ -61,7 +63,7 @@ func run() -> void:
 	state.grade_values = values; state.color_grade = {"preset": "Custom"}
 	for language in ["en", "zh", "zh_Hant", "ja"]:
 		I18n.use(language); make_menu()
-		menu.section = 1; menu._adjustment = "color_grade"
+		menu._open_picture_controls(false); menu._picture_advanced = true
 		for page in 3:
 			menu._grade_page = page; menu.refresh(); await snapshot("color-%s-%d" % [language, page])
 		menu._adjustment = "stereo_view"; menu.refresh(); await snapshot("stereo-" + language)

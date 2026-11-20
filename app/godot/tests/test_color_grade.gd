@@ -137,7 +137,7 @@ func _run() -> void:
 	check(grade.preset == "Custom", "Dragging exposure selects custom")
 	menu.dismiss()
 	check(commits == 5 and menu._adjust_hand.is_empty(), "Dismiss saves active drag")
-	menu.visible = true; menu.section = 1; menu._adjustment = "color_grade"; menu.refresh()
+	menu.visible = true; menu._open_picture_controls(false)
 	check(Grade.PRESETS == ["Original", "Warm", "Cool", "Custom"] and menu._preset_buttons.size() == 4 and not menu._buttons.any(func(button): return button.target == 414), "Exactly four visible presets with no stale fifth target")
 	grade.adjust("red_gain", 1.5); var retained := grade.custom.duplicate()
 	menu._activate(412)

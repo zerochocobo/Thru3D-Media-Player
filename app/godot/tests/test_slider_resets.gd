@@ -26,13 +26,14 @@ func run() -> void:
 	var video := Video.new(); root.add_child(video); video.set_process(false); main.video = video
 	video.local_uri = "file:///slider-reset_LR_180.mp4"; video.media.begin(77)
 	video._remember_file = true # This fixture represents a completed file-open request.
+	video._open_picture(video.local_uri, true)
 	video.media.format = {"width": 4096, "height": 2048}
 	var menu := Menu.new(); root.add_child(menu); menu.set_process(false); main.player_menu = menu
 	menu.state_provider = main._menu_state
 	menu.adjustment_requested.connect(main._on_playback_adjustment)
-	menu.adjustment_committed.connect(main._save_playback_adjustments)
+	menu.adjustment_committed.connect(main._on_player_adjustment_committed)
 	menu.adjustment_committed.connect(func(): commits += 1)
-	menu.visible = true; menu.section = 1; menu._adjustment = "color_grade"
+	menu.visible = true; menu.refresh(); menu._open_picture_controls(false); menu._picture_advanced = true
 	for page in Grade.PAGES.size():
 		for key: String in Grade.PAGES[page]:
 			video.color_grade.reset_custom()
@@ -45,8 +46,8 @@ func run() -> void:
 			var before := commits
 			click(menu, row_for(menu, key).reset)
 			check(video.color_grade.values() == expected and commits == before + 1, "One click resets only this color parameter and commits once: " + key)
-			var saved := ConfigFile.new(); saved.load(main.settings_path)
-			var restored := Grade.new(); restored.restore(saved.get_value("video", "color_grade"))
+			var saved := Video.PictureMemory.new(); saved.load_saved()
+			var restored := Grade.new(); restored.restore(saved.lookup(video.local_uri).get("color_grade"))
 			check(restored.values() == expected, "Single color reset survives restart: " + key)
 			check(not row_for(menu, key).reset.enabled, "Neutral color reset is disabled: " + key)
 	for page in Grade.PAGES.size():
@@ -59,8 +60,8 @@ func run() -> void:
 		var saved_count := commits
 		click(menu, menu._buttons.filter(func(button): return button.target == Menu.GRADE_PAGE_RESET)[0])
 		check(video.color_grade.values() == expected and commits == saved_count + 1, "Page reset touches only current page and commits once")
-		var saved := ConfigFile.new(); saved.load(main.settings_path)
-		var restored := Grade.new(); restored.restore(saved.get_value("video", "color_grade"))
+		var saved := Video.PictureMemory.new(); saved.load_saved()
+		var restored := Grade.new(); restored.restore(saved.lookup(video.local_uri).get("color_grade"))
 		check(restored.values() == expected, "Page reset survives restart and retains other pages")
 	var original := video.color_grade.snapshot()
 	check(not video.color_grade.reset_page(-1) and not video.color_grade.reset_page(3) and video.color_grade.snapshot() == original, "Invalid page cannot erase custom adjustments")
@@ -97,7 +98,7 @@ func run() -> void:
 	click(menu, row_for(menu, "screen_scale").reset)
 	check(video.screen_scale == 1.0 and video.screen_distance == 2.0, "Video percentage reset restores physical scale one")
 	video.geometry = 1; video._apply_geometry(); main.settings.set_value("video", "alpha_fps", 35)
-	menu._adjustment = ""; menu.refresh(); menu._activate(menu.ALPHA_GROUP)
+	menu._adjustment = ""; menu.section = 1; menu.refresh(); menu._activate(menu.ALPHA_GROUP)
 	click(menu, row_for(menu, "alpha_fps").reset)
 	var saved_fps := ConfigFile.new(); saved_fps.load(main.settings_path)
 	check(main._alpha_fps() == 30 and saved_fps.get_value("video", "alpha_fps") == 30, "Alpha FPS resets and persists without touching other playback settings")

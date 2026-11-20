@@ -898,6 +898,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun release_layer_image(slot: Int, mipmaps: Boolean): Boolean =
         runCatching { VideoLayerNative.releaseImage(slot, mipmaps) }.getOrDefault(false)
     @UsedByGodot fun video_layer_color_scale_bias(): Boolean = runCatching { VideoLayerNative.colorScaleBias() }.getOrDefault(false)
+    @UsedByGodot fun capture_probe_start() { activity?.let { CaptureProbe.install(it) } }
     @UsedByGodot fun video_layer_qiyu_passthrough(): Boolean = runCatching { VideoLayerNative.qiyuPassthrough() }.getOrDefault(false)
     @UsedByGodot fun video_layer_qiyu_passthrough_layer(enabled: Boolean): Long =
         runCatching { VideoLayerNative.qiyuPassthroughLayer(enabled) }.getOrDefault(0L)
@@ -1170,7 +1171,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         webVideoResolver.close()
         webBrowser.close()
         WebBrowserDepthBridge.closeAll()
-        activity?.let { ExternalInputProbe.close(it) }
+        activity?.let { ExternalInputProbe.close(it); CaptureProbe.close(it) }
         if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); airplayReceiver.close(); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); sceneFiles.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); backgroundImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

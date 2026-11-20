@@ -41,6 +41,7 @@ const SHARPNESS_HINTS := ["No sharpening", "System normal sharpening; shader str
 const OUTPUT_INFO := "Maximum decoded width for shader playback and Alpha on the compositor layer; plain compositor-layer playback ignores it."
 const OUTPUT_HINTS := {AUTO_OUTPUT: "4096 px with the memory saver or on Quest 2 / PICO Neo3 class GPUs, source width otherwise", 0: "Source width",
 	5760: "Max 5760 px wide", 4096: "Max 4096 px wide"}
+const QIYU_OUTPUT_AUTO_HINT := "Source width on QIYU"
 
 static func load_quality(settings: ConfigFile) -> int:
 	if settings.has_section_key("video", "display_quality"):
@@ -113,10 +114,11 @@ static func load_output_choice(settings: ConfigFile) -> int:
 	var value := int(settings.get_value("video", "output_width", AUTO_OUTPUT))
 	return value if value == AUTO_OUTPUT or value in [0, 5760, 4096] else AUTO_OUTPUT
 
-## low_end: an XR2 Gen1 class GPU or the memory saver.
-static func output_width(choice: int, low_end: bool) -> int:
+## low_end: an XR2 Gen1 class GPU or the memory saver. QIYU has no compositor video layer, so every
+## video is shader-drawn and the 4096 cap halved 8K (user, 2026-11-20: hair blurred next to MoonVR).
+static func output_width(choice: int, low_end: bool, qiyu: bool = false) -> int:
 	if choice != AUTO_OUTPUT: return choice
-	return LOW_END_OUTPUT_WIDTH if low_end else 0
+	return LOW_END_OUTPUT_WIDTH if low_end and not qiyu else 0
 
 ## Memory: the saver holds AI passthrough's waiting frames as compact copies instead of decoded
 ## frames, keeps a smaller network cache with AI and caps Auto output at 4096. Quest 3, 8K 10 bit:

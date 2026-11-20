@@ -140,6 +140,14 @@ func integration() -> void:
 	check(main._stick(main.left_controller) == Vector2.ZERO, "An unfocused app ignores external sticks")
 	main.external_input.release_all()
 	main.focused = true
+	# The system IME types into a focused engine editor as key events; mapping must leave them alone.
+	check(not main._text_editor_focused(), "No text editor is focused before a system input session")
+	main.recent_menu.system_text_input.begin("web_home", "https://example.com", 4096, func(_v): pass, func(_v): pass, Callable(), Callable(), true)
+	await process_frame; await process_frame
+	check(main._text_editor_focused(), "A system input session focuses its engine editor, so typed keys skip the mapping")
+	main.recent_menu.system_text_input.cancel("web_home")
+	await process_frame
+	check(not main._text_editor_focused(), "Ending the session returns keys to the mapping")
 	await head_pointer(main)
 	main._on_setting_changed("external_bindings", {"left_hand/ax_button": ["key:%d" % KEY_SPACE]})
 	var saved := ConfigFile.new(); saved.load(main.settings_path)

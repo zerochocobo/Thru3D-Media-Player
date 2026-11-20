@@ -121,7 +121,7 @@ func select(mode: String,id: String,advance: bool = true) -> void:
 	var candidate:=Background.new()
 	candidate.choice="custom" if library.assets.has(id) else id
 	var binding: Dictionary=library.bindings.get(mode,{})
-	candidate.yaw=float(binding.get("yaw",current.yaw)); candidate.brightness=float(binding.get("brightness",current.brightness))
+	candidate.brightness=float(binding.get("brightness",current.brightness))
 	if library.assets.has(id):
 		var asset: Dictionary=library.assets[id]
 		candidate.set_library_asset(library.image_path(id),str(asset.title),int(asset.orientation))
@@ -149,6 +149,10 @@ func _process(_delta: float) -> void:
 			failed=failed or not environment.is_ready
 		if Time.get_ticks_msec()-int(job.started)>60000: failed=true
 		var committed:=false
+		# Direction belongs to the mode, including changes made while the image loaded.
+		var section: String = library.mode_definition(mode).section
+		var saved_yaw: float = library.bindings.get(mode, {}).get("yaw", _background(mode).yaw)
+		candidate.yaw = fposmod(float(app.settings.get_value(section, "background_yaw", saved_yaw)), 360.0)
 		if failed: _error="Background unavailable"; _delete.clear()
 		elif library.bind(mode,str(job.id),candidate.yaw,candidate.brightness):
 			_background(mode).adopt(candidate); _persist(mode)
@@ -214,6 +218,9 @@ func current_image_state(source: Dictionary) -> Dictionary:
 func snapshot(mode: String) -> Dictionary:
 	var background: Node=_background(mode)
 	var state: Dictionary=app._library_settings()
+	# Not shown here, and they move with playback (position, transcription progress): every change
+	# redraws the whole menu, which stutters and flickers its buttons while a video plays.
+	state.erase("voice_manager"); state.erase("subtitle_defaults")
 	state["screen_edit_locked"] = app.screen_edit_lock.beach_locked()
 	var selected: String=str(library.bindings.get(mode,{}).get("id",background.choice))
 	var status:=_error if not _error.is_empty() else library.error
@@ -245,6 +252,7 @@ func _command(operation: String,value: Variant) -> void:
 	if operation in ["edit_beach_screen", "apply_beach_screen"] and app.screen_edit_lock.beach_locked() and app.screen_edit_lock.deny("", "beach_menu"): return
 	match operation:
 		"select": select(str(value.mode),str(value.id))
+		"preview_yaw": _background(str(value.mode)).set_yaw(float(value.value))
 		"atmosphere": app.atmosphere.command(str(value.mode),str(value.key),value.value)
 		"use_current": import_current(app.photo.background_source(),app.photo.display_name,str(value))
 		"add": _begin_import()
@@ -280,10 +288,15 @@ func _command(operation: String,value: Variant) -> void:
 			elif key.begins_with("cinema_") or key.begins_with("beach_"): app._on_setting_changed(key,value.value)
 			else:
 				var background: Node=_background(mode)
+				var binding: Dictionary = library.bindings.get(mode, {})
 				if key=="background_yaw": background.set_yaw(float(value.value))
 				elif key=="background_brightness": background.set_brightness(float(value.value))
-				library.bind(mode,str(library.bindings.get(mode,{}).get("id",background.choice)),background.yaw,background.brightness)
-				_persist(mode)
+				if library.bind(mode, str(binding.get("id", background.choice)), background.yaw, background.brightness):
+					_persist(mode)
+				elif key == "background_yaw":
+					background.set_yaw(float(binding.get("yaw", 0.0)))
+				elif key == "background_brightness":
+					background.set_brightness(float(binding.get("brightness", 1.0)))
 
 func _begin_import() -> void:
 	if library.busy or _picker: return

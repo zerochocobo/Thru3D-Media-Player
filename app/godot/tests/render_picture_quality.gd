@@ -6,6 +6,7 @@ var state := {"has_video": true, "geometry": 1, "stereo": true, "playing": true,
 	"title": "Travel journal · VR180", "source_size": "8192 x 4096", "codec": "hevc", "position_ms": 123456, "duration_ms": 600000,
 	"xr_state": "focused", "layer_available": true, "grade_on_layer": true, "volume": 90, "audio_available": true,
 	"picture_quality_supported": true, "picture_quality_available": true, "picture_quality": false, "picture_sharpness": 50.0,
+	"picture_inherit_available": true, "picture_source": "last", "reuse_last_picture": false,
 	"grade_curves_locked": true, "grade_values": Grade.DEFAULTS.duplicate(), "color_grade": {"preset": "Custom"}}
 
 func _initialize() -> void:
@@ -31,20 +32,22 @@ func _run() -> void:
 	camera.add_child(menu)
 	menu.position.y = -0.45
 	menu.toggle()
-	menu.section = 1
-	for shot in [{"name": "settings_off"}, {"name": "settings_on", "picture_quality": true, "grade_curves_locked": false, "picture_sharpness": 150.0, "picture_upscale": 1, "picture_denoise": 2},
+	for shot in [{"name": "settings_off"}, {"name": "settings_on", "picture_quality": true, "grade_curves_locked": false, "picture_sharpness": 150.0, "picture_upscale": 1, "picture_denoise": 2, "reuse_last_picture": true, "picture_clear_available": true, "picture_source": "file", "capture": {"available": true}, "disc_menu_available": true},
 			{"name": "settings_blocked", "picture_quality_available": false, "picture_quality_blocker": "alpha", "grade_curves_locked": false},
 			{"name": "settings_folds_open", "picture_quality": true, "grade_curves_locked": false, "depth_open": true, "alpha_open": true},
 			{"name": "grade_locked", "page": 0, "picture_quality_available": true}, {"name": "grade_locked_rgb", "page": 2},
 			{"name": "grade_unlocked", "page": 0, "picture_quality": true, "grade_curves_locked": false}]:
-		state.merge({"picture_quality": false, "picture_quality_available": true, "grade_curves_locked": true, "picture_quality_blocker": ""}, true)
+		state.merge({"picture_quality": false, "picture_quality_available": true, "grade_curves_locked": true, "picture_quality_blocker": "", "reuse_last_picture": false, "picture_clear_available": false, "picture_source": "last", "capture": {}, "disc_menu_available": false}, true)
 		state.merge(shot, true)
-		menu._adjustment = "color_grade" if shot.has("page") else ""
+		menu.section = 1 if shot.has("depth_open") else 0
+		menu._adjustment = "" if shot.has("depth_open") else "picture"
+		menu._picture_tab = 1 if shot.has("page") else 0
+		menu._picture_advanced = shot.has("page")
 		menu._grade_page = int(shot.get("page", 0))
 		menu._depth_expanded = shot.get("depth_open", false)
 		menu._alpha_expanded = shot.get("alpha_open", false)
-		# The settings page is taller than the colour page: frame its top.
-		menu.position.y = -0.45 if shot.has("page") else (-1.25 if shot.has("depth_open") else -0.8)
+		menu.position.y = -0.52 if not shot.has("depth_open") else -0.78
+		menu.set_layout_viewer(camera.global_transform)
 		menu.refresh()
 		if shot.name == "settings_off":
 			# The switch's tooltip, as a ray would raise it.

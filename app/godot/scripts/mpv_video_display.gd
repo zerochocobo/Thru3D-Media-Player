@@ -42,6 +42,7 @@ const BitmapSubtitles := preload("res://scripts/bitmap_subtitles.gd")
 const AlphaEdge := preload("res://scripts/alpha_edge.gd")
 var bitmap_subtitles := BitmapSubtitles.new()
 const ModeMemory := preload("res://scripts/file_mode_memory.gd")
+const PictureMemory := preload("res://scripts/file_picture_memory.gd")
 const TrackMemory := preload("res://scripts/file_track_memory.gd")
 const SubtitleTiming := preload("res://scripts/file_subtitle_timing.gd")
 const SubtitleEncoding := preload("res://scripts/file_subtitle_encoding.gd")
@@ -309,6 +310,17 @@ const CAPTION_DROP := 0.244 # radians below the line of sight (14 degrees)
 var _subtitle_poll_ms := 0
 var _subtitle_received_ms := 0
 var mode_memory := ModeMemory.new()
+var picture_memory := PictureMemory.new()
+var picture_defaults := picture_memory.load_defaults(ConfigFile.new())
+var picture_source := "default"
+var picture_open_id := 0
+var reuse_last_picture := false
+var _last_picture := {}
+var _last_picture_uri := ""
+var _picture_committed := {}
+var _picture_eligible := false
+var _picture_pending := true
+var _picture_edited := false
 var captures := preload("res://scripts/video_capture.gd").new(self)
 var _capture_layout_pending := false
 var _capture_preference_exists := false
@@ -512,6 +524,7 @@ var _fisheye_checked_ms := 0
 
 func _ready() -> void:
 	mode_memory.load_saved()
+	picture_memory.load_saved()
 	track_memory.load_saved()
 	subtitle_layout_memory.load_saved()
 	subtitle_timing.load_saved()
@@ -1001,7 +1014,10 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	if not _web_handoff and _thumbnail_source(uri) and Thumbnails.texture(uri) == null and not RecentFiles.valid_cover(server_cover):
 		_thumb_after_ms = 0
 	local_uri = uri
-	if not pip.reopening: _stall_watch.forget()
+	if not pip.reopening:
+		_stall_watch.forget()
+		_open_picture(uri, restore_mode and cast_token == 0 and not _web_handoff and not metadata.get("external_temporary", false),
+			OS.is_debug_build() and bool(metadata.get("picture_diagnostic", false)))
 	server_playback.begin(uri)
 	if not pip.reopening: _restore_subtitle_layout(uri, restore_mode)
 	var saved_whisper := whisper_memory.lookup(uri) if restore_mode else {}
@@ -1170,6 +1186,8 @@ func close_video() -> void:
 	cancel_pending_open()
 	if mode_memory.dirty:
 		mode_memory.save()
+	if picture_memory.dirty:
+		picture_memory.save()
 	if track_memory.dirty:
 		track_memory.save()
 	if subtitle_layout_memory.dirty: subtitle_layout_memory.save()
@@ -1227,6 +1245,9 @@ func close_video() -> void:
 	control.close()
 	_remember_file = false
 	if not pip.reopening:
+		_picture_eligible = false
+		_picture_pending = true
+		_picture_edited = false
 		subtitle_below_screen = false
 		_subtitle_layout_user_changed = false
 	_web_handoff = false
@@ -1256,6 +1277,7 @@ func discard_history_thumbnail() -> void:
 	_thumb_after_ms = -1
 
 func discard_file_settings() -> void:
+	_restore_default_picture()
 	if not _aspect_lock_applies():
 		video_aspect_preset = "original"
 		video_aspect_factor = 1.0
@@ -1906,12 +1928,15 @@ func bookmarks_snapshot() -> Dictionary:
 		_bookmark_rows = bookmark_store.list_markers(_bookmark_media_id)
 		_bookmark_cache_revision = bookmark_store.revision
 	var result := {"bookmark_scope": bookmark_scope(), "bookmarks": _bookmark_rows,
-		"bookmark_revision": bookmark_store.revision, "bookmark_undo": bookmark_store.can_undo(),
+		"bookmark_revision": bookmark_store.revision, "bookmark_undo": _can_undo_bookmark(),
 		"bookmark_ready": not bookmark_snapshot().is_empty(), "bookmark_seekable": bookmark_seekable(),
 		"seek_mode": SeekPolicy.normalize(seek_mode), "bookmark_seek_mode": SeekPolicy.bookmark_override(bookmark_seek_mode),
 		"bookmark_effective_seek_mode": SeekPolicy.effective(seek_mode, bookmark_seek_mode)}
 	result.merge(bookmark_loop.snapshot())
 	return result
+
+func _can_undo_bookmark() -> bool:
+	return bookmark_store.can_undo() and bookmark_store.undo.get("media_id", "") == _bookmark_media_id
 
 func bookmark_action(operation: String, marker_id: String, scope: String) -> String:
 	if cast_token > 0: return ""
@@ -1926,6 +1951,7 @@ func bookmark_action(operation: String, marker_id: String, scope: String) -> Str
 		"delete":
 			return "Bookmark deleted" if bookmark_store.remove(_bookmark_media_id, marker_id) else "Bookmark save failed"
 		"undo":
+			if not _can_undo_bookmark(): return ""
 			return "Bookmark restored" if bookmark_store.restore() else "Bookmark save failed"
 		"seek":
 			if not bookmark_seekable(): return ""
@@ -2957,6 +2983,7 @@ func _restore_usb_mode(identity: String) -> void:
 	# USB connection URIs contain a random token. Android reports the stable
 	# partition + path identity asynchronously, possibly after the first frame.
 	if not local_uri.begins_with("usb://") or mode_memory.identity_aliases.get(local_uri, "") == identity: return
+	_restore_usb_picture(identity)
 	var early := mode_memory.lookup(local_uri)
 	if not mode_memory.register_usb_identity(local_uri, identity) or not _remember_file: return
 	var saved := mode_memory.lookup(local_uri)
@@ -3063,6 +3090,9 @@ func _present_pending() -> void:
 		_unbind()
 		return
 	mode_transition.target_ready(media.session_id)
+	if _picture_pending:
+		_picture_pending = false
+		_remember_last_picture()
 	if _waiting_first:
 		if control.in_flight > 0: _seek_event("target_presented")
 		_waiting_first = false
@@ -3422,7 +3452,7 @@ func _on_debug_command(id: int, payload: String) -> void:
 		auto_depth = depth_requested
 		requested_play = true
 		layer_enabled = bool(command.get("layer", true))
-		open_local(str(command.uri), str(command.title), maxi(int(command.position_ms), 0), false, alpha_requested)
+		open_local(str(command.uri), str(command.title), maxi(int(command.position_ms), 0), false, alpha_requested, "", {"picture_diagnostic": true})
 	elif command.operation == "alpha":
 		set_alpha(bool(command.enabled))
 	elif command.operation == "depth":
@@ -4285,7 +4315,7 @@ func _show_fisheye_picture(origin: XROrigin3D, extras: Array) -> bool:
 		if not platform.release_layer_image(VideoLayer.PICTURE_SLOT, false) or not drawn: return _fisheye_fail("remap", picture)
 		_picture_token = token
 		_fisheye_look = look; _fisheye_quality_drawn = quality
-		_frame_picture_size = picture
+		_frame_picture_size = picture; _picture_upscaled = picture != remapped
 		_fisheye_parameters = params; _fisheye_generation = video_layer.generation
 		if _fisheye_session != media.session_id:
 			_fisheye_session = media.session_id
@@ -4401,8 +4431,8 @@ var picture_quality := false
 ## Sharpening of the mode as the slider shows it, 0 (none: the mode's other work stands on its own) to 2:
 ## 1 is all RCAS gives without overshoot, and above it the picture is plainly oversharpened. (It ran to 5
 ## at first; users found nothing worth having past 2 and the old default of 1 too strong.)
-const SHARPNESS_DEFAULT := 0.5
-const SHARPNESS_MAX := 2.0
+const SHARPNESS_DEFAULT := PictureMemory.SHARPNESS_DEFAULT
+const SHARPNESS_MAX := PictureMemory.SHARPNESS_MAX
 var picture_sharpness := SHARPNESS_DEFAULT:
 	set(value):
 		picture_sharpness = clampf(value, 0.0, SHARPNESS_MAX) if is_finite(value) else SHARPNESS_DEFAULT
@@ -4438,11 +4468,15 @@ const UPSCALE_VR180_EYE := 2880.0
 const UPSCALE_VR360_EYE := Vector2(5760.0, 2880.0)
 const UPSCALE_FRAME_PIXELS := 8192.0 * 4096.0
 const UPSCALE_MIN := 1.15 # less than this is not worth a second pass
+## The output width cap sources open with (DisplayQuality.output_width; 0: none). The layer copy scales a
+## wider video down to it and enlarges no further than it; the picture layer and the eye buffers have none.
+var output_cap := 0
 
 ## The kind and the eyes come from the playback mode on show (projection and stereo layout), so a change
 ## of mode changes the size at once; while a new file is still being recognised nothing is enlarged.
-## kind: 0 flat, 1 VR180, 2 VR360. Returns source when there is nothing to enlarge.
-static func upscale_size(source: Vector2i, kind: int, across: int, down: int, level: int = Upscale.MAXIMUM) -> Vector2i:
+## kind: 0 flat, 1 VR180, 2 VR360. The picture stops at max_width (0: none) rather than giving up there.
+## Returns source when there is nothing to enlarge (LayerCopy.enlargedSize is the same rule).
+static func upscale_size(source: Vector2i, kind: int, across: int, down: int, level: int = Upscale.MAXIMUM, max_width: int = 0) -> Vector2i:
 	if level <= Upscale.OFF: return source
 	if source.x <= 0 or source.y <= 0: return source
 	var eye := Vector2(source) / Vector2(across, down)
@@ -4451,6 +4485,7 @@ static func upscale_size(source: Vector2i, kind: int, across: int, down: int, le
 	elif kind == 1: scale = minf(UPSCALE_VR180_EYE / eye.x, UPSCALE_VR180_EYE / eye.y)
 	scale = minf(scale, sqrt(UPSCALE_FRAME_PIXELS / (float(source.x) * source.y)))
 	if level == Upscale.MODERATE: scale = minf(scale, 2.0)
+	if max_width > 0: scale = minf(scale, float(max_width) / source.x)
 	if scale < UPSCALE_MIN: return source
 	return Vector2i(roundi(source.x * scale) & ~1, roundi(source.y * scale) & ~1)
 
@@ -4463,8 +4498,36 @@ func picture_upscale_sizes() -> Dictionary:
 	var source := Vector2i(int(media.format.get("width", 0)), int(media.format.get("height", 0)))
 	var across := 2 if stereo_sbs and not top_bottom else 1
 	var down := 2 if stereo_sbs and top_bottom else 1
-	return {"source": source, "moderate": upscale_size(source, _upscale_kind(), across, down, Upscale.MODERATE),
-		"maximum": upscale_size(source, _upscale_kind(), across, down, Upscale.MAXIMUM), "vr": geometry != Geometry.Geometry.FLAT}
+	var cap := _copy_width_cap()
+	return {"source": source, "moderate": upscale_size(source, _upscale_kind(), across, down, Upscale.MODERATE, cap),
+		"maximum": upscale_size(source, _upscale_kind(), across, down, Upscale.MAXIMUM, cap), "vr": geometry != Geometry.Geometry.FLAT}
+
+## The cap the layer copy draws this playback within; the picture layer and the eye buffers have none.
+func _copy_width_cap() -> int:
+	return output_cap if (_layer_session or _layer_requested) and not _frame_picture and not _fisheye_picture else 0
+
+## For the info page: the size the picture is shown at, and whether super resolution enlarged it or the
+## output cap made it smaller than the source. A zero size while nothing is shown yet.
+func shown_picture() -> Dictionary:
+	var source := Vector2i(int(media.format.get("width", 0)), int(media.format.get("height", 0)))
+	var size := Vector2i.ZERO
+	var upscaled := false
+	if _layer_session:
+		var copy: Variant = media.playback.get("layer_copy")
+		if copy is Dictionary and int(copy.get("output_width", 0)) > 0:
+			size = Vector2i(int(copy.output_width), int(copy.output_height))
+			upscaled = bool(copy.get("enlarged", false))
+		else:
+			size = source # the decoder's own surface
+	elif _frame_picture or _fisheye_picture:
+		size = _frame_picture_size; upscaled = _picture_upscaled
+	elif not _binding.ticket.is_empty():
+		var frame := Vector2i(int(_binding.ticket.width), int(_binding.ticket.height))
+		size = _binding.enhanced_size() if _binding.enhanced() else frame
+		upscaled = _binding.enhanced() and size != frame
+	# A remapped fisheye picture differs from the source by its projection, not by being reduced.
+	var reduced := not upscaled and not _fisheye_picture and size.x > 0 and source.x > 0 and size.x < source.x
+	return {"size": [size.x, size.y], "upscaled": upscaled, "reduced": reduced}
 
 ## The source has something to enlarge (unknown sizes count as that).
 func picture_upscale_available() -> bool:
@@ -4475,6 +4538,110 @@ var _quality_requested := false # the session on show was opened with the copy
 var _quality_refused_uri := ""
 var _copy_picture := PackedFloat32Array()
 var _copy_focus := []
+
+func load_picture_preferences(settings: ConfigFile) -> void:
+	picture_defaults = picture_memory.load_defaults(settings)
+	reuse_last_picture = bool(settings.get_value("video", "reuse_last_picture", false))
+	_apply_picture(picture_defaults)
+
+func picture_snapshot() -> Dictionary:
+	return {"picture_quality": picture_quality, "picture_sharpness": picture_sharpness,
+		"picture_upscale": picture_upscale, "picture_denoise": picture_denoise, "color_grade": color_grade.snapshot()}
+
+func _apply_picture(picture: Dictionary) -> void:
+	if picture_quality != picture.picture_quality: set_picture_quality(picture.picture_quality)
+	picture_sharpness = picture.picture_sharpness
+	picture_upscale = picture.picture_upscale
+	picture_denoise = picture.picture_denoise
+	color_grade.restore(picture.color_grade)
+	_sync_picture_lock()
+	color_grade.apply(material)
+
+func _open_picture(uri: String, eligible: bool, diagnostic: bool = false) -> void:
+	picture_open_id += 1
+	_picture_eligible = eligible and not ModeMemory.key_for(uri).is_empty()
+	_picture_pending = true
+	_picture_edited = false
+	var saved := picture_memory.lookup(uri) if _picture_can_remember() else {}
+	var inherited := reuse_last_picture and _picture_can_inherit() and not _last_picture.is_empty() \
+		and not ModeMemory.Privacy.protected_uri(_last_picture_uri)
+	picture_source = "file" if not saved.is_empty() else "last" if inherited else "default"
+	if not diagnostic:
+		_apply_picture(saved if picture_source == "file" else _last_picture if inherited else picture_defaults)
+	_picture_committed = picture_snapshot()
+
+func _picture_can_remember() -> bool:
+	return _picture_eligible and ModeMemory.Privacy.settings_allowed(local_uri)
+
+func _picture_can_inherit() -> bool:
+	return _picture_eligible and not ModeMemory.Privacy.protected_uri(local_uri)
+
+func _remember_last_picture() -> void:
+	if not reuse_last_picture or not _picture_can_inherit() or _picture_pending or not media.accepts(media.session_id): return
+	_last_picture = _picture_committed.duplicate(true)
+	_last_picture_uri = local_uri
+
+func clear_last_picture(network_only: bool = false) -> void:
+	if network_only and ModeMemory.Privacy.is_local(_last_picture_uri): return
+	_last_picture.clear()
+	_last_picture_uri = ""
+
+func set_reuse_last_picture(enabled: bool) -> void:
+	reuse_last_picture = enabled
+	if enabled: _remember_last_picture()
+	else: clear_last_picture()
+
+func preview_picture(key: String, value: Variant, defaults: bool = false) -> void:
+	if not PictureMemory.is_adjustment(key): return
+	if defaults:
+		picture_defaults = picture_memory.edited(picture_defaults, key, value)
+		return
+	if not media.accepts(media.session_id) or not cast_allows("color_grade"): return
+	var current := picture_snapshot()
+	var edited := picture_memory.edited(current, key, value)
+	if edited != current: _apply_picture(edited)
+
+func commit_picture() -> void:
+	if not media.accepts(media.session_id): return
+	var chosen := picture_snapshot()
+	if chosen == _picture_committed: return
+	_picture_edited = true
+	if _picture_can_remember():
+		if not picture_memory.remember(local_uri, chosen) or not picture_memory.save():
+			Log.record("file_picture_save_failed", {"error": picture_memory.last_error})
+			return
+		picture_source = "file"
+	else:
+		picture_source = "session"
+	_picture_committed = chosen
+	_remember_last_picture()
+
+func clear_current_picture() -> void:
+	if picture_source != "file" or not _picture_can_remember(): return
+	if not picture_memory.clear_picture(local_uri):
+		Log.record("file_picture_save_failed", {"error": picture_memory.last_error})
+		return
+	_restore_default_picture()
+	_remember_last_picture()
+
+func _restore_default_picture() -> void:
+	picture_source = "default"
+	_picture_edited = true
+	_apply_picture(picture_defaults)
+	_picture_committed = picture_snapshot()
+
+func _restore_usb_picture(identity: String) -> void:
+	if picture_memory.identity_aliases.get(local_uri, "") == identity: return
+	if _picture_edited and _picture_can_remember() and picture_memory.relocate(local_uri, identity):
+		if not picture_memory.save(): Log.record("file_picture_save_failed", {"error": picture_memory.last_error})
+	if not picture_memory.register_usb_identity(local_uri, identity) or not _picture_can_remember() \
+		or _picture_edited or picture_snapshot() != _picture_committed: return
+	var saved := picture_memory.lookup(local_uri)
+	if saved.is_empty(): return
+	picture_source = "file"
+	_apply_picture(saved)
+	_picture_committed = picture_snapshot()
+	_remember_last_picture()
 
 ## The user's switch. A file the plugin refused before gets another try: the output cap may have changed.
 func set_picture_quality(enabled: bool) -> void:
@@ -4578,6 +4745,7 @@ func _frame_quality() -> bool:
 	return picture_quality and picture_quality_supported() and PlatformMethods.supports(platform, "enhance_layer_texture")
 var _frame_quality_drawn := false
 var _frame_picture_size := Vector2i.ZERO # what the picture layer was last drawn at, for the debug report
+var _picture_upscaled := false # super resolution enlarged that picture
 var _frame_picture_look := []
 
 ## Gamma and saturation wait for the mode wherever it could run; elsewhere the shader applies them as before.
@@ -5116,7 +5284,7 @@ func _show_frame_picture(origin: XROrigin3D, extras: Array) -> bool:
 		_picture_token = token
 		_frame_picture_look = stamp
 		_frame_quality_drawn = quality
-		_frame_picture_size = size
+		_frame_picture_size = size; _picture_upscaled = size != source
 	return video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(size), -1, Vector2.ZERO, Vector4(0, 0, 1, 1),
 		VideoLayer.OPAQUE, extras)
 

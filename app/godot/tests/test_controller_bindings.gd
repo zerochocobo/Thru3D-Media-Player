@@ -857,8 +857,8 @@ func back_navigation() -> void:
 				await process_frame
 				library.dismiss()
 		video.local_uri = "file:///playing.mp4"; video.media.begin(7); video.media.state = "playing"; video.requested_play = true; video._waiting_first = false
-		main._show_player_menu(); menu.section = 1; menu._adjustment = "color_grade"; menu.refresh()
-		tap(main, "by_button", hand); check(menu.visible and menu.section == 1 and menu._adjustment.is_empty(), "Back leaves color adjustments for playback settings")
+		main._show_player_menu(); menu.section = 1; menu._open_picture_controls(true)
+		tap(main, "by_button", hand); check(menu.visible and menu.section == 1 and menu._adjustment.is_empty(), "Back leaves default picture controls for playback settings")
 		tap(main, "by_button", hand); check(menu.visible and menu.section == 0, "Back leaves settings for the transport")
 		# Captured timeline cancellation cannot seek, pause, or click the newly exposed UI.
 		video.control.close(); video.control.observe(40000, 120000); menu.refresh()

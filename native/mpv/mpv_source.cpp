@@ -252,6 +252,7 @@ struct Source final {
     std::atomic<bool> hdr_source{false};
     // A layer session whose decoder fell back to software: mediacodec_embed cannot show its frames.
     std::atomic<bool> software_fallback{false};
+    bool software_decoder = false; // event thread: MPV fell back to its software decoder on the layer
     std::atomic<bool> interleave_suspect{false};
     std::atomic<bool> color_conversion_ready{false};
     std::atomic<uint64_t> dolby_frames{0};
@@ -1105,6 +1106,8 @@ struct Source final {
                     // A software decoder can lose its properties entirely when mediacodec_embed
                     // rejects its frames. An empty hwdec-current during initialization is not
                     // enough evidence; the terminal video-chain error is.
+                    if (quest::layer_software_decoder(layer(), software_layer, log->prefix, log->text))
+                        software_decoder = true;
                     if (quest::layer_video_chain_failed(layer(), software_layer, log->log_level <= MPV_LOG_LEVEL_ERROR,
                                                        log->prefix, log->text)) {
                         software_fallback.store(true);
@@ -1195,7 +1198,13 @@ struct Source final {
                 }
                 else if (event->event_id == MPV_EVENT_END_FILE) {
                     const auto* end = static_cast<const mpv_event_end_file*>(event->data);
-                    if (end->error < 0) {
+                    if (end->error < 0 && quest::layer_end_is_software_fallback(layer(), software_layer, software_decoder,
+                                                                                 end->error == MPV_ERROR_NOTHING_TO_PLAY)) {
+                        // Not a failure: the file plays in the eye buffers, where Godot reopens it on seeing
+                        // layer_compatible=false.
+                        software_fallback.store(true);
+                        next_snapshot = std::chrono::steady_clock::now();
+                    } else if (end->error < 0) {
                         const auto diagnosis = quest::playback_end_failure(end->error, source_failure);
                         const std::string detail = std::string("MPV playback: ") + mpv_error_string(end->error) +
                             (diagnosis.detail.empty() ? "" : "; " + diagnosis.detail);

@@ -93,7 +93,8 @@ func _run() -> void:
 	viewport.get_texture().get_image().save_png(output.path_join("settings-flat.png"))
 	for detail in ["screen", "color_grade"]:
 		state.geometry = 1 if detail == "subtitle_distance" else 0
-		menu._adjustment = detail
+		menu._adjustment = "picture" if detail == "color_grade" else detail
+		menu._picture_tab = 1; menu._picture_advanced = detail == "color_grade"
 		for page in (3 if detail == "color_grade" else 1):
 			menu._grade_page = page
 			menu.refresh()

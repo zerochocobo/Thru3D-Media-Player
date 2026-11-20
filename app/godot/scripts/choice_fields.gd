@@ -203,10 +203,11 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 		node.add_child(tick)
 		var middle: Label3D = menu._label(menu.I18n.t("Middle"), Vector3(left + rail_width / 2, 0.023, 0.006), 12, node)
 		middle.render_priority = 16
-	# A recommended value, marked on the rail.
-	if row.has("tick"):
+	var ticks: Array = row.get("ticks", [])
+	if row.has("tick"): ticks = [row.tick]
+	for tick in ticks:
 		var mark: MeshInstance3D = menu._quad(Vector2(0.003, 0.023),
-			Vector3(left + rail_width * clampf(inverse_lerp(row.span.x, row.span.y, float(row.tick)), 0, 1), y, 0.005), UiTheme.color("knob"), 16)
+			Vector3(left + rail_width * clampf(inverse_lerp(row.span.x, row.span.y, float(tick)), 0, 1), y, 0.005), UiTheme.color("knob"), 16)
 		menu._style_slider_marker(mark)
 		node.add_child(mark)
 	var knob: MeshInstance3D = menu._quad(Vector2(0.022, 0.022), Vector3(left, y, 0.006), UiTheme.color("knob"), 17)
@@ -225,6 +226,7 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 		for index in 2:
 			var step := float(row.nudge_step) * (-1 if index == 0 else 1)
 			var item := {"kind": "nudge", "key": row.key, "value": row.value, "step": step, "span": row.span}
+			if row.get("wrap", false): item.wrap = true
 			if row.has("source_uri"): item.source_uri = row.source_uri
 			if row.has("subtitle_key"): item.subtitle_key = row.subtitle_key
 			if row.has("audio_key"): item.audio_key = row.audio_key
@@ -233,7 +235,7 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 			var nudge: Dictionary = menu._buttons.back()
 			# Flanking steppers are the primary fine control, so their signs read at a glance.
 			if nudge_sides: menu.set_label_size(nudge.node.get_child(0), menu.TEXT_PAGE_TITLE + 4)
-			nudge.enabled = not same(clampf(float(row.value) + step, row.span.x, row.span.y), row.value)
+			nudge.enabled = not same(_nudge_value(item), row.value)
 			if not nudge.enabled: nudge.node.get_child(0).modulate = menu.MUTED
 	if row.has("reset_value"):
 		var reset_target := _button({"kind": "reset", "key": row.key, "value": row.reset_value}, "",
@@ -408,14 +410,19 @@ func finish() -> void:
 		menu._buttons.back().node.material_override.render_priority = 31
 		(menu._buttons.back().node.get_child(0) as Label3D).render_priority = 32
 
+static func _nudge_value(item: Dictionary) -> float:
+	var span: Vector3 = item.span
+	var value := snappedf(float(item.value) + float(item.step), span.z)
+	if item.get("wrap", false): return wrapf(value, span.x, span.y + span.z)
+	return clampf(value, span.x, span.y)
+
 func action(target: int) -> bool:
 	if not targets.has(target): return false
 	var item: Dictionary = targets[target]
 	match item.kind:
 		"nudge":
 			if not menu._buttons.any(func(button): return button.target == target and button.enabled): return true
-			var value := clampf(snappedf(float(item.value) + float(item.step), item.span.z), item.span.x, item.span.y)
-			changed.emit(str(item.key), _scoped_value(item, value))
+			changed.emit(str(item.key), _scoped_value(item, _nudge_value(item)))
 			menu.refresh()
 		"reset":
 			if not menu._buttons.any(func(button): return button.target == target and button.enabled): return true

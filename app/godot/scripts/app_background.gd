@@ -266,7 +266,9 @@ func cycle_brightness() -> void:
 
 func set_yaw(value: float) -> void:
 	if not is_finite(value): return
-	yaw = fposmod(value, 360.0)
+	var degrees := fposmod(value, 360.0)
+	if yaw == degrees: return
+	yaw = degrees
 	changed.emit()
 
 func set_brightness(value: float) -> void:

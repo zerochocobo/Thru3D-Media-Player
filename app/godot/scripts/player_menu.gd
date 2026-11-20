@@ -208,6 +208,18 @@ const ALPHA_GROUP := 458
 const PORTRAIT_SIZE := 459
 const DEPTH_POSITION := 460
 const PICTURE_SHARPNESS := 461
+const PICTURE_OPEN := 11280
+const PICTURE_CLOSE := 11281
+const PICTURE_QUALITY_TAB := 11282
+const PICTURE_ADVANCED := 11284
+const PICTURE_CLEAR := 11286
+const PICTURE_PANEL_WIDTH := 0.76
+const PICTURE_PANEL_X := 0.24
+var picture_controls_open_id := 0
+var _picture_tab := 0
+var _picture_advanced := false
+var _picture_panel_bounds := Rect2()
+var _picture_drawn: Array = []
 ## The 2D to 3D settings fold under one header above Alpha's, closed each time like it.
 const DEPTH_GROUP := 462
 const DEPTH_GROUP_SETTINGS := ["video_auto_3d", "depth_render"]
@@ -242,9 +254,9 @@ const OPERATIONS := [
 	["color_grade", "loop", "seek_mode", "hdr_to_sdr", "stereo_view", "video_auto_3d", "depth_render",
 		"alpha_keep_background", "show_status_info", "show_fps"],
 	["capabilities"]]
-const HEADINGS := ["Color & brightness", "Playback mode", "Video time positioning", HdrToSdr.TITLE, "Stereo viewing", VideoAuto3D.TITLE, "2D to 3D effect",
+const HEADINGS := ["Default picture", "Playback mode", "Video time positioning", HdrToSdr.TITLE, "Stereo viewing", VideoAuto3D.TITLE, "2D to 3D effect",
 	"Keep background during passthrough", "Show status information", "Show FPS"]
-const SETTING_ICONS := ["light", "loop", "history", "quality", "eyes", "depth", "depth", "keep_background", "status_info", "frame_rate"]
+const SETTING_ICONS := ["adjust", "loop", "history", "quality", "eyes", "depth", "depth", "keep_background", "status_info", "frame_rate"]
 ## Plain on/off tiles: display choices of the player itself, on offer whatever is playing or cast.
 const SWITCH_SETTINGS := ["alpha_keep_background", "show_status_info", "show_fps"]
 const PLAYBACK_MODE_ICONS := {"single": "play", "repeat_one": "repeat_one", "sequence": "sequence", "repeat_all": "repeat_all", "shuffle": "shuffle"}
@@ -331,7 +343,6 @@ var _seek_hand := ""
 var _seek_start := -1
 var _seek_preview := -1
 var _grade_page := 0
-var _grade_lock_drawn := false
 var _adjust_hand := ""
 var _adjust_target := -1
 var _adjust_rows := {}
@@ -436,9 +447,14 @@ func _draw_popup(draw: Callable) -> void:
 	var before := get_children()
 	draw.call()
 	if (_layout_eye == null and not cinema_world_anchor) or not _settings_popup(): return
-	var key := str([draw.get_method(), section, _adjustment])
-	if draw.get_method() == "_draw_subtitles" and not clone_panel.opened:
-		key += str(_subtitle_panel_bounds.size)
+	var method := draw.get_method()
+	var key := str([method, section, _adjustment])
+	var anchor_rect := Rect2()
+	if method == "_draw_subtitles" and not clone_panel.opened:
+		anchor_rect = _subtitle_panel_bounds
+	elif method == "_draw_picture_panel":
+		anchor_rect = _picture_panel_bounds
+	if anchor_rect.has_area(): key += str(anchor_rect.size)
 	var changed := key != _popup_layout_key
 	_popup_layout_key = key
 	if changed: _cinema_popup_centres.clear()
@@ -449,8 +465,7 @@ func _draw_popup(draw: Callable) -> void:
 	if surface.get_child_count() == 0: surface.free(); return
 	_popup_surfaces.append(surface)
 	surface.set_meta("cinema_popup_key", key)
-	if draw.get_method() == "_draw_subtitles" and not clone_panel.opened:
-		surface.set_meta("subtitle_anchor_bounds", _subtitle_panel_bounds)
+	if anchor_rect.has_area(): surface.set_meta("popup_anchor_bounds", anchor_rect)
 	# Establish the new hierarchy before measuring the bar: new popup nodes are not bar controls.
 	if changed: refresh_layout_reference()
 	arrange_surfaces()
@@ -476,10 +491,11 @@ func arrange_surfaces() -> void:
 
 func _place_upper_surface(surface: Node3D, rect: Rect2) -> void:
 	if rect.size.y <= 0: return
-	# Use the whole subtitle plate, excluding raised dropdowns, for centering.
-	var anchor_rect: Rect2 = surface.get_meta("subtitle_anchor_bounds", rect)
+	var anchor_rect: Rect2 = surface.get_meta("popup_anchor_bounds", rect)
+	var key := str(surface.get_meta("cinema_popup_key", "library"))
+	var centre := panel_centre()
+	if "_draw_picture_panel" in key: centre.x += PICTURE_PANEL_X
 	if cinema_world_anchor:
-		var key := str(surface.get_meta("cinema_popup_key", "library"))
 		if not _cinema_popup_centres.has(key):
 			var head: Variant = layout_head_provider.call() if layout_head_provider.is_valid() else null
 			if space_locked(): head = get_meta("space_head", head)
@@ -490,14 +506,14 @@ func _place_upper_surface(surface: Node3D, rect: Rect2) -> void:
 			if "_draw_volume" in key or "_draw_depth" in key:
 				_cinema_popup_centres[key] = Transform3D.IDENTITY
 			else:
-				_cinema_popup_centres[key] = global_transform.affine_inverse() * SurfaceLayout.above(global_transform, eye, panel_centre(), _bar_bounds().end.y, anchor_rect, global_basis * _layout_up)
+				_cinema_popup_centres[key] = global_transform.affine_inverse() * SurfaceLayout.above(global_transform, eye, centre, _bar_bounds().end.y, anchor_rect, global_basis * _layout_up)
 		# Freeze the layout relative to the bar so unlocked grip movement carries
 		# settings/library surfaces with it, including after a redraw.
 		surface.transform = _cinema_popup_centres[key]
 		surface.set_meta("menu_surface_bounds", rect)
 		composition_layout_changed.emit()
 		return
-	var world := SurfaceLayout.above(global_transform, to_global(_layout_eye), panel_centre(), _bar_bounds().end.y, anchor_rect, global_basis * _layout_up)
+	var world := SurfaceLayout.above(global_transform, to_global(_layout_eye), centre, _bar_bounds().end.y, anchor_rect, global_basis * _layout_up)
 	surface.global_transform = world
 	surface.set_meta("menu_surface_bounds", rect)
 	composition_layout_changed.emit()
@@ -661,7 +677,8 @@ func _reset_navigation() -> void:
 	_close_depth_slider()
 
 func refresh() -> void:
-	_state = state_provider.call() if state_provider.is_valid() else {}
+	_state = _read_state()
+	_drop_replaced_picture_controls()
 	_state["bar_transparency"] = bar_transparency
 	_draw()
 
@@ -677,14 +694,16 @@ func refresh_values() -> void:
 	if not visible:
 		return
 	_refresh_ms = Time.get_ticks_msec() + VALUES_REFRESH_MS # a fresh state needs no periodic pass
-	_state = state_provider.call() if state_provider.is_valid() else {}
+	_state = _read_state()
+	if _drop_replaced_picture_controls():
+		refresh(); return
 	refresh_hand_lock_icon(bool(_state.get("hand_locked", false)))
 	_state["bar_transparency"] = bar_transparency
 	if _depth_open and _depth_boost_available() and _state.get("depth_requested", false) and float(_state.get("depth_strength", 0.0)) > DepthStrength.MAX and not _depth_boost:
 		_depth_boost = true
 		refresh()
 		return
-	if _adjustment == "color_grade" and _grade_lock_drawn != bool(_state.get("grade_curves_locked", false)) and _adjust_hand.is_empty():
+	if editing_picture() and _picture_drawn != _picture_key() and _adjust_hand.is_empty():
 		refresh()
 		return
 	if _adjustment in ["screen", "stereo_view"] and _settings_drawn != _settings_key():
@@ -775,7 +794,7 @@ func _draw() -> void:
 	if not _track_drag.is_empty() and _track_drag.source != str(_state.get("source_uri", "")): _track_drag.clear()
 	if _audio_open and (_audio_source != str(_state.get("source_uri", "")) or section != 0 or _subtitle_open or _mode_open or _volume_open):
 		_audio_open = false; choices.reset()
-	if disc_titles.opened and (section != 0 or _audio_open or _subtitle_open or _mode_open or _volume_open or _pip_open or bookmarks.opened):
+	if disc_titles.opened and (section != 0 or editing_picture() or _audio_open or _subtitle_open or _mode_open or _volume_open or _pip_open or bookmarks.opened):
 		disc_titles.reset()
 	_clear_layout()
 	if str(_state.get("error", "")).is_empty():
@@ -834,7 +853,9 @@ func _draw() -> void:
 		else: _draw_panel()
 	else:
 		_draw_bar()
-		if not _adjustment.is_empty():
+		if editing_picture():
+			_draw_popup(_draw_picture_panel)
+		elif not _adjustment.is_empty():
 			_draw_popup(_draw_adjustments)
 		elif section != 0:
 			_draw_popup(_draw_panel)
@@ -857,12 +878,139 @@ func _settings_popup() -> bool:
 
 ## Slider row geometry: title/value positions, track [left, width], reset position.
 func _slider_geometry() -> Dictionary:
+	if editing_picture():
+		var x := PICTURE_PANEL_X
+		return {"title_x": x - 0.33, "title_size": TEXT_AUX, "value_x": x - 0.076, "value_size": TEXT_AUX,
+			"left": x - 0.05, "width": 0.33, "hit": 0.04, "height": 0.058, "thickness": 0.007, "knob": 0.021,
+			"reset_x": x + 0.328, "reset_size": 0.046}
 	return {"title_x": -0.50, "title_size": TEXT_BODY, "value_x": -0.03, "value_size": TEXT_BODY, "left": SLIDER_LEFT,
 		"width": SLIDER_WIDTH, "hit": 0.06, "height": 0.065, "thickness": 0.008, "knob": 0.022, "reset_x": 0.475, "reset_size": 0.05}
 
 ## Bar controls (100+) stay active under the settings popup; settings tiles use SETTINGS_TILE.
 func _bar_target(target: int) -> bool:
 	return target >= 100 and target < 100 + OPERATIONS[0].size()
+
+func editing_picture() -> bool:
+	return _adjustment in ["picture", "picture_defaults"]
+
+func editing_picture_defaults() -> bool:
+	return _adjustment == "picture_defaults"
+
+func _picture_button_x() -> float:
+	var capture_shown: bool = _state.get("capture", {}).get("available", false)
+	return 0.42 + 0.14 * (int(capture_shown) + int(disc_titles.available()))
+
+func _read_state() -> Dictionary:
+	var state: Dictionary = state_provider.call() if state_provider.is_valid() else {}
+	if editing_picture_defaults() and state.has("picture_defaults"):
+		state = state.duplicate()
+		state.merge(state.picture_defaults, true)
+		state.picture_sharpness = roundf(float(state.picture_sharpness) * 100.0)
+		var grade := Grade.new()
+		grade.restore(state.color_grade)
+		state.grade_values = grade.values(true)
+		state.picture_quality_available = state.get("picture_quality_supported", false)
+		state.grade_curves_locked = state.picture_quality_available and not state.picture_quality
+		state.picture_upscale_available = true
+		state.picture_upscale_sizes = {}
+	return state
+
+func _drop_replaced_picture_controls() -> bool:
+	if _adjustment != "picture" or picture_controls_open_id == int(_state.get("picture_open_id", 0)): return false
+	_adjust_hand = ""
+	_adjust_target = -1
+	_adjustment = ""
+	choices.reset()
+	return true
+
+func _picture_key() -> Array:
+	return [_state.get("picture_quality"), _state.get("picture_quality_supported"), _state.get("picture_quality_available"),
+		_state.get("picture_quality_blocker"), _state.get("grade_curves_locked"), _state.get("picture_upscale_sizes"),
+		_state.get("picture_upscale_available"), _state.get("picture_denoise"), _state.get("picture_upscale"),
+		_state.get("picture_source"), _state.get("picture_clear_available"), _state.get("reuse_last_picture"), _state.get("picture_inherit_available")]
+
+func _open_picture_controls(defaults: bool) -> void:
+	picture_controls_open_id = int(_state.get("picture_open_id", 0))
+	_adjustment = "picture_defaults" if defaults else "picture"
+	_picture_tab = 0 if _state.get("picture_quality_supported", false) else 1
+	_picture_advanced = false
+	_grade_page = 0
+	_capture_open = false
+	refresh()
+
+func _draw_picture_panel() -> void:
+	var x := PICTURE_PANEL_X
+	var has_mode: bool = _state.get("picture_quality_supported", false)
+	var in_color := _picture_tab == 1 or not has_mode
+	var keys: Array = Grade.PAGES[_grade_page] if _picture_advanced else ["exposure", "contrast", "saturation"]
+	var height := (0.41 + 0.064 * keys.size()) if in_color and _picture_advanced else (0.55 if in_color else 0.435)
+	if not has_mode: height -= 0.10
+	var bottom := POPUP_BOTTOM
+	var top := bottom + height
+	var size := Vector2(PICTURE_PANEL_WIDTH, height)
+	_picture_panel_bounds = Rect2(Vector2(x - size.x / 2, bottom), size)
+	var panel := _quad(size, Vector3(x, bottom + height / 2, 0.001), Color(PANEL, 0.96), 10)
+	panel.material_override.set_shader_parameter("corner_radius", 0.025)
+	add_child(panel); _decorations.append(panel)
+	_block_rays(panel, size)
+	_picture_drawn = _picture_key()
+	var title := "Default picture" if editing_picture_defaults() else "Picture quality & color"
+	_label(I18n.t(title), Vector3(x, top - 0.039, 0.004), TEXT_TITLE)
+	_glyph(PICTURE_CLOSE, "close", Vector2(x + 0.33, top - 0.039), 0.054, true, I18n.t("Close"))
+	var tabs_y := top - 0.155
+	if has_mode:
+		_picture_quality_switch(top - 0.101)
+		for index in 2:
+			_button(PICTURE_QUALITY_TAB + index, I18n.t(["Picture quality", "Color"][index]),
+				Vector2(x + (-0.17 if index == 0 else 0.17), tabs_y), Vector2(0.32, 0.05))
+			if index == _picture_tab: _buttons.back().base_color = SELECTED
+	if in_color: _draw_picture_color(x, top - (0.214 if has_mode else 0.114), keys)
+	else: _picture_quality_rows(top - 0.215)
+	if not editing_picture_defaults(): _draw_picture_footer(x, bottom + 0.035)
+	_refresh_adjustments()
+
+func _draw_picture_footer(x: float, y: float) -> void:
+	if _state.get("picture_clear_available", false):
+		_button(PICTURE_CLEAR, I18n.t("Clear video settings"), Vector2(x - 0.207, y), Vector2(0.252, 0.045))
+		set_label_size(_buttons.back().node.get_child(0), TEXT_AUX)
+	elif _state.get("picture_source", "") == "last":
+		var label := _label(I18n.t("Carried over"), Vector3(x - 0.33, y, 0.006), TEXT_AUX)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		label.modulate = MUTED
+	if _state.get("picture_inherit_available", false):
+		var carry := _fit_title(I18n.t("Reuse last picture settings"), "", 0.29, TEXT_AUX)
+		var label := _label(carry, Vector3(x + 0.225, y, 0.005), TEXT_AUX)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		choices.field(null, {"key": "reuse_last_picture", "value": _state.get("reuse_last_picture", false), "switch": true,
+			"choices": [], "hint": "Reuse last picture settings"}, Vector2(x + 0.291, y), 0.086, 0.045)
+
+func _draw_picture_color(x: float, y: float, keys: Array) -> void:
+	for index in Grade.PRESETS.size():
+		var preset: String = Grade.PRESETS[index]
+		_button(410 + index, I18n.t(preset), Vector2(x + (index - 1.5) * 0.17, y), Vector2(0.157, 0.05))
+		set_label_size(_buttons.back().node.get_child(0), TEXT_AUX)
+		_preset_buttons[preset] = _buttons.back()
+	if _picture_advanced:
+		y -= 0.06
+		for index in 3:
+			var title: String = ["Basic", "RGB gain", "RGB gamma / offset"][index]
+			_button(430 + index, _fit_title(I18n.t(title), "", 0.205, TEXT_AUX),
+				Vector2(x + (index - 1) * 0.23, y), Vector2(0.216, 0.05))
+			set_label_size(_buttons.back().node.get_child(0), TEXT_AUX)
+			if index == _grade_page: _buttons.back().base_color = SELECTED
+	for index in keys.size():
+		var key: String = keys[index]
+		var row_y := y - 0.061 - index * 0.064
+		_adjustment_row(450 + index, key, "Brightness" if key == "exposure" and not _picture_advanced else Grade.NAMES[key], Grade.limits(key), row_y)
+		if _grade_locked(key): _lock_row(450 + index, row_y)
+	var last := y - 0.053 - keys.size() * 0.064
+	_button(PICTURE_ADVANCED, I18n.t("Advanced color" if not _picture_advanced else "Back"), Vector2(x - 0.215, last), Vector2(0.25, 0.05))
+	set_label_size(_buttons.back().node.get_child(0), TEXT_AUX)
+	if _picture_advanced:
+		_button(GRADE_PAGE_RESET, I18n.t("Reset page"), Vector2(x + 0.011, last), Vector2(0.176, 0.05), _grade_page_needs_reset())
+		set_label_size(_buttons.back().node.get_child(0), TEXT_AUX)
+		_button(440, I18n.t("Reset custom"), Vector2(x + 0.225, last), Vector2(0.224, 0.05))
+		set_label_size(_buttons.back().node.get_child(0), TEXT_AUX)
 
 func _settings_open() -> bool:
 	return _failure_open or section != 0 or not _adjustment.is_empty()
@@ -999,12 +1147,15 @@ func _draw_bar() -> void:
 	if _cast_allowed("favorite"): _draw_favorite(Vector2(0.28, 0.215))
 	disc_titles.draw_button(Vector2(0.56 if _state.get("capture", {}).get("available", false) else 0.42, 0.215))
 	_draw_capture_action()
+	if _state.get("has_video", false) and _cast_allowed("color_grade"):
+		_round(PICTURE_OPEN, "adjust", Vector2(_picture_button_x(), 0.215), 0.08, true, _adjustment == "picture", I18n.t("Picture quality & color"))
+	var show_bookmarks := _cast_allowed("bookmarks")
 	if _state.get("audio_play_during_video", false):
 		if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): action_requested.emit("music_toggle"))
-		music_quick.draw(MUSIC_OPEN, Vector2(-0.56 if not _state.get("bookmarks", []).is_empty() else -0.42, 0.215), _state)
+		music_quick.draw(MUSIC_OPEN, Vector2(-0.56 if show_bookmarks and bookmarks.list_visible() else -0.42, 0.215), _state)
 	elif music_quick: music_quick.reset()
 	_place_device_status(Vector2(0, -0.245))
-	if _cast_allowed("bookmarks"): bookmarks.draw()
+	if show_bookmarks: bookmarks.draw()
 	_expand_bar_action_hits()
 	if _mode_open:
 		_draw_popup(_draw_modes)
@@ -2014,7 +2165,7 @@ func _base_bar_key() -> String:
 	return str([_state.get("reuse_last_mode", false), _state.get("subtitle_task", {}), _state.get("subtitle_task_mode"), _state.get("listening_cache_complete"), _state.get("listening_translation_complete")]) + str([_state.get("listening_visible", _state.get("listening_available", false)), _state.get("listening_unavailable_hint", ""), _state.get("listening_available", false), _state.get("listening_enabled", false), _state.get("listening_source", "ja"), _state.get("listening_target", ""), _state.get("listening_lead", 12), _state.get("listening_state", "off")]) + str([_state.get("cast", {}), cast_state]) + str([_state.get("screen_scene_locked", false), _state.get("cinema_lights", "auto")]) + _capture_key() + str([_state.get("pip_slots", []), _state.get("pip_count", 0), _state.get("pip_available", true), int(_state.get("audio_whisper", 0)) > 0, _state.get("volume_writable", true), _state.get("whisper_available", false), _state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
 		_state.get("spatial_video", false), _state.get("portrait_requested", false), _state.get("subtitle_below_screen", false), _state.get("subtitle_below_available", false), _state.get("error", ""),
 		_state.get("dual_subtitles_available", false), _state.get("dual_subtitles_enabled", false), _state.get("subtitle_edit_secondary", false), _state.get("secondary_subtitle_track", 0), _state.get("secondary_subtitle_delay", 0.0),
-		_state.get("source_uri", ""), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1), _state.get("audio_delay", 0.0), _state.get("audio_timing_key", ""),
+		_state.get("source_uri", ""), disc_titles.available(), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1), _state.get("audio_delay", 0.0), _state.get("audio_timing_key", ""),
 		_state.get("subtitle_browse_available", false), _state.get("subtitle_files_available", false), _state.get("subtitle_files_revision", 0), _state.get("subtitle_files_state", "idle"), _state.get("subtitle_file_loading", ""), _state.get("subtitle_file_error", ""), _state.get("subtitle_timing_key", ""),
 		_state.get("subtitle_distance", SubtitleDepth.DEFAULT), _state.get("subtitle_follow_view", false), _state.get("subtitle_distance_measured", false), _state.get("subtitle_direction", 0), _state.get("subtitle_position", SubtitleDepth.DEFAULT_POSITION), _state.get("subtitle_horizontal_position", 0.0), _state.get("subtitle_vertical_position", 0.0), _state.get("subtitle_direction", 0), _state.get("subtitle_size", 100), _state.get("subtitle_transparency", 0.0), _state.get("subtitle_style", SubtitleStyle.DEFAULT), _state.get("subtitle_pgs_tint", SubtitleStyle.PGS_DEFAULT), _state.get("subtitle_line", 0), _state.get("subtitle_flat_position", 0), _state.get("subtitle_auto_load", true), _state.get("subtitle_delay", 0.0),
 		_state.get("narration_configurable", false), _state.get("narration_available", false), _state.get("narration_enabled", false), _state.get("narration_source", -1), _state.get("narration_sources", []), _state.get("narration_language", "auto"), _state.get("narration_resolved_language", ""), _state.get("narration_voice", ""), _state.get("narration_status", "off"), _state.get("narration_preview_busy", false), _state.get("narration_missing", 0), _state.get("narration_timing", "continuous"), _state.get("narration_delay", 0), _state.get("narration_progress", -1), _state.get("narration_profile", ""), _state.get("narration_voice_origin", "default"), _state.get("narration_line", 0), _state.get("narration_hide_subtitles", true), _state.get("narration_miss_reason", ""), _state.get("narration_language_required", false), _state.get("narration_preview_progress", -1)])
@@ -2192,14 +2343,9 @@ func _draw_panel() -> void:
 	if depth_group: height += 0.085 + ((depth_rows.size() + (1 if depth_position_setting else 0)) * 0.085 if _depth_expanded else 0.0)
 	if alpha_fps and _alpha_expanded and _state.get("portrait_requested", false): height += 0.17
 	if alpha_fps and _state.get("flat_passthrough_requested", false): height += 0.17
-	var picture_rows: bool = section == 1 and _state.get("picture_quality_supported", false)
-	if picture_rows: height += 0.34
 	var top := _settings_frame(height)
 	_draw_settings_tabs(top - 0.055)
 	var y := top - 0.165
-	if picture_rows:
-		_picture_quality_rows(top - 0.14)
-		y -= 0.34
 	for shown in tiles.size():
 		var index: int = tiles[shown]
 		if index < 0: continue
@@ -2353,20 +2499,23 @@ func _error_text_height(text: String, logical_size: int) -> float:
 
 ## Picture quality mode leads the settings: its switch, then what it brings: sharpening (0 leaves the
 ## rest on its own), super resolution for low-resolution sources and denoising.
-func _picture_quality_rows(y: float) -> void:
+func _picture_quality_switch(y: float) -> void:
+	var x := PICTURE_PANEL_X
 	var available: bool = _state.get("picture_quality_available", false)
 	var on: bool = available and _state.get("picture_quality", false)
-	var heading := _label(I18n.t("Picture quality mode"), Vector3(-0.50, y, 0.004), TEXT_BODY)
+	var heading := _label(I18n.t("Picture quality mode"), Vector3(x - 0.33, y, 0.004), TEXT_BODY)
 	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	choices.field(null, {"key": "picture_quality", "value": on, "switch": true, "choices": [], "hint": PICTURE_QUALITY_HINT}, Vector2(0.395, y), 0.09, 0.05)
+	choices.field(null, {"key": "picture_quality", "value": on, "switch": true, "choices": [], "hint": PICTURE_QUALITY_HINT}, Vector2(x + 0.29, y), 0.09, 0.05)
 	if not available:
 		var toggle: Dictionary = _buttons.back()
 		toggle.enabled = false
 		toggle["hover_disabled"] = true
 		_tips[toggle.target] = I18n.t(PICTURE_QUALITY_BLOCKERS.get(str(_state.get("picture_quality_blocker", "")), PICTURE_QUALITY_BLOCKERS.source))
-	_adjustment_row(PICTURE_SHARPNESS, "picture_sharpness", "Sharpness", Vector3(0, 200, 5), y - 0.085)
-	_slider_tick(PICTURE_SHARPNESS, 100, "100%", y - 0.085)
-	if not on: _lock_row(PICTURE_SHARPNESS, y - 0.085)
+
+func _picture_quality_rows(y: float) -> void:
+	var on: bool = _state.get("picture_quality_available", false) and _state.get("picture_quality", false)
+	_adjustment_row(PICTURE_SHARPNESS, "picture_sharpness", "Sharpness", Vector3(0, 200, 5), y)
+	if not on: _lock_row(PICTURE_SHARPNESS, y)
 	var fits: bool = _state.get("picture_upscale_available", true)
 	var sizes: Dictionary = _state.get("picture_upscale_sizes", {})
 	var source: Vector2i = sizes.get("source", Vector2i.ZERO)
@@ -2376,18 +2525,19 @@ func _picture_quality_rows(y: float) -> void:
 		levels.append({"value": level, "label": "Balanced" if level == 1 else "Maximum",
 			"hint": I18n.t(PICTURE_UPSCALE_LEVELS[level]) % [source.x, source.y, target.x, target.y] if source.x > 0 and target.x > source.x else PICTURE_UPSCALE_HINT})
 	var full := I18n.t(PICTURE_UPSCALE_FULL[bool(sizes.get("vr", false))]) % [source.x, source.y] if on and not fits else ""
-	_picture_choice_row("Super resolution", "picture_upscale", int(_state.get("picture_upscale", 0)) if on and fits else 0, levels, y - 0.17, on, full)
-	_picture_choice_row("Denoise", "picture_denoise", int(_state.get("picture_denoise", 0)) if on else 0,
+	_picture_choice_row("Super resolution", "picture_upscale", int(_state.get("picture_upscale", 0)), levels, y - 0.064, on, full)
+	_picture_choice_row("Denoise", "picture_denoise", int(_state.get("picture_denoise", 0)),
 		[{"value": 0, "label": "Off"}, {"value": 1, "label": "Low"}, {"value": 2, "label": "Medium"}, {"value": 3, "label": "High"}].map(
-			func(option): option["hint"] = PICTURE_DENOISE_HINT; return option), y - 0.255, on, "")
+			func(option): option["hint"] = PICTURE_DENOISE_HINT; return option), y - 0.128, on, "")
 
 ## One of the mode's choices in a row: locked with the mode off, and greyed with a reason (unavailable)
 ## when this video has no use for it.
 func _picture_choice_row(title: String, key: String, value: int, options: Array, y: float, on: bool, unavailable: String) -> void:
-	var heading := _label(I18n.t(title), Vector3(-0.50, y, 0.004), TEXT_BODY)
+	var x := PICTURE_PANEL_X
+	var heading := _label(_fit_title(I18n.t(title), "", 0.23, TEXT_AUX), Vector3(x - 0.33, y, 0.004), TEXT_AUX)
 	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	var first := _buttons.size()
-	choices.field(null, {"key": key, "value": value, "compact": true, "choices": options}, Vector2(0.21, y), 0.46, 0.05)
+	choices.field(null, {"key": key, "value": value, "compact": true, "choices": options}, Vector2(x + 0.14, y), 0.42, 0.05)
 	if on and unavailable.is_empty(): return
 	for index in range(first, _buttons.size()):
 		var button: Dictionary = _buttons[index]
@@ -2558,12 +2708,19 @@ func _activate_hit(hit: Dictionary) -> void:
 		super._activate_hit(hit)
 
 func _activate(target: int) -> void:
-	if screen_lock_ui.activate(target): return
+	if screen_lock_ui.blocked(target): return
 	if section == 0 and _subtitle_open and target in [SUBTITLE_GENERATE, SUBTITLE_TASK_CANCEL, SUBTITLE_TASKS]:
 		setting_requested.emit("listening_generate" if target == SUBTITLE_GENERATE else ("listening_cancel" if target == SUBTITLE_TASK_CANCEL else "subtitle_tasks_open"), _state.get("subtitle_task", {}).get("id", ""))
 		refresh(); return
 	var cast_action := CastPanel.action(target)
 	if not cast_action.is_empty(): cast_requested.emit(cast_action); return
+	if target == PICTURE_OPEN:
+		if not _state.get("has_video", false) or not _cast_allowed("color_grade"): return
+		var was_open := _adjustment == "picture"
+		_reset_navigation()
+		if not was_open: _open_picture_controls(false)
+		else: refresh()
+		return
 	if target == PIP:
 		if not _state.get("has_video", false) or not _state.get("pip_available", true): return
 		var opened := _pip_open
@@ -2652,7 +2809,7 @@ func _activate(target: int) -> void:
 	if choices.action(target): return
 	if target >= EYE_BUFFER_NOTE and target < EYE_BUFFER_NOTE + 1000: return
 	bookmarks.reset()
-	if _settings_popup() and _settings_open() and (target in [11, SETTINGS_CLOSE] or _bar_target(target) or target == MODE):
+	if _settings_popup() and _settings_open() and (target in [11, SETTINGS_CLOSE, MODE, DiscPanel.BUTTON] or _bar_target(target)):
 		# The bar under the popup: its settings button and close fold settings away; other
 		# controls fold it away and act, like the subtitle and video mode popups.
 		_finish_adjustment()
@@ -2677,11 +2834,10 @@ func _activate(target: int) -> void:
 		_adjustment = "screen" if target == SCREEN_SETTINGS else ""
 		refresh()
 		return
-	if section == 0 and disc_titles.activate(target):
-		if disc_titles.opened:
-			_audio_open = false; _subtitle_open = false; _mode_open = false; _volume_open = false; _volume_hand = ""
-			_close_depth_slider(); choices.reset(); refresh()
-		return
+	if section == 0 and target == DiscPanel.BUTTON:
+		_audio_open = false; _subtitle_open = false; _mode_open = false; _volume_open = false; _volume_hand = ""
+		_close_depth_slider(); choices.reset()
+	if section == 0 and disc_titles.activate(target): return
 	if section == 0 and target == 111:
 		if not _enabled("audio"): return
 		_audio_open = not _audio_open; _audio_source = str(_state.get("source_uri", "")); choices.reset()
@@ -2708,8 +2864,9 @@ func _activate(target: int) -> void:
 		return
 	if section == 1 and target >= SETTINGS_TILE and target < SETTINGS_TILE + OPERATIONS[1].size() and OPERATIONS[1][target - SETTINGS_TILE] in ["color_grade", "stereo_view"]:
 		if not _enabled(OPERATIONS[1][target - SETTINGS_TILE]): return
-		_adjustment = OPERATIONS[1][target - SETTINGS_TILE]
-		_grade_page = 0
+		if OPERATIONS[1][target - SETTINGS_TILE] == "color_grade":
+			_open_picture_controls(true); return
+		_adjustment = "stereo_view"
 		refresh()
 		return
 	if section == 0 and target == 110:
@@ -3010,7 +3167,7 @@ func _caption_text(operation: String) -> String:
 		"capabilities": return "Refresh device info"
 		"subtitle_distance": return "%.1f m · %+.0f°" % [float(_state.get("subtitle_distance", 5.0)), float(_state.get("subtitle_position", SubtitleDepth.DEFAULT_POSITION))]
 		"screen_distance": return "%.1f m" % float(_state.get("screen_distance", Surface.SCREEN_DISTANCE))
-		"color_grade": return str(_state.get("color_grade", {}).get("preset", "Original"))
+		"color_grade": return str(_state.get("picture_defaults", {}).get("color_grade", {}).get("preset", "Original"))
 		"screen_curve": return _curve_caption(float(_state.get("screen_curve", 0.0)))
 	return operation
 
@@ -3041,6 +3198,11 @@ func _info_text() -> String:
 	var lines := PackedStringArray()
 	lines.append(_fit_title(str(_state.get("title", I18n.t("No video selected"))), ""))
 	lines.append(I18n.t("Source: %s | %s") % [str(_state.get("source_size", I18n.t("Unknown"))), I18n.t(str(_state.get("codec", "Unknown codec")))])
+	var shown: Dictionary = _state.get("shown_picture", {})
+	var shown_size: Array = shown.get("size", [0, 0])
+	if int(shown_size[0]) > 0:
+		var note := I18n.t("Super resolution") if shown.get("upscaled", false) else (I18n.t("Reduced to the output resolution") if shown.get("reduced", false) else "")
+		lines.append(I18n.t("Picture: %s") % ("%d x %d" % [int(shown_size[0]), int(shown_size[1])] + ("" if note.is_empty() else " | " + note)))
 	lines.append(I18n.t("Time: %.1f / %.1f seconds") % [float(_state.get("position_ms", 0)) / 1000, float(_state.get("duration_ms", 0)) / 1000])
 	lines.append(I18n.t("Subtitles: %s") % _subtitle_name())
 	lines.append(I18n.t("XR: %s") % I18n.t(str(_state.get("xr_state", "Unavailable"))))
@@ -3060,7 +3222,7 @@ func _finish_adjustment() -> void:
 	_adjust_target = -1
 	adjustment_committed.emit()
 
-## Playback first: colour grading is the first thing settings shows.
+## Playback first, with the default picture entry at the top.
 func _draw_settings_tabs(y: float) -> void:
 	var tabs := [{"id": PLAYBACK_SETTINGS, "text": "Playback"}, {"id": SCREEN_SETTINGS, "text": "Screen"}, {"id": 12, "text": "Info"}]
 	for index in tabs.size():
@@ -3236,30 +3398,6 @@ func _draw_adjustments() -> void:
 	if _adjustment == "stereo_view":
 		_draw_stereo_view()
 		return
-	if _adjustment != "color_grade": return
-	var keys: Array = Grade.PAGES[_grade_page]
-	var top := _settings_frame(0.30 + keys.size() * 0.075 + 0.09)
-	_settings_heading("Color & brightness", top)
-	var preset_width := 1.0 / Grade.PRESETS.size()
-	for i in Grade.PRESETS.size():
-		_button(410 + i, I18n.t(Grade.PRESETS[i]), Vector2(-0.5 + (i + 0.5) * preset_width, top - 0.125), Vector2(preset_width - 0.02, 0.058))
-		set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
-		_preset_buttons[Grade.PRESETS[i]] = _buttons.back()
-	for i in 3:
-		_button(430 + i, I18n.t(["Basic", "RGB gain", "RGB gamma / offset"][i]), Vector2(-0.335 + i * 0.335, top - 0.195), Vector2(0.32, 0.05))
-		set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
-		if i == _grade_page: _buttons.back().base_color = SELECTED
-	_grade_lock_drawn = _state.get("grade_curves_locked", false)
-	for i in keys.size():
-		_adjustment_row(450 + i, keys[i], Grade.NAMES[keys[i]], Grade.limits(keys[i]), top - 0.275 - i * 0.075)
-		if _grade_locked(keys[i]): _lock_row(450 + i, top - 0.275 - i * 0.075)
-	var bottom := top - 0.275 - keys.size() * 0.075 - 0.005
-	_button(GRADE_PAGE_RESET, I18n.t("Reset page"), Vector2(-0.2, bottom), Vector2(0.36, 0.055), _grade_page_needs_reset())
-	set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
-	_button(440, I18n.t("Reset custom"), Vector2(0.2, bottom), Vector2(0.36, 0.055))
-	set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
-	_refresh_adjustments()
-
 func _draw_immersive_settings() -> void:
 	var stereo: bool = _state.get("stereo", false)
 	var top := _settings_frame(0.81 if stereo else 0.72)
@@ -3356,7 +3494,8 @@ const SLIDER_WIDTH := 0.40
 
 func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: float) -> void:
 	var g := _slider_geometry()
-	var heading := _label(I18n.t(title), Vector3(g.title_x, y, 0.004), g.title_size)
+	var heading_text := _fit_title(I18n.t(title), "", 0.18, g.title_size) if editing_picture() else I18n.t(title)
+	var heading := _label(heading_text, Vector3(g.title_x, y, 0.004), g.title_size)
 	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	if key in ["portrait_distance", "portrait_scale"] or title == "Stereo horizontal alignment":
 		heading.width = 0.34 / heading.pixel_size
@@ -3369,7 +3508,7 @@ func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: 
 	var width: float = g.width
 	var centre := left + width / 2
 	_button(target, "", Vector2(centre, y), Vector2(width + g.hit, g.height))
-	_buttons.back().enabled = key == "bar_transparency" or _state.get("has_video", false)
+	_buttons.back().enabled = key == "bar_transparency" or editing_picture_defaults() or _state.get("has_video", false)
 	_buttons.back().base_color = Color(TILE, 0)
 	_decoration(Vector2(width, g.thickness), Vector2(centre, y), MUTED)
 	var fill := _decoration(Vector2(width, g.thickness), Vector2(centre, y), ACCENT)
@@ -3430,7 +3569,7 @@ func _activate_depth_off(target: int) -> bool:
 
 ## The grade has something to apply to: the video, or in the photo menu the image on show.
 func _grade_target_ready() -> bool:
-	return _state.get("has_video", false)
+	return editing_picture_defaults() or _state.get("has_video", false)
 
 func _grade_page_needs_reset() -> bool:
 	var values: Dictionary = _state.get("grade_values", Grade.DEFAULTS)
@@ -3549,7 +3688,7 @@ func _set_adjustment_at(x: float) -> void:
 	refresh_values()
 
 func _activate_adjustment(target: int) -> void:
-	if screen_lock_ui.activate(target): return
+	if _adjustment == "screen" and screen_lock_ui.activate(target): return
 	_finish_adjustment()
 	if target == CLOSE:
 		dismiss()
@@ -3592,8 +3731,18 @@ func _activate_adjustment(target: int) -> void:
 	elif _adjustment == "screen" and target >= ROTATION_PRESET and target < ROTATION_PRESET + ROTATION_ANGLES.size() and _state.get("has_video", false) and int(_state.get("geometry", 0)) == 0 and not _state.get("screen_cinema", false):
 		adjustment_requested.emit("screen_rotation", ROTATION_ANGLES[target - ROTATION_PRESET])
 		adjustment_committed.emit()
-	elif _adjustment == "color_grade":
-		if target >= 410 and target < 410 + Grade.PRESETS.size():
+	elif editing_picture():
+		if target == PICTURE_CLOSE:
+			_adjustment = ""
+		elif target in [PICTURE_QUALITY_TAB, PICTURE_QUALITY_TAB + 1]:
+			_picture_tab = target - PICTURE_QUALITY_TAB
+			_picture_advanced = false
+		elif target == PICTURE_ADVANCED:
+			_picture_advanced = not _picture_advanced
+			_grade_page = 0
+		elif target == PICTURE_CLEAR and not editing_picture_defaults() and _state.get("picture_clear_available", false):
+			setting_requested.emit("clear_current_picture", true)
+		elif target >= 410 and target < 410 + Grade.PRESETS.size():
 			adjustment_requested.emit("grade_preset", Grade.PRESETS[target - 410])
 			adjustment_committed.emit()
 		elif target >= 430 and target < 433:

@@ -25,6 +25,7 @@ func _run() -> void:
 	check(Quality.load_output_choice(settings) == Quality.AUTO_OUTPUT, "Output width defaults to auto")
 	check(Quality.output_width(Quality.AUTO_OUTPUT, true) == 4096 and Quality.output_width(Quality.AUTO_OUTPUT, false) == 0, "Auto output follows tier")
 	check(Quality.output_width(0, true) == 0 and Quality.output_width(5760, true) == 5760, "Explicit output width is respected")
+	check(Quality.output_width(Quality.AUTO_OUTPUT, true, true) == 0 and Quality.output_width(4096, true, true) == 4096, "QIYU auto keeps the source width")
 	check(Quality.load_memory_choice(settings) == Quality.MEMORY_AUTO, "Memory mode defaults to auto")
 	check(not Quality.memory_saver(Quality.MEMORY_AUTO, false, 7757) and not Quality.memory_saver(Quality.MEMORY_AUTO, false, 0),
 		"Auto keeps standard memory on Quest 3 class RAM or when RAM is unknown")

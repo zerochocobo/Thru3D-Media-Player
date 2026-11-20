@@ -138,7 +138,6 @@ const WHATS_NEW := 37
 const VersionHistory := preload("res://scripts/version_history.gd")
 var unread_from := ""
 var release_notes := preload("res://scripts/release_notes_dialog.gd").new()
-var launch_browser: Callable = OS.shell_open
 var _about_page := 0 # app, credits
 var _video_settings_expanded := {}
 var _subtitle_settings_expanded := ""
@@ -2180,7 +2179,8 @@ func _rebuild_rows() -> void:
 				rows.append(position)
 				var outputs: Array = []
 				for option in [[Quality.AUTO_OUTPUT, "Auto"], [0, "Original size"], [5760, "6K"], [4096, "4K"]]:
-					outputs.append({"value": option[0], "label": option[1], "hint": Quality.OUTPUT_HINTS[option[0]]})
+					var hint: String = Quality.QIYU_OUTPUT_AUTO_HINT if option[0] == Quality.AUTO_OUTPUT and settings.get("qiyu", false) else Quality.OUTPUT_HINTS[option[0]]
+					outputs.append({"value": option[0], "label": option[1], "hint": hint})
 				var output_row := _choice_row("Output resolution", "output_width", int(settings.get("output_width", Quality.AUTO_OUTPUT)), outputs, true)
 				output_row.info = Quality.OUTPUT_INFO; rows.append(output_row)
 				var memories: Array = []
@@ -2327,7 +2327,7 @@ func _rebuild_rows() -> void:
 				else:
 					rows.append(_about_info("Thru3D Media Player", str(settings.get("version", ""))))
 					rows.append({"title": I18n.t("On-device version history"), "icon": "history", "version_history": true})
-					rows.append({"title": I18n.t("Latest updates on website"), "icon": "external_link", "online_history": true})
+					rows.append({"title": I18n.t("Latest updates on website"), "icon": "globe", "online_history": true})
 					rows.append(_about_info("FFSky Studio", "© 2026 FFSky Studio"))
 					rows.append(_about_info(I18n.t("Support"), DiagnosticLog.SUPPORT_EMAIL))
 					rows.append({"title": I18n.t("Report a problem"), "icon": "cloud", "report_problem": true})
@@ -2862,8 +2862,13 @@ func _choose(row: Dictionary) -> void:
 	if file_actions.select(row): return
 	if account_panel.choose(row): return
 	if row.has("online_history"):
-		status = "Could not open the browser" if launch_browser.call(VersionHistory.url(I18n.language)) != OK else ""
-		refresh(); return
+		if web_browser.supported():
+			_activate(NAV_BASE + Section.WEB)
+			web_browser.open(VersionHistory.url(I18n.language))
+		else:
+			status = "Could not open the browser"
+			refresh()
+		return
 	if row.has("version_history"):
 		_open_version_history(); return
 	if row.has("report_problem"):

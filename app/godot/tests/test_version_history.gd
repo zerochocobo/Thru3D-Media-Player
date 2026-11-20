@@ -2,9 +2,10 @@ extends SceneTree
 
 const History := preload("res://scripts/version_history.gd")
 const Menu := preload("res://scripts/library_menu.gd")
+const BrowserFixture := preload("res://tests/test_web_browser_panel.gd")
+const Channel := preload("res://scripts/distribution_channel.gd")
 var failures: Array[String] = []
 var checks := 0
-var opened: Array[String] = []
 
 const Reader := preload("res://scripts/release_notes_dialog.gd")
 
@@ -104,15 +105,31 @@ func _run() -> void:
 	root.add_child(main)
 	var menu: Menu = main.recent_menu
 	var reader := menu.release_notes
-	menu.launch_browser = func(link: String): opened.append(link); return OK
 	if not menu.visible: menu.toggle()
 	menu._activate(Menu.NAV_BASE + Menu.Section.SETTINGS)
 	menu._activate(Menu.TAB_BASE + Menu.ABOUT_TAB)
 	var offline := menu.rows.find_custom(func(r): return r.has("version_history"))
 	var online := menu.rows.find_custom(func(r): return r.has("online_history"))
 	check(offline >= 0 and online == offline + 1, "Two permanent About rows")
-	menu._activate(Menu.ROW_BASE + online)
-	check(opened == ["https://thru3d.com/changelog.html?lang=zh"] and menu.unread_from == "0.17.9", "Online opens latest in locale and preserves notice")
+	ray(menu, Menu.ROW_BASE + online)
+	check(menu.section == Menu.Section.SETTINGS and menu.tab == Menu.ABOUT_TAB and menu.status == "Could not open the browser" and not menu.web_browser.opened, "Unavailable browser leaves About visible with an error")
+	var original_channel: Variant = ProjectSettings.get_setting(Channel.KEY)
+	var original_platform := menu.platform
+	var bridge := BrowserFixture.Platform.new()
+	menu.attach_platform(bridge)
+	for channel in ["standard", "pico_cn_store", "quest_store"]:
+		ProjectSettings.set_setting(Channel.KEY, channel)
+		bridge.browser.url = ""
+		ray(menu, Menu.ROW_BASE + online)
+		menu.web_browser.tick()
+		check(menu.web_browser.active() and bridge.browser.url == "https://thru3d.com/changelog.html?lang=zh", channel + " opens localized changelog in the embedded browser")
+		check(menu.unread_from == "0.17.9" and not reader.opened, channel + " website preserves offline notice")
+		check(menu.navigate_back() and bridge.actions.back() == "back", channel + " Back uses embedded browser history")
+		menu._activate(Menu.NAV_BASE + Menu.Section.SETTINGS)
+		menu._activate(Menu.TAB_BASE + Menu.ABOUT_TAB)
+	ProjectSettings.set_setting(Channel.KEY, original_channel)
+	menu.attach_platform(original_platform)
+	bridge.free()
 	menu._activate(Menu.NAV_BASE + Menu.Section.RECENT)
 	reader.data_path = dir.path_join("missing.json")
 	ray(menu, Menu.WHATS_NEW)
@@ -121,7 +138,7 @@ func _run() -> void:
 	reader.data_path = History.DATA
 	ray(menu, Menu.WHATS_NEW)
 	check(reader.opened and reader.entries[reader.selected].version == "0.17.12" and reader.unread_versions.keys() == ["0.17.12","0.17.11","0.17.10"], "Three unread releases, latest selected, rest of history available")
-	check(menu.unread_from.is_empty() and reader.entries.back().version == "0.1.0" and opened.size() == 1, "Offline rendered content acknowledges interval once")
+	check(menu.unread_from.is_empty() and reader.entries.back().version == "0.1.0" and not menu.web_browser.opened, "Offline rendered content acknowledges interval once")
 	ray(menu, Reader.VERSION_BASE + 2)
 	check(reader.selected == 2 and reader.body_offset == 0 and reader.unread_versions.size() == 3, "Selecting another version resets body and preserves session dots")
 	check(reader.lines.size() > Reader.BODY_SIZE, "Long notes wrap across pages")

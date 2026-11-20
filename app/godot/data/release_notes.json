@@ -2,6 +2,138 @@
   "schema": 1,
   "entries": [
     {
+      "version": "0.18.5",
+      "date": "2026-11-20",
+      "title": {
+        "zh": "逐片画质调色与播放体验改进",
+        "zh_Hant": "逐片畫質調色與播放體驗改善",
+        "en": "Per-video picture controls and playback improvements",
+        "ja": "動画ごとの画質・色調整と再生の改善"
+      },
+      "items": [
+        {
+          "id": "picture-controls-popup",
+          "text": {
+            "zh": "播放器新增「画质调色」浮窗，可集中调整画质模式、锐度、超级分辨率、降噪和配色；播放设置中的「默认画面」用于调整全局默认值。",
+            "zh_Hant": "播放器新增「畫質調色」浮窗，可集中調整畫質模式、銳度、超級解析度、降噪和配色；播放設定中的「預設畫面」用於調整全域預設值。",
+            "en": "Open the new picture controls popup to adjust Picture Quality Mode, sharpness, Super Resolution, denoising and color. Default Picture in playback settings controls the global defaults.",
+            "ja": "新しい画質・色調整ポップアップで、画質モード、シャープネス、超解像、ノイズ除去、色をまとめて調整できます。再生設定の既定の画面設定から全体の初期値を変更できます。"
+          }
+        },
+        {
+          "id": "per-video-picture-settings",
+          "text": {
+            "zh": "支持为每个视频单独保存画质和调色，重新打开时恢复；可在浮窗底部清除本片设置。保存遵循逐片配置的隐私设置。",
+            "zh_Hant": "支援為每部影片分別儲存畫質和調色，再次開啟時還原；可在浮窗底部清除本片設定。儲存遵循逐片設定的隱私選項。",
+            "en": "Save picture quality and color settings separately for each video and restore them when reopening it. Clear the current video's settings from the popup footer. Saving follows your per-file privacy settings.",
+            "ja": "動画ごとに画質と色の設定を保存し、開き直したときに復元できます。ポップアップ下部から現在の動画の設定を消去できます。保存にはファイル別設定のプライバシー設定が適用されます。"
+          }
+        },
+        {
+          "id": "reuse-last-picture-settings",
+          "text": {
+            "zh": "新增「沿用上次画面设置」，开启后，没有独立设置的视频可沿用上一片的画面参数；视频自身保存的设置优先，上次参数仅在本次应用运行期间保留。",
+            "zh_Hant": "新增「沿用上次畫面設定」，開啟後，沒有獨立設定的影片可沿用上一片的畫面參數；影片本身儲存的設定優先，上次參數僅在本次應用程式執行期間保留。",
+            "en": "Enable Reuse Last Picture Settings to carry settings to videos without their own saved adjustments. A video's saved settings take priority. The previous settings are retained only for the current app session.",
+            "ja": "「前回の画面設定を使う」を有効にすると、個別設定のない動画に前の動画の設定を引き継げます。動画に保存された設定が優先され、前回の設定は今回のアプリ実行中のみ保持されます。"
+          }
+        },
+        {
+          "id": "bookmark-music-actions",
+          "text": {
+            "zh": "调整书签、撤销删除与音乐按钮的排位，减少悬浮入口重叠和误触。",
+            "zh_Hant": "調整書籤、復原刪除與音樂按鈕的位置，減少浮動入口重疊和誤觸。",
+            "en": "Reposition bookmark, undo-delete and music actions to reduce overlapping floating buttons and accidental clicks.",
+            "ja": "ブックマーク、削除の取り消し、音楽ボタンの配置を調整し、フローティングボタンの重なりや誤操作を減らしました。"
+          }
+        },
+        {
+          "id": "system-ime-repeat",
+          "text": {
+            "zh": "修复系统输入法每次按键或退格重复追加整框内容的问题。",
+            "zh_Hant": "修復系統輸入法每次按鍵或退格重複附加整框內容的問題。",
+            "en": "Fix system keyboard input and Backspace repeatedly appending the entire field contents.",
+            "ja": "システムキーボードで入力や削除を行うたびに、入力欄全体の内容が重複して追加される問題を修正しました。"
+          }
+        },
+        {
+          "id": "super-resolution-output-cap",
+          "text": {
+            "zh": "超级分辨率达到输出尺寸上限时按上限处理，避免直接放弃增强；信息页显示画质处理后的实际尺寸。",
+            "zh_Hant": "超級解析度達到輸出尺寸上限時依上限處理，避免直接放棄增強；資訊頁顯示畫質處理後的實際尺寸。",
+            "en": "Super Resolution now works up to the output size limit instead of giving up. The information page shows the actual processed picture size.",
+            "ja": "超解像が出力サイズ上限に達した場合、処理を中止せず上限まで適用します。情報ページには画質処理後の実際のサイズを表示します。"
+          }
+        },
+        {
+          "id": "silent-video-playback-fallback",
+          "text": {
+            "zh": "改善部分无音轨视频打不开的问题，硬件解码不兼容时自动尝试其他播放方式。",
+            "zh_Hant": "改善部分無音軌影片無法開啟的問題，硬體解碼不相容時自動嘗試其他播放方式。",
+            "en": "Improve playback of some videos without audio tracks by automatically trying another playback path when hardware decoding is incompatible.",
+            "ja": "音声トラックのない一部の動画が開けない問題を改善し、ハードウェアデコードに対応していない場合は別の再生方式を自動的に試みます。"
+          }
+        },
+        {
+          "id": "panorama-direction-steps",
+          "text": {
+            "zh": "全局和照片模式的全景背景朝向支持滑条调整及每次1度微调，并分别保存。",
+            "zh_Hant": "全域和照片模式的全景背景方向支援滑桿調整及每次1度微調，並分別儲存。",
+            "en": "Adjust panorama background direction with a slider and one-degree steps, saved separately for global and photo modes.",
+            "ja": "全体モードと写真モードのパノラマ背景の向きをスライダーと1度刻みで調整し、それぞれ保存できます。"
+          }
+        },
+        {
+          "id": "iso-title-screen-lock",
+          "text": {
+            "zh": "修复点击ISO光盘标题入口或关闭标题列表时误触屏幕锁的问题。",
+            "zh_Hant": "修復點選ISO光碟標題入口或關閉標題清單時誤觸螢幕鎖的問題。",
+            "en": "Fix ISO disc title controls accidentally toggling the screen lock when opening or closing the title list.",
+            "ja": "ISOディスクのタイトル一覧を開閉すると、誤ってスクリーンロックが切り替わる問題を修正しました。"
+          }
+        },
+        {
+          "id": "scene-menu-flicker",
+          "text": {
+            "zh": "修复视频播放期间场景菜单频繁重绘造成的按钮闪烁和卡顿。",
+            "zh_Hant": "修復影片播放期間場景選單頻繁重繪造成的按鈕閃爍和頓挫。",
+            "en": "Fix scene menu button flicker and stutter caused by frequent redraws during video playback.",
+            "ja": "動画再生中にシーンメニューが頻繁に再描画され、ボタンがちらついたり動作が引っかかったりする問題を修正しました。"
+          }
+        },
+        {
+          "id": "immersive-photo-navigation",
+          "text": {
+            "zh": "沉浸照片隐藏贴附在照片上的导航控件。",
+            "zh_Hant": "沉浸照片隱藏貼附在照片上的導覽控制項。",
+            "en": "Hide navigation controls attached to immersive photos.",
+            "ja": "没入型写真に貼り付けられたナビゲーション操作部を非表示にしました。"
+          }
+        },
+        {
+          "id": "about-embedded-browser",
+          "text": {
+            "zh": "「关于」中的官网更新记录入口改用播放器内置浏览器打开。",
+            "zh_Hant": "「關於」中的官網更新記錄入口改用播放器內建瀏覽器開啟。",
+            "en": "Open the website release notes from About in the built-in browser.",
+            "ja": "「アプリについて」の公式サイト更新履歴を内蔵ブラウザーで開くようにしました。"
+          }
+        },
+        {
+          "id": "qiyu-source-width",
+          "text": {
+            "zh": "奇遇运行时的自动输出宽度保留片源宽度，避免8K视频默认被限制为4096；手动选择的输出宽度仍优先。",
+            "zh_Hant": "奇遇執行環境的自動輸出寬度保留片源寬度，避免8K影片預設受限於4096；手動選擇的輸出寬度仍優先。",
+            "en": "On QIYU, automatic output width keeps the source width instead of capping 8K video at 4096. A manually selected width still takes priority.",
+            "ja": "QIYUでは自動出力幅で元動画の幅を維持し、8K動画が既定で4096に制限されるのを防ぎます。手動で選択した幅は引き続き優先されます。"
+          },
+          "scope": [
+            "qiyu"
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.18.4.1",
       "date": "2026-11-20",
       "title": {

@@ -1,6 +1,7 @@
 extends "res://scripts/ray_menu.gd"
 
-## All full photos share one attached control region and the existing XR quad pool.
+## Flat photos share one attached control region and the existing XR quad pool.
+const Geometry := preload("res://scripts/video_geometry.gd")
 const OPERATIONS := ["magazine_previous", "magazine_next", "magazine_single"]
 const PREVIOUS_IMAGE := 3
 const ROTATE_IMAGE := 4
@@ -14,13 +15,10 @@ var _state_key: Array = []
 var _single := false
 var _magazine := false
 var _return := false
-var _flat_photo := true
 var _enabled: Array[bool] = [false, false, false, false, false, false, false]
 var _photo_scale := 0.0
 var _entered_ms := -1
 var _last_near_ms := -1
-var _panorama_key := ""
-var _panorama_pose := Transform3D.IDENTITY
 
 func setup(host: Node3D) -> void:
 	app = host
@@ -38,7 +36,7 @@ func eligible() -> bool:
 	if not is_instance_valid(app): return false
 	if app.get("scenery_menu") and app.scenery_menu.visible: return false
 	var photo: Node3D = app.photo
-	return app.photo_active and photo.index >= 0 and photo.panel.visible and not photo.gallery.overview() \
+	return app.photo_active and photo.geometry == Geometry.Geometry.FLAT and photo.index >= 0 and photo.panel.visible and not photo.gallery.overview() \
 		and not photo.gallery.returning and not photo.inspect and app._input_focused() and not app._background_app_paused \
 		and not app.photo_menu.visible and not app.recent_menu.visible and not app.music_menu.visible \
 		and not (app.puzzle_game and app.puzzle_game.active)
@@ -51,23 +49,13 @@ func sync(now: int = -1) -> void:
 		return
 	_magazine = photo.magazine.active()
 	_return = photo.gallery.mode in [2, 3] and photo.gallery.focus >= 0
-	_flat_photo = photo.geometry == 0
-	var factor: float = photo.screen_scale if _flat_photo else 1.0
-	if _flat_photo:
-		_panorama_key = ""
-		# Content rolls about its centre; the row stays upright in the user's placement plane.
-		var pose: Transform3D = photo.global_transform * photo.flat_pose
-		var bottom := 0.0
-		for corner in 4:
-			bottom = minf(bottom, (pose.affine_inverse() * photo.panel.to_global(photo.screen_corner(corner))).y)
-		global_transform = pose * Transform3D(Basis.IDENTITY.scaled(Vector3.ONE * factor), Vector3(0, bottom - 0.13 * factor, 0.025 * factor))
-	else:
-		# Spherical photos have no bottom edge. Capture a stable, comfortable control plane.
-		var key := str([photo.local_uri, photo.geometry])
-		if key != _panorama_key:
-			_panorama_key = key
-			_panorama_pose = app.xr_camera.global_transform * Transform3D(Basis.IDENTITY, Vector3(0, -0.45, -1.5))
-		global_transform = _panorama_pose
+	var factor: float = photo.screen_scale
+	# Keep the row upright in the placement plane as the photo rotates.
+	var pose: Transform3D = photo.global_transform * photo.flat_pose
+	var bottom := 0.0
+	for corner in 4:
+		bottom = minf(bottom, (pose.affine_inverse() * photo.panel.to_global(photo.screen_corner(corner))).y)
+	global_transform = pose * Transform3D(Basis.IDENTITY.scaled(Vector3.ONE * factor), Vector3(0, bottom - 0.13 * factor, 0.025 * factor))
 	ray_max_distance = maxf(MAX_RAY_METRES, global_position.distance_to(app.xr_camera.global_position) + 2.0 * factor)
 	if not is_equal_approx(factor, _photo_scale):
 		_photo_scale = factor
@@ -76,17 +64,17 @@ func sync(now: int = -1) -> void:
 	var busy: bool = photo.loading or photo._presentation_pending or photo._transition_active or _moving_image() \
 		or photo.gallery._swap_phase != 0 or (photo._directory_reorder and photo.directory.loading)
 	var position: int = photo.pending_index if photo.pending_index >= 0 else photo.index
-	var loop: bool = (_flat_photo or photo.gallery.mode != 0) and photo.queue_complete
+	var loop: bool = photo.queue_complete
 	var can_previous: bool = position > 0 if _magazine else photo.queue.size() > 1 and (loop or position > 0)
 	var can_next: bool = position >= 0 and photo.magazine.target(1) < photo.queue.size() if _magazine \
 		else photo.queue.size() > 1 and (loop or (position >= 0 and position + 1 < photo.queue.size()))
 	var key: Array = [photo.index, photo.queue.size(), busy, photo.magazine.single(photo.index), I18n.language,
-		_magazine, _return, _flat_photo, can_previous, can_next, photo.gallery.mode]
+		_magazine, _return, can_previous, can_next, photo.gallery.mode]
 	if key != _state_key:
 		_state_key = key
 		_single = key[3]
 		_enabled = [not busy and photo.index > 0, not busy and photo.index + 1 < photo.queue.size(), not busy,
-			not busy and can_previous, not busy and _flat_photo, not busy and can_next, not _moving_image()]
+			not busy and can_previous, not busy, not busy and can_next, not _moving_image()]
 		refresh()
 	if now < 0: now = Time.get_ticks_msec()
 	var near := false
@@ -113,19 +101,8 @@ func _rays() -> Array:
 func _near_photo_or_controls(origin: Vector3, direction: Vector3) -> bool:
 	if not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.000001: return false
 	var photo: Node3D = app.photo
-	if _flat_photo:
-		var local_origin: Vector3 = photo.panel.to_local(origin)
-		if local_origin.z > 0 and photo.screen_hit(origin, direction) != null: return true
-	else:
-		var start: Vector3 = photo.panel.to_local(origin)
-		var ray: Vector3 = (photo.panel.global_basis.inverse() * direction).normalized()
-		var b: float = start.dot(ray)
-		var discriminant: float = b * b - start.length_squared() + photo.SPHERE_RADIUS * photo.SPHERE_RADIUS
-		if discriminant >= 0:
-			var distance: float = -b + sqrt(discriminant)
-			var hit: Vector3 = start + ray * distance
-			if distance > 0 and (photo.geometry == 3 or (photo.geometry == 1 and hit.z <= 0) \
-				or (photo.geometry == 2 and hit.angle_to(Vector3.FORWARD) <= deg_to_rad(photo.fisheye_fov * 0.5))): return true
+	var local_origin: Vector3 = photo.panel.to_local(origin)
+	if local_origin.z > 0 and photo.screen_hit(origin, direction) != null: return true
 	# Independent wake region: hidden RayMenu buttons deliberately cannot be hit.
 	var inverse := global_transform.affine_inverse()
 	var start: Vector3 = inverse * origin
@@ -184,7 +161,7 @@ func _draw() -> void:
 	_clear_layout(); _set_backdrop(Vector2.ONE * 0.001); _backdrop.visible = false
 	var shift := -0.075 if _return else 0.0
 	_action(PREVIOUS_IMAGE, "previous", Vector2(shift - 0.15, 0), "Previous image")
-	if _flat_photo: _action(ROTATE_IMAGE, "photo_rotate", Vector2(shift, 0), "Rotate clockwise")
+	_action(ROTATE_IMAGE, "photo_rotate", Vector2(shift, 0), "Rotate clockwise")
 	_action(NEXT_IMAGE, "next", Vector2(shift + 0.15, 0), "Next image")
 	if _return: _action(RETURN_TO_WALL, "up", Vector2(0.275, 0), "Back to photo wall" if app.photo.gallery.mode == 2 else "Back to memory wall")
 	if not _magazine: return

@@ -10,6 +10,30 @@ func wait_for(controller: Node) -> void:
 	var deadline:=Time.get_ticks_msec()+20000
 	while (controller.library.busy or not controller._pending.is_empty() or not controller._delete.is_empty()) and Time.get_ticks_msec()<deadline: await process_frame
 	check(not controller.library.busy and controller._pending.is_empty(),"Scene jobs finish")
+
+func drag_direction(app: Node, mode: String, degrees: int) -> void:
+	var menu: Node3D = app.scenery_menu
+	menu.open(mode)
+	menu._activate(menu.ADJUST)
+	var rail: Dictionary = menu.choices.sliders.values()[0]
+	var node: Node3D = rail.node
+	var ray := -node.global_basis.z
+	var section: String = app.scenery.library.mode_definition(mode).section
+	var saved := ConfigFile.new()
+	saved.load(app.settings_path)
+	var original: float = saved.get_value(section, "background_yaw")
+	var start := node.to_global(Vector3(rail.left + rail.width * original / 359.0, 0, 1))
+	var end := node.to_global(Vector3(rail.left + rail.width * degrees / 359.0, 0, 1))
+	menu.press_pointer("left_hand", start, ray, true)
+	menu.update_pointer("left_hand", end, ray, true)
+	check(is_equal_approx(app.display.environment.sky_rotation.y, PI + deg_to_rad(degrees)), mode + " previews panorama rotation while dragging")
+	saved.load(app.settings_path)
+	check(saved.get_value(section, "background_yaw") == original and app.scenery.library.bindings[mode].yaw == original, mode + " keeps its saved angle during preview")
+	menu.release_pointer("left_hand", end, ray, true)
+	saved.load(app.settings_path)
+	check(saved.get_value(section, "background_yaw") == degrees and app.scenery.library.bindings[mode].yaw == degrees, mode + " saves the released angle")
+	menu.dismiss()
+
 func _run() -> void:
 	var directory:=ProjectSettings.globalize_path("res://../../build/output/scenery-integration-")+str(Time.get_ticks_usec())
 	DirAccess.make_dir_recursive_absolute(directory)
@@ -26,6 +50,8 @@ func _run() -> void:
 	check(main._active_menu()==main.scenery_menu,"Global footer owns modal input")
 	check(not main.recent_menu.visible,"Parent footer is hidden")
 	check(main.scenery_menu.mode=="global","Video/library defaults to global scope")
+	var menu_state: Dictionary=scenery.snapshot("global")
+	check(not menu_state.has("voice_manager") and not menu_state.has("subtitle_defaults") and menu_state.has("background"),"The scene menu state leaves out what moves with playback")
 	main._navigate_back()
 	check(main.recent_menu.visible and main.recent_menu.rows==before,"Close restores exact parent content")
 	var source:=directory.path_join("pano.png")
@@ -104,6 +130,7 @@ func _run() -> void:
 		var path: String=str(descriptor[1]).path_join("custom_scenery_test_%d.image"%Time.get_ticks_usec())
 		DirAccess.copy_absolute(source,path); legacy_paths.append(path)
 		legacy_config.set_value(descriptor[0],"background","custom")
+		legacy_config.set_value(descriptor[0],"background_yaw",45 if descriptor[0]=="appearance" else 315)
 		legacy_config.set_value(descriptor[0],"custom_path",path)
 		legacy_config.set_value(descriptor[0],"custom_title","Legacy")
 	var legacy_settings:=directory.path_join("legacy.cfg"); legacy_config.save(legacy_settings)
@@ -117,10 +144,16 @@ func _run() -> void:
 	check(legacy_paths.all(func(path): return FileAccess.file_exists(path)),"Migration keeps original portable copies")
 	legacy_config.load(legacy_settings)
 	check(legacy_config.get_value("appearance","background_asset_id")==legacy_config.get_value("photo_background","background_asset_id"),"Stable asset references persist per mode")
+	check(migrated.background.yaw == 45 and migrated.photo_background.yaw == 315, "Existing 45-degree presets restore in both modes")
+	drag_direction(migrated, "global", 73)
+	migrated.photo_active = true
+	migrated._update_background()
+	drag_direction(migrated, "image", 214)
 	migrated.free(); await process_frame
 	var restored:=Main.new(); restored.settings_path=legacy_settings; root.add_child(restored)
 	await wait_for(restored.scenery)
 	check(restored.background.choice=="custom" and restored.photo_background.choice=="custom","Catalog and mode bindings restore across restart")
+	check(restored.background.yaw == 73 and restored.photo_background.yaw == 214, "Each mode restores its fine angle for the shared panorama after restart")
 	restored.free(); await process_frame
 	for path in legacy_paths: DirAccess.remove_absolute(path)
 	print("Scenery integration: %d checks, %d failures"%[checks,failures.size()]); quit(0 if failures.is_empty() else 1)

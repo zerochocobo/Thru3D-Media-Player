@@ -84,6 +84,7 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
     private val bufferIds = java.util.Collections.synchronizedSet(HashSet<Long>())
     @Volatile private var drawMs = 0.0
     @Volatile private var lastSize = ""
+    @Volatile private var outputSize = 0 to 0 // what the last frame was drawn at, for the info page
     @Volatile private var lastError = ""
     @Volatile private var closed = false
     @Volatile private var delayMs = DEFAULT_DELAY_MS
@@ -167,31 +168,10 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
         var outH = if (outW == w) h else (h.toLong() * outW / w).toInt() and 1.inv()
         // Super resolution: picture quality mode enlarges a low-resolution source; the draw then runs EASU
         // before RCAS. Never past the output cap, which is there for this headset's memory.
-        if (outW == w) enlargedSize(w, h)?.takeIf { maxOutputWidth <= 0 || it.first <= maxOutputWidth }?.let { outW = it.first; outH = it.second }
+        if (outW == w && quality) picture?.let { enlargedSize(w, h, it, maxOutputWidth) }?.let { outW = it.first; outH = it.second }
         scaledDown = outW < w; enlarged = outW > w
+        outputSize = outW to outH
         return intArrayOf(w, h, outW, outH)
-    }
-
-    /** The size super resolution shows a [w] x [h] frame at, or null to leave it (mpv_video_display.gd's
-     * upscale_size holds the same rule for the menu). Each eye's picture grows to fit the box for its kind:
-     * a flat picture 4K (its long side 3840, as many pixels as 3840 x 2160), a VR180 eye 2880 x 2880, a
-     * VR360 eye 5760 x 2880; and the whole frame stays within the pixels of an 8K VR frame, which lets a
-     * 3840 x 3840 top-bottom 360 picture (a common older format) reach 5760 x 5760. */
-    private fun enlargedSize(w: Int, h: Int): Pair<Int, Int>? {
-        val look = picture ?: return null
-        if (!quality || look.size < 17 || look[13] < 0.5f) return null
-        val moderate = look[13] < 1.5f // twice the size at most, where EASU is at its best
-        val eyeW = w.toDouble() / (if (look[15] > 1.5f) 2 else 1)
-        val eyeH = h.toDouble() / (if (look[16] > 1.5f) 2 else 1)
-        var scale = when (look[14].toInt()) {
-            0 -> minOf(FLAT_LONG / maxOf(eyeW, eyeH), Math.sqrt(FLAT_PIXELS / (eyeW * eyeH)))
-            1 -> minOf(VR180_EYE / eyeW, VR180_EYE / eyeH)
-            else -> minOf(VR360_EYE_WIDTH / eyeW, VR360_EYE_HEIGHT / eyeH)
-        }
-        scale = minOf(scale, Math.sqrt(FRAME_PIXELS / (w.toDouble() * h)))
-        if (moderate) scale = minOf(scale, 2.0)
-        if (scale < MIN_ENLARGEMENT) return null
-        return (Math.round(w * scale).toInt() and 1.inv()) to (Math.round(h * scale).toInt() and 1.inv())
     }
 
     /** Memory saver: packs [image] into a free slot, returns its buffer to the decoder (the newest
@@ -382,6 +362,7 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
     override fun stats(): JSONObject = JSONObject().put("arrived", arrived.get()).put("drawn", drawn.get()).put("failed", failed.get())
         .put("early", early.get()).put("held_limit", heldLimit).put("compact", compact).put("packed_slots", packedSlots).put("skipped", skipped.get()).put("max_fps", maxFps).put("hold", hold).put("delay_ms", delayMs).put("blend_delay_ms", blendDelayMs).put("presented", presented)
         .put("distinct_buffers", bufferIds.size).put("draw_ms", drawMs).put("size", lastSize).put("error", lastError)
+        .put("output_width", outputSize.first).put("output_height", outputSize.second)
         .put("gpu_ms", gpuMs).put("scaled_down", scaledDown).put("enlarged", enlarged).put("quality", quality).put("deep", deep).put("sharpen", strength.toDouble()).put("budget_ms", budgetMs)
         .put("window_degrees", halfDegrees.toDouble()).put("focus", focus?.let { "%.3f,%.3f".format(it[0], it[1]) } ?: "")
         .put("data_space", windowDataSpace).put("source_data_space", sourceDataSpace)
@@ -448,6 +429,30 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
         private const val VR360_EYE_HEIGHT = 2880.0
         private const val FRAME_PIXELS = 8192.0 * 4096.0
         private const val MIN_ENLARGEMENT = 1.15 // less than this is not worth a second pass
+
+        /** The size super resolution shows a [w] x [h] frame at under the settings [look], or null to leave
+         * it (mpv_video_display.gd's upscale_size holds the same rule for the menu). Each eye's picture grows
+         * to fit the box for its kind: a flat picture 4K (its long side 3840, as many pixels as 3840 x 2160),
+         * a VR180 eye 2880 x 2880, a VR360 eye 5760 x 2880; and the whole frame stays within the pixels of an
+         * 8K VR frame, which lets a 3840 x 3840 top-bottom 360 picture (a common older format) reach 5760 x 5760.
+         * It stops at [maxWidth] (the output cap, 0: none) rather than giving up there. */
+        internal fun enlargedSize(w: Int, h: Int, look: FloatArray, maxWidth: Int): Pair<Int, Int>? {
+            if (look.size < 17 || look[13] < 0.5f || w <= 0 || h <= 0) return null
+            val moderate = look[13] < 1.5f // twice the size at most, where EASU is at its best
+            val eyeW = w.toDouble() / (if (look[15] > 1.5f) 2 else 1)
+            val eyeH = h.toDouble() / (if (look[16] > 1.5f) 2 else 1)
+            var scale = when (look[14].toInt()) {
+                0 -> minOf(FLAT_LONG / maxOf(eyeW, eyeH), Math.sqrt(FLAT_PIXELS / (eyeW * eyeH)))
+                1 -> minOf(VR180_EYE / eyeW, VR180_EYE / eyeH)
+                else -> minOf(VR360_EYE_WIDTH / eyeW, VR360_EYE_HEIGHT / eyeH)
+            }
+            scale = minOf(scale, Math.sqrt(FRAME_PIXELS / (w.toDouble() * h)))
+            if (moderate) scale = minOf(scale, 2.0)
+            if (maxWidth > 0) scale = minOf(scale, maxWidth.toDouble() / w)
+            if (scale < MIN_ENLARGEMENT) return null
+            return (Math.round(w * scale).toInt() and 1.inv()) to (Math.round(h * scale).toInt() and 1.inv())
+        }
+
         // android.hardware.DataSpace bit fields.
         private const val STANDARD_MASK = 63 shl 16
         private const val TRANSFER_MASK = 31 shl 22

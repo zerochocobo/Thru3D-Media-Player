@@ -1,8 +1,8 @@
 extends RefCounted
 ## Presentation-only adapter: existing slider/choice code and numeric ranges stay unchanged.
 const Guard := preload("res://scripts/screen_edit_lock.gd")
-const TOGGLE := 998100
-const SAVE := 998101
+const TOGGLE := 618
+const SAVE := 619
 const TIP := "Unlock to adjust"
 var menu: Node3D
 var flash_until := 0

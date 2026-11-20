@@ -65,7 +65,9 @@ func shown(menu: Node3D, target: int) -> bool:
 func _check_disc_menu(video: Node3D, host: Host, menu: Node3D, uri: String) -> void:
 	host.titles = report(100); video.disc.poll(host, 7, 30000)
 	check(video.disc.menu_available(), "An HDMV top menu can be played")
-	menu.disc_titles.opened = true; menu.refresh()
+	check(click(menu, Menu.MODE) and menu._mode_open, "Open the video mode popup during ISO playback")
+	check(click(menu, TitlePanel.BUTTON) and menu.disc_titles.opened and not menu._mode_open,
+		"The disc icon switches from video modes to the title list for Blu-ray navigation")
 	check(menu._buttons.any(func(button): return button.target == TitlePanel.MENU_ROW), "The disc menu leads the title list")
 	host.calls.clear()
 	check(click(menu, TitlePanel.MENU_ROW) and host.calls.has(["disc", -2]) and video.disc.menu_session and video.disc.extra(),
@@ -204,6 +206,7 @@ func _run() -> void:
 	var menu := Menu.new()
 	menu.state_provider = main._menu_state
 	menu.setting_requested.connect(main._on_player_setting)
+	menu.adjustment_requested.connect(main._on_playback_adjustment)
 	root.add_child(menu)
 	menu.set_process(false)
 	main.player_menu = menu
@@ -224,6 +227,14 @@ func _run() -> void:
 	check(menu.navigate_back() and not menu.disc_titles.opened, "Back closes the title list")
 	menu.refresh()
 	check(not menu.disc_titles.opened, "The list does not reopen by itself for the same disc")
+	for locked in [false, true]:
+		check(click(menu, 11) and click(menu, Menu.SCREEN_SETTINGS), "Open screen settings above the ISO playback bar")
+		if locked:
+			check(click(menu, Menu.ScreenLockMenu.TOGGLE) and main.screen_edit_lock.locked(), "The settings switch locks the screen during ISO playback")
+		check(click(menu, TitlePanel.BUTTON) and menu.disc_titles.opened and main.screen_edit_lock.locked() == locked,
+			"The disc icon opens the title list from screen settings and preserves the lock")
+		check(click(menu, TitlePanel.CLOSE) and not menu.disc_titles.opened and main.screen_edit_lock.locked() == locked
+			and not main.settings.has_section_key("screen", "default_view"), "Closing the title list preserves the lock and saved screen settings")
 	check(click(menu, TitlePanel.BUTTON) and menu.disc_titles.opened, "The button reopens the list")
 	host.calls.clear()
 	check(click(menu, TitlePanel.ROW + 1) and host.calls.has(["disc", 201]) and host.calls.any(func(call): return call[0] == "open" and call[1] == uri and call[2] == 0),

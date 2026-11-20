@@ -4,6 +4,22 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.18.5 — 2026-11-20
+
+- Open the new picture controls popup to adjust Picture Quality Mode, sharpness, Super Resolution, denoising and color. Default Picture in playback settings controls the global defaults.
+- Save picture quality and color settings separately for each video and restore them when reopening it. Clear the current video's settings from the popup footer. Saving follows your per-file privacy settings.
+- Enable Reuse Last Picture Settings to carry settings to videos without their own saved adjustments. A video's saved settings take priority. The previous settings are retained only for the current app session.
+- Reposition bookmark, undo-delete and music actions to reduce overlapping floating buttons and accidental clicks.
+- Fix system keyboard input and Backspace repeatedly appending the entire field contents.
+- Super Resolution now works up to the output size limit instead of giving up. The information page shows the actual processed picture size.
+- Improve playback of some videos without audio tracks by automatically trying another playback path when hardware decoding is incompatible.
+- Adjust panorama background direction with a slider and one-degree steps, saved separately for global and photo modes.
+- Fix ISO disc title controls accidentally toggling the screen lock when opening or closing the title list.
+- Fix scene menu button flicker and stutter caused by frequent redraws during video playback.
+- Hide navigation controls attached to immersive photos.
+- Open the website release notes from About in the built-in browser.
+- On QIYU, automatic output width keeps the source width instead of capping 8K video at 4096. A manually selected width still takes priority.
+
 ## 0.18.4.1 — 2026-11-20
 
 - Fix the screen being pinned automatically and becoming impossible to drag when entering an imported scene. The default placement only sets its starting position; pinning is enabled by the user.

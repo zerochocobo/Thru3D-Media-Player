@@ -42,11 +42,15 @@ func pointer_surfaces(menu: Node3D, name: String) -> void:
 
 func upper_check(menu: Node3D, surface: Node3D, eye: Vector3, name: String) -> void:
 	var rect: Rect2 = surface.get_meta("menu_surface_bounds")
+	var anchor: Vector3 = menu.panel_centre()
+	if name == "picture":
+		rect = menu._picture_panel_bounds
+		anchor.x += Player.PICTURE_PANEL_X
 	var centre := Vector3(rect.get_center().x, rect.get_center().y, 0)
-	var base := menu.to_global(menu.panel_centre())
+	var base := menu.to_global(anchor)
 	check(faces(surface, centre, eye), name + " faces the eye at its own centre")
 	check(absf(base.distance_to(eye) - surface.to_global(centre).distance_to(eye)) < 0.0001, name + " shares the transport's radius")
-	var top := menu.to_global(Vector3(0, menu._bar_bounds().end.y, 0)) - eye
+	var top := menu.to_global(Vector3(anchor.x, menu._bar_bounds().end.y, 0)) - eye
 	var bottom := surface.to_global(Vector3(centre.x, rect.position.y, 0)) - eye
 	check(top.normalized().cross(bottom.normalized()).dot(menu.global_basis.x) > 0.01, name + " leaves an angular gap above floating actions")
 	check(menu.global_basis.z.angle_to(surface.global_basis.z) > 0.1, name + " has a separate inclination")
@@ -66,7 +70,7 @@ func run() -> void:
 			check(menu.to_global(menu.panel_centre()).is_equal_approx(centre) and faces(menu, menu.panel_centre(), head.origin), "Default transport keeps its centre and faces the viewer")
 			check(absf(menu.global_basis.x.dot(head.basis.y if following else Vector3.UP)) < 0.00001, "Roll follows the selected reference frame")
 			var bar := menu.global_transform
-			for mode in ["settings", "settings-alpha", "screen", "color_grade", "stereo_view", "modes", "subtitles", "audio", "narration", "bookmarks", "error"]:
+			for mode in ["settings", "settings-alpha", "screen", "picture", "stereo_view", "modes", "subtitles", "audio", "narration", "bookmarks", "error"]:
 				state.narration_available = mode == "narration"
 				state.narration_enabled = true; state.narration_resolved_language = "zh"; state.narration_voice = "Yuewen"
 				state.narration_sources = [{"value": -1, "label": "Follow current subtitles"}, {"value": 1, "label": "Chinese"}, {"value": 2, "label": "English"}]
@@ -75,7 +79,8 @@ func run() -> void:
 				state.geometry = 1 if mode == "settings-alpha" else 0
 				match mode:
 					"settings", "settings-alpha": menu.section = 1
-					"screen", "color_grade", "stereo_view": menu._adjustment = mode
+					"screen", "stereo_view": menu._adjustment = mode
+					"picture": menu._open_picture_controls(false)
 					"modes": menu._mode_open = true
 					"subtitles": menu._subtitle_open = true
 					"audio": menu._audio_open = true; menu._audio_source = str(state.source_uri); menu.choices.opened = "audio_track"
@@ -88,6 +93,11 @@ func run() -> void:
 				if menu._popup_surfaces.is_empty(): continue
 				var surface: Node3D = menu._popup_surfaces[0]
 				upper_check(menu, surface, head.origin, mode)
+				if mode == "picture":
+					var popup_centre: Vector2 = menu._picture_panel_bounds.get_center()
+					var world_centre := surface.to_global(Vector3(popup_centre.x, popup_centre.y, 0))
+					var right_offset := menu.to_local(world_centre).x
+					check(right_offset > 0.10 and right_offset < 0.40, "Picture settings sit slightly right of centre")
 				check(menu.global_transform.is_equal_approx(bar), "Opening " + mode + " keeps the transport still")
 				for item in menu._buttons:
 					if not item.enabled or not surface.is_ancestor_of(item.node): continue

@@ -20,4 +20,19 @@ inline bool layer_video_chain_failed(bool layer, bool software_layer, bool error
     return layer && !software_layer && error && prefix == "cplayer" &&
         message.find("Could not initialize video chain.") != std::string_view::npos;
 }
+
+// MediaCodec refused the stream (H.264 High 10 on Quest) and MPV decodes it in software:
+// frames the layer's decoder surface cannot take.
+inline bool layer_software_decoder(bool layer, bool software_layer, std::string_view prefix,
+                                   std::string_view message) {
+    return layer && !software_layer && prefix == "vd" &&
+        message.find("Using software decoding.") != std::string_view::npos;
+}
+
+// A file with no audio has nothing left once its software frames are refused: it ends as
+// "nothing to play" before the video chain error or a snapshot moves it off the layer.
+inline bool layer_end_is_software_fallback(bool layer, bool software_layer, bool software_decoder,
+                                           bool nothing_to_play) {
+    return layer && !software_layer && software_decoder && nothing_to_play;
+}
 }

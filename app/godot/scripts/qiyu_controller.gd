@@ -15,3 +15,5 @@ static var page_decode := true
 
 static func register(platform: Object) -> void:
 	runtime = PlatformMethods.supports(platform, "video_layer_qiyu_passthrough") and bool(platform.video_layer_qiyu_passthrough())
+	# System screenshots of the app come out black on QIYU (2026-11-20): log what a capture sees.
+	if runtime and PlatformMethods.supports(platform, "capture_probe_start"): platform.capture_probe_start()

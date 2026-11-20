@@ -148,16 +148,19 @@ func _custom_rows(everywhere: bool = false) -> Array:
 
 ## After a scene file is picked: the main page, where its card leads the viewer's scenes.
 func show_added_scene() -> void:
+	choices.reset()
 	mode="global"; view="scene"; modal=""; bulk=false; selected.clear(); page=0; _followed=""
 	refresh()
 
 ## Asked from the stance row under any menu: straight to the confirmation, over the scene's own page.
 func ask_entry() -> void:
-	mode="global"; view="adjust"; modal="entry"; bulk=false; selected.clear(); choices.reset(); refresh()
+	choices.reset()
+	mode="global"; view="adjust"; modal="entry"; bulk=false; selected.clear(); refresh()
 
 ## Asked from the shortcut beside the stance button: the settings of the scene in use.
 func show_adjust() -> void:
-	mode="global"; view="adjust"; modal=""; bulk=false; selected.clear(); choices.reset(); refresh()
+	choices.reset()
+	mode="global"; view="adjust"; modal=""; bulk=false; selected.clear(); refresh()
 
 ## What is being done to the scene on its way in, in the viewer's language.
 func _stage_text() -> String:
@@ -213,6 +216,14 @@ func _danger(target: int,text: String,centre: Vector2,size: Vector2,enabled: boo
 func _ready() -> void:
 	super()
 	choices.changed.connect(_choice_changed)
+	choices.previewed.connect(_choice_previewed)
+
+func _choice_previewed(key: String, value: Variant) -> void:
+	if key == "background_yaw":
+		var slider: Dictionary = choices.sliders.get(choices.capture.target, {})
+		if slider.is_empty(): return
+		composition_nodes_changed.emit([slider.node])
+		command.emit("preview_yaw", {"mode": mode, "value": value})
 
 func _choice_changed(key: String,value: Variant) -> void:
 	if view == "beach_screen" and _state.get("screen_edit_locked", false): command.emit("screen_lock_notice", ""); return
@@ -228,8 +239,9 @@ func begin_beach_screen(head: Transform3D) -> void:
 	choices.reset(); view="beach_screen"; _notice=""; refresh()
 
 func open(value: String) -> void:
+	choices.reset()
 	mode = value if library.valid_mode(value) else "global"
-	view = "scene"; page = 0; modal = ""; bulk = false; selected.clear(); choices.reset(); _notice=""
+	view = "scene"; page = 0; modal = ""; bulk = false; selected.clear(); _notice=""
 	_help_return=""; _issue_index=0; _locate=true
 	visible = true; refresh()
 
@@ -264,7 +276,7 @@ func allows_playback_sticks() -> bool: return false
 
 func navigate_back() -> bool:
 	if editor.active(): editor.cancel(); return true
-	if not choices.opened.is_empty(): choices.reset()
+	if not choices.capture.is_empty() or not choices.opened.is_empty(): choices.reset()
 	elif modal=="requirements": modal=_help_return; _help_return=""
 	elif modal=="issues": modal=""
 	elif modal=="add": modal=""
@@ -772,7 +784,8 @@ func _draw_adjust() -> void:
 		_button(BEACH_SCREEN,I18n.t("Screen placement"),Vector2(-.22,_bottom+.13),Vector2(.46,.075),bool(_state.get("cinema_ready",false)))
 		_button(CURRENT,I18n.t("Return to start"),Vector2(.44,_bottom+.13),Vector2(.46,.075),bool(_state.get("cinema_ready",false)))
 	elif choice not in ["dark","passthrough"]:
-		rows=[{"key":"background_yaw","value":_state.get("yaw",0),"choices":range(0,360,45).map(func(x): return {"value":x,"label":str(x)+"°"})},
+		rows=[{"key":"background_yaw", "value":_state.get("yaw", 0), "slider":true, "span":Vector3(0, 359, 1),
+			"unit":"°", "decimals":0, "nudge_step":1, "nudge_sides":true, "wrap":true, "ticks":range(0, 360, 45)},
 			{"key":"background_brightness","value":_state.get("brightness",1.0),"choices":[{"value":.5,"label":"50%"},{"value":.75,"label":"75%"},{"value":1.0,"label":"100%"},{"value":1.25,"label":"125%"}]}]
 	if not _scene_active() and choice=="cinema": names=["Cinema lighting","Cinema interaction","Viewing brightness","Screen ambient light"]
 	elif not _scene_active() and choice=="private_beach": names=["Time of day","Cinema interaction","Screen ambient light"]

@@ -38,7 +38,7 @@ func _run() -> void:
 	check(not menu._buttons.any(func(item): return item.target in [menu.FREE_MOVEMENT,menu.CINEMA_LIGHTS]),"Cinema shortcuts leave the shared footer")
 	tap(menu,menu.ADJUST)
 	check(menu.view=="adjust","Scene adjustment opens by ray")
-	check(target(menu,"background_yaw",null,"open")<0,"Cinema has no panorama direction field")
+	check(target(menu,"background_yaw",null,"slider")<0,"Cinema has no panorama direction field")
 	check(target(menu,"cinema_interaction","move")>=0,"Movement lives in scene adjustments")
 	check(target(menu,"cinema_screen_light",false)>=0,"Screen light is an independent switch")
 	for level in ["soft","dim","low"]:

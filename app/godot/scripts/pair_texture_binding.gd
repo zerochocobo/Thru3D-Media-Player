@@ -41,6 +41,9 @@ var enhance_expected := false
 func enhanced() -> bool:
 	return _enhanced
 
+func enhanced_size() -> Vector2i:
+	return _enhanced_size
+
 ## Shows the plugin's texture [name] of [size] in the bound frame's place.
 func show_enhanced(name: int, size: Vector2i) -> bool:
 	if not material or layer or name <= 0: return false

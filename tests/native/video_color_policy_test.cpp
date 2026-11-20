@@ -35,5 +35,17 @@ int main() {
             check(!can_export_decoder_image(request, redraw, rotation, hardware, true),
                   "Conversion must not export an unconverted image");
         }
+    // A layer file MediaCodec refuses: the software decoder is named in MPV's log, and a file with
+    // nothing else to play ends as nothing to play; that end moves it off the layer.
+    using quest::layer_software_decoder;
+    using quest::layer_end_is_software_fallback;
+    check(layer_software_decoder(true, false, "vd", "Using software decoding."), "The layer notes MPV's software decoder");
+    check(!layer_software_decoder(true, true, "vd", "Using software decoding."), "A software layer session expects it");
+    check(!layer_software_decoder(false, false, "vd", "Using software decoding."), "The eye buffers take software frames");
+    check(!layer_software_decoder(true, false, "cplayer", "Using software decoding."), "Only the decoder's own line counts");
+    check(layer_end_is_software_fallback(true, false, true, true), "A silent software file on the layer falls back");
+    check(!layer_end_is_software_fallback(true, false, false, true), "Nothing to play with a hardware decoder stays a failure");
+    check(!layer_end_is_software_fallback(true, false, true, false), "Other errors stay failures");
+    check(!layer_end_is_software_fallback(false, false, true, true), "The eye buffers have nowhere to fall back to");
     std::cout << "Video color policy checks=" << checks << " failures=0\n";
 }

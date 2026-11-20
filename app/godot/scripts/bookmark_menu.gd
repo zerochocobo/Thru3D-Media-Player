@@ -2,7 +2,6 @@ extends RefCounted
 ## Layout and trigger ownership for timestamps. All requests carry the captured media scope.
 const ADD := 2000
 const LIST := 2001
-const UNDO := 2002
 const CLOSE := 2003
 const UP := 2004
 const DOWN := 2005
@@ -119,6 +118,9 @@ func _loop_action(operation: String, payload: Dictionary, media_scope: String) -
 func _scope() -> String:
 	return str(menu._state.get("bookmark_scope", ""))
 
+func list_visible() -> bool:
+	return not menu._state.get("bookmarks", []).is_empty() or menu._state.get("bookmark_undo", false)
+
 func draw() -> void:
 	if scope != _scope():
 		reset(); notice = ""; scope = _scope()
@@ -130,12 +132,11 @@ func draw() -> void:
 	menu._glyph(ADD, "bookmark_add", Vector2(-0.22, 0.025), 0.06,
 		menu._state.get("bookmark_ready", false) and menu._seek_hand.is_empty(), menu.I18n.t("Add bookmark"))
 	var all: Array = menu._state.get("bookmarks", [])
-	if not all.is_empty():
+	if list_visible():
 		menu._round(LIST, "bookmark", Vector2(-0.42, 0.215), 0.08, has_video, false, menu.I18n.t("Bookmarks"))
-		menu._label(str(all.size()), Vector3(-0.375, 0.245, 0.004), 13)
-	if menu._state.get("bookmark_undo", false):
-		menu._round(UNDO, "undo", Vector2(0.42, 0.215), 0.08, true, false, menu.I18n.t("Undo delete"))
-	if Time.get_ticks_msec() < notice_until:
+		if not all.is_empty(): menu._label(str(all.size()), Vector3(-0.375, 0.245, 0.004), 13)
+	var inline_notice: bool = opened and menu._state.get("bookmark_undo", false) and notice in [menu.I18n.t("Bookmark deleted"), menu.I18n.t("Loop deleted")]
+	if Time.get_ticks_msec() < notice_until and not inline_notice:
 		menu._label(notice, Vector3(0, 0.152, 0.005), 14)
 	_draw_ranges()
 	var groups := Timeline.groups(all, int(menu._state.get("duration_ms", 0)), menu.BAR_SEEK)
@@ -214,7 +215,10 @@ func _draw_list() -> void:
 	_draw_markers()
 	_draw_loops()
 	_draw_seek_options()
-	menu._glyph(PANEL_UNDO, "undo", Vector2(0.505, 0.315), 0.055, menu._state.get("bookmark_undo", false), menu.I18n.t("Undo delete"))
+	if menu._state.get("bookmark_undo", false):
+		menu._label(menu.I18n.t("Deleted"), Vector3(0.22, 0.368, 0.01), 14).modulate = menu.MUTED
+		menu._button(PANEL_UNDO, menu.I18n.t("Undo"), Vector2(0.433, 0.368), Vector2(0.19, 0.047))
+		menu.set_label_size(menu._buttons.back().node.get_child(0), 15)
 
 func _draw_markers() -> void:
 	var entries := _entries()
@@ -326,7 +330,7 @@ func _draw_seek_options() -> void:
 			if option[1] == SeekPolicy.GLOBAL else menu.I18n.t("Faster jumps, less precise" if option[1] == SeekPolicy.SPEED else "Accurate jumps, may take longer")
 
 func _belongs(target: int) -> bool:
-	return target in [ADD, LIST, UNDO, CLOSE, NEW_LOOP, ALL_MARKERS, CANCEL_EDIT, PANEL_UNDO] or targets.has(target)
+	return target in [ADD, LIST, CLOSE, NEW_LOOP, ALL_MARKERS, CANCEL_EDIT, PANEL_UNDO] or targets.has(target)
 
 func press(hand: String, hit: Dictionary) -> bool:
 	if not capture.is_empty(): return true
@@ -374,7 +378,7 @@ func release(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -
 func _activate(target: int, item: Dictionary, media_scope: String) -> void:
 	if target == ADD:
 		if menu._state.get("bookmark_ready", false): menu.bookmark_requested.emit("add", "", media_scope)
-	elif target in [UNDO, PANEL_UNDO]:
+	elif target == PANEL_UNDO:
 		menu.bookmark_requested.emit("undo", "", media_scope); menu.refresh()
 	elif target == LIST:
 		var show_list := not opened
@@ -459,6 +463,10 @@ func _pick_marker(marker_id: String, endpoint: String) -> void:
 	menu.refresh()
 
 func _close_other_popups() -> void:
+	if menu.editing_picture():
+		menu._finish_adjustment()
+		menu._adjustment = ""
+		menu.section = 0
 	menu.choices.reset()
 	menu._subtitle_open = false; menu._mode_open = false; menu._volume_open = false
 	menu._close_depth_slider()
