@@ -59,10 +59,13 @@ class App extends Node3D:
 	var scene_import: Node
 	var updates := 0
 	var shown := false
+	var recentred := 0
 	func _init() -> void:
 		scenery.host = self
 		for node in [background, scenery, xr_origin, video]: add_child(node)
 		xr_origin.add_child(xr_camera)
+	func _place_screen(recenter: bool = false) -> void:
+		if recenter: recentred += 1
 	func _update_background() -> void:
 		updates += 1
 		if scene_import: shown = scene_import.present(background.choice == "dark")
@@ -152,6 +155,16 @@ func _run() -> void:
 	var shown := app.find_child("Floor", true, false) as MeshInstance3D
 	_check(controller.active_id == plaza and app.shown and shown != null and shown.is_visible_in_tree(), "The loaded scene is shown")
 	_check(app.settings.get_value("scene_import", "active", "") == plaza, "The choice is remembered")
+	# First time in, the screen comes up ahead of the entry point at the usual distance, still following.
+	while controller._screen_task >= 0: await process_frame
+	var ahead: Vector3 = controller._root.global_transform.affine_inverse() * (app.video.global_transform * app.video.flat_pose).origin - controller._spawn.origin
+	_check(not controller.screen_pinned() and not controller.snapshot().screen_pinned and controller.library.screen_pin(plaza) == null
+		and not controller.library.entries[plaza].has("screen") and is_equal_approx(Vector2(ahead.x, ahead.z).length(), 3.0)
+		and ahead.dot(-controller._spawn.basis.z) > 2.9, "A scene entered the first time puts the screen ahead of the entry point without pinning it (%s)" % ahead)
+	# The head is never tracked here; on a headset the entry place is let go of once it is.
+	controller._follow_place = null
+	app.video.set_flat_world_pose(Transform3D(Basis.IDENTITY, Vector3(0, 1.5, -3)))
+	app.video.placed = 0
 	_check(int(controller.library.entries[plaza].summary.get("high", {}).get("triangles", 0)) == 12, "The scene's cost is recorded for its card")
 	_check(controller.library.rename(plaza, "  Town square ") and controller.snapshot().rows.any(func(row): return row.id == plaza and row.title == "Town square") and not controller.library.rename(plaza, " "),
 		"A scene takes a new name, and never an empty one")
@@ -184,7 +197,7 @@ func _run() -> void:
 	_check(not shown.is_visible_in_tree() and not controller._lamp.visible and app.display.environment.ambient_light_source != Environment.AMBIENT_SOURCE_COLOR,
 		"Hidden, the scene takes its light and ambient with it")
 	controller.present(true)
-	_check(app.video.placed == 0, "Without a screen marker the ordinary screen is left where it is")
+	_check(app.video.placed == 0, "Not pinned, the ordinary screen is left where it is")
 	app.video.playing = false
 
 	# Moving through the scene uses the built-in scenes' gestures; the scene slides around the viewer.
@@ -327,6 +340,7 @@ func _run() -> void:
 	kept.load_catalog()
 	var pin: Variant = kept.screen_pin(plaza)
 	_check(pin is Transform3D and (pin as Transform3D).is_equal_approx(controller._pin), "The pinned place is read back after a restart")
+	kept.free()
 	_check(controller.set_screen_pinned(false) and not controller.screen_pinned() and controller.library.entries[plaza].screen_pinned == false
 		and controller.library.entries[plaza].has("screen") and controller.library.screen_pin(plaza) == null, "Unpinning turns the switch off and keeps the last place")
 	video._flat.size /= 2.0
@@ -349,22 +363,43 @@ func _run() -> void:
 	var yard := ""
 	for row in controller.library.rows():
 		if row.title == "Yard": yard = str(row.id)
-	_check(not yard.is_empty() and controller.pending_id == yard and not controller.snapshot().stage.is_empty(), "Once copied it goes straight on to loading, stage by stage")
+	_check(not yard.is_empty() and ((controller.pending_id == yard and not controller.snapshot().stage.is_empty()) or controller.active_id == yard), "A copied file reports its loading stage or is already on show")
 	while not controller.pending_id.is_empty(): await process_frame
 	_check(controller.active_id == yard, "and is on show when that finishes")
 	controller.remove([yard])
 	await process_frame
+	# The last scene left the screen far off; a scene whose screen follows the viewer brings it in front again.
+	video.set_flat_world_pose(Transform3D(Basis.IDENTITY, Vector3(0, 1.5, 40)))
 	controller.activate(plaza)
 	while not controller.pending_id.is_empty(): await process_frame
+	while controller._screen_task >= 0: await process_frame
 	shown = app.find_child("Floor", true, false) as MeshInstance3D
+	var in_scene: Vector3 = controller._root.global_transform.affine_inverse() * (video.global_transform * video.flat_pose).origin - controller._spawn.origin
+	_check(not controller.screen_pinned() and controller.library.screen_pin(plaza) == null and is_equal_approx(Vector2(in_scene.x, in_scene.z).length(), 3.0)
+		and in_scene.dot(-controller._spawn.basis.z) > 2.9, "Back in a scene whose screen follows the viewer, it comes up ahead of the entry point, still following (%s)" % in_scene)
+	# The head is tracked only now: the scene rises to the posture's height, and that screen with it.
+	var rise_from: Vector3 = (video.global_transform * video.flat_pose).origin - controller._root.global_position
+	app.xr_camera.position.y = 1.7
+	controller._settle()
+	_check(controller._calibrated and controller._follow_place == null
+		and ((video.global_transform * video.flat_pose).origin - controller._root.global_position).is_equal_approx(rise_from), "When the head is found, the screen rises with the scene, once")
+	app.xr_camera.position.y = 0.0
+	controller.posture = "lie"
+	controller._probe_screen(plaza)
+	_check(controller._screen_task < 0, "Lying down, no screen is put ahead at floor level")
+	controller.posture = "stand"
 
 	controller.activate(hall)
 	while not controller.pending_id.is_empty(): await process_frame
 	await process_frame
 	_check(controller.active_id == hall and app.find_children("Floor", "MeshInstance3D", true, false).size() == 1, "Choosing another scene replaces the first")
+	_check(not controller.screen_pinned() and not controller.snapshot().screen_pinned, "The second scene's screen follows the viewer until they pin it")
+	_check(controller.set_screen_pinned(true), "The viewer pins it")
+	var recentred: int = app.recentred
 	app.scenery.select("global", "cinema")
 	await process_frame
 	_check(controller.active_id.is_empty() and app.find_child("Floor", true, false) == null and app.settings.get_value("scene_import", "active", "x") == "", "Choosing a built-in background turns the imported scene off")
+	_check(app.recentred == recentred + 1, "Leaving a scene with its screen fixed brings the screen back in front of the viewer")
 
 	app.scenery.select("global", "dark")
 	controller.activate(plaza)

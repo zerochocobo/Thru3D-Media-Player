@@ -144,7 +144,7 @@ func caption() -> String:
 
 ## The beach screen is only fixed during playback; paused or idle, it stays adjustable.
 func beach_locked() -> bool:
-	return locked() and host.video.media.state == "playing"
+	return locked() and host._film_playing()
 
 
 func beach_attempt(ray: Variant, hand: String, corners_only: bool) -> bool:

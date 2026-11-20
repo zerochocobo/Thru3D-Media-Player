@@ -1190,6 +1190,16 @@ const char* const kFisheyeLens =
         "  if (frame_layout == 1) { p.x = (p.x + eye) * 0.5; } else if (frame_layout == 2) { p.y = (p.y + eye) * 0.5; }\n";
 GLuint fisheye_programs[2] = {0, 0};
 GLuint fisheye_sampler = 0;
+/** Picture quality mode with denoising or super resolution: the remap goes to this texture first, and
+ * the passes of enhance_frame take it from there to the picture image. */
+GLuint fisheye_staged = 0, fisheye_staged_framebuffer = 0;
+int fisheye_staged_size[2] = {0, 0};
+namespace {
+bool ensure_pass(GLuint& texture, GLuint& framebuffer, int& held_width, int& held_height, int width, int height);
+struct EnhanceSource { GLuint texture = 0; bool external = false; int width = 0, height = 0; float scale_x = 1.0f, scale_y = 1.0f; };
+bool enhance_frame(GLuint target, int width, int height, bool linear_output, const EnhanceSource& from, float sharpen,
+                   const float* grade, float denoise_step, float denoise_tolerance);
+}
 /** Debug only: the next remap reads its picture back, every [step]th pixel, as RGBA8 rows top-first. */
 int fisheye_readback_step = 0;
 std::vector<uint8_t> fisheye_readback;
@@ -1205,15 +1215,27 @@ GLuint fisheye_program(bool external) {
         (external ? "uniform samplerExternalOES source;\n" : "uniform sampler2D source;\n") +
         "uniform vec2 target; uniform vec2 source_size; uniform vec2 span; uniform vec2 uv_scale;\n"
         "uniform float fov; uniform int frame_layout; uniform int half_eyes; uniform int raw_output;\n"
+        // Picture quality mode: RCAS inside window (centre and half size in one eye's picture; no size: all
+        // of it), its neighbours reach away, and the player's grade. amount and boost 0: no sharpening.
+        "uniform vec4 window; uniform vec2 reach; uniform float amount; uniform float boost;\n"
         "out vec4 result;\n"
+        GRADE_GLSL
+        RCAS_GLSL
         "vec3 to_linear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }\n"
+        "void lens(float longitude, float latitude, float eye, out vec3 colour) {\n"
+        "  vec4 result; colour = vec3(0.0); // outside the lens the shared mapping leaves, and this stays black\n" + kFisheyeLens +
+        "  colour = texture(source, p * uv_scale).rgb; }\n"
+        "vec3 seen(vec2 local, float eye) { vec3 c; lens((local.x - 0.5) * span.x, (0.5 - local.y) * span.y, eye, c); return c; }\n"
         "void main() {\n"
         "  vec2 uv = gl_FragCoord.xy / target; // row 0 is the picture's top, as for every GL picture here\n"
         "  float eye = 0.0; vec2 local = uv;\n"
         "  if (frame_layout == 1) { eye = step(0.5, uv.x); local.x = uv.x * 2.0 - eye; }\n"
         "  else if (frame_layout == 2) { eye = step(0.5, uv.y); local.y = uv.y * 2.0 - eye; }\n"
-        "  float longitude = (local.x - 0.5) * span.x; float latitude = (0.5 - local.y) * span.y;\n" + kFisheyeLens +
-        "  vec3 c = texture(source, p * uv_scale).rgb;\n"
+        "  vec3 c = seen(local, eye);\n"
+        "  float weight = amount + boost <= 0.0 ? 0.0 : window.z <= 0.0 ? 1.0 : 1.0 - smoothstep(0.7, 1.0, length((local - window.xy) / window.zw));\n"
+        "  if (weight > 0.0) c = mix(c, rcas(c, seen(local - vec2(0.0, reach.y), eye), seen(local - vec2(reach.x, 0.0), eye),\n"
+        "    seen(local + vec2(reach.x, 0.0), eye), seen(local + vec2(0.0, reach.y), eye), amount, boost), weight);\n"
+        "  c = grade(c);\n"
         "  result = vec4(raw_output == 1 ? c : to_linear(c), 1.0);\n"
         "}\n";
     const GLuint vs = compile(GL_VERTEX_SHADER, vertex), fs = compile(GL_FRAGMENT_SHADER, fragment.c_str());
@@ -1228,12 +1250,19 @@ GLuint fisheye_program(bool external) {
 
 /** Draws the fisheye frame [texture] (GL_TEXTURE_2D, or the decoder's external image) remapped into the
  * whole acquired image of [slot]. params: layout, half_eyes, fov degrees, span x, span y (radians),
- * source width, source height, UV scale x, UV scale y. */
-extern "C" JNIEXPORT jboolean JNICALL
-Java_org_vrpassthroughplayer_plugin_VideoLayerNative_remapFisheye(JNIEnv* env, jclass, jint slot, jint texture, jboolean external, jfloatArray params) {
+ * source width, source height, UV scale x, UV scale y.
+ * look (null: none) is picture quality mode: staged (1: the remap goes to a texture of the next two
+ * values' width and height, which enhance_frame denoises, enlarges, sharpens and grades into the image),
+ * the sharpening as on the layer copy, the window's centre and half size in one eye's picture (no size:
+ * the whole picture), 1 when graded and the grade's 11 values, the denoising's step and tolerance. */
+jboolean remap_fisheye(JNIEnv* env, jint slot, jint texture, jboolean external, jfloatArray params, jfloatArray look) {
     std::lock_guard<std::mutex> lock(mutex);
     Picture* target = picture(slot);
     if (!target || !params || env->GetArrayLength(params) < 9) return JNI_FALSE;
+    float q[22] = {};
+    if (look && env->GetArrayLength(look) >= 22) env->GetFloatArrayRegion(look, 0, 22, q); else look = nullptr;
+    const bool staged = look && q[0] > 0.5f && q[1] >= 1.0f && q[2] >= 1.0f;
+    const float sharpen = look && !staged && q[3] > 0.0f ? q[3] : 0.0f;
     Picture& p = *target;
     if (!p.acquired || texture <= 0 || !glIsTexture(static_cast<GLuint>(texture))) {
         log(ANDROID_LOG_WARN, "remapFisheye: texture " + std::to_string(texture) + " not usable (acquired " + std::to_string(p.acquired) + ")");
@@ -1251,6 +1280,14 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_remapFisheye(JNIEnv* env, j
         if (kind == GL_TEXTURE_EXTERNAL_OES) glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &previous_external);
         const GLuint program = fisheye_program(kind == GL_TEXTURE_EXTERNAL_OES);
         if (!program) return JNI_FALSE;
+        GLuint drawn = p.acquired;
+        int width = p.width, height = p.height;
+        if (staged) {
+            if (!ensure_pass(fisheye_staged, fisheye_staged_framebuffer, fisheye_staged_size[0], fisheye_staged_size[1],
+                             static_cast<int>(q[1]), static_cast<int>(q[2]))) return JNI_FALSE;
+            drawn = fisheye_staged; width = fisheye_staged_size[0]; height = fisheye_staged_size[1];
+            glActiveTexture(GL_TEXTURE0);
+        }
         if (!fisheye_sampler || !glIsSampler(fisheye_sampler)) {
             glGenSamplers(1, &fisheye_sampler);
             glSamplerParameteri(fisheye_sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -1261,18 +1298,36 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_remapFisheye(JNIEnv* env, j
         GLuint framebuffer = 0;
         glGenFramebuffers(1, &framebuffer);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, p.acquired, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, drawn, 0);
         status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status == GL_FRAMEBUFFER_COMPLETE) {
             glDisable(GL_BLEND); glDisable(GL_SCISSOR_TEST); glDisable(GL_DEPTH_TEST);
             glDisable(GL_CULL_FACE); glDisable(GL_STENCIL_TEST); glDisable(GL_DITHER);
             glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-            glViewport(0, 0, p.width, p.height);
+            glViewport(0, 0, width, height);
             glUseProgram(program);
             glBindVertexArray(0);
             glBindTexture(kind, static_cast<GLuint>(texture)); glBindSampler(0, fisheye_sampler);
             glUniform1i(glGetUniformLocation(program, "source"), 0);
-            glUniform2f(glGetUniformLocation(program, "target"), static_cast<float>(p.width), static_cast<float>(p.height));
+            glUniform2f(glGetUniformLocation(program, "target"), static_cast<float>(width), static_cast<float>(height));
+            // As on the layer copy: neighbours 1 + sharpen / 2 pixels away, here pixels of the remapped picture.
+            const float reach = 1.0f + 0.5f * sharpen;
+            glUniform2f(glGetUniformLocation(program, "reach"), reach / (width * (v[0] == 1.0f ? 0.5f : 1.0f)), reach / (height * (v[0] == 2.0f ? 0.5f : 1.0f)));
+            glUniform1f(glGetUniformLocation(program, "amount"), sharpen < 1.0f ? sharpen : 1.0f);
+            glUniform1f(glGetUniformLocation(program, "boost"), sharpen > 1.0f ? sharpen - 1.0f : 0.0f);
+            glUniform4f(glGetUniformLocation(program, "window"), q[4], q[5], q[6], q[7]);
+            const bool graded = look && !staged && q[8] > 0.5f;
+            glUniform1i(glGetUniformLocation(program, "graded"), graded ? 1 : 0);
+            if (graded) {
+                const float* g = q + 9;
+                glUniform3f(glGetUniformLocation(program, "gain"), g[0], g[1], g[2]);
+                glUniform3f(glGetUniformLocation(program, "curve"), g[3], g[4], g[5]);
+                glUniform3f(glGetUniformLocation(program, "lift"), g[6], g[7], g[8]);
+                glUniform1f(glGetUniformLocation(program, "contrast"), g[9]);
+                glUniform1f(glGetUniformLocation(program, "saturation"), g[10]);
+                const auto one = [](float value) { return value > 0.9995f && value < 1.0005f; };
+                glUniform1i(glGetUniformLocation(program, "curved"), one(g[3]) && one(g[4]) && one(g[5]) ? 0 : 1);
+            }
             glUniform1i(glGetUniformLocation(program, "frame_layout"), static_cast<int>(v[0]));
             glUniform1i(glGetUniformLocation(program, "half_eyes"), static_cast<int>(v[1]));
             glUniform1f(glGetUniformLocation(program, "fov"), v[2]);
@@ -1281,11 +1336,12 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_remapFisheye(JNIEnv* env, j
             glUniform2f(glGetUniformLocation(program, "uv_scale"), v[7], v[8]);
             // Without sRGB write encoding the frame's encoded values go in as they are (as copyTexture
             // copies them), saving a per-pixel decode and the hardware re-encode.
-            const bool raw = DrawState::srgb_control();
-            if (raw) glDisable(DrawState::kFramebufferSrgb);
+            // The staged texture holds encoded values whatever the context does for sRGB images.
+            const bool raw = staged || DrawState::srgb_control();
+            if (DrawState::srgb_control()) glDisable(DrawState::kFramebufferSrgb);
             glUniform1i(glGetUniformLocation(program, "raw_output"), raw ? 1 : 0);
             glDrawArrays(GL_TRIANGLES, 0, 3);
-            if (fisheye_readback_step > 0) {
+            if (fisheye_readback_step > 0 && !staged) {
                 const int step = fisheye_readback_step; fisheye_readback_step = 0;
                 std::vector<uint8_t> full(static_cast<size_t>(p.width) * p.height * 4);
                 GLint read_framebuffer = 0; glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_framebuffer);
@@ -1307,7 +1363,23 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_remapFisheye(JNIEnv* env, j
     const GLenum error = glGetError();
     if (status != GL_FRAMEBUFFER_COMPLETE || error != GL_NO_ERROR)
         log(ANDROID_LOG_WARN, "remapFisheye framebuffer status " + std::to_string(status) + " GL error " + std::to_string(error));
-    return status == GL_FRAMEBUFFER_COMPLETE && error == GL_NO_ERROR ? JNI_TRUE : JNI_FALSE;
+    if (status != GL_FRAMEBUFFER_COMPLETE || error != GL_NO_ERROR) return JNI_FALSE;
+    if (!staged) return JNI_TRUE;
+    EnhanceSource from;
+    from.texture = fisheye_staged; from.width = fisheye_staged_size[0]; from.height = fisheye_staged_size[1];
+    return enhance_frame(p.acquired, p.width, p.height, true, from, q[3], q[8] > 0.5f ? q + 9 : nullptr, q[20], q[21]) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_remapFisheye(JNIEnv* env, jclass, jint slot, jint texture, jboolean external, jfloatArray params) {
+    return remap_fisheye(env, slot, texture, external, params, nullptr);
+}
+
+/** remapFisheye with picture quality mode's look (see remap_fisheye). */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_enhanceFisheye(JNIEnv* env, jclass, jint slot, jint texture, jboolean external,
+        jfloatArray params, jfloatArray look) {
+    return remap_fisheye(env, slot, texture, external, params, look);
 }
 
 /** Automatic stereo focus of a fisheye frame (StereoFocusProbe): the two shown eyes' pictures around the
@@ -1520,57 +1592,60 @@ namespace {
  * picture layer as an RGBA texture instead of the decoder surface the layer copy reads, so the same EASU,
  * RCAS and grade run here, on Godot's context, over the whole of their small picture. */
 struct Enhance {
-    GLuint easu = 0, finish = 0, denoise = 0, sampler = 0, enlarged = 0, framebuffer = 0;
+    // Programs by source: [0] a GL_TEXTURE_2D frame, [1] the decoder's external image.
+    GLuint easu[2] = {0, 0}, finish[2] = {0, 0}, denoise[2] = {0, 0};
+    GLuint sampler = 0, enlarged = 0, framebuffer = 0;
     int width = 0, height = 0;
     GLuint denoised = 0, denoised_framebuffer = 0;
     int denoised_width = 0, denoised_height = 0;
+    // The eye buffers' copy of the frame on show (enhanceFrameTexture).
+    GLuint shown = 0, shown_framebuffer = 0;
+    int shown_width = 0, shown_height = 0;
 };
 Enhance enhance;
-bool ensure_enhance_programs() {
-    if (enhance.easu && glIsProgram(enhance.easu) && enhance.finish && glIsProgram(enhance.finish)
-        && enhance.denoise && glIsProgram(enhance.denoise)) return true;
-    enhance = Enhance{};
+bool ensure_enhance_programs(bool external) {
+    const int k = external ? 1 : 0;
+    if (enhance.easu[k] && glIsProgram(enhance.easu[k]) && enhance.finish[k] && glIsProgram(enhance.finish[k])
+        && enhance.denoise[k] && glIsProgram(enhance.denoise[k])) return true;
+    enhance.easu[k] = enhance.finish[k] = enhance.denoise[k] = 0;
     // Rows as glCopyImageSubData lays them: the texture's row r lands on the image's row r.
     static const char* vertex = "#version 300 es\n"
         "out vec2 uv;\n"
         "void main() { uv = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0); }\n";
-    // The arithmetic is on display-encoded values, as on the layer copy: a texture stored as sRGB is
-    // encoded again after sampling, and the picture image (sRGB) takes linear light.
-    #define ENCODING_GLSL \
-        "uniform bool linear_source;\n" \
-        "vec3 encoded(vec3 c) { return linear_source ? mix(c * 12.92, 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c)) : c; }\n"
-    static const char* easu = "#version 300 es\n"
-        "precision highp float;\n"
-        "uniform sampler2D frame; uniform vec2 source;\n"
+    // frame_scale: the visible frame inside a possibly padded decoder buffer.
+    const std::string head = std::string("#version 300 es\n") +
+        (external ? "#extension GL_OES_EGL_image_external_essl3 : require\n" : "") +
+        "precision highp float;\n" +
+        (external ? "uniform samplerExternalOES frame;\n" : "uniform sampler2D frame;\n") +
+        "uniform vec2 frame_scale;\n"
         "in vec2 uv; out vec4 result;\n"
-        ENCODING_GLSL
-        WINDOW_GLSL
-        "vec3 tap(vec2 cell, vec2 offset) { return encoded(texelFetch(frame, ivec2(clamp(cell + offset, vec2(0.0), source - 1.0)), 0).rgb); }\n"
+        // The arithmetic is on display-encoded values, as on the layer copy: a texture stored as sRGB is
+        // encoded again after sampling, and a picture image (sRGB) takes linear light.
+        "uniform bool linear_source;\n"
+        "vec3 encoded(vec3 c) { return linear_source ? mix(c * 12.92, 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c)) : c; }\n";
+    const std::string easu = head +
+        "uniform vec2 source;\n"
+        WINDOW_GLSL +
+        (external ? "vec3 tap(vec2 cell, vec2 offset) { return texture(frame, (clamp(cell + offset, vec2(0.0), source - 1.0) + 0.5) / source * frame_scale).rgb; }\n"
+                  : "vec3 tap(vec2 cell, vec2 offset) { return encoded(texelFetch(frame, ivec2(clamp(cell + offset, vec2(0.0), source - 1.0)), 0).rgb); }\n") +
         EASU_GLSL;
-    static const char* finish = "#version 300 es\n"
-        "precision highp float;\n"
-        "uniform sampler2D frame; uniform sampler2D enlarged; uniform bool enlarge; uniform vec2 reach;\n"
-        "uniform float amount; uniform float boost;\n"
-        "in vec2 uv; out vec4 result;\n"
-        ENCODING_GLSL
+    const std::string finish = head +
+        "uniform sampler2D enlarged; uniform bool enlarge; uniform vec2 reach;\n"
+        "uniform float amount; uniform float boost; uniform bool linear_output;\n"
         GRADE_GLSL
         RCAS_GLSL
-        "vec3 at(vec2 p) { return enlarge ? texture(enlarged, p).rgb : encoded(texture(frame, p).rgb); }\n"
+        "vec3 at(vec2 p) { return enlarge ? texture(enlarged, p).rgb : encoded(texture(frame, p * frame_scale).rgb); }\n"
         "void main() {\n"
         "  vec3 c = grade(rcas(at(uv), at(uv - vec2(0.0, reach.y)), at(uv - vec2(reach.x, 0.0)), at(uv + vec2(reach.x, 0.0)),\n"
         "    at(uv + vec2(0.0, reach.y)), amount, boost));\n"
-        "  result = vec4(mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)), 1.0); }\n";
-    static const char* denoise = "#version 300 es\n"
-        "precision highp float;\n"
-        "uniform sampler2D frame; uniform vec2 step; uniform float tolerance;\n"
-        "in vec2 uv; out vec4 result;\n"
-        ENCODING_GLSL
-        "vec3 near(vec2 offset) { return encoded(texture(frame, uv + offset * step).rgb); }\n"
+        "  result = vec4(linear_output ? mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)) : c, 1.0); }\n";
+    const std::string denoise = head +
+        "uniform vec2 step; uniform float tolerance;\n"
+        "vec3 near(vec2 offset) { return encoded(texture(frame, (uv + offset * step) * frame_scale).rgb); }\n"
         DENOISE_GLSL
         "void main() { result = vec4(denoised(tolerance), 1.0); }\n";
-    #undef ENCODING_GLSL
-    const auto link = [&](const char* fragment) -> GLuint {
-        const GLuint vs = compile(GL_VERTEX_SHADER, vertex), fs = compile(GL_FRAGMENT_SHADER, fragment);
+    const auto link = [&](const std::string& fragment) -> GLuint {
+        const GLuint vs = compile(GL_VERTEX_SHADER, vertex), fs = compile(GL_FRAGMENT_SHADER, fragment.c_str());
         if (!vs || !fs) { if (vs) glDeleteShader(vs); if (fs) glDeleteShader(fs); return 0; }
         const GLuint id = glCreateProgram();
         glAttachShader(id, vs); glAttachShader(id, fs); glLinkProgram(id);
@@ -1579,12 +1654,14 @@ bool ensure_enhance_programs() {
         if (!ok) { log(ANDROID_LOG_WARN, "picture enhance program does not link"); glDeleteProgram(id); return 0; }
         return id;
     };
-    enhance.easu = link(easu); enhance.finish = link(finish); enhance.denoise = link(denoise);
-    if (!enhance.easu || !enhance.finish || !enhance.denoise) return false;
+    enhance.easu[k] = link(easu); enhance.finish[k] = link(finish); enhance.denoise[k] = link(denoise);
+    if (!enhance.easu[k] || !enhance.finish[k] || !enhance.denoise[k]) return false;
     // The frame's own filtering is its owner's: a sampler object gives this draw bilinear, clamped reads.
-    glGenSamplers(1, &enhance.sampler);
-    glSamplerParameteri(enhance.sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glSamplerParameteri(enhance.sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glSamplerParameteri(enhance.sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glSamplerParameteri(enhance.sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (!enhance.sampler || !glIsSampler(enhance.sampler)) {
+        glGenSamplers(1, &enhance.sampler);
+        glSamplerParameteri(enhance.sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glSamplerParameteri(enhance.sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glSamplerParameteri(enhance.sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glSamplerParameteri(enhance.sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
     return true;
 }
 /** A texture one pass draws for the next: the denoised frame at its own size, or EASU's at the picture
@@ -1606,83 +1683,99 @@ bool ensure_pass(GLuint& texture, GLuint& framebuffer, int& held_width, int& hel
     held_width = width; held_height = height;
     return true;
 }
-} // namespace
 
-/** Picture quality mode on the picture layer: draws a GL_TEXTURE_2D frame of source_width x source_height
- * into the whole acquired image: denoised first (denoise_tolerance above 0, its samples denoise_step
- * pixels apart), enlarged with EASU when the image is larger, then sharpened (RCAS, sharpen as on the
- * layer copy: above 1 the excess overshoots) and graded (gain, gamma and offset per channel, contrast,
- * saturation; null for none). The frame's rows keep their order, as copyTexture's do. */
-extern "C" JNIEXPORT jboolean JNICALL
-Java_org_vrpassthroughplayer_plugin_VideoLayerNative_enhanceTexture(JNIEnv* env, jclass, jint slot, jint texture,
-        jint source_width, jint source_height, jfloat sharpen, jfloatArray grade, jfloat denoise_step, jfloat denoise_tolerance) {
-    std::lock_guard<std::mutex> lock(mutex);
-    Picture* target = picture(slot);
-    if (!target) return JNI_FALSE;
-    Picture& p = *target;
-    if (!p.acquired || texture <= 0 || source_width <= 0 || source_height <= 0 || !glIsTexture(static_cast<GLuint>(texture))) return JNI_FALSE;
+/** Picture quality mode on a frame the layer copy never sees: draws [from] (a GL_TEXTURE_2D or the
+ * decoder's external image, its visible part width x height) into the whole of [target], a texture of
+ * width x height: denoised first (denoise_tolerance above 0, its samples denoise_step pixels apart),
+ * enlarged with EASU when the target is larger, then sharpened (RCAS, sharpen as on the layer copy: above
+ * 1 the excess overshoots) and graded (gain, gamma and offset per channel, contrast, saturation; null for
+ * none). linear_output: the target is an sRGB image (a picture layer's), which takes linear light;
+ * otherwise it gets display-encoded values, as the eye buffers' shader reads a frame. The frame's rows
+ * keep their order, as copyTexture's do. */
+bool enhance_frame(GLuint target, int width, int height, bool linear_output, const EnhanceSource& from, float sharpen,
+                   const float* grade, float denoise_step, float denoise_tolerance) {
+    if (!target || !from.texture || from.width <= 0 || from.height <= 0 || !glIsTexture(from.texture)) return false;
     while (glGetError() != GL_NO_ERROR) {}
     GLenum status = GL_FRAMEBUFFER_COMPLETE;
     {
         DrawState saved;
-        if (!ensure_enhance_programs()) return JNI_FALSE;
-        const bool enlarge = p.width > source_width || p.height > source_height;
-        if (enlarge && !ensure_pass(enhance.enlarged, enhance.framebuffer, enhance.width, enhance.height, p.width, p.height)) return JNI_FALSE;
+        GLint previous_external = 0;
+        glActiveTexture(GL_TEXTURE0);
+        if (from.external) glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &previous_external);
+        if (!ensure_enhance_programs(from.external) || !ensure_enhance_programs(false)) return false;
+        const bool enlarge = width > from.width || height > from.height;
+        if (enlarge && !ensure_pass(enhance.enlarged, enhance.framebuffer, enhance.width, enhance.height, width, height)) return false;
         const bool denoise = denoise_tolerance > 0.0f;
         if (denoise && !ensure_pass(enhance.denoised, enhance.denoised_framebuffer, enhance.denoised_width, enhance.denoised_height,
-                                    source_width, source_height)) return JNI_FALSE;
+                                    from.width, from.height)) return false;
         glDisable(GL_BLEND); glDisable(GL_SCISSOR_TEST); glDisable(GL_DEPTH_TEST);
         glDisable(GL_CULL_FACE); glDisable(GL_STENCIL_TEST); glDisable(GL_DITHER);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         glBindVertexArray(0);
-        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(texture)); glBindSampler(0, enhance.sampler);
-        GLint format = 0; glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &format);
-        GLint linear_source = format == GL_SRGB8_ALPHA8 || format == GL_SRGB8 ? 1 : 0;
+        // Intermediate textures hold the encoded values as they are.
+        if (DrawState::srgb_control() && !linear_output) glDisable(DrawState::kFramebufferSrgb);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(from.external ? GL_TEXTURE_EXTERNAL_OES : GL_TEXTURE_2D, from.texture); glBindSampler(0, enhance.sampler);
+        // What the next pass reads as its frame: the source, then the denoised frame (a GL_TEXTURE_2D).
+        int k = from.external ? 1 : 0;
+        float scale_x = from.scale_x, scale_y = from.scale_y;
+        GLint linear_source = 0;
+        if (!from.external) {
+            GLint format = 0; glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &format);
+            linear_source = format == GL_SRGB8_ALPHA8 || format == GL_SRGB8 ? 1 : 0;
+        }
         if (denoise) {
+            const GLuint program = enhance.denoise[k];
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, enhance.denoised_framebuffer);
-            glViewport(0, 0, source_width, source_height);
-            glUseProgram(enhance.denoise);
-            glUniform1i(glGetUniformLocation(enhance.denoise, "frame"), 0);
-            glUniform1i(glGetUniformLocation(enhance.denoise, "linear_source"), linear_source);
-            glUniform2f(glGetUniformLocation(enhance.denoise, "step"), denoise_step / source_width, denoise_step / source_height);
-            glUniform1f(glGetUniformLocation(enhance.denoise, "tolerance"), denoise_tolerance);
+            glViewport(0, 0, from.width, from.height);
+            glUseProgram(program);
+            glUniform1i(glGetUniformLocation(program, "frame"), 0);
+            glUniform2f(glGetUniformLocation(program, "frame_scale"), scale_x, scale_y);
+            glUniform1i(glGetUniformLocation(program, "linear_source"), linear_source);
+            glUniform2f(glGetUniformLocation(program, "step"), denoise_step / from.width, denoise_step / from.height);
+            glUniform1f(glGetUniformLocation(program, "tolerance"), denoise_tolerance);
             glDrawArrays(GL_TRIANGLES, 0, 3);
             // The passes after it read the denoised frame, which holds encoded values as they want them.
+            if (from.external) glBindTexture(GL_TEXTURE_EXTERNAL_OES, static_cast<GLuint>(previous_external));
             glBindTexture(GL_TEXTURE_2D, enhance.denoised); glBindSampler(0, 0);
-            linear_source = 0;
+            linear_source = 0; k = 0; scale_x = scale_y = 1.0f;
         }
-        glViewport(0, 0, p.width, p.height);
+        glViewport(0, 0, width, height);
         if (enlarge) {
+            const GLuint program = enhance.easu[k];
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, enhance.framebuffer);
-            glUseProgram(enhance.easu);
-            glUniform1i(glGetUniformLocation(enhance.easu, "frame"), 0);
-            glUniform1i(glGetUniformLocation(enhance.easu, "linear_source"), linear_source);
-            glUniform2f(glGetUniformLocation(enhance.easu, "source"), static_cast<float>(source_width), static_cast<float>(source_height));
-            glUniform4f(glGetUniformLocation(enhance.easu, "window"), 0.5f, 0.5f, 0.0f, 0.0f);
-            glUniform3f(glGetUniformLocation(enhance.easu, "eyes"), 1.0f, 1.0f, 0.0f);
+            glUseProgram(program);
+            glUniform1i(glGetUniformLocation(program, "frame"), 0);
+            glUniform2f(glGetUniformLocation(program, "frame_scale"), scale_x, scale_y);
+            glUniform1i(glGetUniformLocation(program, "linear_source"), linear_source);
+            glUniform2f(glGetUniformLocation(program, "source"), static_cast<float>(from.width), static_cast<float>(from.height));
+            glUniform4f(glGetUniformLocation(program, "window"), 0.5f, 0.5f, 0.0f, 0.0f);
+            glUniform3f(glGetUniformLocation(program, "eyes"), 1.0f, 1.0f, 0.0f);
             glDrawArrays(GL_TRIANGLES, 0, 3);
         }
         GLuint framebuffer = 0;
         glGenFramebuffers(1, &framebuffer);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, p.acquired, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target, 0);
         status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status == GL_FRAMEBUFFER_COMPLETE) {
-            const GLuint program = enhance.finish;
+            const GLuint program = enhance.finish[k];
             glUseProgram(program);
+            if (DrawState::srgb_control() && linear_output) glEnable(DrawState::kFramebufferSrgb);
             glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, enlarge ? enhance.enlarged : 0); glBindSampler(1, 0);
             glUniform1i(glGetUniformLocation(program, "frame"), 0);
+            glUniform2f(glGetUniformLocation(program, "frame_scale"), scale_x, scale_y);
             glUniform1i(glGetUniformLocation(program, "enlarged"), 1);
             glUniform1i(glGetUniformLocation(program, "enlarge"), enlarge ? 1 : 0);
             glUniform1i(glGetUniformLocation(program, "linear_source"), linear_source);
+            glUniform1i(glGetUniformLocation(program, "linear_output"), linear_output ? 1 : 0);
             // As on the layer copy: neighbours 1 + sharpen / 2 source pixels away.
             const float reach = 1.0f + 0.5f * sharpen;
-            glUniform2f(glGetUniformLocation(program, "reach"), reach / source_width, reach / source_height);
+            glUniform2f(glGetUniformLocation(program, "reach"), reach / from.width, reach / from.height);
             glUniform1f(glGetUniformLocation(program, "amount"), sharpen < 1.0f ? (sharpen > 0.0f ? sharpen : 0.0f) : 1.0f);
             glUniform1f(glGetUniformLocation(program, "boost"), sharpen > 1.0f ? sharpen - 1.0f : 0.0f);
-            jfloat values[11];
-            const bool graded = grade && env->GetArrayLength(grade) >= 11;
-            if (graded) env->GetFloatArrayRegion(grade, 0, 11, values);
+            const bool graded = grade != nullptr;
+            const float* values = grade;
             glUniform1i(glGetUniformLocation(program, "graded"), graded ? 1 : 0);
             if (graded) {
                 glUniform3f(glGetUniformLocation(program, "gain"), values[0], values[1], values[2]);
@@ -1697,11 +1790,52 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_enhanceTexture(JNIEnv* env,
         }
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glDeleteFramebuffers(1, &framebuffer);
+        glActiveTexture(GL_TEXTURE0);
+        if (from.external) glBindTexture(GL_TEXTURE_EXTERNAL_OES, static_cast<GLuint>(previous_external));
     }
     const GLenum error = glGetError();
     if (status != GL_FRAMEBUFFER_COMPLETE || error != GL_NO_ERROR)
-        log(ANDROID_LOG_WARN, "enhanceTexture framebuffer status " + std::to_string(status) + " GL error " + std::to_string(error));
-    return status == GL_FRAMEBUFFER_COMPLETE && error == GL_NO_ERROR ? JNI_TRUE : JNI_FALSE;
+        log(ANDROID_LOG_WARN, "enhance_frame framebuffer status " + std::to_string(status) + " GL error " + std::to_string(error));
+    return status == GL_FRAMEBUFFER_COMPLETE && error == GL_NO_ERROR;
+}
+} // namespace
+
+/** enhance_frame for a software-decoded frame into the whole acquired image of [slot] (grade: 11 values,
+ * or null for none). */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_enhanceTexture(JNIEnv* env, jclass, jint slot, jint texture,
+        jint source_width, jint source_height, jfloat sharpen, jfloatArray grade, jfloat denoise_step, jfloat denoise_tolerance) {
+    std::lock_guard<std::mutex> lock(mutex);
+    Picture* target = picture(slot);
+    if (!target || !target->acquired || texture <= 0) return JNI_FALSE;
+    jfloat values[11];
+    const bool graded = grade && env->GetArrayLength(grade) >= 11;
+    if (graded) env->GetFloatArrayRegion(grade, 0, 11, values);
+    EnhanceSource from;
+    from.texture = static_cast<GLuint>(texture); from.width = source_width; from.height = source_height;
+    return enhance_frame(target->acquired, target->width, target->height, true, from, sharpen, graded ? values : nullptr,
+                         denoise_step, denoise_tolerance) ? JNI_TRUE : JNI_FALSE;
+}
+
+/** Picture quality mode for the eye buffers: the frame on show ([texture]: a GL_TEXTURE_2D, or the
+ * decoder's external image whose visible part is scale_x by scale_y of its buffer) drawn denoised,
+ * enlarged and sharpened into a texture of width x height that this file keeps, for Godot's shader to
+ * read in the frame's place. No grade: that shader applies it. Returns the texture, or 0. */
+extern "C" JNIEXPORT jint JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_enhanceFrameTexture(JNIEnv*, jclass, jint texture, jboolean external,
+        jint source_width, jint source_height, jfloat scale_x, jfloat scale_y, jint width, jint height,
+        jfloat sharpen, jfloat denoise_step, jfloat denoise_tolerance) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (texture <= 0 || width <= 0 || height <= 0) return 0;
+    {
+        DrawState saved;
+        if (!ensure_pass(enhance.shown, enhance.shown_framebuffer, enhance.shown_width, enhance.shown_height, width, height)) return 0;
+    }
+    EnhanceSource from;
+    from.texture = static_cast<GLuint>(texture); from.external = external == JNI_TRUE;
+    from.width = source_width; from.height = source_height; from.scale_x = scale_x; from.scale_y = scale_y;
+    return enhance_frame(enhance.shown, width, height, false, from, sharpen, nullptr, denoise_step, denoise_tolerance)
+        ? static_cast<jint>(enhance.shown) : 0;
 }
 
 /** Alpha plan B: draws RVM's mask texture (R8, 2 x model width: left | right) into the whole acquired

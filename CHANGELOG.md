@@ -4,6 +4,19 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.18.4.1 — 2026-11-20
+
+- Fix the screen being pinned automatically and becoming impossible to drag when entering an imported scene. The default placement only sets its starting position; pinning is enabled by the user.
+
+## 0.18.4 — 2026-11-20
+
+- Picture quality mode supports more compatible fisheye videos and AI person passthrough modes, including keeping the background and placing the person separately. Adjust sharpness, denoising and Super Resolution. Restrictions still apply to real-time 2D-to-3D and AI person passthrough in memory-saving mode. Denoising and Super Resolution increase device load.
+- Sharpness now ranges from 0% to 200%, with a 50% default, for easier adjustment. Saved values above 200% are reduced to 200%.
+- View bundled release notes offline from the media library or About. Entries follow the current headset and distribution channel, with an unread indicator after upgrades.
+- Improve default screen placement in imported scenes. On first entry, place the screen ahead of the entry point while avoiding detected walls. Reposition unpinned screens in front when switching scenes.
+- Fix automatic cinema lights turning on and the private beach switching to daytime while holding the stick to seek.
+- Official builds add diagnostic-log submission from playback failures and webpage Play Beta errors. Public-source builds have no upload endpoint configured; local saving and Wi-Fi sharing remain available.
+
 ## 0.18.3 — 2026-11-19
 
 - Add Picture quality mode for compatible hardware- and software-decoded video, with 0–500% sharpness, selectable denoising and FSR 1 super resolution. The setting is offered across runtimes; availability depends on the playback path. Gamma and saturation controls are unlocked when the mode is active.

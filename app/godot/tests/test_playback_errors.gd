@@ -142,6 +142,52 @@ func _run() -> void:
 	menu.state_provider = offer_state; menu.show_playback_error()
 	check(not menu._buttons.any(func(button): return button.target == Menu.USB_TAKEOVER), "Without the offer the failure dialog shows no takeover")
 	menu.dismiss()
+	# The failure's log in one tap: the button follows its upload; the owner sends each failure once.
+	var upload := {}
+	menu.state_provider = func(): return offer_state.call().merged({"diagnostic_upload": upload}, true)
+	requested.clear()
+	menu.show_playback_error()
+	var log_button := func() -> Dictionary:
+		var found: Array = menu._buttons.filter(func(button): return button.target == Menu.FAILURE_LOG)
+		return found[0] if found.size() == 1 else {}
+	var caption := func(button: Dictionary) -> String:
+		for child in button.node.get_children(): if child is Label3D: return child.text
+		return ""
+	details = menu._buttons.filter(func(button): return button.target == Menu.ERROR_DETAILS)
+	check(not log_button.call().is_empty() and log_button.call().enabled and log_button.call().node.position.y > details[0].node.position.y + 0.06
+		and caption.call(log_button.call()) == I18n.t("Send log") and menu._tips.has(Menu.FAILURE_LOG), "A failure offers its log above the details")
+	menu._activate(Menu.FAILURE_LOG)
+	check(requested == ["diagnostic_upload"] and menu._failure_open, "One press asks the owner to upload this failure's log")
+	upload["busy"] = "upload"; menu.refresh_values()
+	requested.clear(); menu._activate(Menu.FAILURE_LOG)
+	check(not log_button.call().enabled and caption.call(log_button.call()) == I18n.t("Uploading…") and requested.is_empty(), "No second upload while one is under way")
+	upload.erase("busy"); upload["code"] = "7F2K9QXM"; menu.refresh_values(); menu._activate(Menu.FAILURE_LOG)
+	check(caption.call(log_button.call()) == I18n.t("Uploaded · code %s") % "7F2K9QXM" and requested.is_empty()
+		and str(menu._tips.get(Menu.FAILURE_LOG, "")).contains("ffskyteam@gmail.com"), "A sent log shows the code and where to quote it")
+	upload.erase("code"); upload["error"] = I18n.t("Could not upload"); menu.refresh_values(); menu._activate(Menu.FAILURE_LOG)
+	check(caption.call(log_button.call()).contains(I18n.t("Save log")) and requested == ["diagnostic_save"], "A failed upload offers saving the log instead")
+	menu.state_provider = offer_state; menu.dismiss()
+	# The owner files the report under the failure and answers each requester in order.
+	check(Errors.report_category({"reason": "link_expired"}) == "files_network" and Errors.report_category({"code": "STRM_READ_TIMEOUT"}) == "files_network"
+		and Errors.report_category({}, "LOCAL_DOCUMENT_MISSING") == "files_network" and Errors.report_category({"reason": "ai_gpu_unavailable"}) == "picture"
+		and Errors.report_category({"reason": "audio_output_failed"}) == "audio_subtitles" and Errors.report_category({"reason": "decoder_failed"}) == "playback"
+		and Errors.report_category({"code": "MPV_PLAYBACK_STUCK"}) == "playback", "The problem type follows the failure")
+	check(Main.source_scheme("smb://user:pass@nas/a.mkv") == "smb" and Main.source_scheme("/storage/emulated/0/a.mkv") == "file"
+		and Main.source_scheme("HTTPS://x/y") == "https" and Main.source_scheme("") == "" and Main.source_scheme("a b://x") == "other", "Only the source's scheme is reported")
+	video.local_uri = "content://com.android.providers/document/1"
+	var filed := main._failure_report()
+	check(filed.category == "files_network" and filed.trigger == "failure_panel" and filed.source == "content" and filed.error == "LOCAL_DOCUMENT_MISSING"
+		and not str(filed).contains("com.android"), "A picker failure is filed under files without its address")
+	main.quick_upload = {"identity": "video:1:x", "busy": "upload"}
+	main._diagnostic_origins.assign(["quick", "settings"])
+	main.diagnostic_state = {"busy": "save"}
+	main._on_diagnostic_log(JSON.stringify({"action": "upload", "ok": true, "code": "AB12CD34"}))
+	main._on_diagnostic_log(JSON.stringify({"action": "save", "ok": true, "path": "Download/Thru3D/logs/a.txt"}))
+	check(main.quick_upload.get("code") == "AB12CD34" and not main.quick_upload.has("busy") and not main.diagnostic_state.has("code")
+		and main.diagnostic_state.get("path") == "Download/Thru3D/logs/a.txt", "Each log result reaches whoever asked for it")
+	main.quick_upload = {"identity": "video:1:x", "busy": "upload"}; main._diagnostic_origins.assign(["quick"])
+	main._on_diagnostic_log(JSON.stringify({"action": "upload", "ok": false, "error": "rate_limited"}))
+	check(main.quick_upload.get("error") == I18n.t("Too many uploads, try again later"), "A refused one-tap upload says why")
 	video.picker_error = ""
 	# Ordinary files share visible failures, output and rebuffer deadlines with STRM.
 	video.local_uri = "smb://saved/ordinary.mkv"

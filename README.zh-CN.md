@@ -2,15 +2,19 @@
 
 [English](README.md) · [更新日志](CHANGELOG.zh-CN.md) · [English changelog](CHANGELOG.md)
 
+发版维护见[播放器内置更新记录格式](docs/PLAYER_RELEASE_NOTES_FORMAT_CN.md)。
+
 面向 Meta Quest 和 PICO 的独立 VR/MR 媒体播放器，可直接在头显中观看视频和照片、浏览媒体库，并使用支持内容的透视与立体效果。
 
-当前源码版本：**0.18.3**，Android versionCode **108**；另提供实验性的标准 OpenXR Android 导出目标。
+当前源码版本：**0.18.4.1**，Android versionCode **112**；另提供实验性的标准 OpenXR Android 导出目标。
 
 最低兼容目标为 **Quest 2、PICO Neo3**。源码和构建兼容不等于所有机型的性能、显示及交互均已实机验收。
 
 ## 功能
 
-- 兼容视频可开启「画质模式」，调节锐度、降噪和 FSR 1 超分辨率。见[画质与观看设置](docs/INPUT_AND_VIEWING.md)。
+- 媒体库与「关于」提供离线更新记录、升级未读提醒，按头显和发行渠道筛选条目，支持简中、繁中、英文和日文。
+
+- 兼容视频（含支持的鱼眼及 AI 人像透视路径）可开启「画质模式」，调节锐度、降噪和 FSR 1 超分辨率。见[画质与观看设置](docs/INPUT_AND_VIEWING.md)。
 
 - 可配置的外接键盘／游戏手柄与头部瞄准，改善 OpenXR 渲染和奇遇手柄支持。见[输入与观看设置](docs/INPUT_AND_VIEWING.md)。
 - Vulkan 图片转 3D 使用专用深度图计算模型，可复用图片深度图。见[GPU／模型范围](docs/MODELS.md)。

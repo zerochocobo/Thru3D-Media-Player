@@ -426,7 +426,9 @@ internal class MpvVideoBridge(
             layer && hardware && !depth && (!alpha || alphaLayer), alphaLayer && layer && hardware)
         host.playbackLayout = preparedView?.layout
         host.memorySaver = memorySaver
-        host.quality = pictureQuality && host.layerRequested && !alpha
+        // Alpha on the layer takes the mode too, except with the memory saver: its packed copies are 8-bit
+        // and made before their delay, away from where the head will look.
+        host.quality = pictureQuality && host.layerRequested && !(alpha && memorySaver)
         host.discPlaylist = discPlaylist
         host.networkLease = preparedView?.url
         host.interleaveCheckStarted = preparedView != null
@@ -581,7 +583,7 @@ internal class MpvVideoBridge(
                                         maxOutputWidth = debugInt("debug.vrpp.layer.window_max", host.maxWidth),
                                         compact = debugProperty("debug.vrpp.layer.compact").let { if (BuildConfig.DEBUG && it.isNotEmpty()) it == "1" else host.memorySaver },
                                         quality = quality,
-                                        // Debug A/B of the copy's parts, plain playback only (Alpha keeps the 8-bit copy).
+                                        // Debug A/B of the copy's parts, plain playback only.
                                         deep = !host.alphaLayer && debugInt("debug.vrpp.layer.deep", 0) == 1,
                                         sharpen = if (host.alphaLayer) 0f else debugInt("debug.vrpp.layer.sharpen", 0).coerceIn(0, 100) / 100f,
                                         windowDegrees = debugInt("debug.vrpp.layer.window", 0).coerceIn(0, 180).toFloat(),

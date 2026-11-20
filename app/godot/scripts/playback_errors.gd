@@ -63,6 +63,22 @@ const STAGES := {"resolving": "Resolving media", "reading": "Reading media", "pa
 	"ai_initialization": "Initializing AI passthrough", "ai_processing": "Processing AI passthrough"}
 const MPV_REASONS := {-14: "audio_output_failed", -15: "video_output_failed", -16: "nothing_to_play", -17: "unknown_format"}
 
+## A one-tap log upload files the failure under the problem type the user would most likely pick
+## (library_menu DIAGNOSTIC_CATEGORIES): reaching the media, AI passthrough, audio, or playback.
+const FILES_NETWORK_REASONS := ["access_denied", "login_required", "not_found", "storage_provider_failed", "source_missing",
+	"link_expired", "file_changed", "disc_incomplete", "network_timeout", "tls_failed", "host_not_found", "connection_failed",
+	"http_error", "not_media", "range_unsupported", "invalid_range", "invalid_response", "redirect_failed", "stream_interrupted"]
+const FILES_NETWORK_CODES := ["MPV_OPEN_TIMEOUT", "MPV_BUFFER_TIMEOUT", "LOCAL_DOCUMENT_PROVIDER_FAILED",
+	"PERMISSION_LOST", "LOCAL_DOCUMENT_PERMISSION_LOST", "MISSING", "LOCAL_DOCUMENT_MISSING", "TIMEOUT", "LOCAL_DOCUMENT_TIMEOUT", "UNREADABLE"]
+
+static func report_category(report: Dictionary, code: String = "") -> String:
+	var reason := str(report.get("reason", ""))
+	if code.is_empty(): code = str(report.get("code", ""))
+	if reason in FILES_NETWORK_REASONS or code in FILES_NETWORK_CODES or code.begins_with("STRM_"): return "files_network"
+	if reason.begins_with("ai_") or code == "MPV_RVM_FAILED": return "picture"
+	if reason == "audio_output_failed": return "audio_subtitles"
+	return "playback"
+
 ## The player's GPU slots: at most 8192 on a side and 8192x4320 pixels (mpv playback_failure.h).
 const PLAYER_LIMIT := "8192×4320"
 

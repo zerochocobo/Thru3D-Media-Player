@@ -14,6 +14,7 @@ class Host extends "res://tests/test_player_menu.gd".Host:
 class Surface extends "res://scripts/media_surface.gd":
 	var local_uri := "content://test/pip"
 	func portrait_requested() -> bool: return false
+	func set_scrub_hold(_held: bool) -> void: pass
 	var _binding := preload("res://scripts/pair_texture_binding.gd").new()
 	var pip := preload("res://scripts/video_pip.gd").new(self)
 	func _ready() -> void:

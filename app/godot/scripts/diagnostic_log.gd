@@ -8,6 +8,10 @@ const MAX_BYTES := 4 * 1024 * 1024
 static var path := EVENT_PATH
 static var rotated_path := ROTATED_PATH
 static var _dir_ready := ""
+## Settings' upload and the failure panels' one-tap upload say the same about where a log goes.
+const UPLOAD_TIP := "Sends this log to the developer. Media names, accounts and link parameters are masked, and it is deleted after 30 days. Quote the code when you report a problem."
+const SUPPORT_EMAIL := "ffskyteam@gmail.com"
+const SAVE_TIP := "Saved in the headset's Download/Thru3D/logs folder. Copy it with a USB cable to a computer, or send it from the headset's file manager."
 ## The Android crash ring; set once the plugin is known. Stage names, sizes and counts only.
 static var trail_sink: Object = null
 

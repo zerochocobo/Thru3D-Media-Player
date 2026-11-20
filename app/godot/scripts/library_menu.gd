@@ -66,6 +66,7 @@ var _audio_storage_labels: Array[Label3D] = []
 var _audio_storage_refresh := 0
 signal layout_requested
 signal setting_changed(key: String, value: Variant)
+signal version_history_opened
 signal setting_previewed(key: String, value: Variant)
 signal storage_eject_requested(volume: Dictionary)
 signal storage_removed(volume: Dictionary)
@@ -133,6 +134,11 @@ const SUBTITLES_TAB := 1
 const BACKGROUND_TAB := 2
 const ABOUT_TAB := 3
 const ABOUT_HOME := 36
+const WHATS_NEW := 37
+const VersionHistory := preload("res://scripts/version_history.gd")
+var unread_from := ""
+var release_notes := preload("res://scripts/release_notes_dialog.gd").new()
+var launch_browser: Callable = OS.shell_open
 var _about_page := 0 # app, credits
 var _video_settings_expanded := {}
 var _subtitle_settings_expanded := ""
@@ -478,17 +484,17 @@ func _align_playback_panel() -> void:
 	transform = Transform3D(Basis.IDENTITY, Vector3(0, top + 0.08 - bottom, 0))
 
 func has_pointer_capture() -> bool:
-	return not theme_editor.capture.is_empty() or not web_browser.hand.is_empty() or not _voice_drag.is_empty() or not audio_preview_seek.capture.is_empty() or not _drag.is_empty() or not choices.capture.is_empty() or not account_panel.web_hand.is_empty()
+	return not release_notes.capture.is_empty() or not theme_editor.capture.is_empty() or not web_browser.hand.is_empty() or not _voice_drag.is_empty() or not audio_preview_seek.capture.is_empty() or not _drag.is_empty() or not choices.capture.is_empty() or not account_panel.web_hand.is_empty()
 
 func _place_device_status(centre: Vector2) -> void:
-	if theme_editor.opened or compact or playback_expanded:
+	if release_notes.opened or theme_editor.opened or compact or playback_expanded:
 		if device_status: device_status.visible = false
 		return
 	super(centre)
 	device_status.visible = true
 
 func refresh_session_controls(force: bool = false) -> void:
-	if web_browser.active(): return
+	if release_notes.opened or web_browser.active(): return
 	if not compact and not playback_expanded: super(force)
 
 func refresh_background_audio() -> void:
@@ -520,6 +526,7 @@ func toggle() -> void:
 			_load_cloud(); refresh()
 
 func dismiss() -> void:
+	if release_notes.opened: release_notes.close(self); return
 	_cancel_smb_connect(false)
 	if theme_editor.opened: theme_editor.close(false)
 	# Website authentication is a modal workflow. Losing focus, an outside ray or
@@ -803,6 +810,8 @@ func _in_list(point: Vector3) -> bool:
 		and point.y < span.x + 0.01 and point.y > span.x - span.y - 0.02
 
 func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+	if release_notes.opened:
+		return release_notes.press(self, hand, _plane_point(origin, direction) if tracked else null, ray_hit(origin, direction) if tracked else {})
 	if theme_editor.press(hand, origin, direction, tracked): return true
 	var login_ray: Array = account_panel.web_ray(hand, origin, direction, tracked)
 	origin = login_ray[0]; direction = login_ray[1]
@@ -860,6 +869,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	return true
 
 func cancel_pointer(hand: String) -> void:
+	if release_notes.capture.get("hand") == hand: release_notes.capture.clear()
 	theme_editor.cancel(hand)
 	if web_browser.hand == hand: web_browser.cancel()
 	if _voice_drag.get("hand", "") == hand: _voice_drag.clear()
@@ -873,6 +883,9 @@ func cancel_pointer(hand: String) -> void:
 	super(hand)
 
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	if release_notes.opened:
+		super(hand, origin, direction, tracked)
+		release_notes.move(self, hand, _plane_point(origin, direction) if tracked else null); return
 	var login_ray: Array = account_panel.web_ray(hand, origin, direction, tracked)
 	origin = login_ray[0]; direction = login_ray[1]
 	super(hand, origin, direction, tracked)
@@ -923,6 +936,8 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		_drag.at_us = now
 
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	if release_notes.opened:
+		release_notes.release(self, hand, ray_hit(origin, direction) if tracked else {}); return
 	app_actions.release(hand)
 	if theme_editor.opened:
 		theme_editor.release(hand, origin, direction, tracked); return
@@ -964,6 +979,7 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 
 ## Thumbstick y (up positive) scrolls the list; it never selects.
 func stick_scroll(y: float, delta: float) -> void:
+	if release_notes.opened: release_notes.stick(self, y, delta); return
 	if theme_editor.opened: return
 	if web_browser.scroll(y, delta): return
 	if cloud_pagination.opened: return
@@ -996,6 +1012,7 @@ func media_picture_open() -> bool:
 		and server_browser.keyboard.is_empty() and not server_browser.modal_open()
 
 func stick_scroll_horizontal(x: float, delta: float) -> void:
+	if release_notes.opened: return
 	if archives.browsing: return
 	if compact: return
 	if section == Section.MEDIA_SERVER and server_browser.modal_open(): return
@@ -1005,6 +1022,7 @@ func stick_scroll_horizontal(x: float, delta: float) -> void:
 func _process(delta: float) -> void:
 	web_video.tick()
 	web_browser.tick()
+	if release_notes.opened: return
 	if visible and subtitle_queue_open and section == Section.SETTINGS and tab == VIDEO_TAB and Time.get_ticks_msec() > _subtitle_queue_poll and not has_pointer_capture() and choices.opened.is_empty():
 		_subtitle_queue_poll = Time.get_ticks_msec() + 800
 		var queue: Dictionary = settings_provider.call().get("subtitle_defaults", {}).get("subtitle_tasks", {})
@@ -1541,6 +1559,7 @@ func _redraw_file_rows() -> void:
 	composition_layout_changed.emit()
 
 func refresh() -> void:
+	if release_notes.opened: _draw(); return
 	subtitle_filter.prepare()
 	if section == Section.WEB and not Distribution.web_browser_enabled():
 		web_browser.close()
@@ -2307,8 +2326,11 @@ func _rebuild_rows() -> void:
 								rows.append(_about_info(I18n.t(str(license.name)), str(license.get("credit", license.license))))
 				else:
 					rows.append(_about_info("Thru3D Media Player", str(settings.get("version", ""))))
+					rows.append({"title": I18n.t("On-device version history"), "icon": "history", "version_history": true})
+					rows.append({"title": I18n.t("Latest updates on website"), "icon": "external_link", "online_history": true})
 					rows.append(_about_info("FFSky Studio", "© 2026 FFSky Studio"))
-					rows.append(_about_info(I18n.t("Support"), "ffskyteam@gmail.com"))
+					rows.append(_about_info(I18n.t("Support"), DiagnosticLog.SUPPORT_EMAIL))
+					rows.append({"title": I18n.t("Report a problem"), "icon": "cloud", "report_problem": true})
 					rows.append(_about_info(I18n.t("Official website"), "https://thru3d.com"))
 					rows.append(_about_info(I18n.t("Source code"), "https://github.com/zerochocobo/Thru3D-Media-Player"))
 					rows.append({"title": I18n.t("Credits"), "icon": "info", "about_page": 2})
@@ -2606,6 +2628,7 @@ func _read_cache_usage() -> Vector2i:
 ## Video state changes arrive several times a second: redraw only when the Alpha profiles
 ## (current, compiling, cold) shown on the Alpha tab change.
 func _activate(target: int) -> void:
+	if release_notes.opened: release_notes.action(self, target); return
 	if target == BACKGROUND_PICKER_DONE and background_picker_mode:
 		var files: Array = audio_selection.values().duplicate(true)
 		_remember_image_picker_location()
@@ -2627,6 +2650,8 @@ func _activate(target: int) -> void:
 		_audio_preview_scope = _audio_preview_scope_key()
 		audio_preview_requested.emit(str(row.uri), str(row.title)); return
 	if target == MUSIC_OPEN: music_requested.emit(); return
+	if target == WHATS_NEW and not unread_from.is_empty():
+		_open_version_history(); return
 	if target == AUDIO_IMPORT_CANCEL: dismiss(); return
 	if target == AUDIO_IMPORT_DONE:
 		var files: Array = audio_selection.values().duplicate(true)
@@ -2836,6 +2861,13 @@ func _choose(row: Dictionary) -> void:
 	if cloud_search.choose(row): return
 	if file_actions.select(row): return
 	if account_panel.choose(row): return
+	if row.has("online_history"):
+		status = "Could not open the browser" if launch_browser.call(VersionHistory.url(I18n.language)) != OK else ""
+		refresh(); return
+	if row.has("version_history"):
+		_open_version_history(); return
+	if row.has("report_problem"):
+		_open_report_problem(); return
 	if row.has("open_licenses"):
 		_open_licenses()
 		return
@@ -2939,6 +2971,7 @@ func _choose(row: Dictionary) -> void:
 
 ## True when a child layer was consumed; false means the source's top-level list.
 func navigate_back() -> bool:
+	if release_notes.opened: release_notes.close(self); return true
 	if subtitle_queue_open and section == Section.SETTINGS and tab == VIDEO_TAB:
 		if not choices.opened.is_empty(): choices.reset(); refresh(); return true
 		subtitle_queue_open = false; scroll = 0; refresh(); return true
@@ -3460,6 +3493,8 @@ func _draw() -> void:
 	_audio_preview_state = background_audio_provider.call() if audio_import_mode and background_audio_provider.is_valid() else {}
 	_clear_layout()
 	_settings_scroll_hint = null
+	if release_notes.opened:
+		_side.visible = false; _backdrop.visible = true; release_notes.draw(self); return
 	if theme_editor.opened:
 		_side.visible = false; _backdrop.visible = true; theme_editor.draw(); return
 	if web_browser.active():
@@ -3514,6 +3549,10 @@ func _draw() -> void:
 		column.add_child(logo)
 		# A tap on the column between its buttons is inside the menu, not a tap away.
 		_block_rays(column, Vector2(0.42, 1.12))
+		var reminder := _reminder_version()
+		if not reminder.is_empty() and not (image_picker_mode or voice_picker_mode or audio_import_mode or subtitle_picker_mode):
+			_button(WHATS_NEW, I18n.t("What's new"), Vector2(0.116, 0.49), Vector2(0.158, 0.065), true, "", true, _side)
+			_tips[WHATS_NEW] = I18n.t("What's new in %s") % reminder
 		var navigation: Array = [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] if image_picker_mode or voice_picker_mode else [Section.LOCAL, Section.SMB, Section.CLOUD] if audio_import_mode or subtitle_picker_mode else NAV_ORDER
 		if not Distribution.web_browser_enabled(): navigation = navigation.filter(func(item): return item != Section.WEB)
 		var receive_toggle := not (image_picker_mode or voice_picker_mode or audio_import_mode or subtitle_picker_mode) and PlatformMethods.supports(platform, "dlna_receiver_enable")
@@ -4030,23 +4069,27 @@ func refresh_alpha_sizes() -> void:
 func _choice_row(title: String, key: String, value: Variant, options: Array, compact: bool = false, hint: String = "") -> Dictionary:
 	return {"title": I18n.t(title), "key": key, "value": value, "choices": options, "compact": compact, "hint": hint}
 
-## Diagnostic log, last in General: save it to Download/Thru3D/logs, or serve it on the headset's
-## Wi-Fi address (a headset has no share target to a phone), or upload it to the developer for a
-## code to quote, and read recent warnings in place.
+## Report a problem, last in General (About links to it): upload the diagnostic log to the developer
+## for a code to quote, save it to Download/Thru3D/logs, or serve it on the headset's Wi-Fi address
+## (a headset has no share target to a phone), and read recent warnings in place.
 var _diagnostic_expanded := false
-const DIAGNOSTIC_SAVE_TIP := "Saved in the headset's Download/Thru3D/logs folder. Copy it with a USB cable to a computer, or send it from the headset's file manager."
-const DIAGNOSTIC_UPLOAD_TIP := "Sends this log to the developer. Media names, accounts and link parameters are masked, and it is deleted after 30 days. Quote the code when you report a problem."
+const DIAGNOSTIC_SAVE_TIP := DiagnosticLog.SAVE_TIP
+const DIAGNOSTIC_UPLOAD_TIP := DiagnosticLog.UPLOAD_TIP
+## The failure the browser shows after a Beta failure sends its log through the owner's one-tap upload
+## (main.quick_diagnostic), which keeps this state: identity, busy, code, error, path, save_error.
+var diagnostic_quick := {}
 ## What went wrong, chosen before an upload: without it a log says what happened but not what the user saw.
 const DIAGNOSTIC_CATEGORIES := [["playback", "Playback"], ["picture", "Picture or 3D"], ["audio_subtitles", "Audio or subtitles"],
 	["files_network", "Files or network"], ["web", "Web browser"], ["crash", "Crash or freeze"], ["controls", "Controls"], ["other", "Other"]]
 const DIAGNOSTIC_NOTE_LIMIT := 200
 const DIAGNOSTIC_COMPACT_HINT := "Frame-rate lines every 10 s and whenever playback struggles; warnings and errors all kept"
 func _diagnostic_rows(state: Dictionary) -> Array:
-	var header := {"title": I18n.t("Diagnostic log"), "group_header": true, "diagnostic_group": true,
+	var header := {"title": I18n.t("Report a problem"), "group_header": true, "diagnostic_group": true,
 		"icon": "chevron_down" if _diagnostic_expanded else "next"}
 	if not _diagnostic_expanded: return [header]
 	var busy := str(state.get("busy", ""))
 	var rows: Array = [header]
+	# Uploading leads; the detail level, saving and Wi-Fi sharing serve the same log by hand.
 	rows.append(_choice_row("Log detail", "diagnostic_detail", bool(state.get("full", false)),
 		[{"value": false, "label": "Compact", "hint": DIAGNOSTIC_COMPACT_HINT}, {"value": true, "label": "Full log", "hint": "Every line"}]))
 	var saved := str(state.get("path", ""))
@@ -4071,6 +4114,23 @@ func _diagnostic_rows(state: Dictionary) -> Array:
 	for line in state.get("lines", []):
 		rows.append({"title": str(line).left(96), "icon": "info", "enabled": false, "diagnostic_line": true})
 	return rows
+
+## About's link: General with Report a problem open at the top of the list.
+func _open_report_problem() -> void:
+	choices.reset()
+	_about_page = 0
+	tab = GENERAL_TAB
+	_diagnostic_expanded = true
+	setting_changed.emit("diagnostic_log", "recent")
+	_load_section()
+	_rebuild_rows()
+	scroll = float(maxi(0, rows.find_custom(func(item): return item.get("diagnostic_group", false))))
+	scroll = clampf(scroll, 0, _max_scroll())
+	refresh()
+
+## A one-tap log for the failure the browser shows: the owner sends it and keeps [diagnostic_quick].
+func request_quick_diagnostic(identity: String, action: String, report: Dictionary) -> void:
+	setting_changed.emit("diagnostic_quick", {"identity": identity, "action": action, "report": report})
 
 ## The note is typed on the system keyboard; each change goes to the owner, which keeps the draft.
 func _edit_diagnostic_note(current: String) -> void:
@@ -4337,6 +4397,20 @@ func _draw_about() -> void:
 func _about_info(title: String, detail: String) -> Dictionary:
 	return {"title": title, "detail": detail, "icon": "info", "about_info": true}
 
+func _prepare_version_history() -> bool:
+	return release_notes.prepare(str(ProjectSettings.get_setting("application/config/version", "")), I18n.language, VersionHistory.device(platform))
+
+func _reminder_version() -> String:
+	if unread_from.is_empty(): return ""
+	if not _prepare_version_history(): return release_notes.installed
+	return release_notes.newest_unread(unread_from)
+
+func _open_version_history() -> void:
+	_prepare_version_history()
+	_drag.clear()
+	_fling = 0.0
+	release_notes.open(self, unread_from)
+
 func _open_licenses() -> void:
 	_about_page = 3
 	scroll = 0.0
@@ -4420,6 +4494,12 @@ func _activate_hit(hit: Dictionary) -> void:
 		super(hit)
 
 func move_focus(direction: int) -> void:
+	if release_notes.opened:
+		if not release_notes.entries.is_empty():
+			var index := clampi(release_notes.selected + direction, 0, release_notes.entries.size() - 1)
+			release_notes.list_offset = clampi(release_notes.list_offset, maxi(0, index - release_notes.LIST_SIZE + 1), index)
+			release_notes.action(self, release_notes.VERSION_BASE + index)
+		return
 	if rows.is_empty():
 		return
 	focus_index = posmod(focus_index + direction, rows.size())
@@ -4428,5 +4508,6 @@ func move_focus(direction: int) -> void:
 	_draw()
 
 func activate_desktop() -> void:
+	if release_notes.opened: return
 	if visible and focus_index < rows.size():
 		_choose(rows[focus_index])

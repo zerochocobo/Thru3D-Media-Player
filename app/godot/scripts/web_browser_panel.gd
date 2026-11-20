@@ -66,6 +66,8 @@ const DiagnosticLog := preload("res://scripts/diagnostic_log.gd")
 const BASE := 986000
 const PASTE := BASE + 27
 const HISTORY := BASE + 28
+## Sends the log of the Beta failure the address bar shows (library_menu.request_quick_diagnostic).
+const FAILURE_LOG := BASE + 31
 const WEB := BASE + 20
 const KEY := BASE + 100
 const KEY_CONTROL := BASE + 40
@@ -123,6 +125,8 @@ var handoff_waiting_pause := false
 var handoff_started_ms := 0
 var handoff_context := {}
 var handoff_error := {}
+## Tells one shown failure from the next, so each sends its own log once.
+var _failure_count := 0
 var playback_return := {}
 var _signature := ""
 var list_mode := ""
@@ -342,7 +346,7 @@ func tick() -> void:
 	# comparing those rebuilt every browser window four times a second during playback.
 	var chrome: Array = data.get("windows", []).map(func(item): return [item.get("id"), item.get("tab_id"), item.get("url"),
 		item.get("title"), item.get("back"), item.get("forward"), item.get("error"), item.get("editing"), item.get("loading"), item.get("start_page"), item.get("network_capture_available"), item.get("network_capture_enabled"), beta_site_available(item), beta_media_ready(item)])
-	var signature := str([draft, data.get("back"), data.get("forward"), data.get("error"), handoff_error,
+	var signature := str([draft, data.get("back"), data.get("forward"), data.get("error"), handoff_error, menu.diagnostic_quick,
 		chrome, not (cinema_provider.call() if cinema_provider.is_valid() else {}).is_empty(), data.get("tab_list", []), data.get("operation_error", ""), data.get("loading"), data.get("start_page"), data.get("videos", []).size(), data.get("direct_selection", ""), data.get("native_supported", false), handoff, handoff_beta, data.get("editing", false), data.get("network_capture_available"), data.get("network_capture_enabled"), beta_site_available(data), beta_media_ready(data), menu.web_video.result.get("state", "")])
 	if signature != _signature and hand.is_empty():
 		# Do not consume changes while the page owns the pointer: release must redraw
@@ -615,13 +619,29 @@ func _cancel_handoff() -> void:
 	handoff = false; handoff_waiting_pause = false; pause_started = 0; handoff_context = {}
 
 func _handoff_failed() -> void:
+	var code := str(menu.web_video.result.get("error_code", ""))
+	if code.is_empty() or not code.is_valid_identifier(): code = "unknown"
 	if handoff_context.get("bilibili", false):
-		var code := str(menu.web_video.result.get("error_code", ""))
-		if code.is_empty() or not code.is_valid_identifier(): code = "unknown"
 		DiagnosticLog.trail("web_beta.handoff_failed", "waiting_pause=%s code=%s" % [handoff_waiting_pause, code])
-	handoff_error = handoff_context.merged({"message": menu.web_video.error_hint()})
+	handoff_error = _failure(handoff_context, menu.web_video.error_hint(), {"stage": "handoff", "error_code": code, "waiting_pause": handoff_waiting_pause})
 	_cancel_handoff()
 	menu.web_video.result = {}
+
+## The send-log button as its upload goes: send, busy, sent with the code, or saving once sending failed.
+func failure_log_state() -> Dictionary:
+	var upload: Dictionary = menu.diagnostic_quick if str(menu.diagnostic_quick.get("identity", "")) == str(handoff_error.get("failure_id", "-")) else {}
+	if upload.has("busy"): return {"icon": "cloud", "enabled": false, "tip": I18n.t("Uploading…" if upload.busy == "upload" else "Saving…")}
+	if upload.has("code"): return {"icon": "check", "tip": I18n.t("Uploaded · code %s") % str(upload.code) + "\n" + I18n.t("Quote this code when contacting %s") % DiagnosticLog.SUPPORT_EMAIL}
+	if upload.has("path"): return {"icon": "check", "tip": I18n.t("Saved to %s") % str(upload.path).get_base_dir()}
+	if upload.has("save_error"): return {"icon": "save", "action": "save", "tip": str(upload.save_error)}
+	if upload.has("error"): return {"icon": "save", "action": "save", "tip": str(upload.error) + "\n" + I18n.t("Save log")}
+	return {"icon": "cloud", "action": "upload", "tip": I18n.t("Send log") + "\n" + I18n.t(DiagnosticLog.UPLOAD_TIP)}
+
+func _draw_failure_log(host: Node) -> void:
+	var entry := failure_log_state()
+	host._button(FAILURE_LOG, "", Vector2(0.278, host.NAV_Y), host.TOOL_SIZE, entry.get("enabled", true), entry.icon)
+	host._tips[FAILURE_LOG] = entry.tip
+	if not entry.get("enabled", true): host._buttons.back()["hover_disabled"] = true
 
 func owns_handoff(host: Node, context: Dictionary) -> bool:
 	var current := window_state(host.window_id)
@@ -649,9 +669,22 @@ func _discard_playback_return() -> void:
 	if playback_return.get("retained", false): _video_command("release_retained_page", playback_return)
 	playback_return.clear()
 
-func restore_playback(failed: bool, position_ms: int = -1) -> void:
+## The failure the address bar shows, with what its log report says: the site's host, never the page.
+func _failure(context: Dictionary, message: String, report: Dictionary) -> Dictionary:
+	_failure_count += 1
+	var host := str(context.get("origin", "")).get_slice("://", 1).get_slice("/", 0)
+	host = host.substr(host.rfind("@") + 1)
+	return context.merged({"message": message, "failure_id": "web:%d" % _failure_count,
+		"report": report.merged({"category": "web", "trigger": "web_beta", "site": host.get_slice(":", 0)})})
+
+## [failure] (failed only): the player's message, error and report, shown on the page it returns to.
+func restore_playback(failed: bool, position_ms: int = -1, failure: Dictionary = {}) -> void:
 	if playback_return.is_empty(): return
 	var context := playback_return.duplicate(true); playback_return.clear()
+	if failed:
+		var message := str(failure.get("message", ""))
+		handoff_error = _failure(context, message if not message.is_empty() else I18n.t("Playback failed"),
+			{"stage": "native", "error": str(failure.get("error", "")), "source": str(failure.get("source", "")), "failure": failure.get("failure", {})})
 	if position_ms >= 0: context.position_ms = position_ms
 	context.play = failed and bool(context.get("was_playing", false))
 	context.exit_fullscreen = not failed
@@ -765,16 +798,22 @@ func draw_window(host: Node) -> void:
 	draw_tab_strip(host, current)
 	var issue := str(data.get("operation_error", "")) if host.window_id == focused_window else ""
 	var status := handoff_status() if handoff and owns_handoff(host, handoff_context) else ""
+	var failure_log := false
 	if host.selecting: status = I18n.t("Drag to select")
 	if not str(current.get("error", "")).is_empty(): status = I18n.t("Unable to load page")
-	elif owns_handoff(host, handoff_error): status = str(handoff_error.message)
+	elif owns_handoff(host, handoff_error):
+		status = str(handoff_error.message)
+		failure_log = handoff_error.has("report")
 	elif not issue.is_empty():
 		var messages := {"tab_limit": "Maximum 4 tabs", "tabs_busy": "Close a tab to free memory", "window_limit": "Window limit reached",
 			"invalid_address": "Invalid address", "bookmark_limit": "Bookmark limit reached", "storage_failed": "Unable to save changes"}
 		status = I18n.t(messages.get(issue, "Unable to open page"))
 	var caption: String = status if not status.is_empty() else address if not address.is_empty() else I18n.t("Enter URL")
-	host._button(BASE + 3, host._fit_title(caption, "", 0.504, 22), Vector2(0.066, host.NAV_Y), Vector2(0.544, host.TOOL_SIZE.y))
+	# A shown Beta failure keeps a send-log button at the bar's end; the address narrows by one tool.
+	var address_width := 0.416 if failure_log else 0.544
+	host._button(BASE + 3, host._fit_title(caption, "", address_width - 0.04, 22), Vector2(0.066 - (0.544 - address_width) / 2, host.NAV_Y), Vector2(address_width, host.TOOL_SIZE.y))
 	host._tips[BASE + 3] = (status + "\n" if not status.is_empty() else "") + (title + "\n" if not title.is_empty() else "") + address
+	if failure_log: _draw_failure_log(host)
 	host._button(PASTE, "", Vector2(0.406, host.NAV_Y), host.TOOL_SIZE, true, "paste")
 	host._tips[PASTE] = I18n.t("Paste")
 	host._button(HISTORY, "", Vector2(0.534, host.NAV_Y), host.TOOL_SIZE, true, "history")
@@ -989,6 +1028,10 @@ func action(target: int) -> bool:
 		history.opened = not history.opened; history.page = 0; history.scroll_step = 0.0
 		tabs_open = false; window_action.clear(); saved_poll = 0
 		refresh_windows(); return true
+	if active() and target == FAILURE_LOG:
+		var entry := failure_log_state()
+		if entry.has("action"): menu.request_quick_diagnostic(str(handoff_error.failure_id), str(entry.action), handoff_error.report)
+		return true
 	if active() and target == PASTE:
 		var text := clipboard_address()
 		if not text.is_empty():

@@ -323,24 +323,31 @@ func _run() -> void:
 	choose_setting(menu, "show_fps", true)
 	check(settings_events.back() == ["show_fps", true], "FPS display can be switched on from Display settings")
 	menu._activate(Menu.TAB_BASE + Menu.SUBTITLES_TAB)
-	check(menu.tab == Menu.VIDEO_TAB and menu.rows.size() == 11 and menu.rows[6].get("key", "") == "memory_mode"
-		and menu.rows[7].get("key", "") == "alpha_auto_from_filename" and menu.rows[8].get("key", "") == "alpha_keep_background", "Legacy subtitle tab opens the compact video settings with filename control and background retention")
-	check(menu.rows[3].get("key", "") == "depth_render" and menu.rows[3].value == "stretch"
-		and menu.rows[3].choices.map(func(option): return option.value) == ["fill", "stretch"], "Video settings offer both 2D-to-3D views, edge stretching by default")
+	# Rows by key: the video tab grows, and these checks are about the rows, not their count.
+	var video_row := func(key: String) -> Dictionary:
+		var found: Array = menu.rows.filter(func(row): return row.get("key", "") == key)
+		return found[0] if found.size() == 1 else {}
+	var video_keys: Array = menu.rows.map(func(row): return row.get("key", ""))
+	check(menu.tab == Menu.VIDEO_TAB and video_keys.find("memory_mode") >= 0 and video_keys.find("alpha_auto_from_filename") == video_keys.find("memory_mode") + 1
+		and video_keys.find("alpha_keep_background") == video_keys.find("memory_mode") + 2, "Legacy subtitle tab opens the compact video settings with filename control and background retention")
+	check(video_row.call("depth_render").get("value") == "stretch"
+		and video_row.call("depth_render").get("choices", []).map(func(option): return option.value) == ["fill", "stretch"], "Video settings offer both 2D-to-3D views, edge stretching by default")
 	choose_setting(menu, "depth_render", "fill")
 	check(settings_events.back() == ["depth_render", "fill"], "2D-to-3D view choice is reported")
 	check(not menu.rows.any(func(row): return row.get("key", "") == "depth_text_protection"), "Release hides 3D text protection in library settings")
 	menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group", "") == "subtitles")[0])
 	menu._choose(menu.rows.filter(func(row): return row.get("subtitle_settings_group", "") == "appearance")[0])
 	var subtitle_rows: Array = menu.rows.filter(func(row): return str(row.get("key", "")).begins_with("subtitle_") and row.get("key", "") not in ["subtitle_task_mode", "subtitle_task_policy"])
-	check(subtitle_rows.size() == 7 and subtitle_rows[3].slider and subtitle_rows[3].value == 5.0,
+	var subtitle_keys: Array = subtitle_rows.map(func(row): return row.key)
+	var subtitle_row := func(key: String) -> Dictionary: return subtitle_rows[subtitle_keys.find(key)] if key in subtitle_keys else {}
+	check(subtitle_row.call("subtitle_distance").get("slider", false) and subtitle_row.call("subtitle_distance").get("value") == 5.0,
 		"Subtitle distance is a slider, 5 m by default")
-	check(subtitle_rows[5].key == "subtitle_horizontal_position" and subtitle_rows[5].slider and subtitle_rows[5].value == 0,
+	check(subtitle_row.call("subtitle_horizontal_position").get("slider", false) and subtitle_row.call("subtitle_horizontal_position").get("value") == 0,
 		"Global subtitle angle defaults to the marked centre")
-	check(subtitle_rows[4].key == "subtitle_direction" and subtitle_rows[4].value == 0 and subtitle_rows[4].choices.size() == 2,
-		"Direction control is above position, horizontal by default")
-	check(subtitle_rows[0].key == "subtitle_size" and subtitle_rows[0].value == 100 and subtitle_rows[0].span == Vector3(50, 200, 5), "Global text size covers 50 to 200 percent")
-	check(subtitle_rows[1].key == "subtitle_style" and subtitle_rows[1].choices.size() == 5 and subtitle_rows[1].compact, "Global subtitle styles are five direct visual choices")
+	check(subtitle_row.call("subtitle_direction").get("value") == 0 and subtitle_row.call("subtitle_direction").get("choices", []).size() == 2
+		and subtitle_keys.find("subtitle_direction") < subtitle_keys.find("subtitle_horizontal_position"), "Direction control is above position, horizontal by default")
+	check(subtitle_keys[0] == "subtitle_size" and subtitle_rows[0].value == 100 and subtitle_rows[0].span == Vector3(50, 200, 5), "Global text size covers 50 to 200 percent")
+	check(subtitle_row.call("subtitle_style").get("choices", []).size() == 5 and subtitle_row.call("subtitle_style").get("compact", false), "Global subtitle styles are five direct visual choices")
 	choose_setting(menu, "subtitle_size", 150)
 	check(settings_events.back() == ["subtitle_size", 150.0], "Global size slider applies on release")
 	choose_setting(menu, "subtitle_style", "yellow_black")
@@ -358,7 +365,7 @@ func _run() -> void:
 	check(about_text.contains("Thru3D Media Player") and about_text.contains("FFSky Studio")
 		and about_text.contains("ffskyteam@gmail.com") and about_text.contains("https://thru3d.com")
 		and about_text.contains("https://github.com/zerochocobo/Thru3D-Media-Player"), "About brand and support")
-	menu._activate(Menu.ROW_BASE + 5)
+	menu._activate(Menu.ROW_BASE + menu.rows.find_custom(func(row): return row.get("about_page") == 2))
 	check(menu.rows[0].title == "Belfast Sunset (Pure Sky)" and menu.rows[0].detail.contains("Poly Haven · CC0 1.0")
 		and menu.rows[0].detail.contains("Dimitrios Savva / Greg Zaal / Jarod Guest") and menu.rows.any(func(row): return str(row.title).begins_with("Godot ")),
 		"One panorama entry contains its source, license and all authors")

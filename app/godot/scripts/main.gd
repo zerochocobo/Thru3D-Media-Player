@@ -1,6 +1,7 @@
 extends Node3D
 
 const MediaUri := preload("res://scripts/media_uri.gd")
+const PlaybackErrors := preload("res://scripts/playback_errors.gd")
 const ScreenPresets := preload("res://scripts/screen_presets.gd")
 const UiTheme := preload("res://scripts/ui_theme.gd")
 
@@ -13,6 +14,7 @@ var favorites: RefCounted
 var _migrating_favorites := false
 var _playing_protected := false
 const Log := preload("res://scripts/diagnostic_log.gd")
+const VersionHistory := preload("res://scripts/version_history.gd")
 const Video := preload("res://scripts/mpv_video_display.gd")
 const ServerPlayback := preload("res://scripts/media_server_playback.gd")
 const AlphaEdge := preload("res://scripts/alpha_edge.gd")
@@ -338,7 +340,9 @@ func _ready() -> void:
 	display.status_changed.connect(_update_status)
 	display.status_changed.connect(_on_input_session_changed)
 	display.status_changed.connect(_queue_report)
-	settings.load(settings_path)
+	var load_result := settings.load(settings_path)
+	if load_result in [OK, ERR_FILE_NOT_FOUND] and VersionHistory.record_launch(settings, str(ProjectSettings.get_setting("application/config/version", ""))):
+		settings.save(settings_path)
 	# Off until the viewer turns it on: low-end headsets have not been measured with it.
 	relight_wanted = bool(settings.get_value("video", "ambient_light", false))
 	UiTheme.use(UiTheme.load_choice(settings))
@@ -475,7 +479,8 @@ func _ready() -> void:
 	video.reuse_last_mode_changed.connect(_on_reuse_last_video_mode_changed)
 	_restore_subtitle_settings()
 	video.color_grade.restore(settings.get_value("video", "color_grade", {}))
-	video.picture_sharpness = float(settings.get_value("video", "picture_sharpness", 1.0))
+	video.picture_sharpness = float(settings.get_value("video", "picture_sharpness", video.SHARPNESS_DEFAULT))
+	video.alpha_copy_packed = memory_saver
 	# A look saved with gamma or saturation played in the eye buffers until now: the mode starts on for
 	# it, so the look stays and the picture returns to the compositor layer.
 	if not settings.has_section_key("video", "picture_quality"):
@@ -523,6 +528,10 @@ func _ready() -> void:
 	if video.video_layer: video.video_layer.supersampling = Quality.load_supersampling(settings, low_end_gpu)
 	display.set_foveation(int(settings.get_value("video", "foveation", 0)))
 	recent_menu = PuzzleLibraryMenu.new()
+	recent_menu.unread_from = str(settings.get_value(VersionHistory.SECTION, "unread_from", ""))
+	recent_menu.version_history_opened.connect(func():
+		settings.set_value(VersionHistory.SECTION, "unread_from", "")
+		settings.save(settings_path))
 	recent_menu.browse_memory = directory_browse_memory
 	recent_menu.restore_directory_position = bool(settings.get_value("library", "restore_position", true))
 	recent_menu.controls_page.bindings = controller_bindings
@@ -538,6 +547,7 @@ func _ready() -> void:
 	recent_menu.file_delete_preparing.connect(_prepare_file_delete)
 	recent_menu.file_deleted.connect(_forget_deleted_file)
 	recent_menu.settings_provider = _library_settings
+	recent_menu.diagnostic_quick = quick_upload
 	recent_menu.chosen.connect(_on_library_chosen)
 	recent_menu.browser_opened.connect(_on_web_browser_opened)
 	recent_menu.web_browser.effects_changed.connect(_update_background)
@@ -2824,7 +2834,7 @@ func _menu_pointer_owned(menu: Node3D, hand: String) -> bool:
 		if hand in [menu._seek_hand, menu._volume_hand, menu._depth_hand, menu._adjust_hand] or menu.choices.capture.get("hand", "") == hand or menu.bookmarks.capture.get("hand", "") == hand: return true
 		return menu.has_expanded_library() and _menu_pointer_owned(menu.expanded_library, hand)
 	if menu is LibraryMenu:
-		return menu._drag.get("hand", "") == hand or menu.choices.capture.get("hand", "") == hand or menu.account_panel.web_hand == hand or menu.server_browser.gallery.capture.get("hand", "") == hand
+		return menu.release_notes.capture.get("hand", "") == hand or menu._drag.get("hand", "") == hand or menu.choices.capture.get("hand", "") == hand or menu.account_panel.web_hand == hand or menu.server_browser.gallery.capture.get("hand", "") == hand
 	return false
 
 ## A ray near a flat screen corner shows its bracket: pressing there resizes.
@@ -4732,6 +4742,11 @@ func _depth_render_mode() -> String:
 
 ## Diagnostic log (Settings > General): the plugin's last result per action.
 var diagnostic_state := {}
+## The one-tap log of a failure (player failure panel, browser after a Beta failure), keyed by the
+## failure it reports: busy, code, error, path, save_error. Changed in place: the library menu holds it too.
+var quick_upload := {}
+## Who asked for each pending log action ("settings" or "quick"): one plugin worker answers in order.
+var _diagnostic_origins: Array[String] = []
 
 ## Versions and the settings that shape playback, on top of the log.
 func _diagnostic_header() -> String:
@@ -4744,8 +4759,11 @@ func _diagnostic_header() -> String:
 	return "Player: " + JSON.stringify(info)
 
 func _on_diagnostic_log(payload: String) -> void:
+	var origin: String = _diagnostic_origins.pop_front() if not _diagnostic_origins.is_empty() else "settings"
 	var result: Variant = JSON.parse_string(payload)
 	if not result is Dictionary: return
+	if origin == "quick":
+		_on_quick_diagnostic(result); return
 	diagnostic_state.erase("busy")
 	var ok := bool(result.get("ok", false))
 	match str(result.get("action", "")):
@@ -4771,12 +4789,60 @@ func _on_diagnostic_log(payload: String) -> void:
 			if ok: diagnostic_state["lines"] = result.get("lines", [])
 	if recent_menu and recent_menu.visible: recent_menu.refresh()
 
+## One tap sends the log of the failure in front of the user: the problem type follows the failure and
+## [report] rides on top of the log. [action] is "upload", or "save" once an upload of it has failed.
+func quick_diagnostic(identity: String, action: String, report: Dictionary) -> void:
+	if identity.is_empty() or action not in ["upload", "save"]: return
+	if not platform_plugin or not PlatformMethods.supports(platform_plugin, "diagnostic_log"): return
+	if str(quick_upload.get("identity", "")) != identity:
+		quick_upload.clear(); quick_upload["identity"] = identity
+	# One log per failure: a sent or saved one stays, a busy one is not asked twice.
+	if quick_upload.has("busy") or quick_upload.has("code") or (action == "save" and quick_upload.has("path")): return
+	for key in ["error", "save_error"]: quick_upload.erase(key)
+	quick_upload["busy"] = action
+	_diagnostic_origins.append("quick")
+	var header := "Report: " + JSON.stringify(report.merged({"note": ""})) + "\n" + _diagnostic_header()
+	platform_plugin.diagnostic_log(action, header, bool(diagnostic_state.get("full", false)))
+	_quick_diagnostic_changed()
+
+func _on_quick_diagnostic(result: Dictionary) -> void:
+	quick_upload.erase("busy")
+	var ok := bool(result.get("ok", false))
+	match str(result.get("action", "")):
+		"upload":
+			if ok: quick_upload["code"] = str(result.get("code", ""))
+			else: quick_upload["error"] = I18n.t("Too many uploads, try again later" if str(result.get("error", "")) in ["rate_limited", "quota"] else "Could not upload")
+		"save":
+			if ok: quick_upload["path"] = str(result.get("path", ""))
+			else: quick_upload["save_error"] = I18n.t("Could not save")
+	_quick_diagnostic_changed()
+
+func _quick_diagnostic_changed() -> void:
+	if player_menu and player_menu.visible: player_menu.refresh_values()
+
+## The failure the player panel shows: the session and its message tell one failure from the next.
+func _failure_identity() -> String:
+	return "video:%d:%s" % [video.media.session_id, _menu_error()]
+
+func _failure_report() -> Dictionary:
+	var failure: Dictionary = video.media.error_report if video.picker_error.is_empty() else {}
+	return {"category": PlaybackErrors.report_category(failure, video.picker_error), "trigger": "failure_panel",
+		"source": source_scheme(video.local_uri), "error": video.picker_error if not video.picker_error.is_empty() else video.media.error, "failure": failure}
+
+## The kind of source a failed address was, never the address: "smb", "https", "content", "file".
+static func source_scheme(uri: String) -> String:
+	if uri.is_empty(): return ""
+	if not uri.contains("://"): return "file"
+	var scheme := uri.get_slice("://", 0).to_lower()
+	return scheme if scheme.length() <= 16 and RegEx.create_from_string("^[a-z][a-z0-9+.-]*$").search(scheme) else "other"
+
 ## Output width and memory saver for sources opened from now on.
 func _apply_memory_mode(plugin: Object) -> void:
 	var total_mb := int(plugin.total_memory_mb()) if plugin and PlatformMethods.supports(plugin, "total_memory_mb") else 0
 	memory_saver = Quality.memory_saver(Quality.load_memory_choice(settings), low_end_gpu, total_mb)
 	if not plugin: return
 	if PlatformMethods.supports(plugin, "set_mpv_memory_saver"): plugin.set_mpv_memory_saver(memory_saver)
+	if video: video.alpha_copy_packed = memory_saver
 	plugin.set_mpv_output_width(Quality.output_width(Quality.load_output_choice(settings), low_end_gpu or memory_saver))
 
 func _restore_seek_settings() -> void:
@@ -5121,6 +5187,7 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 					header = "Report: " + JSON.stringify({"category": category, "note": str(diagnostic_state.get("note", ""))}) + "\n" + header
 					diagnostic_state["report"] = false
 				diagnostic_state["busy"] = str(value)
+				_diagnostic_origins.append("settings")
 				platform_plugin.diagnostic_log(str(value), header, bool(diagnostic_state.get("full", false)))
 		"diagnostic_report":
 			diagnostic_state["report"] = bool(value)
@@ -5130,6 +5197,9 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			diagnostic_state["note"] = str(value).strip_escapes().left(200)
 		"diagnostic_detail":
 			diagnostic_state["full"] = bool(value)
+		"diagnostic_quick":
+			if value is Dictionary and value.get("report") is Dictionary:
+				quick_diagnostic(str(value.get("identity", "")), str(value.get("action", "")), value.report)
 		"memory_mode":
 			settings.set_value("video", "memory_mode", int(value))
 			settings.save(settings_path)
@@ -5255,6 +5325,8 @@ func _on_menu_action(operation: String) -> void:
 	if operation == "wrist_watch_toggle": _toggle_wrist_watch(); return
 	if operation == "hand_lock_toggle": hand_lock.set_locked(not hand_lock.locked); return
 	if operation == "bar_appearance_done": _finish_bar_appearance(); return
+	if operation in ["diagnostic_upload", "diagnostic_save"] and not photo_active and not _menu_error().is_empty():
+		quick_diagnostic(_failure_identity(), operation.trim_prefix("diagnostic_"), _failure_report()); return
 	if operation == "usb_takeover" and not photo_active and _usb_takeover_offer():
 		_close_current_media(false)
 		if recent_menu is LibraryMenu: recent_menu.open_usb_takeover()
@@ -5680,6 +5752,8 @@ func _menu_state() -> Dictionary:
 		"capabilities_available": platform_plugin != null,
 		"error": _menu_error(), "error_report": video.media.error_report if video.picker_error.is_empty() else {},
 		"usb_takeover_offer": _usb_takeover_offer()}
+	if not str(result.error).is_empty() and str(quick_upload.get("identity", "")) == _failure_identity():
+		result["diagnostic_upload"] = quick_upload.duplicate()
 	result.merge(video.bookmarks_snapshot())
 	if seek_feedback.phase in ["preview", "waiting"]: result["bookmark_ready"] = false
 	result["watch_available"] = wrist_watch != null
@@ -5891,6 +5965,9 @@ func _return_to_web_video(failed: bool, uri: String) -> void:
 	if not recent_menu or str(recent_menu.web_browser.playback_return.get("native_uri", "")) != uri: return
 	_clear_controls_locks()
 	var position: int = video.control.display_position_ms() if video.local_uri == uri and video.media.frame_counter > 0 else -1
+	# What failed goes back with the page: the browser shows it and can send its log.
+	var failure := {"message": _menu_error(), "error": video.media.error, "failure": video.media.error_report.duplicate(true),
+		"source": source_scheme(video.local_uri)} if failed and video.local_uri == uri else {}
 	_cancel_video_queue_wait()
 	_grab = {}; interface_move.cancel(); stick_controls.suspend()
 	if video_directory: video_directory.cancel()
@@ -5898,7 +5975,7 @@ func _return_to_web_video(failed: bool, uri: String) -> void:
 	video.loop_enabled = playback_mode == "repeat_one"
 	_show_full_library()
 	recent_menu._playback_context.clear()
-	recent_menu.web_browser.restore_playback(failed, position)
+	recent_menu.web_browser.restore_playback(failed, position, failure)
 
 var _thumbnail_history_sequence := -1
 func _update_thumbnail_protection() -> void:
@@ -5942,7 +6019,7 @@ func _update_beach_time(delta: float) -> void:
 ## The sea is heard only when nothing else is: no playing video and no background music.
 func _beach_surf_audible() -> bool:
 	if not _beach_active() or not _input_focused(): return false
-	if video and not video.local_uri.is_empty() and video.media.state == "playing": return false
+	if _film_playing(): return false
 	var music: Variant = music_menu.audio if music_menu else null
 	return music == null or music.paused or music.player == null or not music.player.playing
 
@@ -6121,7 +6198,7 @@ func _update_beach_handhelds() -> void:
 func _beach_screen_aim(hand: String, ray: Variant, menu: Node3D) -> Variant:
 	if not _beach_active() or ray == null or menu != null or _cinema_interaction_owns(): return null
 	var dragging: bool = beach_environment.scene_held(hand) and beach_environment.screen_editing()
-	if not dragging and video and not video.local_uri.is_empty() and video.media.state == "playing": return null
+	if not dragging and _film_playing(): return null
 	var hit: Dictionary = beach_environment.beach.screen_hit(ray[0], ray[1])
 	return hit.point if not hit.is_empty() else null
 
@@ -6483,12 +6560,21 @@ func _cinema_picture_key() -> String:
 	return "beach_picture_size" if cinema_environment==beach_environment and beach_environment else "cinema_picture_size"
 
 ## True while a film is playing or just stopped: the hall dims and the beach turns to night.
+## A held seek stick pauses the decoder on each landed frame; the film is still running. The
+## decoder reports its resume a moment after the last frame, while the gesture fades out.
+func _stick_seek_paused() -> bool:
+	return not seek_feedback.phase.is_empty() and video != null and video.get("requested_play") == true and video.media.state == "paused"
+
+## What the scene treats as a playing film: its lights, sounds and locks ignore a stick seek.
+func _film_playing() -> bool:
+	return video != null and not video.local_uri.is_empty() and (video.media.state == "playing" or _stick_seek_paused())
+
 func _film_dark() -> bool:
 	if not video: return false
 	var now := Time.get_ticks_msec()
 	# Only an open file can be "loading": with nothing open, auto keeps the lights up.
 	var opening := not str(video.get("local_uri") if video.get("local_uri") != null else "").is_empty()
-	if opening and video.get("requested_play") == true and video.media.state not in ["paused", "ended", "error", "failed", "closed"]:
+	if opening and video.get("requested_play") == true and (_stick_seek_paused() or video.media.state not in ["paused", "ended", "error", "failed", "closed"]):
 		_cinema_lights_idle_since = -1
 	elif _cinema_lights_idle_since < 0:
 		_cinema_lights_idle_since = now
@@ -7307,11 +7393,13 @@ func _stick_seek_sample() -> Dictionary:
 	var details: Dictionary = video.media.playback.get("details", {})
 	return {"active": video.cast_allows("seek") and video.media.accepts(video.media.session_id) and video.picker_error.is_empty() and details.get("seekable", "yes") != "no",
 		"uri": video.local_uri, "session": video.media.session_id, "sequence": video.control.sequence,
-		"push": video.scrub_push(), "live": video.scrub_live(),
 		"position_ms": video.control.display_position_ms(), "duration_ms": video.control.duration_ms}
 
 func _begin_stick_seek(hand: String, input: String, step: int, id: String = "") -> void:
-	seek_feedback.begin(_stick_seek_sample(), hand, input, step, id)
+	var sample := _stick_seek_sample()
+	# Read once per gesture: the per-frame sample only tracks the session and its position.
+	if not sample.is_empty(): sample.merge({"push": video.scrub_push(), "live": video.scrub_live()})
+	seek_feedback.begin(sample, hand, input, step, id)
 	_submit_stick_seek()
 
 ## The release uses the viewer's seek precision. Held steps are keyframe scrubs, one at a

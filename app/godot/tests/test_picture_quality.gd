@@ -10,6 +10,7 @@ func check(value: bool, message: String) -> void:
 func _initialize() -> void: call_deferred("_run")
 
 func _run() -> void:
+	_alpha_blockers()
 	var grade := Grade.new()
 	check(not grade.uses_curves(), "A fresh grade uses no gamma or saturation")
 	grade.adjust("contrast", 1.2)
@@ -80,9 +81,9 @@ func _run() -> void:
 	check(menu._adjust_rows[Menu.PICTURE_SHARPNESS].button.enabled, "Sharpness unlocks with the mode")
 	menu._set_adjustment_at(-10.0)
 	var span: Vector3 = menu._adjust_rows[Menu.PICTURE_SHARPNESS].span
-	check(is_equal_approx(span.x, 0.0) and is_equal_approx(span.y, 500.0), "Sharpness runs from 0% to 500%")
+	check(is_equal_approx(span.x, 0.0) and is_equal_approx(span.y, 200.0), "Sharpness runs from 0% to 200%")
 	check(is_zero_approx(Video.sharpen_strength(0.0)), "0% is no sharpening")
-	check(is_equal_approx(Video.sharpen_strength(1.0), 1.0) and is_equal_approx(Video.sharpen_strength(5.0), 5.0), "100% is all of RCAS; above it the excess passes on")
+	check(is_equal_approx(Video.sharpen_strength(1.0), 1.0) and is_equal_approx(Video.sharpen_strength(2.0), 2.0), "100% is all of RCAS; above it the excess passes on")
 	check(Video.sharpen_strength(0.5) > 0.7 and Video.sharpen_strength(0.5) < 0.8 and Video.sharpen_strength(0.1) > 0.3, "The lower half of the slider is evened out")
 	var option := func(key: String, value: int) -> Dictionary:
 		return menu._buttons.filter(func(button): var target: Dictionary = menu.choices.targets.get(button.target, {}); return target.get("key", "") == key and int(target.get("value", -1)) == value)[0]
@@ -123,3 +124,11 @@ func _run() -> void:
 	for failure in failures: printerr("FAIL: " + failure)
 	print("picture quality tests: %d failures" % failures.size())
 	quit(1 if not failures.is_empty() else 0)
+
+## Each setting that keeps Alpha off the layer has its own explanation on the switch.
+func _alpha_blockers() -> void:
+	var texts := {}
+	for key in ["alpha", "alpha_background", "alpha_flat", "alpha_memory", "alpha_fisheye", "3d", "source"]:
+		check(Menu.PICTURE_QUALITY_BLOCKERS.has(key), "The switch explains " + key)
+		texts[Menu.PICTURE_QUALITY_BLOCKERS.get(key, "")] = true
+	check(texts.size() == 7, "Each reason reads differently")

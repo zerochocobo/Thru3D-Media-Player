@@ -197,6 +197,8 @@ var _screen_measurement: Label3D
 const ERROR_DETAILS := 496
 const ERROR_OPEN := 499
 const USB_TAKEOVER := 497
+## Sends the failure's log in one tap; the problem type follows the failure (main.quick_diagnostic).
+const FAILURE_LOG := 498
 const PlaybackErrors := preload("res://scripts/playback_errors.gd")
 var _failure_open := false
 var _error_details_open := false
@@ -209,8 +211,10 @@ const PICTURE_SHARPNESS := 461
 ## The 2D to 3D settings fold under one header above Alpha's, closed each time like it.
 const DEPTH_GROUP := 462
 const DEPTH_GROUP_SETTINGS := ["video_auto_3d", "depth_render"]
-const PICTURE_QUALITY_HINT := "Sharper picture, with gamma and saturation adjustable. Uses more battery and the headset runs warmer. Turn off AI portrait passthrough and 2D to 3D first. The picture pauses briefly when switching."
+const PICTURE_QUALITY_HINT := "Sharper picture, with gamma and saturation adjustable. Uses more battery and the headset runs warmer. Turn off 2D to 3D first. The picture pauses briefly when switching."
 const PICTURE_QUALITY_BLOCKERS := {"alpha": "Unavailable while AI portrait passthrough is on", "3d": "Unavailable while 2D to 3D is on",
+	"alpha_background": "Unavailable for AI portrait passthrough while Keep background during passthrough is on", "alpha_flat": "Unavailable for AI portrait passthrough on flat video", "alpha_memory": "Unavailable for AI portrait passthrough while Memory is set to Saver",
+	"alpha_fisheye": "Unavailable for AI portrait passthrough on fisheye video",
 	"source": "Unavailable for this video"}
 const PICTURE_LOCKED_HINT := "Turn on Picture quality mode to adjust"
 ## Super resolution describes what it does to the video on show: its size and the size it becomes.
@@ -2303,7 +2307,7 @@ func _draw_failure_panel() -> void:
 	var summary := _info_text()
 	var detail := PlaybackErrors.details(_state.get("error_report", {}))
 	var takeover := bool(_state.get("usb_takeover_offer", false))
-	var button_offset := 0.14 + _error_text_height(summary, 19) + 0.058 + (0.075 if takeover else 0.0)
+	var button_offset := 0.14 + _error_text_height(summary, 19) + 0.058 + 0.075 + (0.075 if takeover else 0.0)
 	var detail_offset := button_offset + 0.058
 	var height := detail_offset + _error_text_height(detail, 14) + 0.055 if _error_details_open else button_offset + 0.093
 	var top := _settings_frame(height)
@@ -2315,7 +2319,10 @@ func _draw_failure_panel() -> void:
 	_info.width = 0.98 / _info.pixel_size
 	_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	if takeover:
-		_button(USB_TAKEOVER, I18n.t("Open directly"), Vector2(0, top - button_offset + 0.075), Vector2(0.98, 0.065), true, "usb", true)
+		_button(USB_TAKEOVER, I18n.t("Open directly"), Vector2(0, top - button_offset + 0.15), Vector2(0.98, 0.065), true, "usb", true)
+	var entry := _failure_log()
+	_button(FAILURE_LOG, entry.text, Vector2(0, top - button_offset + 0.075), Vector2(0.98, 0.065), entry.get("enabled", true), entry.icon)
+	if entry.has("tip"): _tips[FAILURE_LOG] = entry.tip
 	_button(ERROR_DETAILS, I18n.t("Error details") + ("  ▾" if _error_details_open else "  ▸"), Vector2(0, top - button_offset), Vector2(0.98, 0.065))
 	if _error_details_open:
 		var info := _label(detail, Vector3(-0.49, top - detail_offset, 0.004), 14)
@@ -2324,6 +2331,21 @@ func _draw_failure_panel() -> void:
 		info.width = 0.98 / info.pixel_size
 		info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	choices.finish()
+
+## The failure log row as its upload goes: send, busy, the code to quote, or saving it when sending failed.
+func _failure_log() -> Dictionary:
+	var upload: Dictionary = _state.get("diagnostic_upload", {})
+	if upload.has("busy"):
+		return {"text": I18n.t("Uploading…" if upload.busy == "upload" else "Saving…"), "icon": "cloud", "enabled": false}
+	if upload.has("code"):
+		return {"text": I18n.t("Uploaded · code %s") % str(upload.code), "icon": "check", "tip": I18n.t("Quote this code when contacting %s") % DiagnosticLog.SUPPORT_EMAIL}
+	if upload.has("path"):
+		return {"text": I18n.t("Saved to %s") % str(upload.path).get_base_dir(), "icon": "check", "tip": I18n.t(DiagnosticLog.SAVE_TIP)}
+	if upload.has("save_error"):
+		return {"text": str(upload.save_error), "icon": "save", "action": "diagnostic_save", "tip": I18n.t(DiagnosticLog.SAVE_TIP)}
+	if upload.has("error"):
+		return {"text": str(upload.error) + " · " + I18n.t("Save log"), "icon": "save", "action": "diagnostic_save", "tip": I18n.t(DiagnosticLog.SAVE_TIP)}
+	return {"text": I18n.t("Send log"), "icon": "cloud", "action": "diagnostic_upload", "tip": I18n.t(DiagnosticLog.UPLOAD_TIP)}
 
 func _error_text_height(text: String, logical_size: int) -> float:
 	return ui_font().get_multiline_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, 0.98 / TEXT_PIXEL_SIZE,
@@ -2342,7 +2364,7 @@ func _picture_quality_rows(y: float) -> void:
 		toggle.enabled = false
 		toggle["hover_disabled"] = true
 		_tips[toggle.target] = I18n.t(PICTURE_QUALITY_BLOCKERS.get(str(_state.get("picture_quality_blocker", "")), PICTURE_QUALITY_BLOCKERS.source))
-	_adjustment_row(PICTURE_SHARPNESS, "picture_sharpness", "Sharpness", Vector3(0, 500, 5), y - 0.085)
+	_adjustment_row(PICTURE_SHARPNESS, "picture_sharpness", "Sharpness", Vector3(0, 200, 5), y - 0.085)
 	_slider_tick(PICTURE_SHARPNESS, 100, "100%", y - 0.085)
 	if not on: _lock_row(PICTURE_SHARPNESS, y - 0.085)
 	var fits: bool = _state.get("picture_upscale_available", true)
@@ -2425,7 +2447,7 @@ func _settings_key() -> String:
 		_state.get("screen_edit_locked", false), _state.get("screen_default_locked", false), _state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("screen_scene_curve", true), _state.get("cinema_lights", "auto"),
 		_state.get("screen_curve_modes_available", false), _state.get("screen_curve_mode", "horizontal"),
 		_state.get("video_aspect_preset", "original"), _state.get("video_aspect_locked", false), _state.get("depth_requested", false),
-		_state.get("error", ""), _state.get("error_report", {}), _state.get("usb_takeover_offer", false), _alpha_expanded, _depth_expanded,
+		_state.get("error", ""), _state.get("error_report", {}), _state.get("usb_takeover_offer", false), _state.get("diagnostic_upload", {}), _alpha_expanded, _depth_expanded,
 		_state.get("picture_quality", false), _state.get("picture_quality_available", false), _state.get("picture_quality_supported", false),
 		_state.get("picture_quality_blocker", ""), _state.get("picture_upscale", 0), _state.get("picture_denoise", 0), _state.get("picture_upscale_available", true),
 		_state.get("picture_upscale_sizes", {})])
@@ -2609,6 +2631,10 @@ func _activate(target: int) -> void:
 		return
 	if target == SETTINGS_CLOSE and _failure_open:
 		_failure_open = false; _error_details_open = false; refresh()
+		return
+	if target == FAILURE_LOG and _failure_open:
+		var entry := _failure_log()
+		if entry.has("action"): action_requested.emit(entry.action)
 		return
 	if target == USB_TAKEOVER and _failure_open and _state.get("usb_takeover_offer", false):
 		_failure_open = false; _error_details_open = false
@@ -3373,7 +3399,7 @@ func _leaves_layer(key: String) -> bool:
 func _adjustment_default(key: String) -> Variant:
 	if key == DepthPosition.KEY: return 0.0
 	if key == "bar_transparency": return 14.0
-	if key == "picture_sharpness": return 100.0
+	if key == "picture_sharpness": return 50.0
 	if Grade.DEFAULTS.has(key): return Grade.DEFAULTS[key]
 	return {"screen_distance": Surface.SCREEN_DISTANCE, "screen_scale": 100.0, "cinema_picture_size": 100.0, "video_aspect_factor": 1.0,
 		"screen_curve": 0.0,
@@ -3451,7 +3477,7 @@ func _refresh_adjustments() -> void:
 		var position: bool = row.key == "subtitle_position"
 		var defaults := {"screen_curve": 0.0, "screen_scale": 100.0, "cinema_picture_size": 100.0, "screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0, "stereo_horizontal": 0.0, "stereo_vertical": 0.0}
 		defaults["bar_transparency"] = 14.0
-		defaults["picture_sharpness"] = 100.0
+		defaults["picture_sharpness"] = 50.0
 		defaults["stereo_focus"] = FOCUS_DEFAULT
 		defaults[DepthPosition.KEY] = 0.0
 		for key in Surface.ImmersiveAdjustments.KEYS: defaults[key] = 0.0

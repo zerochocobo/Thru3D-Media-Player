@@ -873,6 +873,14 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         runCatching { VideoLayerNative.renderPipFeatherMask(slot, feathers) }.getOrDefault(false)
     @UsedByGodot fun remap_layer_fisheye(slot: Int, texture: Int, external: Boolean, params: FloatArray): Boolean =
         runCatching { VideoLayerNative.remapFisheye(slot, texture, external, params) }.getOrDefault(false)
+    /** Picture quality mode for a frame shown in the eye buffers: see [VideoLayerNative.enhanceFrameTexture]. */
+    @UsedByGodot fun enhance_frame_texture(texture: Int, external: Boolean, sourceWidth: Int, sourceHeight: Int, scaleX: Float, scaleY: Float,
+                                           width: Int, height: Int, sharpen: Float, denoiseStep: Float, denoiseTolerance: Float): Int =
+        runCatching { VideoLayerNative.enhanceFrameTexture(texture, external, sourceWidth, sourceHeight, scaleX, scaleY, width, height,
+            sharpen, denoiseStep, denoiseTolerance) }.getOrDefault(0)
+    /** The fisheye remap with picture quality mode: see [VideoLayerNative.enhanceFisheye]. */
+    @UsedByGodot fun enhance_layer_fisheye(slot: Int, texture: Int, external: Boolean, params: FloatArray, look: FloatArray): Boolean =
+        runCatching { VideoLayerNative.enhanceFisheye(slot, texture, external, params, look) }.getOrDefault(false)
     /** Debug builds only: reads back the next remapped fisheye picture (every [step]th pixel). */
     @UsedByGodot fun request_fisheye_readback(step: Int) { if (BuildConfig.DEBUG) runCatching { VideoLayerNative.requestFisheyeReadback(step) } }
     @UsedByGodot fun take_fisheye_readback(): ByteArray =

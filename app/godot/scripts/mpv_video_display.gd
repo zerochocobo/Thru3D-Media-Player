@@ -1061,7 +1061,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		platform.set_mpv_interleave_compat(network_interleave)
 	disc.before_open(platform, uri, not restore_mode, restore_mode and recent_files.lookup(uri).is_empty())
 	disc_menu.reset()
-	_quality_requested = layer and not _layer_alpha_host and _quality_wanted(uri)
+	_quality_requested = layer and _quality_wanted(uri)
 	if PlatformMethods.supports(platform, "set_layer_picture_quality"): platform.set_layer_picture_quality(_quality_requested)
 	_copy_picture = PackedFloat32Array(); _copy_focus = []
 	_sync_copy_picture()
@@ -4217,7 +4217,7 @@ func toggle_pip_slot(slot: int, head: Transform3D) -> void:
 ## Fisheye settings the remapped picture layer can show exactly (the layer applies eyes, alignment,
 ## grading and filters); anything else stays in the eye buffers.
 func _fisheye_layer_config() -> bool:
-	return geometry == Geometry.Geometry.FISHEYE and not _fisheye_failed and layer_enabled and video_layer != null 		and video_layer.available() and video_layer.supports(Geometry.Geometry.HALF_EQUIRECT, false) 		and not alpha_requested and not depth_requested and not packed_file and video_layer.grades(color_grade) 		and int(media.format.get("source_rotation_degrees", 0)) == 0 and PlatformMethods.supports(platform, "remap_layer_fisheye")
+	return geometry == Geometry.Geometry.FISHEYE and not _fisheye_failed and layer_enabled and video_layer != null 		and video_layer.available() and video_layer.supports(Geometry.Geometry.HALF_EQUIRECT, false) 		and not alpha_requested and not depth_requested and not packed_file and (_fisheye_quality() or video_layer.grades(color_grade)) 		and int(media.format.get("source_rotation_degrees", 0)) == 0 and PlatformMethods.supports(platform, "remap_layer_fisheye")
 
 func _fisheye_picture_wanted() -> bool:
 	var ticket := _binding.ticket
@@ -4225,18 +4225,51 @@ func _fisheye_picture_wanted() -> bool:
 	if int(ticket.get("session_id", 0)) != media.session_id or media.state == "failed" or int(ticket.get("rotation_degrees", 0)) != 0: return false
 	return _binding.color_texture().is_valid()
 
+## Picture quality mode on the remapped fisheye picture: the remap sharpens around where the head looks
+## and grades in its one draw; denoising or super resolution add enhance_layer_texture's passes after it.
+func _fisheye_quality() -> bool:
+	return _frame_quality() and PlatformMethods.supports(platform, "enhance_layer_fisheye")
+var _fisheye_quality_drawn := false
+var _fisheye_look := []
+const FISHEYE_WINDOW_DEGREES := 40.0 # the layer copy's starting window; this draw has no cost governor
+
+## The sharpening window in one eye's remapped picture ([span] radians across and high): centre and half
+## size, or no size for the whole picture when the head's direction is not known.
+func _fisheye_window(span: Vector2) -> Array:
+	if view_camera == null: return [0.5, 0.5, 0.0, 0.0]
+	var head := panel.global_transform.affine_inverse() * view_camera.global_transform
+	var from := head.origin
+	var along := -head.basis.z.normalized()
+	var toward := from.dot(along)
+	var inside := toward * toward - from.length_squared() + SPHERE_RADIUS * SPHERE_RADIUS
+	if inside < 0.0: return [0.5, 0.5, 0.0, 0.0]
+	var hit := from + along * (sqrt(inside) - toward)
+	var reach := deg_to_rad(FISHEYE_WINDOW_DEGREES)
+	return [snappedf(0.5 + atan2(hit.x, -hit.z) / span.x, 0.002), snappedf(0.5 - asin(clampf(hit.y / SPHERE_RADIUS, -1.0, 1.0)) / span.y, 0.002),
+		reach / span.x, reach / span.y]
+
 func _show_fisheye_picture(origin: XROrigin3D, extras: Array) -> bool:
 	var ticket := _binding.ticket
 	var size := Vector2i(int(ticket.width), int(ticket.height))
 	var span := VideoLayer.fisheye_span(float(fisheye_fov))
-	var picture := fisheye_picture_size(size, span, stereo_sbs, top_bottom, debug_fisheye_density if debug_fisheye_density > 0.0 else FISHEYE_PIXELS_PER_DEGREE)
+	var remapped := fisheye_picture_size(size, span, stereo_sbs, top_bottom, debug_fisheye_density if debug_fisheye_density > 0.0 else FISHEYE_PIXELS_PER_DEGREE)
+	var quality := _fisheye_quality()
+	var values := _picture_values() if quality else PackedFloat32Array()
+	# Super resolution treats the remapped picture as a VR180 one, which it is once drawn.
+	var picture := upscale_size(remapped, 1, 2 if stereo_sbs and not top_bottom else 1, 2 if stereo_sbs and top_bottom else 1,
+		int(values[13])) if quality and values[13] > 0.5 else remapped
+	var staged := quality and (picture != remapped or values[18] > 0.0)
+	var window := _fisheye_window(span) if quality and not staged and values[0] > 0.0 else [0.5, 0.5, 0.0, 0.0]
+	# While playing each frame's draw takes the head's direction of the moment; a paused picture is drawn
+	# again when the head has turned, as it is when the settings change.
+	var look := [quality, picture, values, window if not requested_play else []]
 	var token := int(ticket.get("slot_token", 0))
 	var scale: Array = ticket.get("color_uv_scale", [1.0, 1.0])
 	var layout := 0 if not stereo_sbs else (2 if top_bottom else 1)
 	var params := PackedFloat32Array([layout, 1.0 if stereo_sbs and stereo_half else 0.0, float(fisheye_fov),
 		span.x, span.y, size.x, size.y, float(scale[0]), float(scale[1])])
 	if token != _picture_token or params != _fisheye_parameters or _fisheye_generation != video_layer.generation \
-		or Vector2i(video_layer.picture_size) != picture:
+		or Vector2i(video_layer.picture_size) != picture or look != _fisheye_look:
 		if not platform.create_layer_image(VideoLayer.PICTURE_SLOT, picture.x, picture.y, 1, false):
 			return _fisheye_fail("create", picture)
 		if Vector2i(video_layer.picture_size) != picture:
@@ -4245,9 +4278,14 @@ func _show_fisheye_picture(origin: XROrigin3D, extras: Array) -> bool:
 		if platform.acquire_layer_image(VideoLayer.PICTURE_SLOT) <= 0: return false
 		var external := str(ticket.get("color_target", "")) == "external"
 		var source := RenderingServer.texture_get_native_handle(_binding.color_texture())
-		var drawn: bool = platform.remap_layer_fisheye(VideoLayer.PICTURE_SLOT, source, external, params)
+		var drawn: bool = platform.enhance_layer_fisheye(VideoLayer.PICTURE_SLOT, source, external, params,
+			PackedFloat32Array([1.0 if staged else 0.0, remapped.x, remapped.y, values[0], window[0], window[1], window[2], window[3], values[1]])
+				+ values.slice(2, 13) + PackedFloat32Array([values[17], values[18]])) if quality \
+			else platform.remap_layer_fisheye(VideoLayer.PICTURE_SLOT, source, external, params)
 		if not platform.release_layer_image(VideoLayer.PICTURE_SLOT, false) or not drawn: return _fisheye_fail("remap", picture)
 		_picture_token = token
+		_fisheye_look = look; _fisheye_quality_drawn = quality
+		_frame_picture_size = picture
 		_fisheye_parameters = params; _fisheye_generation = video_layer.generation
 		if _fisheye_session != media.session_id:
 			_fisheye_session = media.session_id
@@ -4360,11 +4398,14 @@ func _layer_wanted() -> bool:
 ## picture where the head looks and applies the whole colour grade, so gamma and saturation no longer
 ## take 8K off the compositor layer. The copy joins the decoder's path at open: switching reopens the file.
 var picture_quality := false
-## Sharpening of the mode as the slider shows it, 0 (none: the mode's other work stands on its own) to 5:
-## 1 is all RCAS gives without overshoot, and above it some users want the plainly oversharpened look.
-var picture_sharpness := 1.0:
+## Sharpening of the mode as the slider shows it, 0 (none: the mode's other work stands on its own) to 2:
+## 1 is all RCAS gives without overshoot, and above it the picture is plainly oversharpened. (It ran to 5
+## at first; users found nothing worth having past 2 and the old default of 1 too strong.)
+const SHARPNESS_DEFAULT := 0.5
+const SHARPNESS_MAX := 2.0
+var picture_sharpness := SHARPNESS_DEFAULT:
 	set(value):
-		picture_sharpness = clampf(value, 0.0, 5.0) if is_finite(value) else 1.0
+		picture_sharpness = clampf(value, 0.0, SHARPNESS_MAX) if is_finite(value) else SHARPNESS_DEFAULT
 
 ## The layer copy's strength for a slider value. RCAS answers about as the 2.4th power of its amount
 ## (Quest 3 captures: detail +0.6%, +7%, +34% at 0.1, 0.5, 1), so the slider's lower part takes the
@@ -4443,7 +4484,13 @@ func set_picture_quality(enabled: bool) -> void:
 ## Why the mode cannot carry this playback, for the menu: "" when it can.
 func picture_quality_blocker() -> String:
 	if picture_quality_available(): return ""
-	if alpha_requested: return "alpha"
+	if alpha_requested and _layer_alpha() and alpha_copy_packed: return "alpha_memory"
+	if alpha_requested and not _eye_quality_possible():
+		# A plugin without the eye buffers' draw carries the mode under Alpha only on the layer: say what keeps it off there.
+		if alpha_over_scenery: return "alpha_background"
+		if portrait_requested(): return "alpha_flat"
+		if geometry == Geometry.Geometry.FISHEYE: return "alpha_fisheye"
+		return "alpha"
 	if depth_requested: return "3d"
 	return "source"
 
@@ -4451,11 +4498,65 @@ func picture_quality_supported() -> bool:
 	return video_layer != null and video_layer.available() and video_layer.picture_quality and layer_enabled \
 		and PlatformMethods.supports(platform, "set_layer_picture_quality")
 
-## The mode can carry this playback: not Alpha, 2D to 3D or a fisheye remap, which draw the picture themselves.
+## A fisheye picture takes the mode where it is remapped onto the picture layer: not under Alpha, and
+## not once the remap failed or proved too slow for this headset (the eye buffers show the lens then).
+func _fisheye_quality_possible() -> bool:
+	if alpha_requested: return _eye_quality_possible()
+	return not _fisheye_failed and not fisheye_overloaded and PlatformMethods.supports(platform, "enhance_layer_fisheye")
+
+## The mode in the eye buffers: each frame Godot's shader shows is drawn denoised, enlarged and sharpened
+## into a texture first (enhance_frame_texture), the whole of it and 8 bits a channel. It carries what
+## the layer cannot: Alpha over scenery, on a flat or a fisheye picture.
+func _eye_quality_possible() -> bool:
+	return PlatformMethods.supports(platform, "enhance_frame_texture")
+var _eye_quality_stamp := []
+var _eye_quality_failed := 0 # the session it failed in: that one keeps its frames as they are
+
+func _sync_eye_quality() -> void:
+	var ticket := _binding.ticket
+	var wanted := _quality_wanted() and _eye_quality_possible() and not _layer_session and not _binding.layer and _binding.material != null \
+		and not ticket.is_empty() and not _frame_picture and not _fisheye_picture and not _processed_picture \
+		and _eye_quality_failed != media.session_id
+	var values := _picture_values() if wanted else PackedFloat32Array()
+	var source := Vector2i.ZERO
+	var size := Vector2i.ZERO
+	if wanted:
+		source = _binding.warp_size(ticket) if _binding.warped else Vector2i(int(ticket.width), int(ticket.height))
+		var paired: bool = stereo_sbs or _binding.warped
+		size = upscale_size(source, _upscale_kind(), 2 if paired and not top_bottom else 1, 2 if paired and top_bottom else 1,
+			int(values[13])) if values[13] > 0.5 else source
+		wanted = values[0] > 0.0 or values[18] > 0.0 or size != source
+	_binding.enhance_expected = wanted
+	if not wanted:
+		_binding.show_original()
+		_eye_quality_stamp = []
+		return
+	var stamp := [media.session_id, int(ticket.get("slot_token", 0)), int(ticket.get("frame_id", 0)), values, size]
+	if stamp == _eye_quality_stamp and _binding.enhanced(): return
+	var external := str(ticket.get("color_target", "")) == "external"
+	var scale: Array = ticket.get("color_uv_scale", [1.0, 1.0]) if external else [1.0, 1.0]
+	var drawn: int = platform.enhance_frame_texture(RenderingServer.texture_get_native_handle(_binding.color_texture()), external,
+		source.x, source.y, float(scale[0]), float(scale[1]), size.x, size.y, values[0], values[17], values[18])
+	if drawn <= 0 or not _binding.show_enhanced(drawn, size):
+		_eye_quality_failed = media.session_id
+		_binding.enhance_expected = false
+		_binding.show_original()
+		DiagnosticLog.record("eye_quality_failed", {"source": [source.x, source.y], "size": [size.x, size.y], "external": external})
+		return
+	_eye_quality_stamp = stamp
+
+## The memory saver in effect (main.gd): Alpha's layer copy then packs its frames small and early, which
+## the mode cannot work on.
+var alpha_copy_packed := false
+
+## The mode can carry this playback: not 2D to 3D yet (its GPU load leaves the eye buffers' draw no room
+## that has been measured). Alpha on the layer shows the copy's picture under its mask; off the layer
+## the eye buffers' draw sharpens what the shader shows.
 func picture_quality_available(uri: String = "") -> bool:
 	if uri.is_empty(): uri = local_uri
-	return picture_quality_supported() and not alpha_requested and not depth_requested and not packed_file \
-		and geometry != Geometry.Geometry.FISHEYE and (uri.is_empty() or (uri != _quality_refused_uri \
+	return picture_quality_supported() and (not alpha_requested or (not alpha_copy_packed if _layer_alpha() else _eye_quality_possible())) \
+		and not depth_requested and not packed_file \
+		and (geometry != Geometry.Geometry.FISHEYE or _fisheye_quality_possible()) and (uri.is_empty() or (uri != _quality_refused_uri \
 		and (uri != _layer_blocked_uri or PlatformMethods.supports(platform, "enhance_layer_texture"))))
 
 func _quality_wanted(uri: String = "") -> bool:
@@ -4469,7 +4570,7 @@ func _quality_copying() -> bool:
 ## on the decoder surface, or by the picture layer's own draw of a software-decoded frame.
 func layer_picture_baked(source_kind: int = VideoLayer.SURFACE) -> bool:
 	if source_kind == VideoLayer.SURFACE: return _layer_session and _quality_requested
-	return _frame_picture and _frame_quality_drawn
+	return (_frame_picture and _frame_quality_drawn) or (_fisheye_picture and _fisheye_quality_drawn)
 
 ## Picture quality mode for frames a software decoder made (a DVD's MPEG-2, Profile 5...): they never
 ## pass the layer copy, so the picture layer draws them enlarged, sharpened and graded itself.
@@ -4608,6 +4709,10 @@ func set_browser_screen_owned(value: bool) -> void:
 	_update_layer()
 
 func _update_layer() -> void:
+	if vr_passthrough.active() or browser_screen_owned or not video_layer:
+		# Nothing below runs: the frames stay as they are bound rather than wait on a draw that will not come.
+		_binding.enhance_expected = false
+		_binding.show_original()
 	if vr_passthrough.active():
 		vr_passthrough.hide_source()
 		if video_layer: video_layer.hide(self)
@@ -4722,6 +4827,7 @@ func _update_layer() -> void:
 		panel.material_override = _hole_material
 	elif panel.material_override == _hole_material:
 		panel.material_override = material
+	_sync_eye_quality()
 	if not shown: _sync_portrait()
 	# A picture layer replaces the video shader too. Keep captions above its hole when
 	# their own layer is unavailable, and restore the shader overlay on video-layer failure.

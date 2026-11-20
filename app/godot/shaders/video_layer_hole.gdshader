@@ -1,8 +1,10 @@
 shader_type spatial;
 // Clears the eye buffer to transparent black where the compositor video layer shows through.
 // Reverse subtract of opaque white gives zero colour and alpha over any background, opaque or not.
-// Drawn first among transparent objects without writing depth, so menus in front still cover it.
-render_mode unshaded, blend_sub, cull_disabled, depth_draw_never, shadows_disabled, fog_disabled;
+// Drawn first among transparent objects. It writes depth: a scene's glows, glass and other blended
+// surfaces behind the screen are drawn later and would otherwise land on the hole, over the video.
+// Menus and anything else in front are nearer and still cover it.
+render_mode unshaded, blend_sub, cull_disabled, depth_draw_always, shadows_disabled, fog_disabled;
 
 // Surface UV rectangle to clear; the rest of the mesh stays (a photo's soft edge drawn beside it).
 uniform vec4 keep_rect = vec4(0.0, 0.0, 1.0, 1.0);

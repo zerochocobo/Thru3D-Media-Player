@@ -197,6 +197,7 @@ const PATHS := {
 	# Cinema house lights: off is the bare bulb struck through; auto carries an "A".
 	"light_off": '<path d="M9 16C9 13 6.5 12 6.5 9A5.5 5.5 0 0 1 17.5 9C17.5 12 15 13 15 16ZM9.5 19H14.5M10.5 22H13.5M3 3L21 21"/>',
 	"light_auto": '<path d="M7 16C7 13 4.5 12 4.5 9A5.5 5.5 0 0 1 15.5 9C15.5 12 13 13 13 16ZM7.5 19H12.5M8.5 22H11.5M16 23L19.5 13 23 23M17.3 19.5H21.7"/>',
+	"external_link": '<path d="M14 3H21V10M21 3L11 13M10 5H5A2 2 0 0 0 3 7V19A2 2 0 0 0 5 21H17A2 2 0 0 0 19 19V14"/>',
 	"history": '<path d="M3 12A9 9 0 1 0 6 5.3M3 3V8H8"/><path d="M12 7V12L15 14"/>',
 	"usb": '<path d="M12 2V17M12 2L9 5M12 2L15 5M12 11L7 8V6M12 13L17 10V8"/><circle cx="12" cy="19" r="2.5"/><rect x="5.5" y="4.5" width="3" height="2"/><circle cx="17" cy="7" r="1.3"/>',
 	"eject": '<path d="M4 14L12 4 20 14Z"/><path d="M4 20H20"/>',

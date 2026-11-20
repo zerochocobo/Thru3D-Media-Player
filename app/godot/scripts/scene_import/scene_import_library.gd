@@ -287,7 +287,8 @@ func note_summary(id: String, tier: String, info: Dictionary) -> void:
 
 func rename(id: String, title: String) -> bool:
 	var clean := title.strip_edges().replace("
-", " ").replace("", " ").left(80)
+", " ").replace("
+", " ").left(80)
 	if not entries.has(id) or clean.is_empty(): return false
 	var previous: String = entries[id].title
 	entries[id].title = clean

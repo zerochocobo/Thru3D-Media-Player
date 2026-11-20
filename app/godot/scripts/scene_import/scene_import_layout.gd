@@ -16,6 +16,10 @@ const FLOOR_STEP := 0.4
 const HEADROOM := 1.8
 const MIN_FLOOR_EXTENT := 2.5
 const CORE_MARGIN := 3.0
+## The default screen: looked for straight ahead and a little to each side, kept off what it meets.
+const SCREEN_PROBE_ANGLES := [0.0, 0.26, -0.26]
+const SCREEN_WALL_GAP := 0.3
+const SCREEN_NEAREST := 0.8
 
 static func resolve(root: Node3D, bounds: AABB, sidecar: Dictionary = {}) -> Dictionary:
 	var floor_paths: Array[NodePath] = []
@@ -254,3 +258,76 @@ static func _stand_point(root: Node3D, items: Array[Dictionary], core: AABB, flo
 			best = score
 			point = Vector3(core.position.x + (at.x + 0.5) * cell.x, member[1], core.position.z + (at.y + 0.5) * cell.y)
 	return {"point": point}
+
+## The meshes of `root` that the default screen's probe from `eye` along `heading` may meet,
+## as plain data a worker can test (see free_ahead).
+static func probe_jobs(root: Node3D, eye: Vector3, heading: Basis, reach: float) -> Array[Dictionary]:
+	var span := AABB(eye, Vector3.ZERO)
+	for angle in SCREEN_PROBE_ANGLES: span = span.expand(eye + Basis(Vector3.UP, angle) * -heading.z * reach)
+	span = span.grow(0.05)
+	var jobs: Array[Dictionary] = []
+	var to_root := root.global_transform.affine_inverse()
+	for node in root.find_children("*", "MeshInstance3D", true, false):
+		var mesh: Mesh = (node as MeshInstance3D).mesh
+		if mesh == null or not (node as MeshInstance3D).is_visible_in_tree(): continue
+		var to_scene := to_root * (node as Node3D).global_transform
+		var bounds: AABB = to_scene * mesh.get_aabb()
+		if not bounds.intersects(span): continue
+		# Imported meshes are ArrayMeshes; what is too big to hold twice is left out.
+		if mesh is ArrayMesh:
+			var indices := 0
+			for surface in mesh.get_surface_count():
+				var length: int = mesh.surface_get_array_index_len(surface)
+				indices += length if length > 0 else mesh.surface_get_array_len(surface)
+			if indices <= 0 or indices > MAX_FLOOR_PROBE_INDICES: continue
+		jobs.append({"mesh": mesh, "to_scene": to_scene, "to_mesh": to_scene.affine_inverse(), "bounds": bounds})
+	return jobs
+
+## How far ahead of `eye` the wall is, measured along `heading`'s forward; `reach` when nothing is
+## met. Of the three probes the middle distance counts, so a lamp or a pillar in one of them does
+## not pull the screen up to the face. Builds triangle shapes, so it belongs on a worker thread.
+static func free_ahead(jobs: Array[Dictionary], eye: Vector3, heading: Basis, reach: float) -> float:
+	var forward := -heading.z
+	var ends: Array[Vector3] = []
+	var nearest: Array[float] = []
+	for angle in SCREEN_PROBE_ANGLES:
+		ends.append(eye + Basis(Vector3.UP, angle) * forward * reach / cos(angle))
+		nearest.append(reach)
+	for job in jobs:
+		var shape: TriangleMesh = null
+		for probe in ends.size():
+			if not (job.bounds as AABB).intersects(AABB(eye, Vector3.ZERO).expand(ends[probe]).grow(0.01)): continue
+			# Built here and dropped after: Mesh.generate_triangle_mesh would keep a copy as long as the scene.
+			if shape == null:
+				shape = TriangleMesh.new()
+				if not shape.create_from_faces(_faces(job.mesh)): break
+			var hit: Dictionary = shape.intersect_segment(job.to_mesh * eye, job.to_mesh * ends[probe])
+			if not hit.is_empty(): nearest[probe] = minf(nearest[probe], ((job.to_scene as Transform3D) * (hit.position as Vector3) - eye).dot(forward))
+	nearest.sort()
+	return nearest[nearest.size() / 2]
+
+## The triangles of a mesh, three corners each.
+static func _faces(mesh: Mesh) -> PackedVector3Array:
+	var faces := PackedVector3Array()
+	for surface in mesh.get_surface_count():
+		if mesh is ArrayMesh and (mesh as ArrayMesh).surface_get_primitive_type(surface) != Mesh.PRIMITIVE_TRIANGLES: continue
+		var arrays := mesh.surface_get_arrays(surface)
+		var corners: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		var order: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
+		if order.is_empty():
+			faces.append_array(corners.slice(0, corners.size() - corners.size() % 3))
+			continue
+		var start := faces.size()
+		faces.resize(start + order.size() - order.size() % 3)
+		for index in faces.size() - start: faces[start + index] = corners[order[index]]
+	return faces
+
+## Where the screen stands by default, `free` ahead of an eye at `eye` on a floor at `floor`:
+## the middle of its bottom edge (as Library.screen_pin keeps it), facing back along `heading`.
+## The viewer's usual `distance` when the room allows it, else just short of the wall.
+static func default_screen(eye: Vector3, floor: float, heading: Basis, distance: float, free: float, height: float) -> Transform3D:
+	var away := clampf(minf(distance, free - SCREEN_WALL_GAP), SCREEN_NEAREST, maxf(distance, SCREEN_NEAREST))
+	var basis := heading.orthonormalized()
+	var at := eye - basis.z * away
+	at.y = maxf(eye.y - height * 0.5, floor)
+	return Transform3D(basis, at)

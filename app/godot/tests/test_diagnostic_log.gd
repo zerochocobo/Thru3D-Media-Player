@@ -20,25 +20,18 @@ func _run() -> void:
 	menu.setting_changed.connect(func(key, value): events.append([key, value]))
 	root.add_child(menu); menu.toggle(); menu.set_process(false)
 	var header: Dictionary = menu.rows.back()
-	check(header.get("diagnostic_group", false) and header.title == I18n.t("Diagnostic log"), "The diagnostic log is the last, collapsed General row")
+	check(header.get("diagnostic_group", false) and header.title == I18n.t("Report a problem"), "Report a problem is the last, collapsed General row")
 	check(not menu.rows.any(func(row): return row.get("setting", [""])[0] == "diagnostic_log"), "Collapsed: no log actions")
 	menu._choose(header)
 	check(events == [["diagnostic_log", "recent"]], "Opening the group asks for the recent warnings once")
 	var actions: Array = menu.rows.filter(func(row): return row.has("setting") and row.setting[0] == "diagnostic_log").map(func(row): return row.setting[1])
-	check(actions == ["save", "share", "recent"] and menu.rows.any(func(row): return row.get("setting", []) == ["diagnostic_report", true]),
-		"Save, share on Wi-Fi and refresh the recent lines; upload first asks what went wrong")
-	state.diagnostic_log = {"report": true}
-	menu.refresh()
-	var type_rows: Array = menu.rows.filter(func(row): return row.get("key", "") == "diagnostic_category")
-	var send_rows: Array = menu.rows.filter(func(row): return row.get("setting", []) == ["diagnostic_log", "upload"])
-	check(type_rows.size() == 1 and type_rows[0].value == "" and type_rows[0].choices.size() == Library.DIAGNOSTIC_CATEGORIES.size() + 1
-		and send_rows.size() == 1 and not send_rows[0].enabled, "A report needs a problem type before it can be sent")
-	check(menu.rows.any(func(row): return row.get("diagnostic_note", false) and row.title == I18n.t("Add a note (optional)")), "The note is optional and starts empty")
-	state.diagnostic_log = {"report": true, "category": "audio_subtitles", "note": "Subtitles lag behind"}
-	menu.refresh()
-	send_rows = menu.rows.filter(func(row): return row.get("setting", []) == ["diagnostic_log", "upload"])
-	check(send_rows.size() == 1 and send_rows[0].get("enabled", true) and menu.rows.any(func(row): return row.get("diagnostic_note", false) and row.title == "Subtitles lag behind"),
-		"With a type chosen the report can be sent, and the typed note is shown")
+	check(actions == ["save", "share", "recent"] and not menu.rows.any(func(row): return row.get("setting", []) == ["diagnostic_report", true]),
+		"Public logs offer save, Wi-Fi sharing and recent lines without an upload form")
+	for upload_state in [{"report": true}, {"report": true, "category": "audio_subtitles", "note": "Subtitles lag behind"}, {"code": "7F2K9QXM"}, {"upload_error": "Could not upload"}]:
+		state.diagnostic_log = upload_state
+		menu.refresh()
+		check(not menu.rows.any(func(row): return row.get("setting", []) == ["diagnostic_report", true] or row.get("setting", []) == ["diagnostic_log", "upload"] or row.get("key", "") == "diagnostic_category" or row.get("diagnostic_note", false)),
+			"Public upload controls remain absent even with remembered official-build state")
 	state.diagnostic_log = {}
 	menu.refresh()
 	var detail: Array = menu.rows.filter(func(row): return row.get("key", "") == "diagnostic_detail")
@@ -58,17 +51,30 @@ func _run() -> void:
 	state.diagnostic_log["code"] = "7F2K9QXM"
 	menu.refresh()
 	var uploaded: Array = menu.rows.filter(func(row): return row.get("diagnostic_code", false))
-	check(uploaded.size() == 1 and uploaded[0].title == I18n.t("Uploaded · code %s") % "7F2K9QXM" and uploaded[0].setting == ["diagnostic_report", true] and uploaded[0].has("tip"),
-		"An uploaded log shows the code to quote; choosing it starts another report")
+	check(uploaded.is_empty(), "Public logs do not present an official upload reference")
 	state.diagnostic_log = {"busy": "upload"}
 	menu.refresh()
 	check(not menu.rows.any(func(row): return row.get("setting", [""])[0] == "diagnostic_report" or row.get("setting", ["", ""])[1] == "upload"), "No second upload while one is under way")
 	state.diagnostic_log = {"upload_error": "Could not upload", "lines": ["W QuestVideoLayer: picture slot 2 image wait timed out (1 times)"]}
 	menu.refresh()
-	check(menu.rows.any(func(row): return row.get("setting", []) == ["diagnostic_report", true] and row.get("detail", "") == "Could not upload"), "A failed upload says so and can be tried again")
+	check(not menu.rows.any(func(row): return row.get("setting", []) == ["diagnostic_report", true]), "Official upload errors cannot restore the public upload form")
 	var lines: Array = menu.rows.filter(func(row): return row.get("diagnostic_line", false))
 	check(lines.size() == 1 and not lines[0].enabled, "Recent lines are listed and cannot be chosen")
 	check(menu.navigate_back() and not menu.rows.any(func(row): return row.get("diagnostic_line", false)), "Back collapses the group")
+	# About links straight to the open group.
+	menu.tab = Library.ABOUT_TAB; menu.refresh()
+	var link: Array = menu.rows.filter(func(row): return row.get("report_problem", false))
+	events.clear()
+	check(link.size() == 1 and link[0].title == I18n.t("Report a problem"), "About lists Report a problem")
+	if link.size() == 1: menu._choose(link[0])
+	var opened: int = menu.rows.find_custom(func(row): return row.get("diagnostic_group", false))
+	check(menu.tab == Library.GENERAL_TAB and menu._diagnostic_expanded and opened >= 0 and menu.rows[opened].icon == "chevron_down"
+		and events == [["diagnostic_log", "recent"]], "The link opens General with the group expanded")
+	# A failure's one-tap log goes to the owner with its identity, action and report.
+	events.clear()
+	menu.request_quick_diagnostic("web:3", "upload", {"category": "web", "trigger": "web_beta"})
+	check(events == [["diagnostic_quick", {"identity": "web:3", "action": "upload", "report": {"category": "web", "trigger": "web_beta"}}]],
+		"A browser failure's log is requested from the owner")
 	menu.queue_free()
 	print("Diagnostic log checks=%d failures=%d" % [checks, failures.size()])
 	for failure in failures: push_error(failure)

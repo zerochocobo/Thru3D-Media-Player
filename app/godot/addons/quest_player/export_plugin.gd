@@ -12,11 +12,21 @@ func _exit_tree() -> void:
 	android_export = null
 
 class QuestPlayerExport extends EditorExportPlugin:
+	const History := preload("res://scripts/version_history.gd")
+
 	func _get_name() -> String:
 		return "QuestPlayer"
 
 	func _supports_platform(platform: EditorExportPlatform) -> bool:
 		return platform is EditorExportPlatformAndroid
+
+	func _export_file(path: String, _type: String, _features: PackedStringArray) -> void:
+		if path != History.DATA: return
+		var data: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(path))
+		var version := str(ProjectSettings.get_setting("application/config/version"))
+		data.entries = data.entries.filter(func(row): return History.compare(row.version, version) <= 0)
+		add_file(path, JSON.stringify(data).to_utf8_buffer(), false)
+		skip()
 
 	# Build-Player declares the layer-extension GDExtension for Android exports only (its library is in
 	# the plugin AAR). Godot lists it in the exported extension list; the declaration itself must ship too.

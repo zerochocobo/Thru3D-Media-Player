@@ -62,6 +62,7 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
     private var working = false // copy thread: the last draw denoised, enlarged or sharpened inside the window
     // Picture quality mode keeps the frame on show (copy thread) and draws it again when the settings or the
     // head's direction change with no new frame coming: a paused picture follows the menu and the head.
+    // With Alpha's held frames it takes the reader's one spare image.
     private var shown: Held? = null
     private var shownLook: FloatArray? = null
     private var shownFocus: FloatArray? = null
@@ -283,7 +284,7 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
             failed.incrementAndGet(); lastError = failure.toString().take(160)
         } finally {
             // The buffer goes back to the decoder: at once, or when the next frame has taken its place.
-            if (quality && !hold && !closed) {
+            if (quality && !closed) {
                 if (shown !== frame) { shown?.image?.close(); shown = frame }
                 handler.removeCallbacks(redraw); handler.postDelayed(redraw, IDLE_MS)
             } else {

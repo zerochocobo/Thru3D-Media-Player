@@ -4,6 +4,7 @@ const Loader := preload("res://scripts/scene_import/scene_import_loader.gd")
 const Budget := preload("res://scripts/scene_import/scene_import_budget.gd")
 const Cache := preload("res://scripts/scene_import/scene_import_cache.gd")
 const SkyLoader := preload("res://scripts/scene_import/scene_import_sky.gd")
+const Layout := preload("res://scripts/scene_import/scene_import_layout.gd")
 var checks: Array[Dictionary] = []
 var failures: Array[String] = []
 var output := ProjectSettings.globalize_path("res://../../build/output/scene-import")
@@ -388,6 +389,31 @@ Connections:  {
 	shelf.entries["abc123"]["entry"] = [0, "x", 0, 0]
 	_check(shelf.entry("abc123") == null, "A malformed entry point is ignored")
 	shelf.free()
+
+	# A small room: the default screen stops short of the wall ahead rather than standing outside it.
+	var small_room := Node3D.new()
+	small_room.position = Vector3(5, 0, 5)
+	small_room.rotation.y = 0.7
+	var wall_texture := _texture(8, 3)
+	small_room.add_child(_box("Floor", Vector3(0, -0.05, 0), Vector3(6, 0.1, 6), wall_texture))
+	small_room.add_child(_box("Wall", Vector3(0, 1.5, -2.0), Vector3(6, 3, 0.1), wall_texture))
+	get_root().add_child(small_room)
+	var probe_eye := Vector3(0, 1.6, 0.5)
+	var probe_jobs := Layout.probe_jobs(small_room, probe_eye, Basis.IDENTITY, 8.3)
+	var free_room := Layout.free_ahead(probe_jobs, probe_eye, Basis.IDENTITY, 8.3)
+	_check(probe_jobs.size() == 1 and absf(free_room - 2.45) < 0.02, "The probe finds the wall ahead in the scene's own space (%.2f)" % free_room)
+	var screen_place := Layout.default_screen(probe_eye, 0.0, Basis.IDENTITY, 8.0, free_room, 1.0)
+	_check(screen_place.origin.is_equal_approx(Vector3(0, 1.1, 0.5 - (free_room - Layout.SCREEN_WALL_GAP))), "It stands short of the wall, its bottom edge half its height below the eyes (%s)" % screen_place.origin)
+	screen_place = Layout.default_screen(probe_eye, 0.0, Basis.IDENTITY, 2.0, 8.3, 4.0)
+	_check(screen_place.origin.is_equal_approx(Vector3(0, 0.0, -1.5)), "With room to spare it keeps the usual distance and never sinks into the floor (%s)" % screen_place.origin)
+	_check(is_equal_approx(Layout.free_ahead(probe_jobs, probe_eye, Basis(Vector3.UP, PI), 8.3), 8.3), "Facing away from the wall, nothing is met")
+	# A lamp hanging right ahead is in one probe only: the wall behind it still counts.
+	small_room.add_child(_box("Lamp", Vector3(0, 1.6, -0.5), Vector3(0.3, 0.3, 0.3), wall_texture))
+	probe_jobs = Layout.probe_jobs(small_room, probe_eye, Basis.IDENTITY, 8.3)
+	free_room = Layout.free_ahead(probe_jobs, probe_eye, Basis.IDENTITY, 8.3)
+	_check(probe_jobs.size() == 2 and absf(free_room - 2.45) < 0.02, "One thing in the way does not pull the screen up to the face (%.2f)" % free_room)
+	_check(Layout._faces(probe_jobs[0].mesh).size() == 36, "A box gives its twelve triangles")
+	small_room.free()
 
 	loader.finished.connect(_threaded)
 	loader.start(marked, Budget.HIGH, options)

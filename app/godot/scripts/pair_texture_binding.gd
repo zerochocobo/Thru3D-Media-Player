@@ -26,6 +26,55 @@ static func warp_size(pair: Dictionary) -> Vector2i:
 
 ## The picture of a layer pair is on the compositor's video layer: nothing to bind here.
 var layer := false
+## Picture quality mode in the eye buffers: the plugin draws the frame denoised, enlarged and sharpened
+## into a texture of its own, which the materials read in the frame's place (always with the RGBA shader;
+## the frame itself stays color_texture() for whoever reads the source). The wrapper outlives the pairs:
+## the plugin draws every frame into the same texture.
+var enhanced_rid := RID()
+var _enhanced_name := 0
+var _enhanced_size := Vector2i.ZERO
+var _enhanced := false
+## Set while the mode works on this display's frames: a decoder frame then binds with the RGBA shader
+## and the texture's last picture at once, instead of swapping shaders twice a frame.
+var enhance_expected := false
+
+func enhanced() -> bool:
+	return _enhanced
+
+## Shows the plugin's texture [name] of [size] in the bound frame's place.
+func show_enhanced(name: int, size: Vector2i) -> bool:
+	if not material or layer or name <= 0: return false
+	if name != _enhanced_name or size != _enhanced_size or not enhanced_rid.is_valid():
+		drop_enhanced()
+		enhanced_rid = RenderingServer.texture_create_from_native_handle(RenderingServer.TEXTURE_TYPE_2D,
+			Image.FORMAT_RGBA8, name, size.x, size.y, 1)
+		_enhanced_name = name; _enhanced_size = size
+	if not enhanced_rid.is_valid(): return false
+	_use_shader(material, PAIR_SHADER)
+	RenderingServer.material_set_param(material.get_rid(), "color_texture", enhanced_rid)
+	_enhanced = true
+	return true
+
+## Back to the frame as it was bound.
+func show_original() -> void:
+	if not _enhanced: return
+	_enhanced = false
+	if not material or layer: return
+	var decoder := str(ticket.get("color_target", "")) == "external"
+	_use_shader(material, DECODER_SHADER if decoder else PAIR_SHADER)
+	if decoder:
+		var scale: Array = ticket.get("color_uv_scale", [1.0, 1.0])
+		material.set_shader_parameter("color_uv_scale", Vector2(float(scale[0]), float(scale[1])))
+	RenderingServer.material_set_param(material.get_rid(), "color_texture", color_texture())
+
+## Forgets the plugin's texture (it made another, or the mode is over). No material may still show it.
+func drop_enhanced() -> void:
+	if enhanced_rid.is_valid(): RenderingServer.free_rid(enhanced_rid)
+	enhanced_rid = RID(); _enhanced_name = 0; _enhanced_size = Vector2i.ZERO
+
+## What the materials show as the frame's colour.
+func shown_texture() -> RID:
+	return enhanced_rid if _enhanced and enhanced_rid.is_valid() else color_texture()
 ## Secondary pictures borrow this exact display lease; detach all RIDs before retiring it.
 var _consumers: Array[ShaderMaterial] = []
 var _shared_shader: Shader
@@ -60,7 +109,7 @@ func share_with(target: ShaderMaterial, parameters: Dictionary = {}, portrait: b
 		if not values.has(name) or values[name] != value:
 			target.set_shader_parameter(name, value); values[name] = value
 	for name in ["color_texture", "alpha_texture", "portrait_texture"]:
-		var texture := color_texture() if name == "color_texture" else (alpha_rid if name == "alpha_texture" else portrait_rid)
+		var texture := shown_texture() if name == "color_texture" else (alpha_rid if name == "alpha_texture" else portrait_rid)
 		if values.get(name) != texture:
 			RenderingServer.material_set_param(target.get_rid(), name, texture); values[name] = texture
 
@@ -102,7 +151,8 @@ func bind(target: ShaderMaterial, pair: Dictionary) -> bool:
 	if (not decoder and not color_rid.is_valid()) or not alpha_rid.is_valid() or (pair.has("portrait_texture_id") and not portrait_rid.is_valid()):
 		_free_wrappers()
 		return false
-	_use_shader(target, DECODER_SHADER if decoder else PAIR_SHADER)
+	_enhanced = decoder and enhance_expected and enhanced_rid.is_valid()
+	_use_shader(target, DECODER_SHADER if decoder and not _enhanced else PAIR_SHADER)
 	var rect: Array = pair.model_content_rect
 	material = target
 	ticket = pair.duplicate(true)
@@ -121,8 +171,8 @@ func bind(target: ShaderMaterial, pair: Dictionary) -> bool:
 		_decoder_color.size = Vector2(int(pair.buffer_width), int(pair.buffer_height))
 		_decoder_color.set_external_buffer_id(egl_image)
 		var scale: Array = pair.get("color_uv_scale", [1.0, 1.0])
-		material.set_shader_parameter("color_uv_scale", Vector2(float(scale[0]), float(scale[1])))
-		RenderingServer.material_set_param(material.get_rid(), "color_texture", _decoder_color.get_rid())
+		if not _enhanced: material.set_shader_parameter("color_uv_scale", Vector2(float(scale[0]), float(scale[1])))
+		RenderingServer.material_set_param(material.get_rid(), "color_texture", enhanced_rid if _enhanced else _decoder_color.get_rid())
 	else:
 		RenderingServer.material_set_param(material.get_rid(), "color_texture", color_rid)
 	RenderingServer.material_set_param(material.get_rid(), "alpha_texture", alpha_rid)
@@ -145,6 +195,7 @@ func unbind() -> Dictionary:
 	material = null
 	warped = false
 	layer = false
+	_enhanced = false
 	# The slot retires after this and destroys its EGLImage. Forget it: ExternalTexture.size
 	# rebinds the remembered image on a size change, and a dead image leaves GL_INVALID_OPERATION.
 	if _decoder_color:

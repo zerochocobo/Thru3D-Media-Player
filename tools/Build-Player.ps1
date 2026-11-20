@@ -71,6 +71,12 @@ if ($DebugApplicationId) {
 }
 function Convert-HexString([byte[]]$Bytes) { -join ($Bytes | ForEach-Object { $_.ToString('X2') }) }
 $workspace = Split-Path -Parent $PSScriptRoot
+$projectDirectory = Join-Path $workspace 'app\godot'
+$appVersion = [regex]::Match((Get-Content (Join-Path $projectDirectory 'project.godot') -Raw), '(?m)^config/version="([^"]+)"').Groups[1].Value
+$releaseNotesPath = Join-Path $projectDirectory 'data\release_notes.json'
+$notesChecker = Join-Path $PSScriptRoot 'check_release_notes.py'
+& (Join-Path $workspace '.venv/Scripts/python.exe') $notesChecker $releaseNotesPath $appVersion --build-type $BuildType
+if ($LASTEXITCODE -ne 0) { throw 'Release notes input check failed.' }
 & (Join-Path $workspace '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'check_image_transfers.py')
 if ($LASTEXITCODE -ne 0) { throw 'Runtime image transfer guard failed.' }
 & (Join-Path $workspace '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'Build-ChineseLexicon.py') --check
@@ -112,8 +118,6 @@ if ($BuildType -eq 'Release') {
 } else {
     & "$PSScriptRoot\environment\Prepare-DebugSigning.ps1" -ToolRoot $ToolRoot -SigningDirectory $SigningDirectory
 }
-$projectDirectory = Join-Path $workspace 'app\godot'
-$appVersion = [regex]::Match((Get-Content (Join-Path $projectDirectory 'project.godot') -Raw), '(?m)^config/version="([^"]+)"').Groups[1].Value
 $presetText = [IO.File]::ReadAllText($exportPresetsPath)
 $presetHeader = [regex]::Match($presetText, '(?m)^\[preset\.(\d+)\]\r?\nname="' + [regex]::Escape($exportPreset) + '"')
 if (-not $presetHeader.Success) { throw 'Export preset not found.' }
@@ -360,6 +364,8 @@ foreach ($storagePermission in @('android.permission.READ_EXTERNAL_STORAGE','and
 }
 if ($manifestText -notmatch ('android:versionCode[^\r\n]*=' + $expectedVersionCode + '\b')) { throw 'APK Android versionCode differs from the requested build number.' }
 & "$PSScriptRoot/Assert-DistributionPackaged.ps1" -ArchivePath $apkPath -ExpectedChannel $distributionChannel
+& (Join-Path $workspace '.venv/Scripts/python.exe') $notesChecker $releaseNotesPath $appVersion --build-type $BuildType --apk $apkPath
+if ($LASTEXITCODE -ne 0) { throw 'Packaged release notes check failed.' }
 if ($manifestText -notmatch ('android:versionName[^\r\n]*="' + [regex]::Escape($appVersion) + '"')) {
     throw 'APK version differs from the project version.'
 }

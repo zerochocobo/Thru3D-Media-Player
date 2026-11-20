@@ -25,6 +25,13 @@ internal object VideoLayerNative {
     @JvmStatic external fun copyTexture(slot: Int, texture: Int): Boolean
     /** Fisheye frame remapped to equirect into the acquired image (params: see video_layer.cpp). */
     @JvmStatic external fun remapFisheye(slot: Int, texture: Int, external: Boolean, params: FloatArray): Boolean
+    /** [remapFisheye] with picture quality mode's look (22 values, see video_layer.cpp's remap_fisheye). */
+    /** Picture quality mode for the eye buffers: the frame drawn denoised, enlarged and sharpened into a
+     * texture of width x height the native side keeps; its GL name, or 0 (see video_layer.cpp). */
+    @JvmStatic external fun enhanceFrameTexture(texture: Int, external: Boolean, sourceWidth: Int, sourceHeight: Int,
+                                                scaleX: Float, scaleY: Float, width: Int, height: Int,
+                                                sharpen: Float, denoiseStep: Float, denoiseTolerance: Float): Int
+    @JvmStatic external fun enhanceFisheye(slot: Int, texture: Int, external: Boolean, params: FloatArray, look: FloatArray): Boolean
     /** Runtime graphics limits: max layer count, swapchain image width, height. */
     @JvmStatic external fun compositorLimits(): String
     @JvmStatic external fun pipMetrics(): String

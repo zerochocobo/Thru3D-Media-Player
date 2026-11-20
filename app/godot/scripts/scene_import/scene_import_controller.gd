@@ -8,6 +8,7 @@ const Budget := preload("res://scripts/scene_import/scene_import_budget.gd")
 const Unity := preload("res://scripts/scene_import/scene_import_unity.gd")
 const Platform := preload("res://scripts/scene_import/scene_import_platform.gd")
 const Motion := preload("res://scripts/scene_import/scene_import_motion.gd")
+const Layout := preload("res://scripts/scene_import/scene_import_layout.gd")
 const Gallery := preload("res://scripts/scene_import/scene_gallery.gd")
 const GalleryView := preload("res://scripts/scene_import/scene_gallery_view.gd")
 const Panorama := preload("res://scripts/app_background.gd")
@@ -88,6 +89,12 @@ var _calibrated := false
 var _pin: Variant = null
 ## What the pinned screen was last placed from, and where it ended up: placed again when any of it changes.
 var _pin_applied := []
+## The worker looking for room ahead of the entry point, for a scene's first screen place; -1 when none.
+var _screen_task := -1
+var _screen_generation := 0
+## Where a following screen was put on entry, in the scene's space, until the head is tracked:
+## the scene still rises to the posture's height then, and the screen goes with it.
+var _follow_place: Variant = null
 
 func setup(owner: Node) -> void:
 	app = owner
@@ -251,6 +258,7 @@ func _loaded(result: Dictionary, id: String) -> void:
 	motion.attach(_root, info.stats.bounds)
 	_pin = library.screen_pin(id)
 	_enter_pose(id)
+	if library.screen_pin(id) == null: _probe_screen(id)
 	_load_backdrop(library.backdrop(id) if _sky == null else "")
 	active_id = id
 	app.settings.set_value(SECTION, "active", id)
@@ -266,11 +274,14 @@ func background_selected() -> void:
 func deactivate() -> void:
 	if _root == null and active_id.is_empty() and pending_id.is_empty(): return
 	pending_id = ""
+	# A screen left fixed in the scene could be anywhere: it comes back in front of the viewer.
+	var pinned := screen_pinned()
 	_release()
 	active_id = ""
 	app.settings.set_value(SECTION, "active", "")
 	app.settings.save(app.settings_path)
 	app._update_background()
+	if pinned and app.has_method("_place_screen"): app._place_screen(true)
 
 func _release() -> void:
 	# The sky and the panorama outlive the scene: hand them back at full brightness.
@@ -290,6 +301,8 @@ func _release() -> void:
 	_raised = 0.0
 	_pin = null
 	_pin_applied = []
+	_screen_generation += 1
+	_follow_place = null
 
 ## Called by the background update with whether scenery may show right now; returns whether the scene does.
 func present(allowed: bool) -> bool:
@@ -301,27 +314,64 @@ func present(allowed: bool) -> bool:
 		motion.suspend()
 	return _shown
 
-## Where the viewer fixed the screen comes first, then where the scene names one; otherwise the
-## ordinary screen stays in front of the viewer.
+## A pinned screen goes back to its place in the scene; otherwise the ordinary screen stays in
+## front of the viewer. Screens named by the scene's author are not used.
 func _place_screen() -> void:
 	var video: Node = app.get("video")
 	if video == null or app.get("photo_active") or video.geometry != Geometry.Geometry.FLAT or not video.has_method("set_flat_world_pose"): return
-	if _pin is Transform3D:
-		if not _shown: return
+	if _pin is Transform3D and _shown:
 		# Kept by the middle of its bottom edge, so a resized screen still stands where it stood.
 		var pose: Transform3D = _root.global_transform * (_pin as Transform3D)
 		pose.origin += pose.basis.y * _screen_height(video) * 0.5
 		video.set_flat_world_pose(pose)
 		_pin_applied = [_root.global_transform, video._flat.size, video.screen_rotation, video.global_transform * video.flat_pose]
-		return
-	if _layout.get("source", "") not in ["marker", "sidecar"] or not _layout.get("screen") is Transform3D: return
-	video.set_flat_world_pose(_root.transform * (_layout.screen as Transform3D))
 
 ## How tall the picture stands as it is turned on its screen.
 static func _screen_height(video: Node) -> float:
 	var turn := deg_to_rad(float(video.screen_rotation))
 	var size: Vector2 = video._flat.size
 	return absf(cos(turn)) * size.y + absf(sin(turn)) * size.x
+
+## Entering a scene, the screen is put in front of the entry point, at the viewer's usual distance
+## or short of the wall ahead, so a small room never leaves it outside or where the last scene had
+## it. It keeps following the viewer from there: only the viewer pins it.
+func _probe_screen(id: String) -> void:
+	# Lying, the viewer looks up: a screen ahead at floor level would be out of sight.
+	if _screen_task >= 0 or _root == null or posture == "lie": return
+	var eye := _spawn.origin + Vector3.UP * eye_height()
+	var heading := Basis(Vector3.UP, _spawn.basis.get_euler().y)
+	var reach := maxf(float(app.video.screen_distance), Layout.SCREEN_NEAREST) + Layout.SCREEN_WALL_GAP
+	var jobs := Layout.probe_jobs(_root, eye, heading, reach)
+	var generation := _screen_generation
+	_screen_task = WorkerThreadPool.add_task(func() -> void:
+		var free := Layout.free_ahead(jobs, eye, heading, reach)
+		_probed.call_deferred(id, generation, eye, heading, free))
+
+func _probed(id: String, generation: int, eye: Vector3, heading: Basis, free: float) -> void:
+	WorkerThreadPool.wait_for_task_completion(_screen_task)
+	_screen_task = -1
+	# Left, swapped or pinned by the viewer in the meantime: a scene entered since still needs its own.
+	if generation != _screen_generation or id != active_id or _root == null or library.screen_pin(id) != null:
+		if _root != null and generation != _screen_generation and library.screen_pin(active_id) == null: _probe_screen(active_id)
+		return
+	var video: Node = app.get("video")
+	var place := Layout.default_screen(eye, _spawn.origin.y, heading, float(video.screen_distance), free, _screen_height(video))
+	_follow_place = place
+	_place_following()
+	if _calibrated: _follow_place = null
+
+## Puts a screen that follows the viewer at its place for this entry; it follows them from there.
+func _place_following() -> void:
+	var video: Node = app.get("video")
+	if video == null or app.get("photo_active") or video.geometry != Geometry.Geometry.FLAT or screen_pinned(): return
+	var pose: Transform3D = _root.global_transform * (_follow_place as Transform3D)
+	pose.origin += pose.basis.y * _screen_height(video) * 0.5
+	video.set_flat_world_pose(pose)
+	# Following from here on, not from where the last scene had it.
+	if app.has_method("_capture_follow_screen"): app._capture_follow_screen(video, app._head_pose())
+
+func _exit_tree() -> void:
+	if _screen_task >= 0: WorkerThreadPool.wait_for_task_completion(_screen_task)
 
 ## Whether the flat video stays where the viewer fixed it in this scene, rather than in front of them.
 func screen_pinned() -> bool:
@@ -408,6 +458,9 @@ func _settle() -> void:
 	_root.global_position.y += wanted - _raised
 	_raised = wanted
 	_place_screen()
+	if _follow_place is Transform3D:
+		_place_following()
+		if _calibrated: _follow_place = null
 
 ## The posture a scene is entered with: the one saved with its entry point, else standing.
 func _enter_pose(id: String) -> void:
@@ -423,7 +476,7 @@ func poll_sticks(stick: Vector2, turn: Vector2, delta: float, _blocked: bool = f
 	if not _shown or not motion.moving(): return false
 	var before := _root.transform
 	motion.poll_sticks(stick, turn, delta, (app.xr_camera as Node3D).global_transform, _feet())
-	# A screen the scene placed goes with the scene.
+	# A pinned screen goes with the scene.
 	if not before.is_equal_approx(_root.transform): _place_screen()
 	return true
 

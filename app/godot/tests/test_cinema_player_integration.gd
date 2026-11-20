@@ -485,6 +485,17 @@ func _auto_light_routes() -> void:
 	main._cinema_lights_idle_since = Time.get_ticks_msec() - main.CINEMA_LIGHTS_UP_DELAY_MS - 1
 	main._sync_cinema_lights()
 	check(main.cinema_environment.lights_on, "Auto raises the house lights once playback has really stopped")
+	# A held seek stick keeps the decoder paused between its preview frames.
+	for phase in ["preview", "waiting", "done"]:
+		main.seek_feedback.phase = phase
+		main._sync_cinema_lights()
+		main._cinema_lights_idle_since = Time.get_ticks_msec() - main.CINEMA_LIGHTS_UP_DELAY_MS - 1 if main._cinema_lights_idle_since >= 0 else -1
+		main._sync_cinema_lights()
+		check(not main.cinema_environment.lights_on, "A stick seek in its %s phase keeps the house dark" % phase)
+	main.seek_feedback.phase = ""
+	main._cinema_lights_idle_since = Time.get_ticks_msec() - main.CINEMA_LIGHTS_UP_DELAY_MS - 1
+	main._sync_cinema_lights()
+	check(main.cinema_environment.lights_on, "The house lights follow a real pause again after the seek")
 	# Closing a film keeps its uri and play request, but the closed session is not loading.
 	main.video.media.state = "playing"; main._sync_cinema_lights()
 	check(not main.cinema_environment.lights_on, "Auto darkens the house again for the next film")

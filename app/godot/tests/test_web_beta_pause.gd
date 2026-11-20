@@ -136,6 +136,8 @@ func run() -> void:
 	menu.web_browser.handoff_started_ms = Time.get_ticks_msec() - 30001; poll()
 	check(not menu.web_browser.handoff and menu.web_video.pending == 0 and not menu.web_browser.handoff_error.is_empty(),
 		"Timed out Beta cancels the resolver and releases its hold with a visible reason")
+	check(menu.web_browser.handoff_error.get("report", {}).get("stage") == "handoff" and menu.web_browser.handoff_error.report.get("error_code") == "timeout",
+		"A failed handoff keeps its code for a one-tap log")
 	platform.browser.erase("pause_confirmed")
 	start(true, false)
 	check(menu.web_browser.input_host()._tips[menu.web_browser.BASE + 18] == menu.web_browser.I18n.t("Video not ready"),

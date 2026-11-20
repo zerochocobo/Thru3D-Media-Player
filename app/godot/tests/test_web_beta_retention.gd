@@ -54,9 +54,29 @@ func run() -> void:
 		"Stop returns paused at native progress without resuming neighbouring videos")
 	var context := {"tab":11,"window":1,"navigation":3,"origin":"https://weibo.com/","pause_token":9,
 		"retained":true,"selection":"chosen-card","was_playing":true,"native_uri":"https://weibo.com/123456/POST1"}
-	browser.playback_return=context.duplicate(true);browser.restore_playback(true,26000)
+	menu.visible=true;menu.section=Menu.Section.WEB
+	browser.playback_return=context.duplicate(true)
+	browser.restore_playback(true,26000,{"message":"Decoder failed","error":"The video decoder could not be started.","source":"https",
+		"failure":{"reason":"decoder_failed","stage":"decoding"}})
 	check(platform.browser_commands.back().play and platform.browser_commands.back().selection=="chosen-card",
 		"A failed native open restores only the previously playing source")
+	# The page it returns to says what failed and can send that failure's log in one tap.
+	var report: Dictionary = browser.handoff_error.get("report",{})
+	check(browser.handoff_error.get("message")=="Decoder failed" and report.get("trigger")=="web_beta" and report.get("category")=="web"
+		and report.get("site")=="weibo.com" and report.get("stage")=="native" and report.get("failure",{}).get("reason")=="decoder_failed"
+		and not str(report).contains("chosen-card"),"A native failure is shown on the page with a report naming only the site")
+	poll(browser)
+	var host: Node3D = browser.input_host()
+	check(host._buttons.any(func(b): return b.target==browser.FAILURE_LOG and b.enabled),"The failed page offers its log beside the address")
+	var quick: Array = []
+	menu.setting_changed.connect(func(key,value): if key=="diagnostic_quick": quick.append(value))
+	browser.action(browser.FAILURE_LOG)
+	check(quick.size()==1 and quick[0].identity==browser.handoff_error.failure_id and quick[0].action=="upload" and quick[0].report==report,
+		"One press asks the owner to upload this failure's log")
+	menu.diagnostic_quick.merge({"identity":browser.handoff_error.failure_id,"code":"7F2K9QXM"},true)
+	poll(browser); browser.action(browser.FAILURE_LOG)
+	check(quick.size()==1 and str(browser.input_host()._tips.get(browser.FAILURE_LOG,"")).contains("7F2K9QXM"),"A sent log shows its code and is not sent again")
+	menu.diagnostic_quick.clear()
 	browser.playback_return=context.duplicate(true);browser.playback_selected("file:///different.mp4")
 	check(browser.playback_return.is_empty() and platform.browser_commands.back().action=="release_retained_page",
 		"An unrelated native selection releases the old live-page pin and lease")
