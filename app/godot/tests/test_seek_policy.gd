@@ -201,8 +201,10 @@ func _run() -> void:
 	library.setting_changed.connect(main._on_setting_changed)
 	root.add_child(library); library.toggle(); library.set_process(false)
 	main.recent_menu = library
-	check(library.rows[0].key == "seek_mode" and library.rows[0].choices.size() == 2 and library.rows.filter(func(row): return row.get("key") == "seek_mode").size() == 1 and library.rows.filter(func(row): return row.get("key") == "output_width").size() == 1,
-		"Global settings keep one seek selector and one resolution selector alongside other settings")
+	check(library.rows[0].key == "seek_mode" and library.rows[0].choices.size() == 2
+		and library.rows.filter(func(row): return row.get("key") == "seek_mode").size() == 1
+		and not library.rows.any(func(row): return row.get("key") == "output_width"),
+		"Global settings expose one seek selector while the output group is collapsed")
 	choose(library, "seek_mode", Policy.SPEED)
 	check(video.seek_mode == Policy.SPEED and library.rows[0].value == Policy.SPEED and labels(library).contains("时间可能有偏差"),
 		"Global settings ray selection applies speed and explains the precision tradeoff")

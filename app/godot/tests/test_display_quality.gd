@@ -60,13 +60,16 @@ func _run() -> void:
 	main.recent_menu.section = main.recent_menu.Section.SETTINGS
 	main.recent_menu.tab = main.recent_menu.DISPLAY_TAB
 	main.recent_menu.refresh()
+	var groups: Array = main.recent_menu.rows.filter(func(row): return row.has("display_settings_group"))
+	check(groups.map(func(row): return row.display_settings_group) == ["interface", "rendering", "overlays"]
+		and groups.all(func(row): return row.icon == "next"), "Display groups start collapsed below the top-level controls")
 	# The transparency editor is an action row; these assertions describe choice fields.
 	var watch_rows: Array = main.recent_menu.rows.filter(func(row): return row.get("key") == "watch_color")
 	check(watch_rows.size() == 1 and watch_rows[0].get("swatches", false) and watch_rows[0].choices.size() == 5,
 		"Display offers five inline watch color swatches")
 	var watch_index: int = main.recent_menu.rows.find(watch_rows[0])
 	check(main.recent_menu.rows[watch_index - 1].key == "color_theme", "Watch color follows the interface palette")
-	main.recent_menu._set_scroll(main.recent_menu._max_scroll())
+	main.recent_menu._set_scroll(0)
 	for option in Palette.OPTIONS:
 		var target := -1
 		for id in main.recent_menu.choices.targets:
@@ -82,9 +85,12 @@ func _run() -> void:
 			check(material.get_shader_parameter("accent") == option.swatch and material.get_shader_parameter("secondary") == option.swatch,
 				"All dial, control and projection materials share " + option.value)
 	main.recent_menu._set_scroll(0)
-	var rows: Array = main.recent_menu.rows.filter(func(row): return row.has("key") and row.key != "watch_color")
-	check(rows.map(func(row): return row.key) == ["color_theme", "hand_model", "display_quality", "refresh_cap", "supersampling", "sharpness", "show_status_info", "show_fps", "playback_menu_depth", "stick_seek_overlay"],
-		"Display groups appearance, render quality, status and playback overlays in order")
+	main.recent_menu._choose(main.recent_menu.rows.filter(func(row): return row.get("display_settings_group") == "interface")[0])
+	main.recent_menu._choose(main.recent_menu.rows.filter(func(row): return row.get("display_settings_group") == "overlays")[0])
+	main.recent_menu._choose(main.recent_menu.rows.filter(func(row): return row.get("display_settings_group") == "rendering")[0])
+	var rows: Array = main.recent_menu.rows.filter(func(row): return row.has("key") and row.key not in ["watch_color", "scene_body_height"])
+	check(rows.map(func(row): return row.key) == ["color_theme", "hand_model", "playback_menu_depth", "display_quality", "refresh_cap", "supersampling", "sharpness", "show_status_info", "show_fps", "stick_seek_overlay"],
+		"Expanded groups show each setting in order")
 	var fields := {}
 	for row in rows: fields[row.key] = row
 	check(fields.display_quality.choices.size() == Quality.SCALES.size() + 1 and fields.display_quality.choices[0].value == Quality.AUTO
@@ -92,8 +98,8 @@ func _run() -> void:
 		and fields.supersampling.choices.size() == 3 and fields.supersampling.value == 1
 		and fields.sharpness.choices.size() == 3,
 		"Render scale, refresh, supersampling and sharpness retain their choices and defaults")
-	check(rows[-2].key == "playback_menu_depth" and rows[-2].choices.size() == 3 and rows[-2].value == "default",
-		"Experimental VR playback control depth keeps its unchanged default above progress visibility")
+	check(fields.playback_menu_depth.choices.size() == 3 and fields.playback_menu_depth.value == "default",
+		"Experimental VR control bar depth keeps the original choices and default")
 	check(rows.back().key == "stick_seek_overlay" and rows.back().value and not rows.back().get("switch", false) and rows.back().choices.size() == 2,
 		"Thumbstick progress visibility is the final Display row and defaults on")
 	var refresh_values: Array = fields.refresh_cap.choices.map(func(option): return option.value)
@@ -129,6 +135,9 @@ func _run() -> void:
 	check(main.display.capabilities().meta_dynamic_resolution_enabled == false and main.display.capabilities().render_target_size_scope == "allocated_eye_buffer", "Diagnostics distinguish allocated buffers from dynamic render regions")
 	check(main.display.render_scale == 1.1, "Quality keeps current XR targets until restart")
 	check(main._library_settings().display_quality_pending, "Pending quality is visible")
+	main.recent_menu._choose(main.recent_menu.rows.filter(func(row): return row.get("display_settings_group") == "rendering")[0])
+	var rendering_header: Dictionary = main.recent_menu.rows.filter(func(row): return row.get("display_settings_group") == "rendering")[0]
+	check(rendering_header.get("detail") == I18n.t("Restart to apply"), "The collapsed rendering group still shows the restart reminder")
 	check(main.video.sharpness == 0.6 and main.photo.sharpness == 0.6, "Sharpness applies to both media types")
 	check(main.photo._detail_material.get_shader_parameter("sharpness") == 0.6, "Photo magnifier matches")
 	settings.load(path)
@@ -185,6 +194,7 @@ func _run() -> void:
 	main.recent_menu.section = main.recent_menu.Section.SETTINGS
 	main.recent_menu.tab = main.recent_menu.VIDEO_TAB
 	main.recent_menu.refresh()
+	main.recent_menu._choose(main.recent_menu.rows.filter(func(row): return row.get("video_settings_group") == "output")[0])
 	var resolution: Array = main.recent_menu.rows.filter(func(row): return row.get("key", "") == "output_width")
 	check(resolution.size() == 1 and resolution[0].value == Quality.AUTO_OUTPUT and resolution[0].choices[0].value == Quality.AUTO_OUTPUT, "Resolution offers auto first")
 	var memory_rows: Array = main.recent_menu.rows.filter(func(row): return row.get("key", "") == "memory_mode")

@@ -75,8 +75,9 @@ internal class PhotoBridge(
         if(animationId==id)animation?.pixels(token)?:ByteArray(0) else ByteArray(0)
     }
     private class DepthJob(val id: Int, val source: PhotoSource, @Volatile var strength: Float, @Volatile var convergence: Float, val stereo: Boolean, val sceneToken: Int, val rotation: Int,
-                           @Volatile var owner: PhotoBridge, @Volatile var background: Boolean) {
+                           @Volatile var owner: PhotoBridge, @Volatile var background: Boolean, val model: PhotoDepthModel, val refine: Boolean) {
         @Volatile var cancelled = false
+        val event get() = if (sceneToken > 0) "photo_scene_depth" else if (refine) "photo_depth_refined" else if (background) "photo_preload_depth" else "photo_depth"
     }
     private val depthJobs = ConcurrentHashMap<Int, DepthJob>()
     // Requests whose depth map may be kept between openings (history policy, decided by the caller).
@@ -411,9 +412,15 @@ internal class PhotoBridge(
         depthJobs[id]?.takeIf { it.sceneToken == token && token > 0 }?.cancelled = true
     }
 
-    /** One inference per photo on the shared model thread, using the independent photo model.
-     * Color stays at source display resolution; only content contributes to depth normalization. */
-    fun depth(id: Int, strength: Float = 1f, stereo: Boolean = false, background: Boolean = preload, sceneToken: Int = 0, rotation: Int = 0, convergence: Float = 0.35f): Boolean {
+    /** One inference per photo on the shared model thread, using an independent photo model.
+     * Color stays at source display resolution; only content contributes to depth normalization.
+     * The model follows [PhotoDepthRuntime.mode]; [refine] asks for the quality map of a picture shown with
+     * the fast one and reports it as photo_depth_refined. A kept quality map always serves a request. */
+    fun depth(id: Int, strength: Float = 1f, stereo: Boolean = false, background: Boolean = preload, sceneToken: Int = 0, rotation: Int = 0, convergence: Float = 0.35f,
+              refine: Boolean = false): Boolean {
+        if (refine && (background || sceneToken > 0 || !stereo)) return false
+        // Scene depth (panorama layers, native stereo) keeps the quality model.
+        val model = if (refine || sceneToken > 0) PhotoDepthModel.QUALITY else PhotoDepthRuntime.mode.firstModel
         if (!strength.isFinite() || strength !in 0f..2f || !convergence.isFinite() || convergence !in 0f..1f || !PhotoStereo.validRotation(rotation)) return false
         val job = synchronized(PhotoCache.lock) {
             if (closed) return false
@@ -421,14 +428,15 @@ internal class PhotoBridge(
             if (source.nativeStereo && sceneToken == 0) return false
             if (background && (sceneToken > 0 || source.animation || !allowBackground(source.file, !PhotoDepthRuntime.alive()))) return false
             val existing = depthJobs[id]
-            if (existing != null && !existing.cancelled && existing.stereo == stereo && existing.sceneToken == sceneToken && existing.rotation == rotation) {
+            if (existing != null && !existing.cancelled && existing.stereo == stereo && existing.sceneToken == sceneToken && existing.rotation == rotation
+                && existing.model == model && existing.refine == refine) {
                 existing.strength = strength
                 existing.convergence = convergence
                 existing.background = background
                 return true
             }
             depthJobs.remove(id)?.cancelled = true
-            DepthJob(id, source.retain(), strength, convergence, stereo, sceneToken, rotation, this, background).also {
+            DepthJob(id, source.retain(), strength, convergence, stereo, sceneToken, rotation, this, background, model, refine).also {
                 depthJobs[id] = it
                 inFlightSources[it] = source
             }
@@ -452,64 +460,83 @@ internal class PhotoBridge(
                 val near = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.LITTLE_ENDIAN)
                 val target = File(source.parentFile, "depth.bin")
                 val metadata = File(source.parentFile, "depth.json")
+                // Acceptable maps, best first: the quality map serves every request; the fast one only fast requests.
+                val accepted = if (job.model == PhotoDepthModel.FAST) PhotoDepthModel.entries.toList() else listOf(PhotoDepthModel.QUALITY)
                 val cached = if (target.length() == w.toLong()*h*4 && metadata.isFile)
-                    runCatching { JSONObject(metadata.readText()).takeIf { it.optString("photo_cache") == "da2-518-stretch-v2" } }.getOrNull() else null
+                    runCatching { JSONObject(metadata.readText()).takeIf { PhotoDepthModel.ofCache(it.optString("photo_cache")) in accepted } }.getOrNull() else null
                 val leftEye = job.source.nativeStereo && job.sceneToken > 0
+                fun variant(model: PhotoDepthModel) = model.cache + if (leftEye) "-left" else ""
                 // An animation's frame snapshot is not the file a later opening would hash.
                 val store = if (cached == null && snapshot == null && id in job.owner.keptDepth) PhotoDepthStore(app.cacheDir) else null
-                val key = store?.key(source, "da2-518-stretch-v2" + if (leftEye) "-left" else "")
+                val keys = store?.keys(source, PhotoDepthModel.entries.map(::variant))
                 checkDepth()
-                val kept = if (store != null && key != null) store.get(key, w, h) else null
+                var keptModel: PhotoDepthModel? = null
+                val kept = if (store != null && keys != null) accepted.firstNotNullOfOrNull { model ->
+                    store.get(keys.getValue(variant(model)), w, h)?.also { keptModel = model }
+                } else null
                 val result: JSONObject
+                val used: PhotoDepthModel
                 if (cached != null) {
                     near.put(target.readBytes()); near.rewind()
+                    used = PhotoDepthModel.ofCache(cached.optString("photo_cache"))!!
                     result = cached.put("depth_cached",true).put("model_reused",false)
                 } else if (kept != null) {
                     // A picture seen before: no model session, no GPU time.
+                    used = keptModel!!
                     near.put(kept.near); near.rewind()
                     val bytes = ByteArray(near.remaining()); near.get(bytes); near.rewind()
                     target.writeBytes(bytes)
                     result = JSONObject().put("state","ready").put("path",target.path).put("width",w).put("height",h)
-                        .put("photo_cache","da2-518-stretch-v2").put("rect",org.json.JSONArray(kept.rect.map { it.toDouble() }))
+                        .put("photo_cache",used.cache).put("rect",org.json.JSONArray(kept.rect.map { it.toDouble() }))
                     metadata.writeText(result.toString())
                     result.put("depth_cached",true).put("depth_kept",true).put("model_reused",false)
                 } else {
+                    used = job.model
                     stage(id,"input")
                     val inputStarted = System.nanoTime()
-                    val input = PhotoDepthInput.prepare(source, selectLeftEye = leftEye)
+                    val input = PhotoDepthInput.prepare(source, used.width, used.height, selectLeftEye = leftEye)
                     val inputMs = (System.nanoTime() - inputStarted) / 1_000_000.0
                     val content = input.content
                     checkDepth()
                     checkHeadroom(!PhotoDepthRuntime.alive())
                     stage(id,"waiting_model")
                     val modelStarted = System.nanoTime()
-                    result = PhotoDepthRuntime.run(app,::checkDepth) { handle, reused ->
+                    val output = if (used.width == w && used.height == h) near
+                        else ByteBuffer.allocateDirect(used.width * used.height * 4).order(ByteOrder.LITTLE_ENDIAN)
+                    result = PhotoDepthRuntime.run(app,used,::checkDepth) { handle, reused ->
                         checkHeadroom(false)
                         val runtime = JSONObject(DepthNative.describe(handle)).put("session_reused", reused)
                         stage(id,"inference")
-                        JSONObject(DepthNative.processPhoto(handle,input.rgb,near,content.x,content.y,content.width,content.height))
+                        JSONObject(DepthNative.processPhoto(handle,input.rgb,output,content.x,content.y,content.width,content.height))
                             .put("runtime",runtime).put("model_reused",reused).put("depth_cached",false)
                     }
-                    result.put("input_ms",inputMs).put("depth_total_ms",(System.nanoTime()-modelStarted)/1_000_000.0)
+                    // The fast map covers the same whole-photo stretch; resample it to the shared map size.
+                    if (output !== near) { near.put(PhotoDepthInput.resample(output, used.width, used.height, w, h)); near.rewind() }
+                    result.put("input_ms",inputMs).put("input_steps",input.steps).put("depth_total_ms",(System.nanoTime()-modelStarted)/1_000_000.0)
                     require(result.optString("state") == "ready")
                     checkDepth()
                     near.rewind(); val bytes = ByteArray(near.remaining()); near.get(bytes); near.rewind()
                     target.writeBytes(bytes)
-                    result.put("path",target.path).put("width",w).put("height",h).put("photo_cache","da2-518-stretch-v2")
-                        .put("rect",org.json.JSONArray(listOf(content.x.toDouble()/w,content.y.toDouble()/h,content.width.toDouble()/w,content.height.toDouble()/h)))
+                    result.put("path",target.path).put("width",w).put("height",h).put("photo_cache",used.cache)
+                        .put("rect",org.json.JSONArray(listOf(content.x.toDouble()/used.width,content.y.toDouble()/used.height,
+                            content.width.toDouble()/used.width,content.height.toDouble()/used.height)))
                     metadata.writeText(result.toString())
-                    if (store != null && key != null) {
+                    if (store != null && keys != null) {
                         val rect = result.getJSONArray("rect")
-                        store.put(key, near, w, h, FloatArray(4) { rect.getDouble(it).toFloat() })
+                        store.put(keys.getValue(variant(used)), near, w, h, FloatArray(4) { rect.getDouble(it).toFloat() })
+                        // The quality map serves every later request: its fast map would only take room.
+                        if (used == PhotoDepthModel.QUALITY) store.remove(keys.getValue(variant(PhotoDepthModel.FAST)))
                     }
                 }
+                result.put("depth_model", if (used == PhotoDepthModel.QUALITY) "quality" else "fast")
                 checkDepth()
                 if (stereo) {
                     checkHeadroom(false)
                     stage(id,"stereo")
                     val stereoStarted = System.nanoTime()
                     val rect = result.getJSONArray("rect")
-                    val pair = PhotoStereo.prepare(source,near,FloatArray(4) { rect.getDouble(it).toFloat() },job.strength,id,job.rotation,job.convergence)
+                    val pair = PhotoStereo.prepare(source,near,FloatArray(4) { rect.getDouble(it).toFloat() },job.strength,id,job.rotation,job.convergence,
+                        used == PhotoDepthModel.FAST)
                     pair.keys().forEach { key -> result.put(key,pair.get(key)) }
                     result.put("stereo_total_ms",(System.nanoTime()-stereoStarted)/1_000_000.0)
                 }
@@ -520,11 +547,12 @@ internal class PhotoBridge(
                     // Once a result is committed, a strength retry must enqueue fresh pair work.
                     job.owner.depthJobs.remove(id,job)
                     job.owner.stage(id,"ready")
-                    android.util.Log.i("QuestPhotoDepth", "request=$id cached=${cached != null} kept=${kept != null} reused=${result.optBoolean("model_reused")} total_ms=${result.optDouble("total_ms")} " +
+                    android.util.Log.i("QuestPhotoDepth", "request=$id model=${used.name} refine=${job.refine} cached=${cached != null} kept=${kept != null} reused=${result.optBoolean("model_reused")} total_ms=${result.optDouble("total_ms")} " +
                         "input_ms=${result.optDouble("input_ms")} depth_ms=${result.optDouble("depth_ms")} priority=${result.optJSONObject("runtime")?.optInt("priority",-1)} " +
-                        "stereo_ms=${result.optDouble("stereo_total_ms")} stereo_gpu_us=${result.optLong("stereo_render_us")}")
+                        "stereo_ms=${result.optDouble("stereo_total_ms")} stereo_gpu_us=${result.optLong("stereo_render_us")} " +
+                        "input_steps=[${result.optString("input_steps")}] stereo_steps=[${result.optString("stereo_steps")}]")
                     if (job.sceneToken > 0) result.put("scene_token",job.sceneToken)
-                    job.owner.emit(if (job.sceneToken > 0) "photo_scene_depth" else if (job.background) "photo_preload_depth" else "photo_depth",id,result.toString())
+                    job.owner.emit(job.event,id,result.toString())
                 }
             } catch (_: InterruptedException) { }
             catch (error: Throwable) {
@@ -537,7 +565,7 @@ internal class PhotoBridge(
                     val failure = JSONObject().put("state","error").put("error","PHOTO_DEPTH_FAILED").put("scene_token",job.sceneToken)
                         .put("stereo_rotation",job.rotation)
                         .put("deferred", error is BackgroundPressure)
-                    job.owner.emit(if (job.sceneToken > 0) "photo_scene_depth" else if (job.background) "photo_preload_depth" else "photo_depth", id, failure.toString())
+                    job.owner.emit(job.event, id, failure.toString())
                 } }
             }
             finally { snapshot?.delete();synchronized(PhotoCache.lock) {

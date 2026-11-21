@@ -163,10 +163,6 @@ func draw_footer() -> void:
 	menu._tips[CLEAR_SELECTION] = menu.I18n.t("Cancel selection")
 
 func choose(row: Dictionary) -> bool:
-	if row.get("group_header", false):
-		privacy_expanded = not privacy_expanded
-		if privacy_expanded: menu.scroll = float(maxi(0, menu.rows.find(row)))
-		menu.choices.reset(); menu.refresh(); return true
 	if row.get("unlock_favorites", false): open_password("unlock"); return true
 	if row.has("privacy_action"):
 		var action_name: String = row.privacy_action
@@ -387,6 +383,9 @@ func action(id: int) -> bool:
 			var catalog: RefCounted = store if home_tab == 1 else menu.catalog
 			var success: bool = catalog.remove(str(target.uri)) if home_tab == 1 else catalog.forget(str(target.uri))
 			if success and home_tab == 0: success = catalog.purge_keys([])
+			if success and home_tab == 0:
+				menu._cancel_covers()
+				menu.Thumbnails.forget(str(target.uri))
 			if success: modal = ""
 			else: menu.status = "Favorites save failed"
 			menu.refresh()
@@ -447,6 +446,11 @@ func _remove_rows(items: Array, clear_all: bool = false) -> void:
 			var undo: Dictionary = menu.catalog.undo.duplicate(true)
 			menu.catalog.clear_all(); menu.catalog.undo = undo
 		var persisted: bool = menu.catalog.purge_keys([]) if not removed.is_empty() else false
+		if persisted:
+			menu._cancel_covers()
+			if clear_all: menu.Thumbnails.clear_in_background()
+			else:
+				for entry in removed: menu.Thumbnails.forget(str(entry.uri))
 		success = removed.size() == items.size() and persisted
 		if not removed.is_empty(): history_undo = {"entries":removed, "until":Time.get_ticks_msec() + 8000, "marker":menu.catalog.undo.duplicate(true)}
 	if success: selection.clear(); batch.clear(); modal = ""

@@ -181,7 +181,7 @@ DepthStabilizer::DepthStabilizer(int width, int height) : w_(width), h_(height) 
 
 void DepthStabilizer::reset() {
     have_band_ = false; initialized_ = false; have_small_ = false;
-    have_ref_ = false; cooldown_left_ = 0;
+    have_ref_ = false; cooldown_left_ = 0; residual_level_ = 0; previous_distance_ = 0;
 }
 
 bool DepthStabilizer::scene_cut(const float* rgb, int frame_step) {
@@ -210,18 +210,18 @@ bool DepthStabilizer::scene_cut(const float* rgb, int frame_step) {
     for (auto& v : hist) v /= pixels;
     hist_ = hist; hist_distance_ = 0;
     if (!have_ref_) { ref_hist_ = hist; have_ref_ = true; return false; }
-    const float keep = std::pow(kCutRefEma, static_cast<float>(std::max(1, frame_step)));
-    auto update = [&] { for (size_t i = 0; i < hist.size(); ++i) ref_hist_[i] = ref_hist_[i] * keep + hist[i] * (1 - keep); };
-    if (cooldown_left_ > 0) { cooldown_left_ = std::max(0, cooldown_left_ - frame_step); update(); return false; }
+    if (cooldown_left_ > 0) { cooldown_left_ = std::max(0, cooldown_left_ - frame_step); follow_reference(frame_step); return false; }
     float bc = 0;
     for (size_t i = 0; i < hist.size(); ++i) bc += std::sqrt(ref_hist_[i] * hist[i]);
     const float distance = std::sqrt(std::max(0.f, 1.f - bc));
     hist_distance_ = distance;
-    // A cut re-seeds the reference; PTMediaServer then resets the detector (and its cooldown) and
-    // steps it again on the same frame, so no cooldown follows a cut.
-    if (distance > kCutThreshold) { ref_hist_ = hist; cooldown_left_ = 0; return true; }
-    update();
-    return false;
+    // Only a candidate: process() confirms it and then re-seeds or follows the reference.
+    return distance > kCutThreshold;
+}
+
+void DepthStabilizer::follow_reference(int frame_step) {
+    const float keep = std::pow(kCutRefEma, static_cast<float>(std::max(1, frame_step)));
+    for (size_t i = 0; i < hist_.size(); ++i) ref_hist_[i] = ref_hist_[i] * keep + hist_[i] * (1 - keep);
 }
 
 void DepthStabilizer::band(const float* inv, int frame_step) {
@@ -422,12 +422,29 @@ void DepthStabilizer::process(const float* inv, const float* rgb, int frame_step
     frame_step = std::max(1, frame_step);
     timing_ = {};
     auto started = Clock::now();
-    last_cut_ = scene_cut(rgb, frame_step);
+    const bool candidate = scene_cut(rgb, frame_step);
+    const bool compared = have_ref_ && hist_distance_ > 0;
     timing_.scene_ms = elapsed(started);
     motion(rgb);
     since_cut_ = std::min(since_cut_ + frame_step, 1 << 20);
-    if (!last_cut_ && since_cut_ > kCutResidualHold && mc_residual_ > kCutResidual && hist_distance_ > kCutResidualDistance) {
-        last_cut_ = true; ref_hist_ = hist_;
+    const float jump = hist_distance_ - previous_distance_;
+    // Colour: a cut changes the colours at once and the picture with them; slow drift (fire,
+    // a lamp coming on) crosses the threshold against the trailing reference with little change.
+    last_cut_ = candidate && (jump >= kCutJump || mc_residual_ > kCutResidual);
+    // Picture: a residual well above the shot's level, or a smaller rise with a colour jump.
+    const bool rise = residual_level_ <= 0 || mc_residual_ > kCutResidualRise * residual_level_ ||
+                      (mc_residual_ > kCutResidualRiseWithJump * residual_level_ && jump >= kCutResidualJump);
+    if (!last_cut_ && since_cut_ > kCutResidualHold && mc_residual_ > kCutResidual && rise && hist_distance_ > kCutResidualDistance)
+        last_cut_ = true;
+    // A cut re-seeds the reference; PTMediaServer then resets the detector (and its cooldown) and
+    // steps it again on the same frame, so no cooldown follows a cut.
+    if (last_cut_) { ref_hist_ = hist_; cooldown_left_ = 0; }
+    else if (compared) follow_reference(frame_step);
+    previous_distance_ = last_cut_ ? 0.f : hist_distance_;
+    if (last_cut_) residual_level_ = 0;
+    else if (mc_residual_ > 0) {
+        const float r = rate(kCutResidualLevelRate, frame_step);
+        residual_level_ = residual_level_ > 0 ? residual_level_ * (1 - r) + mc_residual_ * r : mc_residual_;
     }
     if (last_cut_) since_cut_ = 0;
     if (last_cut_) { have_band_ = false; initialized_ = false; have_small_ = false; ++cuts_; }

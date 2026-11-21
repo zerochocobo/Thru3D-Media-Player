@@ -29,7 +29,7 @@ internal object VideoLayerNative {
     /** Picture quality mode for the eye buffers: the frame drawn denoised, enlarged and sharpened into a
      * texture of width x height the native side keeps; its GL name, or 0 (see video_layer.cpp). */
     @JvmStatic external fun enhanceFrameTexture(texture: Int, external: Boolean, sourceWidth: Int, sourceHeight: Int,
-                                                scaleX: Float, scaleY: Float, width: Int, height: Int,
+                                                scaleX: Float, scaleY: Float, width: Int, height: Int, eyesAcross: Int, eyesDown: Int,
                                                 sharpen: Float, denoiseStep: Float, denoiseTolerance: Float): Int
     @JvmStatic external fun enhanceFisheye(slot: Int, texture: Int, external: Boolean, params: FloatArray, look: FloatArray): Boolean
     /** Runtime graphics limits: max layer count, swapchain image width, height. */
@@ -82,9 +82,10 @@ internal object VideoLayerNative {
     @JvmStatic external fun releaseBlit()
     /** Picture quality mode on the picture layer: draws a GL texture of [sourceWidth] x [sourceHeight] into
      * the acquired image of [slot], enlarged (EASU) when the image is larger, sharpened and graded as the
-     * layer copy does ([grade]: 11 values, or null). For frames a software decoder made. */
-    @JvmStatic external fun enhanceTexture(slot: Int, texture: Int, sourceWidth: Int, sourceHeight: Int, sharpen: Float, grade: FloatArray?,
-                                           denoiseStep: Float, denoiseTolerance: Float): Boolean
+     * layer copy does ([grade]: 11 values, or null). For frames a software decoder made and 2D->3D stereo
+     * pairs; [eyesAcross] x [eyesDown] eye pictures, which no pass reads across. */
+    @JvmStatic external fun enhanceTexture(slot: Int, texture: Int, sourceWidth: Int, sourceHeight: Int, eyesAcross: Int, eyesDown: Int,
+                                           sharpen: Float, grade: FloatArray?, denoiseStep: Float, denoiseTolerance: Float): Boolean
     @JvmStatic external fun releaseImage(slot: Int, mipmaps: Boolean): Boolean
     @JvmStatic external fun runtimeExtensions(): String
     /** Layers can carry a colour scale/bias (the colour grade) instead of leaving the compositor. */

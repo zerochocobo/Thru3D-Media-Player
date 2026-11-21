@@ -5,7 +5,7 @@ import android.content.res.AssetManager
 import java.io.File
 import java.nio.ByteBuffer
 
-/** Video/portrait ZipDepth and independent photo DA2, MNN OpenCL. Not thread-safe per handle. */
+/** Video/portrait ZipDepth and independent photo DA2 (plus a fast photo ZipDepth), MNN OpenCL. Not thread-safe per handle. */
 internal object DepthNative {
     // Loads libquest_rvm on first use of this object.
     val unavailable: String? = RvmNative.unavailable
@@ -17,6 +17,8 @@ internal object DepthNative {
     @JvmStatic private external fun createAsset(assets: AssetManager, cacheDirectory: String?, modelAsset: String): Long
     /** Independent still-photo model, same shared worker but separate compiled-program cache. */
     @JvmStatic external fun createPhoto(assets: AssetManager, cacheDirectory: String?): Long
+    /** 512x512 ZipDepth still-photo model (fast map), same cache directory as [createPhoto]. */
+    @JvmStatic external fun createPhotoFast(assets: AssetManager, cacheDirectory: String?): Long
     /** {"width","height","prepare_ms","gpu_ops","cpu_fallback_ops"} */
     @JvmStatic external fun describe(handle: Long): String
     /** rgb float32 CHW [0,1] -> near float32 HxW [0,1] (1 = nearest). reset restarts the shot's depth band. */

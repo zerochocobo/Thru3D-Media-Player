@@ -120,6 +120,14 @@ var _hover: Dictionary = {}
 ## Hands whose ray comes from the head (external keyboard/gamepad): no beam, only the dot,
 ## which stays at the menu's depth as the gaze reticle when nothing is hit.
 var head_pointers: Dictionary = {}
+## The menu the controllers are aiming at keeps their dot at the beam's end when it misses a panel.
+var idle_dot := false
+## Where a beam that misses the panels stops, per hand: the screen it reaches, set by the app.
+## The beam draws over everything, so without it the beam runs on through the picture.
+var miss_points: Dictionary = {}
+## Whether a hand's trigger is down, from the app: a release routed elsewhere never reaches this
+## menu. Without an answer a held control keeps the menu, and tooltips show as usual.
+var pointer_held: Callable
 var _pointers: Dictionary = {}
 var _decorations: Array[Node3D] = []
 ## Modal surfaces stop rays in the gaps between their controls.
@@ -406,7 +414,10 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 	_hover[hand] = int(hit.get("target", NONE))
 	var valid := tracked and origin.is_finite() and direction.is_finite() and direction.length_squared() > 0.000001
 	var endpoint := Vector3.ZERO
-	if valid: endpoint = to_global(hit.point) if not hit.is_empty() else origin + direction.normalized() * ray_max_distance
+	if valid and not hit.is_empty(): endpoint = to_global(hit.point)
+	elif valid:
+		var stop: Variant = miss_points.get(hand)
+		endpoint = stop if stop is Vector3 and origin.distance_to(stop) < ray_max_distance else origin + direction.normalized() * ray_max_distance
 	_draw_pointer(hand, origin, endpoint, valid, not hit.is_empty())
 	# Both hands update every frame; the colour pass reruns only for a change (or the refresh
 	# interval). The tooltip (cheap) always follows the current tips.
@@ -428,7 +439,7 @@ func _draw_pointer(hand: String, origin: Vector3, endpoint: Vector3, valid: bool
 	var head := bool(head_pointers.get(hand, false))
 	# A beam leaving the point between the eyes reads as a different streak in each eye.
 	pointer.line.visible = valid and not head
-	pointer.dot.visible = valid and (hit or head)
+	pointer.dot.visible = valid and (hit or head or idle_dot)
 	if valid:
 		var mono := not _mono_pointer_projection().is_empty()
 		var tip := to_local(endpoint)
@@ -440,6 +451,8 @@ func _draw_pointer(hand: String, origin: Vector3, endpoint: Vector3, valid: bool
 			pointer.dot.position = tip if mono else tip + Vector3(0, 0, 0.008)
 		elif head:
 			pointer.dot.position = to_local(origin + (endpoint - origin).normalized() * origin.distance_to(global_position))
+		elif idle_dot:
+			pointer.dot.position = tip
 
 func cancel_pointer(hand: String) -> void:
 	app_actions.cancel_hand(hand)
@@ -890,7 +903,10 @@ func _update_tooltip() -> void:
 	var shown := {}
 	var tip := ""
 	# Cheap checks first: only a hovered button's tip is translated (same result, far less work).
-	var hovered_targets: Array = _hover.values()
+	# A hand holding its trigger is using the control under it, not reading about it.
+	var hovered_targets: Array = []
+	for hand in _hover:
+		if not pointer_held.is_valid() or not pointer_held.call(hand): hovered_targets.append(_hover[hand])
 	for button in _buttons:
 		if not hovered_targets.has(button.target) or not (button.enabled or button.get("hover_disabled", false)): continue
 		if not button.node.is_visible_in_tree(): continue

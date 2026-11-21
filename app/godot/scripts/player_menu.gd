@@ -677,10 +677,12 @@ func _reset_navigation() -> void:
 	_close_depth_slider()
 
 func refresh() -> void:
+	_sync_adjust_clear()
 	_state = _read_state()
 	_drop_replaced_picture_controls()
 	_state["bar_transparency"] = bar_transparency
 	_draw()
+	_sync_adjust_clear()
 
 func show_playback_error() -> void:
 	visible = true
@@ -778,8 +780,12 @@ func refresh_values() -> void:
 	_refresh_adjustments()
 	_refresh_depth_position()
 	_update_highlights()
+	# The pass above shows fills, resets and the seek thumb by value: a hold hides them again.
+	_sync_adjust_clear()
 
 func _process(_delta: float) -> void:
+	_apply_held_choice()
+	_sync_adjust_clear()
 	_process_capture_hover()
 	if _favorite_notice_until > 0 and Time.get_ticks_msec() >= _favorite_notice_until and not has_pointer_capture():
 		_favorite_notice = ""; _favorite_notice_until = 0
@@ -919,6 +925,7 @@ func _drop_replaced_picture_controls() -> bool:
 	if _adjustment != "picture" or picture_controls_open_id == int(_state.get("picture_open_id", 0)): return false
 	_adjust_hand = ""
 	_adjust_target = -1
+	_restore_after_adjustment()
 	_adjustment = ""
 	choices.reset()
 	return true
@@ -2022,10 +2029,22 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 		if not controls_hit.is_empty() and int(controls_hit.target) not in [NONE, 100, 101, 102, 103, 107, 108, SEEK, FOLLOW, TEMP_PASSTHROUGH, SPACE_LOCK, WATCH]:
 			expanded_library.dismiss()
 	if not _track_drag.is_empty(): return true
-	if choices.press(hand, origin, direction, tracked): return true
+	var held_by: String = choices.capture.get("hand", "")
+	if not held_by.is_empty() and held_by != hand and choices.capture.get("item", {}).get("key", "") in HOLD_SUBTITLE_KEYS:
+		# The other hand's trigger brings the menu back for the rest of this hold.
+		_adjust_keep_menu = true; _sync_adjust_clear()
+	if choices.press(hand, origin, direction, tracked):
+		var item: Dictionary = choices.capture.get("item", {}) if choices.capture.get("hand", "") == hand and held_by.is_empty() else {}
+		if item.get("kind", "") == "choose" and item.get("key", "") in HOLD_CHOICE_KEYS and tracked and ray_hit(origin, direction).get("enabled", false):
+			_begin_choice_hold(hand, str(item.key), int(choices.capture.target), false)
+		elif item.get("kind", "") == "slider" and item.get("key", "") in HOLD_SUBTITLE_KEYS:
+			_adjust_pressed_ms = Time.get_ticks_msec(); _adjust_seen_ms = _adjust_pressed_ms; _adjust_keep_menu = false
+		return true
 	if not bookmarks.capture.is_empty(): return true
-	for owner in [_adjust_hand, _depth_hand, _volume_hand, _seek_hand]:
-		if not owner.is_empty() and owner != hand: return false
+	for owner in [_adjust_hand, _depth_hand, _volume_hand, _seek_hand, str(_choice_hold.get("hand", ""))]:
+		if not owner.is_empty() and owner != hand:
+			if owner == _adjust_hand or owner == _choice_hold.get("hand", ""): _adjust_keep_menu = true; _sync_adjust_clear()
+			return false
 	update_pointer(hand, origin, direction, tracked)
 	var hit := ray_hit(origin, direction) if tracked else {}
 	var clone_row: bool = clone_panel.opened and not hit.is_empty() and clone_panel.actions.get(int(hit.target), {}).get("operation", "") in ["caption", "original", "clone", "save_name", "use", "preview", "rename_name"]
@@ -2046,6 +2065,9 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 		if not _adjust_hand.is_empty() and _adjust_hand != hand: return false
 		_adjust_hand = hand
 		_adjust_target = int(hit.target)
+		_adjust_pressed_ms = Time.get_ticks_msec()
+		_adjust_seen_ms = _adjust_pressed_ms
+		_adjust_keep_menu = false
 		_set_adjustment_at(_input_point(hit).x)
 		return true
 	if not hit.is_empty() and int(hit.target) == DEPTH:
@@ -2062,13 +2084,20 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 		_volume_sent = -1
 		_set_volume_at(_input_point(hit).y)
 		return true
-	return super(hand, origin, direction, tracked)
+	# A colour preset applies on the press; holding it on clears the menu like a held slider.
+	var preset: bool = not hit.is_empty() and hit.get("enabled", false) and _grade_preset_target(int(hit.target))
+	var handled := super(hand, origin, direction, tracked)
+	if preset and handled: _begin_choice_hold(hand, "grade_preset", int(hit.target), true)
+	return handled
 
 func cancel_for_hand_lock(hand: String) -> void:
 	# Keep live preview values, but never turn cancellation into a final commit.
 	if _adjust_hand == hand:
 		_adjust_hand = ""
 		_adjust_target = -1
+		_restore_after_adjustment()
+	if _choice_hold.get("hand", "") == hand:
+		_choice_hold.clear(); _restore_after_adjustment()
 	if _depth_hand == hand: _depth_hand = ""
 	cancel_pointer(hand)
 
@@ -2104,6 +2133,9 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 					elif _track_drag.kind == "files": _scroll_subtitle_files(next - _subtitle_files_offset)
 					else: _scroll_subtitles(next - _subtitle_offset)
 	choices.update(hand, origin, direction, tracked)
+	if hand == _choice_hold.get("hand", "") or hand == choices.capture.get("hand", ""):
+		if tracked and visible: _adjust_seen_ms = Time.get_ticks_msec()
+		_sync_adjust_clear()
 	bookmarks.update(hand, origin, direction, tracked)
 	if hand == _seek_hand:
 		if not tracked or not visible or not _can_seek():
@@ -2117,8 +2149,10 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		if not visible or not tracked:
 			_finish_adjustment()
 		else:
+			_adjust_seen_ms = Time.get_ticks_msec()
 			var adjust_point: Variant = _plane_point(origin, direction, _adjust_target)
 			if adjust_point != null: _set_adjustment_at(float(adjust_point.x))
+			_sync_adjust_clear()
 	if hand == _depth_hand:
 		if not visible or not tracked or not _depth_open or not _can_depth():
 			_finish_depth_drag()
@@ -2133,6 +2167,8 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 
 func release_pointer(hand: String, _origin: Vector3, _direction: Vector3, _tracked: bool) -> void:
 	app_actions.release(hand)
+	if _choice_hold.get("hand", "") == hand:
+		_choice_hold.clear(); _sync_adjust_clear()
 	if _track_drag.get("hand") == hand:
 		var request := _track_drag.duplicate()
 		_track_drag.clear()
@@ -2145,7 +2181,7 @@ func release_pointer(hand: String, _origin: Vector3, _direction: Vector3, _track
 		if _tracked and visible: _icon_tap.released = true
 		else: _icon_tap.clear()
 	if choices.capture.get("hand", "") == hand:
-		choices.release(hand, _origin, _direction, _tracked); return
+		choices.release(hand, _origin, _direction, _tracked); _sync_adjust_clear(); return
 	bookmarks.release(hand, _origin, _direction, _tracked)
 	if hand == _seek_hand:
 		var target := _seek_preview
@@ -3220,7 +3256,137 @@ func _finish_adjustment() -> void:
 	if _adjust_hand.is_empty(): return
 	_adjust_hand = ""
 	_adjust_target = -1
+	_restore_after_adjustment()
 	adjustment_committed.emit()
+
+## A held picture slider clears the menu off the picture and keeps its own row: the change shows
+## on the whole picture while the hand is still on the knob. A tap is over before the menu leaves.
+const ADJUST_CLEAR_MS := 250
+## Only sliders whose every step shows on the picture itself: its colours and sharpness, its depth
+## and stereo alignment, its matte and its shape. Placing the screen, playback pace and the menu's
+## own look keep the menu.
+const ADJUST_CLEAR_KEYS := ["picture_sharpness", "alpha_feather", "alpha_shrink", "stereo_horizontal", "stereo_vertical", "stereo_focus",
+	"screen_curve", "video_aspect_factor", "edge_feather_strength"]
+## The menu comes back when the held hand's ray has not been routed here for this long.
+const ADJUST_CLEAR_LOST_MS := 400
+var _adjust_pressed_ms := 0
+var _adjust_seen_ms := 0
+## Another hand pressed during the hold: the menu stays for the rest of it.
+var _adjust_keep_menu := false
+var _adjust_cleared: Array[int] = []
+## Everything the held slider clears, gathered once per redraw.
+var _adjust_clearing: Array[Node3D] = []
+var _adjust_cleared_generation := -1
+
+## Picture choices held the same way: the option under the trigger applies once the hold is long
+## enough, and the menu clears down to its row until the release. A tap stays a plain choice.
+const HOLD_CHOICE_KEYS := ["picture_upscale", "picture_denoise",
+	# Subtitle options that change how the captions look or sit on the picture.
+	"subtitle_follow_view", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line", "subtitle_below_screen"]
+## Subtitle sliders that move or restyle the captions on the picture clear the menu the same way.
+const HOLD_SUBTITLE_KEYS := ["subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_position", "subtitle_distance",
+	"subtitle_flat_position", "subtitle_size", "subtitle_transparency"]
+const GRADE_PRESET_BASE := 410
+## {hand, key, target, applied}: key is a HOLD_CHOICE_KEYS field or "grade_preset".
+var _choice_hold: Dictionary = {}
+
+func _clears_menu(key: String) -> bool:
+	return Grade.DEFAULTS.has(key) or key == DepthPosition.KEY or key in ADJUST_CLEAR_KEYS or key in Surface.ImmersiveAdjustments.KEYS
+
+func _grade_preset_target(target: int) -> bool:
+	return target >= GRADE_PRESET_BASE and target < GRADE_PRESET_BASE + Grade.PRESETS.size()
+
+## Starts a held choice after its press: the press time and ray share the slider hold's clocks.
+func _begin_choice_hold(hand: String, key: String, target: int, applied: bool) -> void:
+	_choice_hold = {"hand": hand, "key": key, "target": target, "applied": applied}
+	_adjust_pressed_ms = Time.get_ticks_msec()
+	_adjust_seen_ms = _adjust_pressed_ms
+	_adjust_keep_menu = false
+
+## A held field option applies when the hold is long enough; a release first leaves it to the tap.
+func _apply_held_choice() -> void:
+	if _choice_hold.is_empty() or _choice_hold.applied: return
+	var capture: Dictionary = choices.capture
+	if capture.get("hand", "") != _choice_hold.hand or int(capture.get("target", -1)) != int(_choice_hold.target) or capture.get("moved", false) \
+		or not pointer_held.is_valid() or not pointer_held.call(_choice_hold.hand):
+		_choice_hold.clear(); return
+	if Time.get_ticks_msec() - _adjust_pressed_ms < ADJUST_CLEAR_MS: return
+	_choice_hold.applied = true
+	choices.action(int(_choice_hold.target))
+
+## What a hold keeps on show, with its hand; empty while nothing held clears the menu.
+func _menu_hold() -> Dictionary:
+	if not _adjust_hand.is_empty():
+		var row: Dictionary = _adjust_rows.get(_adjust_target, {})
+		if row.is_empty() or not _clears_menu(str(row.key)) or not is_instance_valid(row.button.node): return {}
+		return {"hand": _adjust_hand, "keep": [row.button.node, row.heading, row.label, row.track, row.fill, row.knob]}
+	var slider: Dictionary = choices.capture.get("item", {})
+	if slider.get("kind", "") == "slider" and slider.get("key", "") in HOLD_SUBTITLE_KEYS:
+		# Its rail, fill, knob and value ride on the slider's own button, found again after a redraw.
+		for button in _buttons:
+			var item: Dictionary = choices.targets.get(int(button.target), {})
+			if item.get("kind", "") == "slider" and item.get("key", "") == slider.key: return {"hand": str(choices.capture.hand), "keep": [button.node]}
+		return {}
+	if not _choice_hold.get("applied", false): return {}
+	var keep: Array = []
+	for button in _buttons:
+		var target := int(button.target)
+		var item: Dictionary = choices.targets.get(target, {})
+		if (_choice_hold.key == "grade_preset" and _grade_preset_target(target)) or (item.get("kind", "") == "choose" and item.get("key", "") == _choice_hold.key):
+			keep.append(button.node)
+	return {"hand": _choice_hold.hand, "keep": keep} if not keep.is_empty() else {}
+
+## The one place that decides: the menu is cleared only while every condition holds this frame,
+## and comes back the frame one fails. Runs every frame, on each ray update and before a redraw,
+## so no path that ends or loses a drag has to remember to restore it.
+func _sync_adjust_clear() -> void:
+	var hold := _menu_hold()
+	var now := Time.get_ticks_msec()
+	if not is_visible_in_tree() or _adjust_keep_menu or hold.is_empty() \
+		or now - _adjust_pressed_ms < ADJUST_CLEAR_MS or now - _adjust_seen_ms > ADJUST_CLEAR_LOST_MS \
+		or not pointer_held.is_valid() or not pointer_held.call(hold.hand):
+		_restore_after_adjustment()
+		return
+	# A redraw under the held slider brings new nodes: they leave as well.
+	if _adjust_cleared_generation != _buttons_generation:
+		_adjust_cleared_generation = _buttons_generation
+		# Only what a redraw builds, plus the panel and its footer: their visibility is nobody's state.
+		# Parts with a life of their own (the attached library, pointers, tooltips) are left alone.
+		var owned := {_backdrop: true, device_status: true}
+		for button in _buttons: owned[button.node] = true
+		for node in _labels + _decorations: owned[node] = true
+		for node in hold.keep: owned.erase(node)
+		_adjust_clearing.clear()
+		_collect_owned(self, owned)
+	# Value refreshes show fills, resets, the seek thumb and the like again: they leave each frame.
+	var changed := false
+	for node in _adjust_clearing:
+		if not is_instance_valid(node) or not node.visible: continue
+		node.visible = false
+		var id := node.get_instance_id()
+		if not _adjust_cleared.has(id): _adjust_cleared.append(id)
+		changed = true
+	if changed: composition_layout_changed.emit()
+
+func _collect_owned(parent: Node, owned: Dictionary) -> void:
+	for child in parent.get_children():
+		if child is Node3D and _popup_surfaces.has(child): _collect_owned(child, owned)
+		elif owned.has(child): _adjust_clearing.append(child)
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_VISIBILITY_CHANGED: _sync_adjust_clear()
+
+func _restore_after_adjustment() -> void:
+	_adjust_cleared_generation = -1
+	_adjust_clearing.clear()
+	if _adjust_cleared.is_empty(): return
+	for id in _adjust_cleared:
+		var node := instance_from_id(id) as Node3D
+		if node: node.visible = true
+	_adjust_cleared.clear()
+	# A part a refresh hid while it was cleared came back with the rest: the next pass settles it.
+	_refresh_ms = 0
+	composition_layout_changed.emit()
 
 ## Playback first, with the default picture entry at the top.
 func _draw_settings_tabs(y: float) -> void:
@@ -3510,14 +3676,14 @@ func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: 
 	_button(target, "", Vector2(centre, y), Vector2(width + g.hit, g.height))
 	_buttons.back().enabled = key == "bar_transparency" or editing_picture_defaults() or _state.get("has_video", false)
 	_buttons.back().base_color = Color(TILE, 0)
-	_decoration(Vector2(width, g.thickness), Vector2(centre, y), MUTED)
+	var track := _decoration(Vector2(width, g.thickness), Vector2(centre, y), MUTED)
 	var fill := _decoration(Vector2(width, g.thickness), Vector2(centre, y), ACCENT)
 	fill.material_override.render_priority = 13
 	var knob := _decoration(Vector2.ONE * g.knob, Vector2(left, y), UiTheme.color("knob"))
 	_style_slider_marker(knob)
 	knob.material_override.render_priority = 14
 	_adjust_rows[target] = {"key": key, "span": span, "label": value, "fill": fill, "knob": knob, "button": _buttons.back(),
-		"left": left, "width": width}
+		"left": left, "width": width, "heading": heading, "track": track}
 	var default_value: Variant = _adjustment_default(key)
 	# Rotation retains its named reset; settings sliders share the right-hand reset column.
 	if default_value != null and key != "screen_rotation":

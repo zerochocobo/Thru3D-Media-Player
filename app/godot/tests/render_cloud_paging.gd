@@ -21,6 +21,7 @@ func _run() -> void:
 		for view in ["paged", "jump", "warning", "progress", "all", "partial", "settings", "settings-expanded", "settings-dropdown", "compact"]:
 			menu.section = Menu.Section.SETTINGS if view.begins_with("settings") else Menu.Section.CLOUD
 			menu.tab = Menu.GENERAL_TAB; menu.compact = view == "compact"
+			menu._set_general_settings_group("files", view.begins_with("settings"))
 			var paging: RefCounted = menu.cloud_pagination
 			paging.settings_expanded = view in ["settings-expanded", "settings-dropdown"]
 			menu.choices.opened = "cloud_page_size/115_open" if view == "settings-dropdown" else ""

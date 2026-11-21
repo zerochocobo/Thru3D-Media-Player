@@ -4,6 +4,23 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.18.6 — 2026-11-21
+
+- Speed up photo 3D stereo-image generation and display to reduce the first photo's conversion wait. Faster decoding and orientation of portrait photos with EXIF rotation also reduce the wait for 3D.
+- Use Picture Quality Mode with real-time 2D-to-3D on compatible 1080p and 4K videos, including sharpness, denoising, Super Resolution and color controls. Upscaling follows device capabilities, and enhancement increases device load.
+- Automatically fill missing video and photo previews for local storage, SMB and DLNA, reusing existing artwork and caches first. Prefetch settings are grouped together. Prefetching can pause when frame timing worsens and retry after recovery; manual refresh can retry visible entries with missing previews.
+- Photo 3D offers Fast, then fine, Best quality and Fastest conversion modes. The default shows a fast result first and refines it afterward, reusing a cached quality result when available.
+- Real-time 2D-to-3D briefly waits for each processed frame to receive its own depth map, up to 80 ms. Slower devices stop waiting automatically, and audio delay follows the measured wait.
+- Reduce repeated false scene-cut resets in the video depth stabilizer during moving shots.
+- Temporarily hide other menu content while holding supported picture or subtitle sliders and display options, then restore it on release. Value refreshes no longer bring the hidden menu back, and tooltips interfere less while a trigger is held.
+- Keep ambient light outside the picture edge and offer an optional soft picture edge. Outside menus, the ray ends where it reaches the screen, with the pointer dot at its tip.
+- Recheck the parent DLNA listing before playback to improve video matching after directory changes. Problem reports include preview and query diagnostics.
+- Show a loading state during USB or system file picker access checks instead of temporarily reporting playback failure.
+- On QIYU, add dithering on compatible linear eye-buffer paths to reduce dark gradient banding. Retry with a fallback decoder when system frame capture returns an all-black image.
+- Reorganize General, Video and Display settings into collapsible groups for file management, privacy, output and performance, 3D, passthrough and subtitles. Appearance, watch style, control bar transparency and scene height stay at the top of Display; an Adjust button opens transparency controls.
+- The library's file-management entry takes you directly to its setting. Returning preserves the source, folder and browsing position.
+- Preserve the media service's HTTP error details when a network video fails to open, making causes such as service unavailability and access restrictions clearer.
+
 ## 0.18.5 — 2026-11-20
 
 - Open the new picture controls popup to adjust Picture Quality Mode, sharpness, Super Resolution, denoising and color. Default Picture in playback settings controls the global defaults.

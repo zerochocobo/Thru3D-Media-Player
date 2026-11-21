@@ -177,7 +177,7 @@ void fragment() {
 	bool outside = any(lessThan(model_p, vec2(0.0))) || any(greaterThan(model_p, vec2(1.0)));
 	vec2 alpha_p = clamp(model_p, first_center, last_center);
 	alpha_p.x = (alpha_p.x + float(eye)) * 0.5;
-	ALBEDO = outside_lens(sample_direction) ? vec3(0.0) : color_grade(rgb);
+	ALBEDO = outside_lens(sample_direction) ? vec3(0.0) : color_grade(rgb, FRAGCOORD.xy);
 	if (packed_alpha && stereo_sbs && !top_bottom) {
 		// Pixels that carry the mask had their color overwritten by the packer.
 		// (No early return: Godot writes the outputs after this function body.)

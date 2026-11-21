@@ -140,6 +140,15 @@ func cancel() -> void:
 		pending.erase(id)
 	busy = false
 
+func clear_poster_memory() -> void:
+	for id in pending.keys():
+		if pending[id].action != "cover": continue
+		if menu.platform: menu.platform.media_server_cancel(id)
+		pending.erase(id)
+	covers.clear()
+	textures.clear()
+	failed_covers.clear()
+
 func load_servers() -> void:
 	forget_section()
 	cancel(); view = "servers"; server = {}; history.clear(); keyboard = ""; sources_open = false

@@ -86,20 +86,23 @@ internal data class PlaybackFailure(
 
         fun native(status: JSONObject): PlaybackFailure {
             val code = status.optInt("mpv_code")
-            val reason = status.optString("failure_reason").ifBlank { if (status.optBoolean("render_failed")) "video_output_failed" else when (code) {
+            val renderFailed = status.optBoolean("render_failed")
+            val httpStatus = status.optInt("http_status").takeIf { code == -13 && !renderFailed && it in 400..599 } ?: 0
+            val reason = if (httpStatus != 0) http(httpStatus).reason else
+                status.optString("failure_reason").ifBlank { if (renderFailed) "video_output_failed" else when (code) {
                 -14 -> "audio_output_failed"
                 -15 -> "video_output_failed"
                 -16 -> "nothing_to_play"
                 -17 -> "unknown_format"
                 else -> "unknown"
             } }
-            val stage = status.optString("failure_stage").ifBlank { when (reason) {
+            val stage = if (httpStatus != 0) "opening" else status.optString("failure_stage").ifBlank { when (reason) {
                 "audio_output_failed", "video_output_failed" -> "output"
                 "nothing_to_play", "unknown_format" -> "parsing"
                 else -> "opening"
             } }
             val failure = PlaybackFailure(reason, stage, listOf(status.optString("error"), status.optString("render_error"))
-                .filter(String::isNotBlank).joinToString("; "), mpvCode = code)
+                .filter(String::isNotBlank).joinToString("; "), httpStatus = httpStatus, mpvCode = code)
             val stream = DecoderCapacity.stream(status.optJSONObject("details")) ?: return failure
             val decoder = runCatching { DecoderCapacity.describe(stream) }.getOrNull()
             return withCapacity(failure, stream.json(), decoder)
@@ -127,7 +130,10 @@ internal data class PlaybackFailure(
                 failure.copy(reason = if (gpu) "ai_gpu_unavailable" else "ai_processing_failed",
                     stage = if (gpu) "ai_initialization" else "ai_processing")
             } else failure
-            val selected = if (upstream != null && (original.reason == "unknown" ||
+            // Only a LocalStreamServer lease has an upstream diagnosis. Its 404/416/502 then
+            // describe the loopback request, never the media server, so they do not classify.
+            val proxyStatus = original.mpvCode == -13 && original.httpStatus != 0
+            val selected = if (upstream != null && (original.reason == "unknown" || proxyStatus ||
                     original.reason == "unknown_format" && upstream.reason != "unknown")) upstream else original
             return selected.copy(mpvCode = original.mpvCode).json().put("code", code)
                 .put("message", safeDetail(original.detail)).put("native_detail", if (selected !== original || original.mpvCode != 0) safeDetail(original.detail) else "")

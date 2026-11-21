@@ -33,6 +33,10 @@ public:
     float last_dy() const { return last_dy_; }
     float last_response() const { return last_response_; }
     uint64_t cuts() const { return cuts_; }
+    /** Diagnostics of the last call: motion residual (0-255), colour distance, the shot's residual level. */
+    float last_residual() const { return mc_residual_; }
+    float last_distance() const { return hist_distance_; }
+    float residual_level() const { return residual_level_; }
     struct Timing { double scene_ms = 0, band_ms = 0, box_ms = 0, motion_ms = 0, blend_ms = 0, stabilize_ms = 0, dilation_ms = 0; };
     const Timing& last_timing() const { return timing_; }
     /** Foreground dilation radius in model pixels; negative restores the default round(w/512), >= 1. */
@@ -62,6 +66,17 @@ public:
     // montage, fast motion and grain flicker repeated it 2-9 frames later.
     static constexpr float kCutResidual = 8.5f, kCutResidualDistance = 0.08f;
     static constexpr int kCutResidualHold = 12;
+    // The residual must also jump above the shot's own recent level (an EMA of its residual), or rise
+    // less while the colours jump too: rippling water, grain or a handheld camera hold it at 20-28 for
+    // seconds, and Foundation S01E02 (4:58-14:00) then re-cut every hold, 13-14 frames, resetting the
+    // map each time (156 of its 301 cuts were inside a shot). portrait_cuts' 10.7-11.8 stand on <= 5.9.
+    static constexpr float kCutResidualRise = 1.8f, kCutResidualLevelRate = 0.2f;
+    static constexpr float kCutResidualRiseWithJump = 1.25f, kCutResidualJump = 0.10f;
+    // A colour cut (distance > kCutThreshold) must also jump by kCutJump against the previous call
+    // or change the picture (residual > kCutResidual). Same film: its real cuts jumped by a median
+    // 0.36 with residual < 8.5 in 3%; fire and slowly lit sets drifted past 0.4 at +0.03-0.07 with
+    // residual 3-7, against a reference that trails them.
+    static constexpr float kCutJump = 0.12f;
 
     // Exposed for tests: phase correlation of two equally sized float images (Hann windowed).
     // Returns the shift (dx, dy) that registers a onto b, b(x) ~ a(x - d); response in [0, 1].
@@ -79,7 +94,7 @@ private:
     std::vector<float> small_cur_, small_prev_, resid_small_;
     // Scene cut detector.
     std::vector<float> ref_hist_, hist_;
-    float hist_distance_ = 0;
+    float hist_distance_ = 0, previous_distance_ = 0;
     bool have_ref_ = false;
     int cooldown_left_ = 0;
     int dilation_ = -1;
@@ -88,11 +103,13 @@ private:
     // Motion of this frame against the previous model input (small grid), shared by the cut test and the stabilizer.
     bool mc_valid_ = false;
     float mc_dx_ = 0, mc_dy_ = 0, mc_residual_ = 0;
+    float residual_level_ = 0; // EMA of this shot's motion residual (0: none yet)
     float last_dx_ = 0, last_dy_ = 0, last_response_ = 0;
     uint64_t cuts_ = 0;
     Timing timing_;
 
     bool scene_cut(const float* rgb, int frame_step);
+    void follow_reference(int frame_step);
     void motion(const float* rgb);
     void band(const float* inv, int frame_step);
     void stabilize(int frame_step);

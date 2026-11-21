@@ -25,6 +25,14 @@ func tap(menu: Node3D, id: int) -> void:
 	menu.press_pointer("left_hand", point, -menu.global_basis.z, true)
 	menu.release_pointer("left_hand", point, -menu.global_basis.z, true)
 
+func video_group_target(menu: Node3D, group: String) -> int:
+	var index: int = menu.rows.find_custom(func(row): return row.get("video_settings_group") == group)
+	menu._set_scroll(float(index))
+	return Library.ROW_BASE + menu._row_slot(index)
+
+func setting_row(menu: Node3D, key: String) -> Dictionary:
+	return menu.rows.filter(func(row): return row.get("key") == key)[0]
+
 func _initialize() -> void: call_deferred("_run")
 
 func _run() -> void:
@@ -66,55 +74,74 @@ func _run() -> void:
 	menu._activate(Library.TAB_BASE + Library.VIDEO_TAB)
 	menu.release_pointer("left_hand", point, -menu.global_basis.z, true)
 	check(events.size() == 1 and menu.choices.capture.is_empty() and menu.choices.opened.is_empty(), "Tab switch cancels old dropdown ownership and stale release")
-	check(menu.rows[0].key == "seek_mode" and menu.rows[0].choices.size() == 2 and menu.rows[2].key == "hdr_to_sdr" and menu.rows[2].value == "on" and menu.rows[3].key == "video_auto_3d" and menu.rows[4].key == "depth_render" and menu.rows[4].compact
-		and menu.rows[6].key == "output_width" and menu.rows[6].compact
-		and menu.rows[7].key == "memory_mode" and menu.rows[8].key == "alpha_auto_from_filename" and menu.rows[9].key == "alpha_keep_background" and menu.rows.size() == 12 and menu.rows[10].video_settings_group == "alpha" and menu.rows[11].video_settings_group == "subtitles",
-		"Video starts with common choices and two collapsed groups")
-	check(menu.choices.targets.values().all(func(item): return item.get("key", "") in ["seek_mode", "seek_step_seconds", "hdr_to_sdr", "video_auto_3d", "depth_render", "depth_position_default", "output_width", "memory_mode", "alpha_auto_from_filename", "alpha_keep_background"]), "Collapsed groups have no hidden ray controls")
-	menu._set_scroll(menu._max_scroll())
-	var alpha_point := origin(menu, Library.ROW_BASE + 10 - menu._first_line())
+	check(menu.rows[0].key == "seek_mode" and menu.rows[0].choices.size() == 2 and menu.rows[1].key == "seek_step_seconds"
+		and menu.rows.slice(2).map(func(row): return row.video_settings_group) == ["output", "depth", "alpha", "subtitles"],
+		"Video starts with quick seek controls and four collapsed groups")
+	check(menu.choices.targets.values().all(func(item): return item.get("key", "") in ["seek_mode", "seek_step_seconds"]),
+		"Collapsed groups have no hidden ray controls")
+	tap(menu, video_group_target(menu, "output"))
+	check(setting_row(menu, "hdr_to_sdr").value == "on" and setting_row(menu, "output_width").compact
+		and menu.rows.slice(3, 6).map(func(row): return row.key) == ["hdr_to_sdr", "output_width", "memory_mode"],
+		"Output groups HDR, resolution and memory")
+	tap(menu, video_group_target(menu, "output"))
+	tap(menu, video_group_target(menu, "depth"))
+	check(setting_row(menu, "depth_render").compact
+		and menu.rows.slice(4, 7).map(func(row): return row.key) == ["video_auto_3d", "depth_render", "depth_position_default"],
+		"2D to 3D groups automatic conversion, edge treatment and position")
+	tap(menu, video_group_target(menu, "depth"))
+	var alpha_point := origin(menu, video_group_target(menu, "alpha"))
 	menu.press_pointer("left_hand", alpha_point, -menu.global_basis.z, true)
-	check(menu.rows.size() == 12, "Group expansion waits for trigger release")
+	check(menu.rows.size() == 6, "Group expansion waits for trigger release")
 	menu.cancel_pointer("left_hand")
 	menu.release_pointer("left_hand", alpha_point, -menu.global_basis.z, true)
-	check(menu.rows.size() == 12, "Cancelled group click stays collapsed")
-	tap(menu, Library.ROW_BASE + 10 - menu._first_line())
-	check(menu.rows.size() == 17 and menu.rows[10].icon == "chevron_down" and not menu.collections.privacy_expanded,
-		"Ray expands only Alpha without changing the privacy group")
-	var alpha_row: Dictionary = menu.rows[11]
-	check(alpha_row.key == "alpha_profile" and alpha_row.compact and alpha_row.value == "320x320"
+	check(menu.rows.size() == 6, "Cancelled group click stays collapsed")
+
+	tap(menu, video_group_target(menu, "alpha"))
+	check(menu.rows.size() == 13 and menu.rows[4].icon == "chevron_down" and not menu.collections.privacy_expanded
+		and menu.rows.slice(5, 7).map(func(row): return row.key) == ["alpha_auto_from_filename", "alpha_keep_background"],
+		"Ray expands only the passthrough settings with both behavior controls at the top")
+	var alpha_row := setting_row(menu, "alpha_profile")
+	check(alpha_row.compact and alpha_row.value == "320x320"
 		and alpha_row.choices.map(func(o): return o.value) == ["256x256", "320x320", "384x384", "512x512"]
 		and str(alpha_row.get("hint", "")).is_empty() and not str(alpha_row.info).is_empty()
 		and alpha_row.choices.all(func(o): return o.hint == alpha_row.info),
 		"Alpha model size sits above the frame rate: four square sizes, 320 by default, larger slower and smaller rougher")
 	state.alpha_cold = ["512x512"]; state.alpha_warming = ["384x384"]; menu.refresh()
-	check(menu.rows[11].choices[3].get("hint", "") == "First use prepares the model, about 1 minute" and menu.rows[11].choices[2].get("hint", "") == "Preparing the model"
-		and menu.rows[11].choices[1].hint == menu.rows[11].info, "A cold or compiling size says so on its own option; ready ones keep the trade-off tooltip")
+	var warming_row := setting_row(menu, "alpha_profile")
+	check(warming_row.choices[3].get("hint", "") == "First use prepares the model, about 1 minute"
+		and warming_row.choices[2].get("hint", "") == "Preparing the model"
+		and warming_row.choices[1].hint == warming_row.info, "A cold or compiling size says so on its own option; ready ones keep the trade-off tooltip")
 	tap(menu, target(menu, "alpha_profile", "512x512"))
 	check(events.back() == ["alpha_profile", "512x512"], "Choosing a size reports it")
 	state.erase("alpha_cold"); state.erase("alpha_warming"); state.alpha_profile = "320x320"; menu.refresh()
-	check(menu.rows[12].key == "alpha_fps" and menu.rows[12].slider and menu.rows[12].span == Vector3(10, 40, 1) and menu.rows[12].value == 30 and not str(menu.rows[12].hint).is_empty(), "Alpha frame rate is a 10-40 FPS slider defaulting to 30 with a passthrough hint")
-	check(menu.rows[13].key == "alpha_feather" and menu.rows[13].value == 100 and menu.rows[14].key == "alpha_shrink" and menu.rows[14].value == 40
-		and menu.rows[14].span == Vector3(0, 100, 1), "Alpha feather and edge shrink follow the frame rate, as in the player settings")
-	check(menu.rows[15].key == "alpha_mask_blend" and menu.rows[15].value == true and menu.rows[15].choices.size() == 2
-		and not str(menu.rows[15].choices[0].hint).is_empty() and menu.rows[15].choices[0].hint != menu.rows[15].choices[1].hint,
+	var fps := setting_row(menu, "alpha_fps")
+	check(fps.slider and fps.span == Vector3(10, 40, 1) and fps.value == 30 and not str(fps.hint).is_empty(),
+		"Alpha frame rate is a 10-40 FPS slider defaulting to 30 with a passthrough hint")
+	var feather := setting_row(menu, "alpha_feather")
+	var shrink := setting_row(menu, "alpha_shrink")
+	check(feather.value == 100 and shrink.value == 40 and shrink.span == Vector3(0, 100, 1),
+		"Alpha feather and edge shrink follow the frame rate, as in the player settings")
+	var interpolation := setting_row(menu, "alpha_mask_blend")
+	check(interpolation.value == true and interpolation.choices.size() == 2
+		and not str(interpolation.choices[0].hint).is_empty() and interpolation.choices[0].hint != interpolation.choices[1].hint,
 		"Cut-out interpolation follows the edge sliders: on by default, each choice explains its cost")
 	check(not menu.rows.any(func(row): return row.get("key", "") == "alpha_precision"), "AI precision stays hidden")
 	check(alpha_row.choices[1].label.begins_with("320 ") and alpha_row.choices.filter(func(o): return o.label.contains(" ")).size() == 1,
 		"Only the 320 size is marked as the default")
-	menu._set_scroll(menu._max_scroll())
-	tap(menu, Library.ROW_BASE + 16 - menu._first_line())
-	check(menu.rows.size() == 19 and menu._video_settings_expanded.get("alpha") and menu._video_settings_expanded.get("subtitles"), "Subtitle group opens with two collapsed categories beside Alpha")
+	tap(menu, video_group_target(menu, "subtitles"))
+	check(menu.rows.size() == 15 and menu._video_settings_expanded.get("alpha") and menu._video_settings_expanded.get("subtitles"),
+		"Subtitle group opens with two collapsed categories beside Alpha")
 	var saved_events := events.size()
-	menu._set_scroll(4.0); tap(menu, Library.ROW_BASE + 10 - menu._first_line())
-	check(menu.rows.size() == 14 and menu._video_settings_expanded.get("subtitles") and not menu._video_settings_expanded.get("alpha"), "Collapsing Alpha keeps the subtitle category entries visible")
-	menu._set_scroll(5.0); tap(menu, Library.ROW_BASE + 11 - menu._first_line())
-	check(menu.rows.size() == 12 and menu.scroll <= menu._max_scroll() and is_instance_valid(menu._settings_scroll_hint) == (menu._max_scroll() > 0) and events.size() == saved_events,
-		"Collapsing both groups clamps scrolling to the common rows without changing preferences")
+	tap(menu, video_group_target(menu, "alpha"))
+	check(menu.rows.size() == 8 and menu._video_settings_expanded.get("subtitles") and not menu._video_settings_expanded.get("alpha"),
+		"Collapsing Alpha keeps the subtitle category entries visible")
+	tap(menu, video_group_target(menu, "subtitles"))
+	check(menu.rows.size() == 6 and menu.scroll <= menu._max_scroll() and is_instance_valid(menu._settings_scroll_hint) == (menu._max_scroll() > 0) and events.size() == saved_events,
+		"Collapsing both groups clamps scrolling without changing preferences")
 	menu.settings_provider = func(): return state.merged({"voice_manager": {"narration_clone_supported": true}})
 	menu.refresh()
 	check(not menu.rows.any(func(row): return row.get("voice_manager", false)), "Narration management stays inside collapsed subtitles")
-	tap(menu, Library.ROW_BASE + 11 - menu._first_line())
+	tap(menu, video_group_target(menu, "subtitles"))
 	check(menu.rows.any(func(row): return row.get("subtitle_settings_group", "") == "narration"), "Expanding subtitles exposes the narration category")
 	menu._choose(menu.rows.filter(func(row): return row.get("subtitle_settings_group", "") == "narration")[0])
 	check(menu.rows.any(func(row): return row.get("voice_manager", false)), "Expanding narration exposes its unchanged voice manager")
@@ -169,8 +196,14 @@ func _run() -> void:
 	check(state.background=="belfast","Tracking loss cancels pending scene selection")
 	scenery.free(); catalog.free()
 	menu._activate(Library.TAB_BASE + Library.DISPLAY_TAB)
+	check(not is_instance_valid(menu._settings_scroll_hint), "Collapsed Display groups fit without scrolling")
+	var interface_index: int = menu.rows.find_custom(func(row): return row.get("display_settings_group") == "interface")
+	tap(menu, Library.ROW_BASE + menu._row_slot(interface_index))
+	var render_index: int = menu.rows.find_custom(func(row): return row.get("display_settings_group") == "rendering")
+	tap(menu, Library.ROW_BASE + menu._row_slot(render_index))
+	menu._set_scroll(0.0)
 	check(is_instance_valid(menu._settings_scroll_hint) and menu._settings_scroll_hint.visible,
-		"Overflowing settings show a downward cue on first opening")
+		"Expanding Display groups shows a downward cue when the page overflows")
 	for position in [0.0, 0.34, 0.66, menu._max_scroll()]:
 		menu._set_scroll(position)
 		var hint: MeshInstance3D = menu._settings_scroll_hint
@@ -224,14 +257,15 @@ func _run() -> void:
 			if button.base_color == Color.WHITE: chosen += 1
 		check(chosen == 1, "Exactly one watch swatch is selected")
 	menu._activate(Library.TAB_BASE + Library.BACKGROUND_TAB)
+	check(menu._display_settings_expanded.is_empty(), "Leaving Display resets group expansion")
 	check(menu._max_scroll() == 0 and not is_instance_valid(menu._settings_scroll_hint), "Short settings pages have no scrolling cue")
 	menu._activate(Library.TAB_BASE + Library.VIDEO_TAB)
 	menu._set_scroll(menu._max_scroll())
-	tap(menu, Library.ROW_BASE + menu.rows.find(menu.rows.filter(func(row): return row.get("video_settings_group", "") == "alpha")[0]) - menu._first_line())
+	tap(menu, video_group_target(menu, "alpha"))
 	menu.dismiss()
 	check(menu.choices.opened.is_empty() and menu.choices.capture.is_empty(), "Closing settings clears popup and capture")
 	menu.toggle()
-	check(menu.rows.size() == 12 and menu._video_settings_expanded.is_empty(), "Reopening settings restores the collapsed groups and background preference")
+	check(menu.rows.size() == 6 and menu._video_settings_expanded.is_empty(), "Reopening settings restores the collapsed groups and background preference")
 	menu.queue_free()
 	print("Choice field checks=%d failures=%d" % [checks, failures.size()])
 	for failure in failures: push_error(failure)

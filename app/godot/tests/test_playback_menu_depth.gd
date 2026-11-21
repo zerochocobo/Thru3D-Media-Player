@@ -47,7 +47,11 @@ func run() -> void:
 	main.xr_camera.global_transform = main.head_pose
 	main.recent_menu.section = main.recent_menu.Section.SETTINGS
 	main.recent_menu.tab = main.recent_menu.DISPLAY_TAB; main.recent_menu.refresh()
-	check(main.recent_menu.rows[-2].key == Depth.KEY and main.recent_menu.rows[-2].choices == Depth.choices(), "Depth choices sit immediately above thumbstick progress visibility")
+	main.recent_menu._choose(main.recent_menu.rows.filter(func(row): return row.get("display_settings_group") == "interface")[0])
+	var depth_row: int = main.recent_menu.rows.find_custom(func(row): return row.get("key") == Depth.KEY)
+	check(depth_row > 0 and main.recent_menu.rows[depth_row].choices == Depth.choices()
+		and main.recent_menu.rows[depth_row - 1].get("key") == "hand_model",
+		"Depth choices sit below the hand model in the interface group")
 	main.video.local_uri = "file:///depth-fixture.mp4"; main.video.media.begin(1); main.video.media.state = "playing"
 	main._show_player_menu()
 	var menu: Node3D = main.video_menu

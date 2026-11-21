@@ -39,6 +39,7 @@ func run() -> void:
 	view.add_child(library); library.set_process(false); main.recent_menu = library
 	library.setting_changed.connect(main._on_setting_changed)
 	library.section = Library.Section.SETTINGS; library.tab = Library.DISPLAY_TAB
+	library._display_settings_expanded["overlays"] = true
 	var fps := Fps.new(); view.add_child(fps); fps.set_process(false); fps.set_shown(true); main.fps_overlay = fps
 	var overlay := Overlay.new(); overlay.source = main._playback_status_sample
 	view.add_child(overlay); overlay.set_process(false); main.playback_status_overlay = overlay

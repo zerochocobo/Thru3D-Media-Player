@@ -61,6 +61,15 @@ func _initialize() -> void:
 	check(relight.scale.r > relight.scale.g * 1.5, "A red page tints the room red", relight.scale)
 	check(relight._floor != null and relight._floor.visible, "The floor shadow is shown under the window")
 	check(relight._edge != null and not relight._edge.visible, "A page keeps a hard edge")
+	# A video keeps its hard edge too, unless the viewer asks for the dissolve.
+	var video_frame := {"transform": Transform3D.IDENTITY, "size": Vector2(1.6, 0.9), "flat": true, "glow_z": Runtime.VIDEO_GLOW_Z, "edge_priority": Runtime.VIDEO_EDGE_PRIORITY}
+	relight._place(video_frame, 0.0)
+	check(not relight._edge.visible and is_zero_approx(float(relight._glow_material.get_shader_parameter("band"))), "A video's picture keeps a hard edge by default")
+	relight.soft_edge = true
+	relight._place(video_frame, 0.0)
+	check(relight._edge.visible and is_equal_approx(float(relight._glow_material.get_shader_parameter("band")), Model.EDGE_BAND), "The soft edge option dissolves a video's border into the halo")
+	relight.soft_edge = false
+	relight.update_browser(1.0 / 30.0, window, true, 0.0)
 	# The two controls: a short reach needs a much smaller quad, and low brightness tints less.
 	check(Model.halo_margin(0.0) < Model.halo_margin(1.0) * 0.5, "A tight halo covers far less than a wide one")
 	check(Model.halo_strength(0.0) < Model.halo_strength(1.0), "Brightness scales the halo")

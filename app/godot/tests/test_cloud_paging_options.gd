@@ -167,7 +167,11 @@ func _run() -> void:
 	check(menu.rows.is_empty() and paging.raw_count == 0, "Confirmed deletion updates full-mode cached rows and count")
 	paging.cancel(); menu.compact = false; menu.section = Menu.Section.SETTINGS; menu.tab = Menu.GENERAL_TAB
 	menu.scroll = 0.0; menu.refresh()
+	check(not menu.rows.any(func(row): return row.get("cloud_paging_group", false)), "Cloud paging is inside the collapsed file browsing group")
+	var files_header: Dictionary = menu.rows.filter(func(row): return row.get("general_settings_group") == "files")[0]
+	menu._choose(files_header)
 	var header: Dictionary = menu.rows.filter(func(row): return row.get("cloud_paging_group", false))[0]
+	check(header.get("subgroup", false), "Cloud paging is styled as a nested group")
 	check(menu.rows.filter(func(row): return str(row.get("key", "")).begins_with("cloud_page_size/")).is_empty(), "Collapsed settings group creates no provider fields")
 	var closed_nodes: int = menu.get_child_count()
 	menu._choose(header)
@@ -185,6 +189,10 @@ func _run() -> void:
 	check(menu.choices.popup.is_empty() and menu.choices.opened.is_empty() and menu.get_child_count() == closed_nodes, "Collapse frees popup and provider nodes")
 	for i in 12: menu._choose(header); menu._choose(header)
 	check(menu.get_child_count() == closed_nodes, "Repeated expansion does not accumulate menu nodes")
+	menu._choose(header)
+	menu._choose(menu.rows.filter(func(row): return row.get("general_settings_group") == "files")[0])
+	check(not paging.settings_expanded and not menu.rows.any(func(row): return row.get("cloud_paging_group", false)),
+		"Closing file settings also closes its cloud paging group")
 	var preference_path: String = paging.preferences.path
 	menu.queue_free(); await process_frame; platform.free()
 	if FileAccess.file_exists(preference_path): DirAccess.remove_absolute(preference_path)

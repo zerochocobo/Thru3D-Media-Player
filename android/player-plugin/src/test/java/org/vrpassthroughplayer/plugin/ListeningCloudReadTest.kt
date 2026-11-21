@@ -278,8 +278,10 @@ class ListeningCloudReadTest {
             // A full speculative 2 MiB takes 2.56 s on this link. The requested
             // 4 KiB is already available and must reach FFmpeg promptly.
             // The cloud burst budget is 500 ms plus the demanded and final
-            // in-flight reads. Cached audio bypasses this IO lock.
-            assertTrue("Speculative fill withheld requested audio",System.nanoTime()-began<800_000_000)
+            // in-flight reads. Cached audio bypasses this IO lock. The bound sits
+            // between that and the full fill, since a loaded machine running the
+            // whole suite beside other builds overran 800 ms (2026-11-21).
+            assertTrue("Speculative fill withheld requested audio",System.nanoTime()-began<1_500_000_000)
             assertTrue(source.readAheadStats()!!.getValue("upstream_bytes")<2L*1024*1024)
         }
     }

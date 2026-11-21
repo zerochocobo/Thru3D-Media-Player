@@ -39,6 +39,7 @@ func run() -> void:
 		preload("res://scripts/i18n.gd").use(language)
 		for scene in ["recent-grid","recent-hover","favorites-list","favorites-hover","favorites-recover","favorites-selection","favorites-folder-list","favorites-folder-hover","favorites-locked-list","favorites-locked-grid","folder-toolbar","privacy-collapsed","privacy-open","privacy","privacy-memory","privacy-clear","pin","pin-confirm","pin-busy","video","video-depth","photo","photo-depth"]:
 			menu.collections.modal = ""; menu.visible = true; player.visible = false; photo.visible = false
+			menu._set_general_settings_group("records", scene == "privacy-clear")
 			player._depth_open = false; photo._depth_open = false
 			store.busy = false
 			menu.section = Library.Section.RECENT; store.protected = false; store.locked = false; menu.collections.home_tab = 0
@@ -72,7 +73,7 @@ func run() -> void:
 			elif scene in ["video", "video-depth"]: menu.visible = false; player.visible = true; player._depth_open = scene.ends_with("depth"); player.refresh()
 			elif scene in ["photo", "photo-depth"]: menu.visible = false; photo.visible = true; photo._depth_open = scene.ends_with("depth"); photo.refresh()
 			if menu.visible: menu.refresh()
-			if scene == "privacy-open": menu._choose(menu.rows.filter(func(row):return row.get("group_header", false))[0])
+			if scene == "privacy-open": menu._choose(menu.rows.filter(func(row): return row.title == Library.I18n.t("Privacy settings"))[0])
 			if scene == "favorites-recover": menu.collections._toggle_card_favorite(menu.rows[0])
 			if scene in ["favorites-hover", "favorites-recover", "recent-hover", "favorites-folder-hover"]:
 				var tile: Dictionary = menu._buttons.filter(func(b):return b.target == menu.ROW_BASE)[0]

@@ -40,6 +40,7 @@ func run() -> void:
 	var library := Library.new(); library.settings_provider = func(): return {"depth_position_default":0}
 	viewport.add_child(library); library.set_process(false); library.visible = true
 	library.section = Library.Section.SETTINGS; library.tab = Library.VIDEO_TAB
+	library._video_settings_expanded["depth"] = true
 	I18n.use("zh"); library.refresh()
 	await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 	viewport.get_texture().get_image().save_png(output.path_join("global-zh.png"))

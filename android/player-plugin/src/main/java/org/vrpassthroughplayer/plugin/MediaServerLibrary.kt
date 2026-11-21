@@ -40,6 +40,39 @@ internal object MediaServerStore {
     }
 }
 
+internal object MediaServerPosterCache {
+    const val DIRECTORY = "media-servers"
+    @Volatile var generation = 0L
+        private set
+
+    fun usage(cacheDir: File): Pair<Long, Long> = synchronized(MediaServerStore) {
+        val files = posters(cacheDir)
+        files.size.toLong() to files.sumOf { it.length() }
+    }
+
+    fun clear(cacheDir: File): Boolean = synchronized(MediaServerStore) {
+        generation++
+        var success = true
+        for (file in posters(cacheDir)) if (!file.delete() && file.exists()) success = false
+        success
+    }
+
+    fun prune(cacheDir: File, keep: File) {
+        val files = posters(cacheDir)
+        var bytes = files.sumOf { it.length() }
+        for (file in files.sortedBy { it.lastModified() }) {
+            if (bytes <= 128L * 1024 * 1024) break
+            if (file == keep) continue
+            val size = file.length()
+            if (file.delete()) bytes -= size
+        }
+    }
+
+    private fun posters(cacheDir: File): List<File> =
+        File(cacheDir, DIRECTORY).listFiles().orEmpty().filter { it.isDirectory }
+            .flatMap { directory -> directory.listFiles().orEmpty().filter { it.isFile && it.extension == "jpg" } }
+}
+
 internal class MediaServerLibrary(private val context: () -> Context?, private val streams: () -> LocalStreamServer,
     private val nextId: () -> Int,
     private val accounts: () -> List<MediaServerAccount> = {
@@ -80,6 +113,7 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
     fun request(raw: String): Int {
         if (closed || raw.length > 32768) return -1
         val req = runCatching { JSONObject(raw) }.getOrNull() ?: return -1
+        val posterGeneration = MediaServerPosterCache.generation
         val id = nextId(); val job = Job(if (req.optString("action") == "remove") "" else req.optString("server_id")); jobs[id] = job
         val task = FutureTask<Unit> {
             val result = try {
@@ -106,7 +140,7 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
                             "folder_artwork" -> client.folderArtwork(req.getString("scene_id"))
                             "candidates" -> client.candidates(req)
                             "detail" -> JSONObject().put("detail", client.detail(req.getString("scene_id")))
-                            "cover" -> cover(app, account, client, http, req)
+                            "cover" -> cover(app, account, client, http, req, posterGeneration)
                             else -> throw MediaServerFailure("Invalid server request")
                         }
                     }
@@ -123,7 +157,8 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
         return id
     }
     fun cancel(id: Int) { jobs.remove(id)?.let { it.http?.close(); it.future?.cancel(true); it.future?.let(pool::remove) } }
-    private fun cover(app: Context, account: MediaServerAccount, client: MediaLibraryClient, http: MediaServerHttp, request: JSONObject): JSONObject {
+    private fun cover(app: Context, account: MediaServerAccount, client: MediaLibraryClient, http: MediaServerHttp,
+        request: JSONObject, generation: Long): JSONObject {
         val id = request.getString("scene_id")
         mediaRequire(id.matches(Regex("[A-Za-z0-9-]{1,64}")))
         val type = request.optString("image_type", "Primary"); val index = request.optInt("image_index")
@@ -132,7 +167,8 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
         val image = client.image(id, type, index, tag, width)
         val variant = if (!request.has("image_type")) "" else "-" + java.security.MessageDigest.getInstance("SHA-256")
             .digest("$type/$index/$tag/$width".toByteArray()).take(12).joinToString("") { "%02x".format(it) }
-        val directory = File(app.cacheDir, "media-servers/${account.id}").apply { mkdirs() }
+        mediaRequire(generation == MediaServerPosterCache.generation, "Request cancelled")
+        val directory = File(app.cacheDir, MediaServerPosterCache.DIRECTORY + "/" + account.id).apply { mkdirs() }
         val file = File(directory, "$id$variant.jpg")
         if (!file.isFile || System.currentTimeMillis() - file.lastModified() > 86400000) {
             val bitmap = runCatching { decodeCover(http.bytes(image, 8 * 1024 * 1024), maxSize = width) }.getOrElse { original ->
@@ -145,13 +181,12 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
             try {
                 temporary.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 85, it) }
                 synchronized(MediaServerStore) {
-                    mediaRequire(!Thread.currentThread().isInterrupted && MediaServerStore.get(app, account.id) == account, "Request cancelled")
+                    mediaRequire(generation == MediaServerPosterCache.generation &&
+                        !Thread.currentThread().isInterrupted && MediaServerStore.get(app, account.id) == account, "Request cancelled")
                     mediaRequire(temporary.renameTo(file), "Cover unavailable")
+                    MediaServerPosterCache.prune(app.cacheDir, file)
                 }
             } finally { bitmap.recycle(); temporary.delete() }
-            val cached = File(app.cacheDir, "media-servers").walkTopDown().filter { it.isFile && it.extension == "jpg" }.toList()
-            var total = cached.sumOf { it.length() }
-            for (old in cached.sortedBy { it.lastModified() }) { if (total <= 128L * 1024 * 1024) break; if (old != file) { val size = old.length(); if (old.delete()) total -= size } }
         }
         return JSONObject().put("scene_id", id).put("path", file.absolutePath)
     }

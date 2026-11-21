@@ -146,12 +146,63 @@ func choose_setting(menu: Node, key: String, value: Variant) -> void:
 		if menu.choices.opened.is_empty(): return
 		menu.stick_scroll(-1.0, 0.3)
 
+func check_thumbnail_prefetch_settings(menu: Node) -> void:
+	var keys := ["library_thumbnail_prefetch", "library_thumbnail_smb", "library_thumbnail_dlna", "library_thumbnail_frame_protection", "library_thumbnail_limit"]
+	var expected_titles := ["Local files", "SMB", "DLNA", "Low frame rate protection during prefetch", "Prefetch limit"]
+	var group_index: int = menu.rows.find_custom(func(row): return row.get("general_settings_group") == "previews")
+	check(group_index >= 0 and menu.rows[group_index].icon == "next"
+		and menu.rows[group_index].title == "Prefetch file previews", "Preview prefetch starts as a collapsed General group")
+	check(not menu.rows.any(func(row): return row.get("key", "") in keys), "Collapsed group hides its five settings")
+	check(not menu.rows.any(func(row): return row.get("key", "") == "scene_body_height"), "General leaves scene height under Display")
+	if group_index < 0: return
+	menu._set_scroll(float(group_index))
+	var group_target: int = Menu.ROW_BASE + group_index - menu._first_line()
+	var group_button: Dictionary = menu._buttons.filter(func(button): return button.target == group_target)[0]
+	var origin: Vector3 = group_button.node.to_global(Vector3(0, 0, 1))
+	menu.press_pointer("right_hand", origin, -menu.global_basis.z, true)
+	menu.release_pointer("right_hand", origin, -menu.global_basis.z, true)
+	check(menu.rows[group_index].icon == "chevron_down", "Ray trigger expands the preview prefetch group")
+	var items: Array = menu.rows.slice(group_index + 1, group_index + 1 + keys.size())
+	if items.map(func(row): return row.get("key", "")) != keys:
+		check(false, "Expanded prefetch group contains its five settings in order")
+		return
+	check(items.map(func(row): return row.title) == expected_titles, "Prefetch controls use short labels")
+	check(items[3].value == true, "Frame rate protection defaults on")
+	check(items[4].choices.map(func(option): return option.value) == [10, 20, 50, 100, 200], "Prefetch quantity uses the existing five choices")
+	for offset in keys.size():
+		var index := group_index + 1 + offset
+		menu._set_scroll(float(index))
+		var target: int = Menu.ROW_BASE + index - menu._first_line()
+		var button: Dictionary = menu._buttons.filter(func(candidate): return candidate.target == target)[0]
+		origin = button.node.to_global(Vector3(-0.44, 0, 1))
+		menu.update_pointer("right_hand", origin, -menu.global_basis.z, true)
+		check(menu._tooltip != null and menu._tooltip.visible and menu._tooltip.get_child(0).text == items[offset].info,
+			"Pointing at %s displays its prefetch tooltip" % expected_titles[offset])
+	menu._hide_tooltip()
+	for offset in keys.size():
+		var wanted: Variant = 200 if offset == 4 else false
+		choose_setting(menu, keys[offset], wanted)
+		check(settings_events.back() == [keys[offset], wanted], "%s uses its existing setting key" % expected_titles[offset])
+	menu._choose(menu.rows[group_index])
+	check(menu.rows[group_index].icon == "next" and not menu.rows.any(func(row): return row.get("key", "") in keys),
+		"Clicking the header again hides the five controls")
+	menu._activate(Menu.TAB_BASE + Menu.DISPLAY_TAB)
+	var height: Dictionary = menu.rows[3]
+	check(height.get("key") == "scene_body_height" and height.get("title") == "Height in scene"
+		and height.get("value") == 171 and height.get("span") == Vector3(140, 200, 1)
+		and menu.rows.slice(0, 4).all(func(row): return not row.get("group_header", false)),
+		"Display keeps the colors, control bar transparency and scene height outside the foldouts")
+	choose_setting(menu, "scene_body_height", 182)
+	check(settings_events.back() == ["scene_body_height", 182.0], "The Display slider emits the original scene height setting")
+	menu._activate(Menu.TAB_BASE + Menu.GENERAL_TAB)
+
 func _run() -> void:
 	preload("res://scripts/i18n.gd").use("en") # text checks are written in English
 	var platform := FakePlatform.new()
 	var menu := Menu.new()
 	menu.catalog = Catalog.new()
-	menu.settings_provider = func(): return {"profile": "320x320", "profiles": ["320x320", "512x512"], "output_width": 0, "rvm_model": "fast", "version": "t"}
+	menu.settings_provider = func(): return {"profile": "320x320", "profiles": ["320x320", "512x512"],
+		"output_width": 0, "rvm_model": "fast", "version": "t", "scene_body_height": 171}
 	menu.chosen.connect(func(uri: String, title: String): chosen.append([uri, title]))
 	menu.setting_changed.connect(func(key: String, value: Variant): settings_events.append([key, value]))
 	root.add_child(menu)
@@ -307,10 +358,12 @@ func _run() -> void:
 	check(not Menu.SETTING_TABS.has("Alpha") and not menu.text_snapshot().contains("320x320")
 		and not menu.text_snapshot().contains("RVM quality"), "Settings omit model and input-resolution decisions")
 	menu._activate(Menu.TAB_BASE + Menu.VIDEO_TAB)
+	menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group") == "output")[0])
 	choose_setting(menu, "output_width", 4096)
 	check(settings_events.back() == ["output_width", 4096], "Output cap setting")
 	menu._activate(Menu.TAB_BASE + Menu.GENERAL_TAB)
-	menu._choose(menu.rows.filter(func(row):return row.get("group_header", false) and not row.get("cloud_paging_group", false))[0])
+	check_thumbnail_prefetch_settings(menu)
+	menu._choose(menu.rows.filter(func(row): return row.title == "Privacy settings")[0])
 	check(menu.rows.any(func(row): return row.get("key", "") == "privacy_mode" and row.value == "all"), "History defaults to all in General's Privacy group")
 	choose_setting(menu, "privacy_mode", "none")
 	check(settings_events.back() == ["privacy_mode", "none"], "Privacy settings can stop recording")
@@ -319,6 +372,7 @@ func _run() -> void:
 	check(settings_events.back() == ["file_settings_memory", "none"], "Per-file memory has its own selection event")
 	menu._activate(Menu.TAB_BASE + Menu.DISPLAY_TAB)
 	check(not menu.rows.any(func(row): return row.get("key", "") == "library_backdrop"), "Media background is configured in the server browser, not global Display")
+	menu._choose(menu.rows.filter(func(row): return row.get("display_settings_group") == "overlays")[0])
 	check(menu.rows.any(func(row): return row.get("key", "") == "show_fps" and row.value == false), "Display settings offer the FPS display, off by default")
 	choose_setting(menu, "show_fps", true)
 	check(settings_events.back() == ["show_fps", true], "FPS display can be switched on from Display settings")
@@ -327,9 +381,10 @@ func _run() -> void:
 	var video_row := func(key: String) -> Dictionary:
 		var found: Array = menu.rows.filter(func(row): return row.get("key", "") == key)
 		return found[0] if found.size() == 1 else {}
-	var video_keys: Array = menu.rows.map(func(row): return row.get("key", ""))
-	check(menu.tab == Menu.VIDEO_TAB and video_keys.find("memory_mode") >= 0 and video_keys.find("alpha_auto_from_filename") == video_keys.find("memory_mode") + 1
-		and video_keys.find("alpha_keep_background") == video_keys.find("memory_mode") + 2, "Legacy subtitle tab opens the compact video settings with filename control and background retention")
+	check(menu.tab == Menu.VIDEO_TAB and menu.rows.filter(func(row): return row.has("video_settings_group"))
+		.map(func(row): return row.video_settings_group) == ["output", "depth", "alpha", "subtitles"],
+		"Legacy subtitle tab opens the grouped video settings")
+	menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group") == "depth")[0])
 	check(video_row.call("depth_render").get("value") == "stretch"
 		and video_row.call("depth_render").get("choices", []).map(func(option): return option.value) == ["fill", "stretch"], "Video settings offer both 2D-to-3D views, edge stretching by default")
 	choose_setting(menu, "depth_render", "fill")
@@ -504,6 +559,12 @@ func _run() -> void:
 	check(menu.rows.any(func(row):return row.get("group_header", false)) and menu.rows[0].title == "语言" and menu.rows[0].value == "zh"
 		and menu.rows[0].choices.map(func(option): return option.label) == ["System", "简体中文", "繁體中文", "日本語", "English"],
 		"General groups all languages in one dropdown, each named in itself")
+	check(menu.rows.any(func(row): return row.get("general_settings_group") == "previews" and row.title == "预读取文件预览图"),
+		"Simplified Chinese names the feature as file preview prefetch")
+	menu._activate(Menu.TAB_BASE + Menu.DISPLAY_TAB)
+	check(menu.rows[3].get("key") == "scene_body_height" and menu.rows[3].title == "场景身高",
+		"Simplified Chinese makes the height apply to scenes")
+	menu._activate(Menu.TAB_BASE + Menu.GENERAL_TAB)
 	var chosen := []
 	menu.setting_changed.connect(func(key, value): chosen.append([key, value]))
 	choose_setting(menu, "language", "en")
@@ -515,5 +576,6 @@ func _run() -> void:
 	for failure in failures:
 		push_error(failure)
 	menu.queue_free()
+	await process_frame
 	platform.free()
 	quit(0 if failures.is_empty() else 1)

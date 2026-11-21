@@ -32,12 +32,13 @@ func _run() -> void:
 	library.setting_changed.connect(func(key, value):
 		if key == Palette.KEY: Palette.use(value))
 	origin.add_child(library); library.toggle(); library.section = Library.Section.SETTINGS; library.tab = Library.DISPLAY_TAB
-	library.refresh(); library._set_scroll(0); library.refresh()
+	library.reveal_display_interface()
 	for option in Palette.OPTIONS:
 		var theme: String = option.value
 		Palette.use(theme); await frames()
 		library.clear_pointer_visuals(); library._update_highlights(); await frames()
-		check(library.rows[0].key == Palette.KEY and library.rows[1].key == "watch_color" and library.rows[2].setting[0] == "bar_transparency", "Appearance swatches precede bar transparency without scrolling")
+		check(library.rows[0].key == Palette.KEY and library.rows[1].key == "watch_color" and library.rows[2].setting[0] == "bar_transparency",
+			"Top-level appearance swatches precede bar transparency without scrolling")
 		var image: Image = viewport.get_texture().get_image()
 		image.save_png(output.path_join("display-" + theme + ".png"))
 		for button in library._buttons:

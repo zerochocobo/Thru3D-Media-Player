@@ -170,6 +170,8 @@ func refresh_visuals() -> void:
 
 func update(hand: String, hit: Dictionary, tracked: bool = true) -> void:
 	if not tracked: cancel_hand(hand)
+	# A browser window also routes hits on its separate footer, which handles its own hover.
+	if not is_instance_valid(host.device_status): return
 	var now: int = now_provider.call()
 	var target := int(hit.get("target", host.NONE))
 	var over := target == STATUS or (expanded and target in [RESTART, QUIT, CANCEL])

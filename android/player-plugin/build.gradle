@@ -218,5 +218,7 @@ dependencies {
     // Debug Activity subclasses GodotActivity. The matching Godot export template
     // supplies Fragment 1.8.6; compile only, never package another host framework.
     debugCompileOnly 'androidx.fragment:fragment:1.8.6'
+    // @Keep on classes native code calls. Debug got it through Fragment only, so Release did not compile.
+    compileOnly 'androidx.annotation:annotation:1.11.0'
 }
 

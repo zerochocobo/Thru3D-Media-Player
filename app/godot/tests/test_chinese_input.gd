@@ -115,12 +115,16 @@ func run() -> void:
 	var platform := Cloud.Platform.new()
 	var menu := Menu.new(); root.add_child(menu); menu.attach_platform(platform); menu.toggle()
 	menu.section = Menu.Section.SETTINGS; menu.tab = Menu.GENERAL_TAB; menu.refresh()
+	var input_header: Dictionary = menu.rows.filter(func(row): return row.get("general_settings_group") == "input")[0]
+	check(input_header.icon == "next" and not menu.rows.any(func(row): return row.get("key") == "quest_chinese_keyboard"),
+		"Quest input setting starts inside the collapsed keyboard group")
+	menu._choose(input_header)
 	var language_index := -1
 	var keyboard_index := -1
 	for index in menu.rows.size():
 		if menu.rows[index].get("key", "") == "language": language_index = index
 		if menu.rows[index].get("key", "") == "quest_chinese_keyboard": keyboard_index = index
-	check(language_index >= 0 and keyboard_index == language_index + 1, "Setting is directly below language")
+	check(language_index >= 0 and keyboard_index == language_index + 2, "Quest input appears immediately under the keyboard group")
 	menu._activate(Menu.NAV_BASE + Menu.Section.CLOUD); platform.browse_reply(1)
 	menu._choose(menu.rows[0]); platform.browse_reply(2); menu.cloud_search.open(); await process_frame
 	var requests: int = platform.requests.size()

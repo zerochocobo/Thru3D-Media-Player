@@ -13,6 +13,7 @@ external-model-assets/
   depth-mnn/depth_compat.mnn   ZipDepth video default on every headset, 384×224 input
   depth-mnn/photo_depth.mnn   Independent still-photo Depth Anything V2 Small, 518×518 input
   depth-mnn/photo_depth_vulkan.mnn   The same photo network for headsets whose GPU backend is Vulkan
+  depth-mnn/photo_fast.mnn   ZipDepth fast still-photo graph, 512x512 input
 ```
 
 Import without trusting the supplied files' own metadata:
@@ -131,3 +132,7 @@ The refreshment runtime now loads `res://environments/private_beach/straw-sip.wa
 ## Vulkan photos in 0.18.2
 
 The separate `depth-mnn/photo_depth_vulkan.mnn` graph supports photo depth on Vulkan. Its size and SHA-256 are pinned in `models/manifest/runtime-assets.json`; supply it separately through the model import workflow. Photo inference uses a lower-priority GPU queue. Previously viewed photo depth maps can be retained under the photo-cache setting. No weights or user photo caches are included in public Git. This extends the earlier video/browser fallback; support still requires device-specific validation.
+
+## Fast photo depth in 0.18.6
+
+Progressive photo 3D uses the separately supplied `depth-mnn/photo_fast.mnn` graph before the fine photo graph. Its MIT provenance and deployment contract are retained in `models/manifest/zipdepth_photo.json`; runtime-assets.json pins its bytes and SHA-256. No weights, private sample names or numerical sample-evaluation records are distributed. Import-ModelAssets verifies the sixth model and creates its deployment manifest.

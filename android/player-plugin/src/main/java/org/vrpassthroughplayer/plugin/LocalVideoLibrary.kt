@@ -266,6 +266,7 @@ internal class LocalVideoLibrary(
                 }
                 if (closed || epoch != browseEpoch.get()) return@execute
                 emit(id, JSONObject().put("source", "local").put("state", "ready").put("path", path)
+                    .put("freshness", "fresh").put("complete", !subtitlesOnly && path.isNotEmpty())
                     .put("all_files", allFiles()).put("access_kind", if (mounted) "directory" else "all_files")
                     .put("entries", if (subtitlesOnly) SidecarSubtitles.directoryEntries(entries) else entries).put("volumes",volumes).toString())
             } catch (error: Exception) {

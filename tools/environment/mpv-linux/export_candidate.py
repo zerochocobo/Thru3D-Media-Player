@@ -98,6 +98,7 @@ def main():
         'aaudio_clock_patch_sha256': sha(ROOT/'native/mpv/patches/0005-mpv-aaudio-clock.patch'),
         'layer_cadence_patch_sha256': sha(ROOT/'native/mpv/patches/0006-mpv-layer-cadence.patch'),
         'mediacodec_priority_patch_sha256': sha(ROOT/'native/mpv/patches/0007-ffmpeg-mediacodec-priority.patch'),
+        'open_http_status_patch_sha256': sha(ROOT/'native/mpv/patches/0008-mpv-open-http-status.patch'),
         'dovi_rpu_patch_sha256': sha(ROOT/'native/mpv/patches/0002-ffmpeg-profile5-rpu.patch'),
         'architecture': 'arm64-v8a', 'elf_page_alignment': 16384,
         'build_command': 'buildall.sh --arch arm64 mpv',

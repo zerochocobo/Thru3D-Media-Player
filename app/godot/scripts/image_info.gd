@@ -19,7 +19,9 @@ static func read_header(path: String) -> Dictionary:
 	var raw := preload("res://scripts/raw_image.gd").header(file.get_buffer(16), file.get_length())
 	if not raw.is_empty(): return raw
 	file.seek(0)
-	var b := file.get_buffer(mini(file.get_length(), 1024 * 1024))
+	return inspect_header(file.get_buffer(mini(file.get_length(), 1024 * 1024)))
+
+static func inspect_header(b: PackedByteArray) -> Dictionary:
 	if b.size() < 30: return {}
 	var info := {"width": 0, "height": 0, "orientation": 1, "panorama": false}
 	if b[0] == 0x89 and b.slice(1, 4).get_string_from_ascii() == "PNG":

@@ -15,6 +15,9 @@ func _initialize() -> void:
 	check(not decoded.is_empty() and decoded.image.get_size() == Vector2i(518,518), "Accept photo model output")
 	check(not decoded.is_empty() and is_equal_approx(decoded.image.get_pixel(200,200).r,.75), "Keep RF precision")
 	check(not decoded.is_empty() and is_equal_approx(decoded.rect.x,76.0/518), "Keep content rectangle")
+	check(not decoded.is_empty() and decoded.model == "quality", "Maps without a model tag are quality maps")
+	var tagged := payload.duplicate(true); tagged["depth_model"] = "fast"
+	check(Photo._read_depth(JSON.stringify(tagged)).get("model", "") == "fast", "Carry the fast model tag for refinement")
 	var pair_path := path + ".png"
 	var pair := Image.create(64,32,false,Image.FORMAT_RGB8)
 	pair.fill(Color.GREEN); pair.fill_rect(Rect2i(0,0,32,32),Color.RED); pair.save_png(pair_path)

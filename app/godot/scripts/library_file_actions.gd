@@ -129,7 +129,7 @@ func open_settings() -> void:
 	menu.compact = false
 	menu._activate(menu.NAV_BASE + menu.Section.SETTINGS)
 	settings_return = context
-	menu.refresh()
+	menu.reveal_file_management_setting()
 
 func return_from_settings(redraw: bool = true) -> bool:
 	if settings_return.is_empty() or menu.section != menu.Section.SETTINGS: return false

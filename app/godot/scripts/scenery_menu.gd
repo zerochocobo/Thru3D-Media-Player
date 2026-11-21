@@ -315,7 +315,7 @@ func _draw() -> void:
 		height=.46+clampi(ceili(count/3.0),1,2)*.30
 	elif view=="gallery": height=GalleryView.HEIGHT
 	elif view=="atmosphere": height=.44
-	elif view=="mood": height=.40+(2*SUB_ROW if _state.get("mood_light",{}).get("on",false) else 0.0)
+	elif view=="mood": height=.40+(3*SUB_ROW if _state.get("mood_light",{}).get("on",false) else 0.0)
 	elif view=="adjust": height=(.74+(.12 if _scene_state().get("baked",false) else 0.0)+(0.0 if _scene_state().get("own_sky",true) else .12)) if _scene_active() else 1.0 if _state.get("choice","")=="cinema" else .87 if _state.get("choice","")=="private_beach" else .62
 	elif view=="beach_screen": height=1.12
 	elif view in ["import","import_error"]: height=.82
@@ -592,7 +592,8 @@ func _draw_entries(y: float) -> void:
 		if more!=NONE: _glyph(more,"next",Vector2(left+width-ENTRY_HEIGHT*.5,y),ENTRY_HEIGHT,true,I18n.t("Screen mood light"))
 		else: _icon("next",Vector3(body*.5-.03,0,.006),.026,ink if enabled else UiTheme.color("disabled_ink"),button.node)
 
-## The screen's glow, for videos and browser pages alike: a switch, then its range and brightness.
+## The screen's glow, for videos and browser pages alike: a switch, then its range and brightness,
+## and whether a video's edge dissolves into it.
 func _draw_mood_light(y: float) -> void:
 	var light: Dictionary=_state.get("mood_light",{})
 	if light.is_empty(): return
@@ -608,6 +609,10 @@ func _draw_mood_light(y: float) -> void:
 		_left(I18n.t(["Light range","Light brightness"][i]),Vector2(LEFT,y),TEXT_BODY,.40)
 		choices.field(null,{"slider":true,"key":keys[i],"value":light[keys[i]],"span":Vector3(limits.x,limits.y,5),"unit":"%","decimals":0,
 			"tick":preset,"reset_value":preset,"reset_when_changed":true},Vector2(.25,y),.82,.07)
+	y-=SUB_ROW
+	_left(I18n.t("Soft picture edge"),Vector2(LEFT,y),TEXT_BODY,.80)
+	choices.field(null,{"key":"ambient_soft_edge","value":light.get("ambient_soft_edge",false),"choices":[],"switch":true,
+		"hint":"A video's outer edge fades into the glow, with no border between them. The glow covers that edge and turns it pale. Off keeps the whole picture sharp, with the glow behind the screen."},Vector2(.61,y),.11,.07)
 
 ## The themes, how much of one, and its sound.
 func _draw_atmosphere(y: float) -> void:

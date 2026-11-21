@@ -37,6 +37,7 @@ func _run() -> void:
 	library.settings_provider = main._library_settings; library.setting_changed.connect(main._on_setting_changed)
 	root.add_child(library); library.set_process(false)
 	library.visible = true; library.section = Library.Section.SETTINGS; library.tab = Library.VIDEO_TAB; library.refresh()
+	library._choose(library.rows.filter(func(row): return row.get("video_settings_group") == "depth")[0])
 	var menu := Menu.new(); main.player_menu = menu
 	menu.state_provider = main._menu_state; menu.setting_requested.connect(main._on_player_setting)
 	root.add_child(menu); menu.set_process(false); menu.visible = true; menu.section = 1; menu.refresh()

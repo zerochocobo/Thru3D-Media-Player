@@ -17,9 +17,12 @@ type cursorFixture struct {
 	fail           bool
 	seen           []string
 	dropped        bool
+	innerCacheHit  bool
 }
 
-func (d *cursorFixture) PlayerDropPages() { d.dropped = true }
+func (d *cursorFixture) PlayerDropPages()                  { d.dropped = true }
+func (d *cursorFixture) PlayerPageCacheHit(model.Obj) bool { return d.innerCacheHit }
+func (d *cursorFixture) PlayerForget(string)               { d.innerCacheHit = false }
 
 func (d *cursorFixture) PlayerFolder(_ context.Context, remote, id string) (model.Obj, error) {
 	d.folders++
@@ -58,7 +61,7 @@ func TestCursorDirectoryOnlyFetchesRequestedBatchAndRetainsFailedPageForRetry(t 
 		return readCursorDirectory(ctx, d, d, "/mount", "/Movies", "folder-id", offset, order, refresh)
 	}
 	first, err := read(0, "name_asc", false)
-	if err != nil || len(first.objects) != 1 || first.next != 48 || first.total != -1 || d.calls != 1 {
+	if err != nil || first.cacheHit || len(first.objects) != 1 || first.next != 48 || first.total != -1 || d.calls != 1 {
 		t.Fatal(first, err, d.calls)
 	}
 	second, err := read(48, "name_asc", false)
@@ -69,8 +72,8 @@ func TestCursorDirectoryOnlyFetchesRequestedBatchAndRetainsFailedPageForRetry(t 
 	if _, err = read(96, "name_asc", false); err == nil {
 		t.Fatal("failure ignored")
 	}
-	read(0, "name_asc", false)
-	if d.calls != 3 {
+	cached, err := read(0, "name_asc", false)
+	if err != nil || !cached.cacheHit || d.calls != 3 {
 		t.Fatal("failure discarded successful pages")
 	}
 	d.fail = false
@@ -78,12 +81,13 @@ func TestCursorDirectoryOnlyFetchesRequestedBatchAndRetainsFailedPageForRetry(t 
 	if d.calls != 4 || d.seen[3] != "2" {
 		t.Fatal("retry changed cursor", d.seen)
 	}
-	read(0, "modified_desc", false)
-	if d.calls != 5 || d.seen[4] != "" {
+	d.innerCacheHit = true
+	reordered, err := read(0, "modified_desc", false)
+	if err != nil || !reordered.cacheHit || d.calls != 5 || d.seen[4] != "" {
 		t.Fatal("sort reused prior cursor")
 	}
-	read(48, "name_asc", true)
-	if d.calls != 6 || d.seen[5] != "1" {
+	refreshed, err := read(48, "name_asc", true)
+	if err != nil || refreshed.cacheHit || d.calls != 6 || d.seen[5] != "1" {
 		t.Fatal("refresh replayed earlier pages", d.seen)
 	}
 }

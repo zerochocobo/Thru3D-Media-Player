@@ -25,6 +25,11 @@
       "path": "depth-mnn/photo_depth_vulkan.mnn",
       "bytes": 49741472,
       "sha256": "9092b1bfaed69d1eca3a5803bcf14f7548e5ec3c8e4631f53fd4ba6fd850359e"
+    },
+    {
+      "path": "depth-mnn/photo_fast.mnn",
+      "bytes": 12794216,
+      "sha256": "50d36983b40a779d65c8fa8fda0f6310953a9843589133bbeaaf5b39dc0c3786"
     }
   ],
   "manifests": {
@@ -240,6 +245,30 @@
       ],
       "frozen_vs_source_rel_max": 5.024228357797256e-06,
       "mnn_fp16_weights_vs_frozen_rel_max": 0.005823842715471983
+    },
+    "photo-fast-mnn": {
+      "schema_version": 3,
+      "backend": "MNN 3.6.1 OpenCL",
+      "model": "ZipDepth base",
+      "head": "convex-softmax-free-clamp8, dense-grouped-1x1",
+      "license": "MIT",
+      "upstream": "https://github.com/fabiotosi92/ZipDepth",
+      "revision": "91f3fd21e131641f51e8d35736d1958350180e3a",
+      "checkpoint_sha256": "a55910bb0b99c8c5e641cb9206e810b269690ad94e8a2ef08c827c4679391a65",
+      "architecture_sha256": "9fd74fa2053da5bd56b2f2eecfdc3a6bf5e5161da0df05c72da3b89f29b77521",
+      "model_utils_sha256": "cd396c8d4f1eeb93da564b879d2b62aee8025d11222188153a549457649ead5c",
+      "input": "src float32 1x3x512x512 RGB 0..1",
+      "output": "depth float32 1x1x512x512 relative inverse depth (larger = nearer)",
+      "width": 512,
+      "height": 512,
+      "usage": "photo",
+      "mnn_file": "photo_fast.mnn",
+      "compute_precision": "fp16",
+      "weight_precision": "fp16",
+      "gpu_mode": 16,
+      "global_context": "learned softmax (not mean approximation)",
+      "frozen_onnx_sha256": "577d9609b68576fff8d5cc39a1921b1afeb2b9de358faff48fb4c53264df28a4",
+      "mnn_sha256": "50d36983b40a779d65c8fa8fda0f6310953a9843589133bbeaaf5b39dc0c3786"
     }
   }
 }

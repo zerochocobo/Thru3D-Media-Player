@@ -15,6 +15,7 @@ func _run() -> void:
 	var library := Library.new(); library.settings_provider = func(): return state
 	camera.add_child(library); library.set_process(false)
 	library.section = Library.Section.SETTINGS; library.tab = Library.VIDEO_TAB
+	library._video_settings_expanded["depth"] = true
 	var menu := Menu.new(); menu.state_provider = func(): return state
 	camera.add_child(menu); menu.set_process(false); menu.position.y = -0.45; menu.section = 1
 	for language in ["zh", "zh_Hant", "ja", "en"]:

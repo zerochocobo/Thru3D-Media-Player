@@ -79,7 +79,12 @@ internal class DlnaLibrary(
 
     fun browse(id: String, objectId: String): JSONArray {
         val selected = synchronized(this) { saved[id]?.let(::server) ?: found[id] } ?: error("DLNA server unavailable")
-        val entries = DlnaClient.browse(selected, objectId)
+        val diagnostics = if (PlaybackPrivacy.diagnostics) DlnaClient.BrowseDiagnostics() else null
+        val entries = try {
+            DlnaClient.browse(selected, objectId, diagnostics = diagnostics)
+        } finally {
+            if (diagnostics != null && PlaybackPrivacy.diagnostics) DlnaClient.log("library_listing {$diagnostics}")
+        }
         synchronized(this) {
             for (i in 0 until entries.length()) {
                 val entry = entries.getJSONObject(i)
@@ -100,23 +105,77 @@ internal class DlnaLibrary(
         return entries
     }
 
+    fun thumbnailReader(id: String, url: String): DlnaThumbnailReader? {
+        val endpoint = synchronized(this) { saved[id]?.let(::server) ?: found[id] } ?: return null
+        val media = DlnaClient.httpUri(url)?.takeIf { it.rawUserInfo == null } ?: return null
+        if (listOf(endpoint.location, endpoint.controlUrl).none {
+                DlnaClient.httpUri(it)?.host.equals(media.host, ignoreCase = true)
+            }) return null
+        return DlnaThumbnailReader(media)
+    }
+
+    fun thumbnailChildren(id: String, objectId: String, job: LocalThumbnailPrefetch.Work): JSONArray {
+        val endpoint = synchronized(this) { saved[id]?.let(::server) ?: found[id] } ?: return JSONArray()
+        return DlnaClient.thumbnailChildren(endpoint, objectId, job)
+    }
+
     fun playable(uri: String): String {
         val identity = java.net.URI(uri)
         require(identity.scheme == "dlna" && !identity.rawAuthority.isNullOrEmpty())
         val id = java.net.URLDecoder.decode(identity.rawAuthority, "UTF-8")
         var selected = synchronized(this) { saved[id]?.let(::server) ?: found[id] }
         if (selected == null) { refresh(); selected = synchronized(this) { saved[id]?.let(::server) ?: found[id] } }
-        val endpoint = selected ?: error("DLNA server unavailable")
-        val objectId = java.net.URLDecoder.decode(identity.rawPath.removePrefix("/"), "UTF-8")
-        val entry = video(DlnaClient.browse(endpoint, objectId, metadata = true), objectId) ?: error("DLNA item unavailable")
-        val resolved = entry.getString("uri")
-        synchronized(this) {
-            references[resolved] = JSONObject().put("uri", resolved).put("object_id", objectId).put("server", endpoint.json())
-                .put("parent_id", entry.optString("parent_id")).put("subtitle_origin", "directory")
-                .put("subtitles", entry.optJSONArray("subtitles") ?: JSONArray())
-            if (PlaybackPrivacy.networkHistory) transientReferences.remove(resolved) else transientReferences.add(resolved)
+        val endpoint = selected ?: run {
+            if (PlaybackPrivacy.diagnostics) DlnaClient.log("playback_lookup outcome=server_unavailable metadata=not_queried parent=not_queried")
+            error("DLNA server unavailable")
         }
-        return resolved
+        val objectId = java.net.URLDecoder.decode(identity.rawPath.removePrefix("/"), "UTF-8")
+        val metadataDiagnostics = if (PlaybackPrivacy.diagnostics) DlnaClient.BrowseDiagnostics(objectId) else null
+        var parentDiagnostics: DlnaClient.BrowseDiagnostics? = null
+        var parentStatus = "not_queried"
+        var outcome = "failed"
+        try {
+            val metadata = video(DlnaClient.browse(endpoint, objectId, metadata = true, diagnostics = metadataDiagnostics), objectId)
+            val parentId = metadata?.optString("parent_id")?.takeIf { it.isNotBlank() && it != objectId }
+                ?: knownParent(id, objectId, metadata?.optString("uri"))
+            // Some servers list the stream only in BrowseDirectChildren. Use the saved parent
+            // as a location hint and obtain the resource again, including any renewed URL.
+            val entry = if (metadata != null) {
+                parentStatus = "not_needed"
+                metadata
+            } else {
+                parentStatus = "no_known_parent"
+                val parent = parentId ?: error("DLNA item unavailable")
+                parentDiagnostics = metadataDiagnostics?.let { DlnaClient.BrowseDiagnostics(objectId) }
+                video(DlnaClient.browse(endpoint, parent, diagnostics = parentDiagnostics), objectId)
+                    ?.takeIf { DlnaClient.httpUri(it.optString("uri")) != null } ?: error("DLNA item unavailable")
+            }
+            val resolved = entry.getString("uri")
+            synchronized(this) {
+                references[resolved] = JSONObject().put("uri", resolved).put("object_id", objectId).put("server", endpoint.json())
+                    .put("parent_id", parentId.orEmpty()).put("subtitle_origin", "directory")
+                    .put("subtitles", entry.optJSONArray("subtitles") ?: JSONArray())
+                if (PlaybackPrivacy.networkHistory) transientReferences.remove(resolved) else transientReferences.add(resolved)
+            }
+            outcome = if (metadata != null) "metadata_selected" else "parent_selected"
+            return resolved
+        } finally {
+            if (metadataDiagnostics != null && PlaybackPrivacy.diagnostics) {
+                val parent = parentDiagnostics?.let { "{$it}" } ?: parentStatus
+                DlnaClient.log("playback_lookup outcome=$outcome metadata={$metadataDiagnostics} parent=$parent")
+            }
+        }
+    }
+
+    @Synchronized private fun knownParent(serverId: String, objectId: String, uri: String?): String? {
+        fun matches(row: JSONObject): Boolean = row.optString("object_id") == objectId &&
+            row.optJSONObject("server")?.optString("id") == serverId &&
+            row.optString("parent_id").let { it.isNotBlank() && it != "-1" && it != objectId }
+
+        val reference = uri?.let { references[it] }?.takeIf(::matches)
+            ?: references.values.lastOrNull(::matches)
+            ?: playbackReferences.values.lastOrNull(::matches)
+        return reference?.getString("parent_id")
     }
 
     fun subtitles(uri: String): List<MediaSubtitleLink> {

@@ -27,6 +27,6 @@ void fragment() {
 	vec4 color = texture(image_texture, UV);
 	// Feather on the fixed portal plane, rather than on a moving depth-texture contour.
 	float edge = smoothstep(0.0, 0.004, distance_to_edge);
-	ALBEDO = color_grade(color.rgb);
+	ALBEDO = color_grade(color.rgb, FRAGCOORD.xy);
 	ALPHA = color.a * edge;
 }

@@ -83,6 +83,12 @@ def main():
         marker.write_text(json.dumps(record, indent=2)+"\n")
         print(f"Extracted {record['name']} {record['revision']}", flush=True)
     mpv = base/"mpv"
+    http_patch = ROOT/"native/mpv/patches/0008-mpv-open-http-status.patch"
+    # Remove this layer before the subtitle and capture patches verify shared files.
+    applied_http_patch = mpv/".quest-open-http-applied.patch"
+    if applied_http_patch.exists():
+        subprocess.run(["git", "apply", "--reverse", str(applied_http_patch)], cwd=mpv, check=True)
+        applied_http_patch.unlink()
     patch = ROOT/"native/mpv/patches/0001-quest-source-frame.patch"
     record = json.loads((patch.parent/"source-frame-manifest.json").read_text())
     if sha(patch) != record["patch_sha256"]:
@@ -131,6 +137,8 @@ def main():
     apply_capture_patch(mpv)
     apply_aaudio_patch(mpv)
     apply_vsync_patch(mpv)
+    subprocess.run(["git", "apply", str(http_patch)], cwd=mpv, check=True)
+    applied_http_patch.write_bytes(http_patch.read_bytes())
     from mvc_patch import apply_mvc_patch
     ffmpeg_record = next(s for s in lock['sources'] if s['name'] == 'ffmpeg')
     apply_mvc_patch(base/'ffmpeg', args.cache/ffmpeg_record['archive'])

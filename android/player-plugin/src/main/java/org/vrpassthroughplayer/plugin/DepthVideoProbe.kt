@@ -19,7 +19,12 @@ import java.util.Locale
  * replaces it), so the next inference starts as soon as the GPU is free instead of one or two frames
  * later. Three input/raw buffers bound the work in flight; ZipDepth uses the device tier's input.
  * Before the first result (cold compile) and for good if the model cannot run, frames show in 2D
- * (depth_ran=false) and the reason is reported in stats. */
+ * (depth_ran=false) and the reason is reported in stats.
+ *
+ * A frame taken for inference is not published until its own map is ready, at most [HOLD_MS], so the
+ * picture and its depth are the same frame (Quest 3: 26-30 ms, depth 0 frames behind instead of 1.0-1.1);
+ * [audioDelayMs] keeps the sound with the later picture. A device whose maps take about the limit or
+ * longer publishes at once, as before. Debug builds: adb shell setprop debug.vrpp.depth.hold_ms N (0 = off). */
 internal class DepthVideoProbe(
     private val scope: MediaSessionGate.Scope,
     private val context: () -> Context?,
@@ -47,6 +52,19 @@ internal class DepthVideoProbe(
     private var pending: Job? = null       // lock: newest input waiting for the GPU
     private var replaced = 0L              // lock: pending inputs superseded by a newer frame
     private var lastAcceptedPtsUs = -1L    // lock: source time of the latest frame taken for inference
+    /** A frame waiting for its own map ([staged]) or behind one that does, in frame order. */
+    private class Held(val id: FramePairGate.Identity, val descriptor: String, val token: Long, val sinceNs: Long, val staged: Boolean)
+    private val waiting = ArrayDeque<Held>() // lock
+    private val order = Any()                // publishing in frame order; taken before lock, never inside it
+    private val holdLimitNs = holdLimitMs() * 1_000_000L
+    private var heldOwn = 0L                 // lock: held frames published with their own map
+    private var heldLate = 0L                // lock: held frames published with another map (limit, replaced, skipped)
+    /** Average wait of published frames (ms). */
+    @Volatile var holdMs = 0.0; private set
+    @Volatile private var holdSamples = 0L
+    /** The audio delay MPV should apply for the held picture (ms); null until this generation has measured
+     * enough frames, so a seek (a new generation) leaves the delay where it was instead of pulsing it. */
+    val audioDelayMs: Double? get() = if (holdSamples >= HOLD_SETTLE_FRAMES) holdMs else null
     /** Minimum source-time gap between frames taken for inference (caps the rate near 30 Hz). Measured
      * in video time, not wall time: a frame that waited behind the GPU must not push the next one out
      * (wall-time gaps made every other 30 fps frame miss the gate, ~19 maps/s on an idle GPU). */
@@ -74,6 +92,8 @@ internal class DepthVideoProbe(
     fun stats(): Map<String, Any> = mapOf("depth_process_ms_avg" to processMs, "depth_infer_ms_avg" to inferMs,
         "depth_stabilize_ms_avg" to stabilizeMs, "depth_latency_ms_avg" to latencyMs, "depth_updates" to inferred,
         "depth_interval_ms" to intervalNs / 1_000_000L, "depth_pending_replaced" to synchronized(lock) { replaced },
+        "depth_hold_limit_ms" to holdLimitNs / 1_000_000L, "depth_hold_ms_avg" to holdMs,
+        "depth_held_own" to synchronized(lock) { heldOwn }, "depth_held_late" to synchronized(lock) { heldLate },
         "depth_stages" to JSONObject(inferStages).also { stages ->
             JSONObject(postStages).let { post -> post.keys().forEach { stages.put(it, post.get(it)) } }
         }.toString(),
@@ -142,16 +162,18 @@ internal class DepthVideoProbe(
 
     /** [rgb] is the bridge's staged mono input (float32 CHW), valid only during this call; null when
      * this frame was not staged for the model. */
-    fun submit(ticket: DecodedFrameGate.Ticket, token: Long, rgb: ByteBuffer?, descriptor: JSONObject) {
-        var near: Pair<ByteBuffer, ByteBuffer>
-        var nearFrame: Long
+    fun submit(ticket: DecodedFrameGate.Ticket, token: Long, rgb: ByteBuffer?, descriptor: JSONObject) = synchronized(order) {
         var start: Job? = null
+        var staged = false
+        var dropped: List<Held> = emptyList()
         val id = synchronized(lock) {
             val identity = gate.identify(ticket, token)
             if (closed || identity == null) null else {
                 if (identity.frameId < lastSubmitted) {
                     latest = null; latestFrame = -1L
                     pending?.let { free.addLast(it) }; pending = null
+                    // Frames of the scene left behind were never shown; they are not shown now.
+                    dropped = waiting.toList(); waiting.clear()
                 }
                 lastSubmitted = identity.frameId
                 if (rgb != null && handle > 0L && rgb.capacity() == plane * 12) {
@@ -162,21 +184,57 @@ internal class DepthVideoProbe(
                         job.frameId = identity.frameId; job.submittedNs = System.nanoTime()
                         contentPixels(descriptor, job.content)
                         if (!inferring) { inferring = true; start = job }
+                        staged = true
                     }
                 }
                 identity
             }
         }
-        if (id == null) { release(token); return }
+        dropped.forEach { release(it.token) }
+        if (id == null) { release(token); return@synchronized }
+        // Maps slower than the limit would only delay the picture: publish at once, as without the hold.
+        val hold = holdLimitNs > 0 && latencyMs * 1_000_000 < holdLimitNs * 0.9 && synchronized(lock) {
+            (staged || waiting.isNotEmpty()).also { if (it) waiting.addLast(Held(id, descriptor.toString(), token, System.nanoTime(), staged)) }
+        }
+        if (hold) DepthPost.handler.postDelayed({ drain(-1L) }, holdLimitNs / 1_000_000L + 1)
+        else present(id, descriptor.toString(), token, -1L)
+        start?.let { job -> worker.post { infer(job) } }
+    }
+
+    /** Publishes one frame with the latest map (order). [sinceNs]: when it began to wait; negative: it did not. */
+    private fun present(id: FramePairGate.Identity, descriptor: String, token: Long, sinceNs: Long) {
+        val near: Pair<ByteBuffer, ByteBuffer>
+        val nearFrame: Long
         val line = synchronized(lock) {
             near = latest ?: FLAT; nearFrame = latestFrame
-            observe(id.frameId, if (near !== FLAT) id.frameId - nearFrame else -1L)
+            if (sinceNs >= 0) { if (near !== FLAT && nearFrame == id.frameId) heldOwn++ else heldLate++ }
+            // A frame that waited can carry a later frame's map (its own inference was replaced): not behind.
+            observe(id.frameId, if (near !== FLAT) (id.frameId - nearFrame).coerceAtLeast(0L) else -1L)
+        }
+        if (holdLimitNs > 0) {
+            holdMs = holdMs * 0.95 + (if (sinceNs >= 0) (System.nanoTime() - sinceNs) / 1e6 else 0.0) * 0.05
+            holdSamples++
         }
         line?.let { android.util.Log.i("QuestDepth", it) }
         val ran = near !== FLAT
         val kernel = JSONObject().put("cuts", cuts).put("near_frame_id", nearFrame).put("frames_behind", if (ran) id.frameId - nearFrame else -1)
-        if (!publish(id, descriptor.toString(), near, ran, kernel)) release(token)
-        start?.let { job -> worker.post { infer(job) } }
+        if (!publish(id, descriptor, near, ran, kernel)) release(token)
+    }
+
+    /** Publishes the frames that need wait no longer: those up to [through] (its map is the latest now, or
+     * never comes), frames behind them that were not taken for inference, and any held past the limit. */
+    private fun drain(through: Long) = synchronized(order) {
+        var released = false
+        while (true) {
+            val next = synchronized(lock) {
+                val head = waiting.firstOrNull()
+                if (closed || head == null) null
+                else if (head.id.frameId <= through || (released && !head.staged) || System.nanoTime() - head.sinceNs >= holdLimitNs) waiting.removeFirst()
+                else null
+            } ?: break
+            present(next.id, next.descriptor, next.token, next.sinceNs)
+            released = true
+        }
     }
 
     /** Counts one published frame (lock); every LOG_INTERVAL_NS returns the summary line for the
@@ -189,10 +247,11 @@ internal class DepthVideoProbe(
         val elapsed = now - windowStartNs
         if (elapsed < LOG_INTERVAL_NS) return null
         val seconds = elapsed / 1e9
-        val line = "video depth maps_per_s=%.1f frames_per_s=%.1f behind_avg=%s behind_max=%d latency_ms=%.0f infer_ms=%.0f stabilize_ms=%.0f replaced=%d cuts=%d profile=%s ready=%b error=%s frame=%d".format(
+        val line = "video depth maps_per_s=%.1f frames_per_s=%.1f behind_avg=%s behind_max=%d latency_ms=%.0f infer_ms=%.0f stabilize_ms=%.0f replaced=%d cuts=%d profile=%s ready=%b error=%s frame=%d hold_ms=%.0f held_own=%d held_late=%d".format(
             Locale.US, (inferred - windowUpdates) / seconds, windowFrames / seconds,
             if (windowShown > 0) "%.1f".format(Locale.US, windowBehind.toDouble() / windowShown) else "-",
-            windowBehindMax, latencyMs, inferMs, stabilizeMs, replaced, cuts, DepthNative.PROFILE, handle > 0, error.ifEmpty { "-" }, frameId)
+            windowBehindMax, latencyMs, inferMs, stabilizeMs, replaced, cuts, DepthNative.PROFILE, handle > 0, error.ifEmpty { "-" }, frameId,
+            holdMs, heldOwn, heldLate)
         windowStartNs = now; windowUpdates = inferred
         windowFrames = 0; windowShown = 0; windowBehind = 0; windowBehindMax = 0
         return line
@@ -216,6 +275,7 @@ internal class DepthVideoProbe(
     /** GPU stage on [DepthWorker]: hands the raw map to [DepthPost], then starts the pending frame. */
     private fun infer(job: Job) {
         var handed = false
+        val frameId = job.frameId
         try {
             val active = handle
             if (active <= 0L || synchronized(lock) { closed }) return
@@ -249,14 +309,15 @@ internal class DepthVideoProbe(
                 waiting
             }
             next?.let { worker.post { infer(it) } }
+            if (!handed) drain(frameId) // no map comes for this frame
         }
     }
 
     /** CPU stage on [DepthPost]. The stabilizer's rates are per source frame: skipped frames count. */
     private fun stabilize(active: Long, job: Job, started: Long) {
+        val frameId = job.frameId
         try {
             if (synchronized(lock) { closed } || handle != active) return
-            val frameId = job.frameId
             val near = direct(plane * 4)
             val reset = synchronized(lock) { latest == null } || lastInferred < 0 || frameId <= lastInferred
             val step = if (reset) 1 else (frameId - lastInferred).coerceIn(1L, 1000L).toInt()
@@ -290,6 +351,7 @@ internal class DepthVideoProbe(
                     "latency_ms_avg=${"%.1f".format(latencyMs)} updates=$inferred")
         } finally {
             synchronized(lock) { if (!closed) free.addLast(job) }
+            drain(frameId) // its map is the latest now (or never comes)
         }
     }
 
@@ -311,16 +373,20 @@ internal class DepthVideoProbe(
         val owned = synchronized(lock) { (handle == active).also { if (it) { handle = 0L; latest = null } } }
         // The worker serializes this after any in-flight inference of the same handle.
         if (owned) worker.post { DepthNative.close(active) }
+        drain(Long.MAX_VALUE) // 2D from here on
     }
 
     override fun close() {
         val previous: Long
+        val held: List<Held>
         synchronized(lock) {
             if (closed) return
             closed = true; gate.close()
             previous = handle; handle = 0; latest = null
             pending = null; free.clear()
+            held = waiting.toList(); waiting.clear()
         }
+        held.forEach { release(it.token) }
         // The worker serializes this after any in-flight inference; a stabilizer call still running
         // keeps its own native reference, and later ones see the closed handle and stop.
         if (previous > 0) worker.post { DepthNative.close(previous) }
@@ -343,6 +409,18 @@ internal class DepthVideoProbe(
                     .invoke(null, "debug.vrpp.depth.interval_ms") as String
                 value.toLongOrNull()?.coerceIn(0L, 2000L) ?: INTERVAL_MS
             } catch (_: Throwable) { INTERVAL_MS }
+        }
+        /** Longest wait for a frame's own map (ms). */
+        private const val HOLD_MS = 80L
+        /** Frames before the measured wait sets the audio delay (the average needs about two seconds). */
+        private const val HOLD_SETTLE_FRAMES = 48L
+        private fun holdLimitMs(): Long {
+            if (!BuildConfig.DEBUG) return HOLD_MS
+            return try {
+                val value = Class.forName("android.os.SystemProperties").getMethod("get", String::class.java)
+                    .invoke(null, "debug.vrpp.depth.hold_ms") as String
+                value.toLongOrNull()?.coerceIn(0L, 200L) ?: HOLD_MS
+            } catch (_: Throwable) { HOLD_MS }
         }
         /** Pass-through mask: never written, so every 2D pair can share it (two distinct planes). */
         private val FLAT: Pair<ByteBuffer, ByteBuffer> by lazy {

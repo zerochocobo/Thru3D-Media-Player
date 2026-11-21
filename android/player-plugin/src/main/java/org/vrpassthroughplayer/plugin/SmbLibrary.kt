@@ -352,6 +352,31 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
         return SmbStreamSource(url, connection, size)
     }
 
+    fun thumbnailReader(uri: String): StreamSource.Reader {
+        val rest = uri.removePrefix("smb://")
+        val path = rest.substringAfter('/', "")
+        require(path.split('/').none { it.isEmpty() || it == "." || it == ".." } && '\\' !in path)
+        val server = server(rest.substringBefore('/'))
+        // A preview never waits on the browsing executor or retires its transport.
+        val properties = SmbClientPolicy.properties(server.user.isEmpty()).apply {
+            setProperty("jcifs.client.responseTimeout", "1100")
+            setProperty("jcifs.client.connTimeout", "750")
+            setProperty("jcifs.client.soTimeout", "1100")
+            setProperty("jcifs.client.maxRequestRetries", "1")
+        }
+        val base = BaseContext(PropertyConfiguration(properties))
+        val context = if (server.user.isEmpty()) base.withGuestCredentials()
+            else base.withCredentials(NtlmPasswordAuthenticator(server.domain, server.user, server.password))
+        val handle = try { smbReader("smb://${server.host}/$path", context) }
+            catch (error: Exception) { runCatching { context.close() }; throw error }
+        return object : StreamSource.Reader by handle {
+            private val closed = java.util.concurrent.atomic.AtomicBoolean()
+            override fun close() {
+                if (closed.compareAndSet(false, true)) try { handle.close() } finally { context.close() }
+            }
+        }
+    }
+
     /** SMB hosts seen within [timeoutMs]: mDNS _smb._tcp (NAS, macOS, Samba), WS-Discovery, which
      * Windows uses instead of mDNS, and a TCP 445 sweep of the local subnet for Windows machines
      * that keep WS-Discovery off (Public network, publication service stopped). Hosts without a
@@ -470,18 +495,20 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
 /** Each reader opens its own SMB handle, so a fork reads the same file independently. */
 internal class SmbStreamSource(private val url: String, private val connection: SmbConnection<CIFSContext>,
                                override val size: Long) : StreamSource {
-    override fun open(): StreamSource.Reader = SmbRecoveringReader(connection) { context ->
-        val file = SmbClientPolicy.file(url, context)
-        val reader = try { SmbRandomAccessFile(file, "r") }
-            catch (error: Exception) { runCatching { file.close() }; throw error }
-        object : StreamSource.Reader {
-            override fun read(offset: Long, buffer: ByteArray, length: Int): Int {
-                reader.seek(offset)
-                return reader.read(buffer, 0, length)
-            }
-            override fun close() { try { reader.close() } finally { file.close() } }
-        }
-    }
+    override fun open(): StreamSource.Reader = SmbRecoveringReader(connection) { smbReader(url, it) }
     override val forkable get() = true
     override fun fork(): StreamSource = SmbStreamSource(url, connection, size)
+}
+
+private fun smbReader(url: String, context: CIFSContext): StreamSource.Reader {
+    val file = SmbClientPolicy.file(url, context)
+    val reader = try { SmbRandomAccessFile(file, "r") }
+        catch (error: Exception) { runCatching { file.close() }; throw error }
+    return object : StreamSource.Reader {
+        override fun read(offset: Long, buffer: ByteArray, length: Int): Int {
+            reader.seek(offset)
+            return reader.read(buffer, 0, length)
+        }
+        override fun close() { try { reader.close() } finally { file.close() } }
+    }
 }

@@ -98,11 +98,11 @@ inline Frame source_frame(const std::string& path, int64_t position, const std::
         }
     }
 }
-inline void frame_rgba(const AVFrame& source, uint8_t* pixels, int pitch) {
+inline void frame_rgba(const AVFrame& source, uint8_t* pixels, int pitch, int width, int height) {
     frame_size(source.width, source.height);
-    if (!pixels || pitch < source.width * 4) throw std::runtime_error("Could not capture source frame");
+    if (!pixels || pitch < width * 4) throw std::runtime_error("Could not capture source frame");
     auto* scale = sws_getContext(source.width, source.height, static_cast<AVPixelFormat>(source.format),
-        source.width, source.height, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
+        width, height, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!scale) throw std::runtime_error("Could not capture source frame");
     const std::unique_ptr<SwsContext, decltype(&sws_freeContext)> owned(scale, sws_freeContext);
     const int matrix = source.colorspace == AVCOL_SPC_BT709 ? SWS_CS_ITU709 :
@@ -114,7 +114,10 @@ inline void frame_rgba(const AVFrame& source, uint8_t* pixels, int pitch) {
         coefficients, 1, 0, 1 << 16, 1 << 16));
     uint8_t* target[4] = {pixels, nullptr, nullptr, nullptr};
     const int lines[4] = {pitch, 0, 0, 0};
-    if (sws_scale(scale, source.data, source.linesize, 0, source.height, target, lines) != source.height)
+    if (sws_scale(scale, source.data, source.linesize, 0, source.height, target, lines) != height)
         throw std::runtime_error("Could not capture source frame");
+}
+inline void frame_rgba(const AVFrame& source, uint8_t* pixels, int pitch) {
+    frame_rgba(source, pixels, pitch, source.width, source.height);
 }
 } // namespace quest::capture

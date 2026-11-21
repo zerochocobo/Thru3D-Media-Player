@@ -21,6 +21,6 @@ void fragment() {
         uv = (pixel - decoded_rect.xy) / decoded_rect.zw;
     }
     vec4 color = texture(tile_texture, uv);
-    ALBEDO = color_grade(color.rgb);
+    ALBEDO = color_grade(color.rgb, FRAGCOORD.xy);
     ALPHA = color.a * opacity;
 }

@@ -25,7 +25,7 @@ internal object PhotoPortrait {
         require(PhotoStereo.validRotation(rotation))
         val nearFile = File(source.parentFile,"depth.bin")
         val depth = JSONObject(File(source.parentFile,"depth.json").readText())
-        require(depth.optString("photo_cache") == "da2-518-stretch-v2" && nearFile.length() == 518L*518*4)
+        require(PhotoDepthModel.ofCache(depth.optString("photo_cache")) != null && nearFile.length() == 518L*518*4)
         val directory = File(source.parentFile,"portrait").apply { mkdirs() }
         val sourceMask = File(directory,"mask.t3di")
         if (!sourceMask.isFile) {

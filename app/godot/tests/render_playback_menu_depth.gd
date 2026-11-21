@@ -33,13 +33,15 @@ func run() -> void:
 	library.section = Library.Section.SETTINGS; library.tab = Library.DISPLAY_TAB; library.visible = true
 	for language in ["zh", "zh_Hant", "ja", "en"]:
 		display_settings.clear(); library.scroll = 0
+		library._display_settings_expanded.clear()
 		I18n.use(language); library.refresh()
-		check(library.rows[-2].key == Depth.KEY and library.rows.back().key == "stick_seek_overlay", language + " progress switch immediately below depth")
+		library._choose(library.rows.filter(func(row): return row.get("display_settings_group") == "interface")[0])
+		var depth_row: int = library.rows.find_custom(func(row): return row.get("key") == Depth.KEY)
+		check(depth_row > 0 and library.rows[depth_row - 1].get("key") == "hand_model",
+			language + " depth follows the hand model in the interface group")
 		check(library._labels.any(func(label): return label.text == I18n.t(Depth.TITLE)) or library._buttons.any(func(button): return button.node.get_child_count() > 0 and button.node.get_child(0) is Label3D and button.node.get_child(0).text == I18n.t(Depth.TITLE)), language + " full title fits")
 		check(library.text_width(I18n.t(Depth.TITLE), 18) <= 0.43, language + " title does not overlap the choice field")
 		await pixels(view, "display-" + language)
-		# Other Display fields may precede these final rows; hover visible controls.
-		library._set_scroll(library._max_scroll(), false)
 		var targets: Array = library.choices.targets.keys().filter(func(id): return library.choices.targets[id].key == Depth.KEY)
 		check(targets.size() == 3 and targets.all(func(id): return library.choices.targets[id].kind == "choose"), language + " three direct switches without a select")
 		for id in targets:
@@ -49,7 +51,10 @@ func run() -> void:
 			check(is_instance_valid(library._tooltip) and library._tooltip.visible, language + " tooltip is visible")
 			await pixels(view, "display-tip-" + language + "-" + option.value)
 		library._hover.clear(); library._update_tooltip()
-		library._set_scroll(library._max_scroll(), false)
+		library._choose(library.rows.filter(func(row): return row.get("display_settings_group") == "interface")[0])
+		library._choose(library.rows.filter(func(row): return row.get("display_settings_group") == "overlays")[0])
+		check(library.rows.back().key == "stick_seek_overlay" and library.rows[-2].key == "show_fps",
+			language + " thumbstick progress bar follows FPS under playback overlays")
 		await pixels(view, "display-seek-on-" + language)
 		var switch_targets: Array = library.choices.targets.keys().filter(func(id): return library.choices.targets[id].key == "stick_seek_overlay")
 		check(switch_targets.size() == 2 and switch_targets.map(func(id): return library.choices.targets[id].value) == [false, true], language + " direct Off/On choices match FPS setting")

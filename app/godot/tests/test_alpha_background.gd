@@ -80,10 +80,14 @@ func run() -> void:
 	main.video_menu.dismiss()
 	main.recent_menu.section = main.recent_menu.Section.SETTINGS; main.recent_menu.tab = main.recent_menu.VIDEO_TAB
 	main.recent_menu.visible = true; main.recent_menu.refresh()
+	check(not main.recent_menu.rows.any(func(item): return item.get("key") == "alpha_keep_background"), "Background setting starts inside the collapsed video passthrough group")
+	var alpha: Dictionary = main.recent_menu.rows.filter(func(item): return item.get("video_settings_group") == "alpha")[0]
+	main.recent_menu._choose(alpha)
 	var row := -1
 	for index in main.recent_menu.rows.size():
 		if main.recent_menu.rows[index].get("key") == "alpha_keep_background": row = index
-	check(row >= 0 and main.recent_menu.rows[row + 1].title == main.I18n.t("AI portrait passthrough (Alpha)"), "Library places toggle immediately before AI portrait configuration")
+	check(row >= 0 and main.recent_menu.rows[row - 1].get("key") == "alpha_auto_from_filename"
+		and main.recent_menu.rows[row + 1].get("key") == "alpha_profile", "Library puts both passthrough options before the AI model controls")
 	if row >= 0:
 		main.recent_menu._set_scroll(float(row))
 		check(choose(main.recent_menu, true) and main._alpha_keep_background(), "Library ray press/release shares persisted setting")

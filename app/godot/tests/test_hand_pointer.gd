@@ -29,6 +29,8 @@ class Viewer extends Node3D:
 	var geometry := 1
 	var view_camera: XRCamera3D
 	var turned := Vector2.ZERO
+	var panel := Node3D.new()
+	func _init() -> void: panel.visible = false; add_child(panel)
 	func corner_at(_origin: Vector3, _direction: Vector3) -> int: return -1
 	func set_corner_hover(_corner: int) -> void: pass
 	func manual_portrait_pose() -> void: pass

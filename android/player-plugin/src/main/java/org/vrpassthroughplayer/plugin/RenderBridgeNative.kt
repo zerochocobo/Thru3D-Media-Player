@@ -1,14 +1,27 @@
 package org.vrpassthroughplayer.plugin
 
+import android.graphics.Bitmap
 import java.nio.ByteBuffer
 
 /** Every call is made on Godot's GL thread with the creating EGL context current. */
 internal object RenderBridgeNative {
     init { System.loadLibrary("quest_render_bridge") }
     /** Worker-only still-image path. RGBA row 0 is top, near is mono RF; output is packed SBS RGBA.
-     * Reuses video's forward warp, z-buffer, hole fill, rim and sliver cleanup. Returns elapsed us. */
+     * Reuses video's forward warp, z-buffer, hole fill, rim and sliver cleanup. Returns elapsed us.
+     * pair[0]: the pair's GPU token for [photoPairBegin] (0 when it exists only in [output]). */
     @JvmStatic external fun photoStereo(rgba: ByteBuffer, width: Int, height: Int, near: ByteBuffer,
-        modelWidth: Int, modelHeight: Int, content: FloatArray, strength: Float, convergence: Float, turns: Int, output: ByteBuffer): Long
+        modelWidth: Int, modelHeight: Int, content: FloatArray, strength: Float, convergence: Float, turns: Int, output: ByteBuffer,
+        pair: IntArray): Long
+    /** Any thread: [bitmap] (RGBA8) turned upright for EXIF [orientation] 5-8 into a T3DI v2 file at [path]. */
+    @JvmStatic external fun writeUprightRaw(bitmap: Bitmap, orientation: Int, path: String): Boolean
+    /** Godot's GL thread: photo pairs share this context's objects from the next still on. */
+    @JvmStatic external fun photoShareContext()
+    /** Godot's GL thread: the pair's GL texture for one copy, or 0 when it is gone. A non-zero result is
+     * always followed by [photoPairEnd]. */
+    @JvmStatic external fun photoPairBegin(token: Int): Int
+    @JvmStatic external fun photoPairEnd(token: Int)
+    /** Any thread: frees the photo pairs kept on the GPU. */
+    @JvmStatic external fun photoReleasePairs()
     /** stereo: two views, side by side unless topBottom (top half is the left eye). */
     fun create(width: Int, height: Int, inputWidth: Int, inputHeight: Int, stereo: Boolean, topBottom: Boolean = false): Long =
         createLayout(width, height, inputWidth, inputHeight, if (!stereo) 0 else if (topBottom) 2 else 1)

@@ -22,7 +22,9 @@ func _run() -> void:
 				{"title":"旅行 2026.mp4","uri":"file:///storage/emulated/0/Movies/travel.mp4","size":104857600,"modified":100,"can_delete":true},
 				{"id":"/storage/emulated/0/Movies/concert","title":"演唱会","container":true,"delete_uri":"file:///storage/emulated/0/Movies/concert","can_delete":true},
 				{"title":"教程 02.mp4","uri":"file:///storage/emulated/0/Movies/tutorial02.mp4","size":30000000,"modified":200,"can_delete":false}]
-			if view == "settings": menu.section = Menu.Section.SETTINGS; menu.tab = Menu.GENERAL_TAB
+			if view == "settings":
+				menu.section = Menu.Section.SETTINGS; menu.tab = Menu.GENERAL_TAB
+				menu._set_general_settings_group("files", true)
 			if view == "cloud_sort":
 				menu.section = Menu.Section.CLOUD; menu._cloud_stack = [{"id":"/account","title":"Cloud"}]
 				menu._cloud_entries = [{"title":"Cloud.mp4","uri":"cloud://account/Cloud.mp4","size":1000,"modified":100}]

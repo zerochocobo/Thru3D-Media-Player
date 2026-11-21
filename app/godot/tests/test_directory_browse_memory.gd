@@ -149,6 +149,7 @@ func option_cases() -> void:
 	disabled.dismiss(); disabled.toggle()
 	check(is_zero_approx(disabled.scroll), "Disabled restore reopens library at top")
 	disabled.section = Menu.Section.SETTINGS; disabled.tab = Menu.GENERAL_TAB; disabled.refresh()
+	disabled._choose(disabled.rows.filter(func(row): return row.get("general_settings_group") == "files")[0])
 	var options: Array = disabled.rows.filter(func(row): return row.get("key") == "library_restore_position")
 	check(options.size() == 1 and options[0].hint == Menu.BROWSE_POSITION_HINT and not options[0].value, "Global option has explanatory tooltip and current state")
 	check(disabled._tips.values().has(disabled.I18n.t(Menu.BROWSE_POSITION_HINT)), "Tooltip is attached to rendered ray targets")

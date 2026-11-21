@@ -6,6 +6,27 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PhotoCacheTest {
+    @Test fun storageCategoriesCountAndClearTheirOwnFiles() {
+        val cache = Files.createTempDirectory("storage-categories").toFile()
+        try {
+            val preview = put(cache, "photo-gallery/old/preview.jpg", 11)
+            val page = put(cache, "pdf-pages/old/page.jpg", 13)
+            val poster = put(cache, "media-servers/server/cached.jpg", 17)
+            val other = put(cache, "media-servers/server/not-an-image", 19)
+            assertEquals(1L to 11L, PhotoCache.usage(cache, "photo"))
+            assertEquals(1L to 13L, PhotoCache.usage(cache, "reading"))
+            assertEquals(1L to 17L, MediaServerPosterCache.usage(cache))
+            val generation = MediaServerPosterCache.generation
+            assertTrue(MediaServerPosterCache.clear(cache))
+            assertEquals(generation + 1, MediaServerPosterCache.generation)
+            assertFalse(poster.exists())
+            assertTrue(preview.isFile && page.isFile && other.isFile)
+            PhotoCache.clear(cache, emptySet(), category = "reading")
+            assertFalse(page.exists())
+            assertTrue(preview.isFile && other.isFile)
+        } finally { cache.deleteRecursively() }
+    }
+
     @Test fun cloudPdfBlocksParticipateInCleanupButActiveDocumentRemainsReadable() {
         val cache = Files.createTempDirectory("pdf-source-cache").toFile()
         try {

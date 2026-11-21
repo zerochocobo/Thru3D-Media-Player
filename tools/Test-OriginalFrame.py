@@ -13,6 +13,11 @@ OUT = ROOT / 'build/output/screenshot-20261024/host'
 CASES = [('avc-before', 'avc', 1015000, 30), ('avc-after', 'avc', 1023000, 31),
          ('offset', 'offset', 1023000, 31), ('hevc10', 'hevc10', 1023000, 31),
          ('first', 'avc', 0, 0), ('last', 'avc', 1980000, 59)]
+VIDEO_FIXTURES = [('video.mov', 'copy', 'mov'), ('video.m4v', 'copy', 'mp4'),
+                  ('stereo.mk3d', 'copy', 'matroska'), ('video.webm', 'libvpx-vp9', 'webm'),
+                  ('video.ts', 'copy', 'mpegts'), ('video.m2ts', 'copy', 'mpegts'),
+                  ('video.mpg', 'mpeg2video', 'mpeg'), ('video.vob', 'mpeg2video', 'vob'),
+                  ('video.avi', 'mpeg4', 'avi'), ('video.wmv', 'wmv2', 'asf'), ('video.flv', 'flv', 'flv')]
 
 
 def run(args):
@@ -27,6 +32,19 @@ def prepare():
              '-t', '2', '-an', '-c:v', codec, '-threads', '2', '-pix_fmt', pix, '-g', '60', '-bf', '3',
              '-colorspace', 'bt709', '-color_range', 'tv', *extra, OUT / (name + '.mp4')])
     run(['ffmpeg', '-y', '-v', 'error', '-i', OUT / 'avc.mp4', '-c', 'copy', '-output_ts_offset', '5', OUT / 'offset.mp4'])
+    run(['ffmpeg', '-y', '-v', 'error', '-i', OUT / 'avc.mp4', '-c', 'copy', OUT / 'no-cover-avc.mkv'])
+    run(['ffmpeg', '-y', '-v', 'error', '-i', OUT / 'hevc10.mp4', '-c', 'copy', OUT / 'no-cover-hevc.mkv'])
+    run(['ffmpeg', '-y', '-v', 'error', '-i', OUT / 'avc.mp4', '-vf', 'scale=320:160',
+         '-frames:v', '1', OUT / 'cover.jpg'])
+    run(['ffmpeg', '-y', '-v', 'error', '-i', OUT / 'avc.mp4', '-c', 'copy', '-attach', OUT / 'cover.jpg',
+         '-metadata:s:t', 'mimetype=image/jpeg', '-metadata:s:t', 'filename=cover.jpg', OUT / 'embedded-cover.mkv'])
+    for filename, codec, container in VIDEO_FIXTURES:
+        m2ts = ['-mpegts_m2ts_mode', '1'] if filename.endswith('.m2ts') else []
+        run(['ffmpeg', '-y', '-v', 'error', '-i', OUT / 'avc.mp4', '-an', '-c:v', codec,
+             '-threads', '2', '-f', container, *m2ts, OUT / filename])
+    run(['ffmpeg', '-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=0x608ed3:size=7680x3840:rate=1',
+         '-frames:v', '1', '-c:v', 'libx265', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p10le',
+         '-x265-params', 'pools=2:frame-threads=1', OUT / 'video-8k.mkv'])
     (OUT / 'invalid.mp4').write_bytes(b'not a video')
     for name, fixture, _, frame in CASES:
         run(['ffmpeg', '-y', '-v', 'error', '-i', OUT / (fixture + '.mp4'),
@@ -48,6 +66,28 @@ def execute():
         result = subprocess.run([str(OUT / 'frame-host'), str(OUT / (fixture + '.mp4')), str(position), str(target), *extra], capture_output=True)
         assert result.returncode != 0 and not target.exists(), name
         reports.append({'name': name, 'rejected': True})
+    for fixture, budget, extra, decoded in [
+        ('no-cover-avc.mkv', 4 * 1024**2, [], True),
+        ('no-cover-hevc.mkv', 4 * 1024**2, [], True),
+        ('avc.mp4', 4 * 1024**2, [], True),
+        ('video-8k.mkv', 4 * 1024**2, [], True),
+        *[(fixture, 4 * 1024**2, [], True) for fixture, _, _ in VIDEO_FIXTURES],
+        ('no-cover-avc.mkv', 1024, [], False),
+        ('no-cover-avc.mkv', 4 * 1024**2, ['cancel'], False),
+        ('invalid.mp4', 4 * 1024**2, [], False),
+    ]:
+        result = json.loads(run([OUT / 'frame-host', OUT / fixture, 'thumbnail', budget, *extra]).stdout)
+        assert result['decoded'] == decoded and result['bytes'] <= budget, (fixture, budget, extra, result)
+        if extra:
+            assert result['bytes'] == 0, result
+        print(f'Thumbnail {fixture}, limit {budget}, {extra}: {result}')
+    for fixture in ['video.ts', 'video.m2ts', 'no-cover-avc.mkv']:
+        result = json.loads(run([OUT / 'frame-host', OUT / fixture, 'prefix', 4 * 1024**2]).stdout)
+        assert result['decoded'] and result['bytes'] <= 4 * 1024**2, (fixture, result)
+        print(f'Non-seekable thumbnail {fixture}: {result}')
+    embedded = json.loads(run([OUT / 'frame-host', OUT / 'embedded-cover.mkv', 'thumbnail', 4 * 1024**2]).stdout)
+    assert not embedded['decoded'] and embedded['cover_bytes'] == (OUT / 'cover.jpg').stat().st_size, embedded
+    print(f'Embedded image selected without video decoding: {embedded}')
     (OUT / 'reports.json').write_text(json.dumps(reports, indent=2))
     print('Decoded six full-size stills; rejected cancellation, invalid input and out-of-range time')
 

@@ -4,6 +4,12 @@ extends RefCounted
 const Methods := preload("res://scripts/platform_methods.gd")
 const MIB := 1024 * 1024
 var frame_reserve := 0.30
+## CPU-only preview work uses delivered frames. It does not require a render query
+## or reserve GPU time for inference. Heavy colour/depth work keeps the strict gate.
+var frame_cadence_only := false
+var preview_job_active := false
+var protect_preview_frames := true
+var _preview_baseline_ms := 0.0
 # A page change stalls one frame by itself; measured background photo inference on Quest 3 left
 # stale frames at the idle level, so a short settle is enough and 2 s + 1 s only delayed every page.
 var stable_seconds := 0.5
@@ -36,15 +42,18 @@ func tick(owner: Node, delta: float, enabled: bool) -> void:
 		poll_at = Time.get_ticks_msec() + 1000
 		var value: Variant = JSON.parse_string(owner.platform.background_resource_policy())
 		policy = value if value is Dictionary else {}
+	var rate := refresh_rate()
+	if not is_finite(rate) or rate <= 0.0: rate = 90.0
+	var elapsed := frame_interval(delta)
+	if frame_cadence_only:
+		observe(0.0, 0.0, elapsed * 1000.0, 1000.0 / rate, elapsed)
+		return
 	var viewport: RID = owner.get_viewport().get_viewport_rid()
 	if _viewport != viewport:
 		stop_measurement()
 		_viewport = viewport
 		RenderingServer.viewport_set_measure_render_time(_viewport, true)
-	var rate := refresh_rate()
-	if not is_finite(rate) or rate <= 0.0: rate = 90.0
 	var now := Time.get_ticks_usec()
-	var elapsed := frame_interval(delta)
 	# TIME_PROCESS can include frame pacing/XR waits; use measured render CPU time instead.
 	# Other main-thread congestion is caught by the actual frame intervals below.
 	var times := render_times(_viewport)
@@ -110,11 +119,19 @@ func _stop_native() -> void:
 		if is_instance_valid(platform): platform.background_gpu_timing(-1))
 
 func observe(cpu_ms: float, gpu_ms: float, frame_ms: float, target_ms: float, delta: float) -> void:
+	if frame_cadence_only and not protect_preview_frames:
+		reason = "ready" if policy.get("work", false) else "resources"
+		return
 	cooldown = maxf(0.0, cooldown - delta)
-	var valid := is_finite(cpu_ms) and is_finite(gpu_ms) and is_finite(frame_ms) and target_ms > 0.0 \
-		and cpu_ms > 0.0 and gpu_ms > 0.0
-	if not valid or not policy.get("work", false) or frame_ms > target_ms * 2.0:
-		reason = "gpu_unavailable" if not is_finite(gpu_ms) or gpu_ms <= 0 else ("resources" if not policy.get("work", false) else "frame_stall")
+	var render_valid := is_finite(cpu_ms) and is_finite(gpu_ms) and cpu_ms > 0.0 and gpu_ms > 0.0
+	var valid := (frame_cadence_only or render_valid) and is_finite(frame_ms) and frame_ms > 0.0 and target_ms > 0.0
+	var stall_ms := target_ms * 2.0
+	if frame_cadence_only:
+		stall_ms = 50.0
+		if preview_job_active and _preview_baseline_ms > 0.0:
+			stall_ms = minf(75.0, maxf(target_ms * 2.2, _preview_baseline_ms * 1.8))
+	if not valid or not policy.get("work", false) or frame_ms > stall_ms:
+		reason = "gpu_unavailable" if not frame_cadence_only and (not is_finite(gpu_ms) or gpu_ms <= 0.0) else ("resources" if not policy.get("work", false) else "frame_stall")
 		_cpu.clear(); _gpu.clear(); _frames.clear(); _assess_seconds = 0.0
 		defer_work(); return
 	_cpu.append(cpu_ms / target_ms); _gpu.append(gpu_ms / target_ms); _frames.append(frame_ms / target_ms)
@@ -122,13 +139,25 @@ func observe(cpu_ms: float, gpu_ms: float, frame_ms: float, target_ms: float, de
 		_cpu.remove_at(0); _gpu.remove_at(0); _frames.remove_at(0)
 	_assess_seconds += delta; samples += 1
 	if _cpu.size() < MIN_SAMPLES or _assess_seconds < 0.25: return
-	# A rolling p95 tolerates an isolated scheduling blip without admitting sustained overload.
-	var safe := _p95(_cpu) <= 1.0 - frame_reserve and _p95(_gpu) <= 1.0 - frame_reserve and _p95(_frames) <= 1.25
+	var safe := _preview_cadence_ok(target_ms) if frame_cadence_only else (
+		_p95(_frames) <= 1.25 and _p95(_cpu) <= 1.0 - frame_reserve and _p95(_gpu) <= 1.0 - frame_reserve)
 	if safe:
 		stable += _assess_seconds; reason = "ready" if stable >= stable_seconds and cooldown <= 0 else "settling"
 	else:
 		reason = "frame_budget"; defer_work()
 	_assess_seconds = 0.0
+
+func _preview_cadence_ok(target_ms: float) -> bool:
+	var ordered := _frames.duplicate()
+	ordered.sort()
+	var high := ordered[mini(ordered.size() - 1, int(ordered.size() * 0.95))] * target_ms
+	# Keep the pre-job cadence fixed. A slow but stable idle session can still do light work.
+	if preview_job_active:
+		return high <= maxf(_preview_baseline_ms * 1.30, _preview_baseline_ms + target_ms * 0.40)
+	var median := ordered[ordered.size() >> 1] * target_ms
+	if high > median + maxf(target_ms * 1.1, median * 0.35): return false
+	_preview_baseline_ms = high
+	return true
 
 static func _p95(values: PackedFloat32Array) -> float:
 	var sorted := values.duplicate(); sorted.sort()
@@ -142,8 +171,8 @@ func can_continue(peak_bytes: int, resident_addition: int = 0) -> bool:
 	return policy.get("work", false) and peak_bytes > 0 and int(policy.get("spare_bytes", 0)) >= peak_bytes + resident_addition
 
 func can_start(peak_bytes: int, resident_addition: int = 0) -> bool:
-	return policy.get("work", false) and stable >= stable_seconds and samples >= MIN_SAMPLES and cooldown <= 0.0 \
-		and peak_bytes > 0 and int(policy.get("spare_bytes", 0)) >= peak_bytes + resident_addition
+	var settled := stable >= stable_seconds and samples >= MIN_SAMPLES and cooldown <= 0.0
+	return can_continue(peak_bytes, resident_addition) and (settled or (frame_cadence_only and not protect_preview_frames))
 
 func resident_limit(current_bytes: int) -> int:
 	if not policy.get("retain", false): return 0
@@ -151,7 +180,8 @@ func resident_limit(current_bytes: int) -> int:
 	return mini(int(policy.get("cache_limit", 0)), current_bytes + int(policy.get("spare_bytes", 0)) / 4)
 
 func report() -> Dictionary:
-	return {"reason":reason,"gpu_source":gpu_source,"stable_s":snappedf(stable,.01),"cooldown_s":snappedf(cooldown,.01),
+	return {"reason":reason,"gpu_source":gpu_source,"frame_cadence_only":frame_cadence_only,"stable_s":snappedf(stable,.01),"cooldown_s":snappedf(cooldown,.01),
+		"preview_baseline_ms":snappedf(_preview_baseline_ms,.01),
 		"native_status":_native_status,"native_updates":_native_updates,
 		"samples":samples,"cpu_p95":_p95(_cpu) if not _cpu.is_empty() else 0,"gpu_p95":_p95(_gpu) if not _gpu.is_empty() else 0,
 		"frame_p95":_p95(_frames) if not _frames.is_empty() else 0,
@@ -175,3 +205,4 @@ func stop() -> void:
 	policy = {}; poll_at = 0; stable = 0.0; samples = 0; cooldown = 0.0
 	_cpu.clear(); _gpu.clear(); _frames.clear(); _assess_seconds = 0.0
 	_last_frame_usec = 0
+	_preview_baseline_ms = 0.0

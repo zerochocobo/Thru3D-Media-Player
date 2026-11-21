@@ -84,6 +84,12 @@ func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, heigh
 	if row.get("slider", false):
 		_slider(parent, row, centre, width, height)
 		return
+	if row.has("button_label"):
+		var label: String = menu.I18n.t(row.button_label)
+		var button_width := minf(width, maxf(0.20, menu.text_width(label, menu.TEXT_BODY) + 0.05))
+		_button({"kind": "choose", "key": row.setting[0], "value": row.setting[1]}, label,
+			centre + Vector2((width - button_width) / 2, 0), Vector2(button_width, height), parent)
+		return
 	var options: Array = row.choices
 	var key: String = row.key
 	if row.get("swatches", false):

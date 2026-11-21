@@ -54,6 +54,7 @@ func _initialize() -> void: call_deferred("run")
 func run() -> void:
 	var platform := Platform.new()
 	var menu := Menu.new(); root.add_child(menu); menu.attach_platform(platform); menu.set_process(false)
+	menu.settings_provider = func(): return {"scene_body_height": 171}
 	var changes: Array = []
 	menu.setting_changed.connect(func(key, value):
 		changes.append([key, value])
@@ -79,10 +80,15 @@ func run() -> void:
 					point(menu, Actions.EDIT_MODE, hand, true)
 					check(menu.section == Menu.Section.SETTINGS and menu.tab == Menu.GENERAL_TAB and not menu.compact, context + " opens full general settings")
 					check(not menu.file_actions.enabled and not menu.file_actions.editing and changes.size() == before and platform.calls.is_empty(), context + " shortcut never enables or writes")
-					var highlighted := false
-					for item in menu._buttons:
-						if item.target == Menu.ROW_BASE + 1: highlighted = item.node.get_child(0).modulate == menu.ACCENT
-					check(highlighted, context + " destination setting is highlighted")
+					var group_index: int = menu.rows.find_custom(func(row): return row.get("general_settings_group") == "files")
+					var setting_index: int = menu.rows.find_custom(func(row): return row.get("key") == "file_editing")
+					check(group_index >= 0 and menu.rows[group_index].icon == "chevron_down" and setting_index == group_index + 1,
+						context + " file settings expand around the destination")
+					check(setting_index >= menu._visible_line() and setting_index < menu._visible_line() + menu._lines(),
+						context + " destination is within the visible viewport")
+					var setting_button := button(menu, Menu.ROW_BASE + menu._row_slot(setting_index))
+					check(not setting_button.is_empty() and setting_button.node.get_child(0).modulate == menu.ACCENT,
+						context + " destination setting is highlighted")
 					var on_target := -999
 					for id in menu.choices.targets:
 						var option: Dictionary = menu.choices.targets[id]

@@ -14,6 +14,7 @@ var checks := 0
 
 class Photo extends Node3D:
 	var mode_memory := Memory.new()
+	var grade_memory := preload("res://scripts/file_photo_grade_memory.gd").new()
 	var history_enabled := true
 
 class Vault extends RefCounted:
@@ -70,6 +71,13 @@ func clear_with_menu(menu: Node, key: String, scope: String) -> void:
 	menu._choose(row)
 	check(menu._confirm.is_empty(), "Confirmed clear action is dispatched")
 
+func wait_for_thumbnail_clear() -> void:
+	var deadline := Time.get_ticks_msec() + 8000
+	while Thumbnails.clearing() and Time.get_ticks_msec() < deadline:
+		Thumbnails.poll()
+		await process_frame
+	check(not Thumbnails.clearing(), "Background thumbnail cleanup finishes")
+
 func run() -> void:
 	var directory := ProjectSettings.globalize_path("res://../../build/output/privacy-memory-split/cases-" + str(Time.get_ticks_usec()))
 	DirAccess.make_dir_recursive_absolute(directory)
@@ -84,7 +92,9 @@ func run() -> void:
 	var main := Main.new(); main.settings_path = directory.path_join("settings.cfg")
 	var video := Video.new(); main.video = video
 	var photo := Photo.new(); main.photo = photo
-	for memory in stores(main) + [video.recent_files, video.bookmark_store]: memory.directory = directory.path_join(str(memory.get_instance_id()))
+	main.atmosphere = preload("res://scripts/atmosphere/atmosphere_controller.gd").new()
+	main.add_child(main.atmosphere)
+	for memory in stores(main) + [photo.grade_memory, main.atmosphere.memory, video.recent_files, video.bookmark_store]: memory.directory = directory.path_join(str(memory.get_instance_id()))
 	root.add_child(video); video.set_process(false)
 	main.favorites = Favorites.new(directory.path_join("favorites"))
 	var menu := Library.new(); main.recent_menu = menu; root.add_child(menu); menu.set_process(false)
@@ -94,6 +104,15 @@ func run() -> void:
 	menu.collections.store = main.favorites; menu.catalog = video.recent_files; menu.refresh()
 	check(menu.rows.any(func(row): return row.get("key") == "privacy_mode") and menu.rows.any(func(row): return row.get("key") == "file_settings_memory"),
 		"Privacy UI offers independent history and per-file memory controls")
+	check(not menu.rows.any(func(row): return row.get("setting", []) == ["privacy_clear", "all"]),
+		"Opening Privacy leaves destructive record actions collapsed")
+	var cleanup_group: Dictionary = menu.rows.filter(func(row): return row.get("general_settings_group") == "records")[0]
+	menu._choose(cleanup_group)
+	menu._choose(menu.rows.filter(func(row): return row.get("setting", []) == ["privacy_clear", "all"])[0])
+	check(menu._confirm == str(["privacy_clear", "all"]), "Clear records retains its confirmation step")
+	check(menu.navigate_back() and menu.collections.privacy_expanded and menu._confirm.is_empty(),
+		"Back closes Clear records and cancels confirmation before leaving Privacy")
+	menu._choose(cleanup_group)
 	main._on_setting_changed("privacy_mode", Privacy.NONE)
 	check(not video.history_enabled and not photo.history_enabled and Privacy.file_settings == Privacy.ALL, "Stopping history leaves memory enabled")
 	seed_settings(main); check_settings(main)
@@ -116,12 +135,19 @@ func run() -> void:
 	main.settings.set_value("ui", "language", "ja")
 	seed_history(main)
 	clear_with_menu(menu, "privacy_clear", "network")
+	check(Thumbnails.clearing() and not Thumbnails.has(NETWORK) and FileAccess.file_exists(Thumbnails.path_for(NETWORK)),
+		"Network privacy clear hides the thumbnails immediately and schedules disk deletion")
+	await wait_for_thumbnail_clear()
 	check(menu.browse_memory.lookup("browse-network", true).is_empty() and menu.browse_memory.lookup("browse-local", false).get("index") == 8, "Existing network-history control also clears only network browser positions")
 	check(fresh(video.recent_files).resume_position(LOCAL) == 12345 and fresh(video.recent_files).lookup(NETWORK).is_empty(),
 		"Network history clear preserves local history")
+	check(Thumbnails.has(LOCAL) and not Thumbnails.has(NETWORK), "Network history clear preserves indexed local thumbnails")
 	check_settings(main)
 	seed_history(main)
 	clear_with_menu(menu, "privacy_clear", "all")
+	check(Thumbnails.clearing() and FileAccess.file_exists(Thumbnails.path_for(LOCAL)),
+		"All-history clear leaves disk deletion to the worker")
+	await wait_for_thumbnail_clear()
 	check(menu.browse_memory.session.is_empty() and menu.browse_memory.persisted.is_empty(), "Existing all-history control also clears browser positions")
 	check(fresh(video.recent_files).entries.is_empty() and not video.recent_files.can_undo(), "History clear removes recent/resume records from both banks and undo")
 	check(not FileAccess.file_exists(Thumbnails.path_for(LOCAL)) and not FileAccess.file_exists(Thumbnails.path_for(NETWORK)), "History clear removes thumbnails")
@@ -152,6 +178,7 @@ func run() -> void:
 		main.favorites.private_remember(uri, "recent", video.recent_files.lookup(uri))
 	seed_settings(main)
 	main._on_setting_changed("privacy_clear", "all")
+	await wait_for_thumbnail_clear()
 	check(main.favorites.private_lookup(NETWORK, "recent").is_empty(), "History clear removes legacy encrypted history")
 	for index in stores(main).size():
 		var memory: RefCounted = stores(main)[index]
@@ -165,6 +192,7 @@ func run() -> void:
 		check(memory.lookup(NETWORK).is_empty() and not memory.lookup(LOCAL).is_empty(), "Network clear scopes encrypted preferences by source")
 	Privacy.vault = null; Privacy.configure(Privacy.ALL); Privacy.configure_file_settings(Privacy.ALL)
 	menu.free(); video.free(); photo.free(); main.free()
+	Thumbnails.finish()
 	print("Independent privacy memory checks=%d failures=%d" % [checks, failures.size()])
 	for failure in failures: push_error(failure)
 	quit(0 if failures.is_empty() else 1)

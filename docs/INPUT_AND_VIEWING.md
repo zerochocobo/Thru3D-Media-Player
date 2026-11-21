@@ -46,8 +46,12 @@ Picture quality mode adds 0-200% sharpening (50% default), denoising levels and 
 
 Eye-buffer render scales now include x1.33 and x1.5 across headsets. Higher scales cost GPU time. Native compositor edge stretching for real-time 2D-to-3D is enabled by default on Adreno 7xx and newer; older GPUs retain the shader path. Paused video redraws after picture-setting or view-direction changes.
 
-Compatible fisheye and AI person passthrough paths support picture controls, including retained backgrounds and separately placed people. Real-time 2D-to-3D and memory-saving AI paths retain restrictions. Denoising and super resolution increase GPU load. Imported scenes choose an initial screen position without enabling pinning; users control pinning explicitly.
+Compatible fisheye and AI person passthrough paths support picture controls, including retained backgrounds and separately placed people. Compatible real-time 2D-to-3D paths now support picture controls, including 4K; memory-saving AI person passthrough paths retain restrictions. Denoising and super resolution increase GPU load. Imported scenes choose an initial screen position without enabling pinning; users control pinning explicitly.
 
 ## Per-video picture controls in 0.18.5
 
 The picture-controls popup combines quality mode, sharpness, Super Resolution, denoising and color. Default Picture changes the global defaults. Saved per-video adjustments take priority when reopening a video and can be cleared in the popup footer; saving follows the per-file privacy preference. Optional Reuse Last Picture Settings applies only to videos without their own adjustments and lasts for the current app session. Super Resolution respects the output-size cap, and the information page shows the processed size. Panorama direction supports one-degree steps, saved independently for global and photo backgrounds.
+
+## Photo 3D and previews in 0.18.6
+
+Photo 3D offers Fast then fine (default), Best quality and Fastest; an existing fine result is reused first. Runtime stereo generation and EXIF orientation handling are faster. Local, SMB and DLNA preview prefetching reuses artwork/caches, pauses under frame-time pressure and retries after recovery. Video 3D can wait for its own depth map for up to 80 ms, stop waiting on slower devices and adjust audio delay to the measured wait. Picture enhancement adds GPU load; source/build checks do not establish headset frame rate, depth refresh rate or visual acceptance.

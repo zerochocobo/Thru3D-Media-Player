@@ -33,4 +33,14 @@ class PhotoStereoTest {
         }
         assertEquals(640 to 480,PhotoStereo.size(640,480))
     }
+
+    @Test fun eyesAreCappedLikeVideoPairs() {
+        // A 22 MP camera photo: each eye about 4 MP and at most 2560 wide.
+        val (w,h) = PhotoStereo.size(5760,3840)
+        assertTrue(w <= PhotoStereo.EYE_EDGE && w.toLong()*h <= PhotoStereo.EYE_PIXELS)
+        assertTrue(w.toLong()*h > PhotoStereo.EYE_PIXELS*9/10)
+        val (pw,ph) = PhotoStereo.size(3840,5760)
+        assertEquals(h to w, pw to ph)
+        assertEquals(2560 to 640, PhotoStereo.size(5120,1280)) // a wide panorama: the edge limits it
+    }
 }

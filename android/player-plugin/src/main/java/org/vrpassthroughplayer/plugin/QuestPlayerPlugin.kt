@@ -1,5 +1,7 @@
 package org.vrpassthroughplayer.plugin
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.opengl.GLES30
 import android.opengl.EGL14
 import android.content.Intent
@@ -170,6 +172,13 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     private val originalCapture = OriginalCapture({ activity?.applicationContext }, sources::capturePlayable, sources::releaseMediaStream, sources::captureAudio,
         { id->mpv.captureOwner(id) },{id->mpv.captureAudioFlush(id)}, { id->pipImages.retain(id) }, { id->pipImages.release(id) })
     private val embeddedCover = EmbeddedCover({ activity?.applicationContext }, sources::capturePlayable, sources::releaseMediaStream)
+    private val localThumbnails = LocalThumbnailPrefetch({ activity?.applicationContext },
+        smb = sources::smbThumbnail, dlna = sources::dlnaThumbnail, dlnaChildren = sources::dlnaThumbnailChildren)
+    @UsedByGodot fun local_thumbnail_request(json: String): Int = if (closed.get()) -1 else localThumbnails.request(json)
+    @UsedByGodot fun local_thumbnail_state(id: Int): String = localThumbnails.state(id)
+    @UsedByGodot fun local_thumbnail_take(id: Int): ByteArray = localThumbnails.take(id)
+    @UsedByGodot fun local_thumbnail_cancel(id: Int) { localThumbnails.cancel(id) }
+    @UsedByGodot fun local_thumbnail_abandon(id: Int) { localThumbnails.abandon(id) }
     @UsedByGodot fun request_embedded_cover(uri: String): Int = if(closed.get())0 else embeddedCover.request(uri)
     @UsedByGodot fun embedded_cover_state(id: Int): String = embeddedCover.state(id)
     @UsedByGodot fun take_embedded_cover(id: Int): ByteArray = embeddedCover.take(id)
@@ -520,27 +529,61 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun prepare_preloaded_photo_portrait_rotated(id: Int, token: Int, strength: Double, rotation: Int): Boolean = !closed.get() &&
         (photoPreloads.portrait(id,token,strength.toFloat(),true,rotation) || photos.portrait(id,token,strength.toFloat(),true,rotation))
     @UsedByGodot fun cancel_preloaded_photo_depth() { photoPreloads.cancelBackgroundDepth(); photos.cancelBackgroundDepth() }
+    /** progressive | quality | fast (PhotoDepthMode); unknown values are ignored. */
+    @UsedByGodot fun set_photo_depth_mode(mode: String) { PhotoDepthMode.of(mode)?.let { PhotoDepthRuntime.mode = it } }
+    /** Quality map for the picture on screen, shown with the fast one; reported as photo_depth_refined. */
+    @UsedByGodot fun refine_photo_3d(id: Int, strength: Double, convergence: Double, rotation: Int): Boolean = !closed.get() &&
+        (photos.depth(id,strength.toFloat(),true,false,rotation=rotation,convergence=convergence.toFloat(),refine=true)
+            || photoPreloads.depth(id,strength.toFloat(),true,false,rotation=rotation,convergence=convergence.toFloat(),refine=true))
     @UsedByGodot fun update_photo_3d_strength(strength: Double) { photos.updateDepthStrength(strength.toFloat()); photoPreloads.updateDepthStrength(strength.toFloat()) }
+    /** Godot's photo decode thread: a photo with EXIF quarter turns (orientation 5-8) decoded upright into a
+     * T3DI file at [output], instead of Godot decoding it and turning 22 MP in place (1.47 s on Quest 3). */
+    @UsedByGodot fun decode_upright_raw(path: String, orientation: Int, output: String): Boolean = runCatching {
+        val bitmap = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inPremultiplied = false // T3DI is straight alpha
+        }) ?: return@runCatching false
+        try { RenderBridgeNative.writeUprightRaw(bitmap, orientation, output) } finally { bitmap.recycle() }
+    }.getOrDefault(false)
+
     @UsedByGodot fun warm_photo_depth_runtime() {
         val app = activity?.applicationContext ?: return
+        // Called on Godot's GL thread as viewing opens: the pairs made from now on stay on the GPU.
+        runCatching { RenderBridgeNative.photoShareContext() }
         PhotoDepthRuntime.warm(app) { photos.depthPending() || photoPreloads.depthPending() }
     }
     @UsedByGodot fun release_photo_depth_runtime() { photos.cancelDepth(); photoPreloads.cancelDepth(); PhotoDepthRuntime.release() }
     @UsedByGodot fun photo_cache_usage(): String {
         val app = activity?.applicationContext ?: return "{}"
         return runCatching {
-            val (files, bytes) = PhotoCache.usage(app.cacheDir)
-            JSONObject().put("files", files).put("bytes", bytes).toString()
+            val (files, bytes) = PhotoCache.usage(app.cacheDir, "photo")
+            val (readingFiles, readingBytes) = PhotoCache.usage(app.cacheDir, "reading")
+            JSONObject().put("files", files + readingFiles).put("bytes", bytes + readingBytes)
+                .put("reading_files", readingFiles).put("reading_bytes", readingBytes).toString()
         }.getOrDefault("{}")
     }
     @UsedByGodot fun clear_photo_cache(): Boolean = clearPhotoCache(false)
+    @UsedByGodot fun clear_photo_preview_cache(): Boolean = clearPhotoCache(false, "photo")
+    @UsedByGodot fun clear_reading_cache(): Boolean = clearPhotoCache(false, "reading")
+    @UsedByGodot fun media_server_cache_usage(): String {
+        val app = activity?.applicationContext ?: return "{}"
+        return runCatching {
+            val (files, bytes) = MediaServerPosterCache.usage(app.cacheDir)
+            JSONObject().put("files", files).put("bytes", bytes).toString()
+        }.getOrDefault("{}")
+    }
+
+    @UsedByGodot fun clear_media_server_cache(): Boolean {
+        val app = activity?.applicationContext ?: return false
+        return !closed.get() && runCatching { MediaServerPosterCache.clear(app.cacheDir) }.getOrDefault(false)
+    }
     /** [leftovers]: only what a previous process left behind, at start; kept depth maps stay. */
-    private fun clearPhotoCache(leftovers: Boolean): Boolean {
+    private fun clearPhotoCache(leftovers: Boolean, category: String = ""): Boolean {
         if (closed.get()) return false
         val app = activity?.applicationContext ?: return false
         return runCatching {
             synchronized(PhotoCache.lock) {
-                PhotoCache.clear(app.cacheDir, photos.cacheDirectories() + photoPreloads.cacheDirectories() + photoPreviews.cacheDirectories() + pipImages.cacheDirectories() + archives.cacheDirectories() + pdfs.cacheDirectories() + readingPages.files(), leftovers)
+                PhotoCache.clear(app.cacheDir, photos.cacheDirectories() + photoPreloads.cacheDirectories() + photoPreviews.cacheDirectories() + pipImages.cacheDirectories() + archives.cacheDirectories() + pdfs.cacheDirectories() + readingPages.files(), leftovers, category)
             }
             true
         }.getOrElse { Log.w("QuestPhotoCache", "Photo cache cleanup failed", it); false }
@@ -583,6 +626,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         SignalInfo("photo_depth", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_scene_depth", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_preload_depth", Int::class.javaObjectType, String::class.java),
+        SignalInfo("photo_depth_refined", Int::class.javaObjectType, String::class.java),
         SignalInfo("media_list", Int::class.javaObjectType, String::class.java),
         SignalInfo("archive_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("local_video_selected", String::class.java),
@@ -854,12 +898,19 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun upload_layer_rows(slot: Int, y: Int, rows: Int, pixels: ByteArray, channels: Int): Boolean =
         runCatching { VideoLayerNative.uploadRows(slot, y, rows, pixels, channels) }.getOrDefault(false)
     @UsedByGodot fun copy_layer_texture(slot: Int, texture: Int): Boolean = runCatching { VideoLayerNative.copyTexture(slot, texture) }.getOrDefault(false)
+    /** A photo's stereo pair straight from the GPU into the acquired layer image, in one copy. False when
+     * the pair is no longer kept: the caller uploads its CPU image instead. */
+    @UsedByGodot fun copy_photo_pair_to_layer(slot: Int, token: Int): Boolean = runCatching {
+        val texture = RenderBridgeNative.photoPairBegin(token)
+        if (texture == 0) return@runCatching false
+        try { VideoLayerNative.copyTexture(slot, texture) } finally { RenderBridgeNative.photoPairEnd(token) }
+    }.getOrDefault(false)
     /** Picture quality mode for a software-decoded frame: see [VideoLayerNative.enhanceTexture]. An empty
      * [grade] leaves the colours as they are. */
-    @UsedByGodot fun enhance_layer_texture(slot: Int, texture: Int, sourceWidth: Int, sourceHeight: Int, sharpen: Float, grade: FloatArray,
-                                           denoiseStep: Float, denoiseTolerance: Float): Boolean =
-        runCatching { VideoLayerNative.enhanceTexture(slot, texture, sourceWidth, sourceHeight, sharpen, grade.takeIf { it.size >= 11 },
-            denoiseStep, denoiseTolerance) }.getOrDefault(false)
+    @UsedByGodot fun enhance_layer_texture(slot: Int, texture: Int, sourceWidth: Int, sourceHeight: Int, eyesAcross: Int, eyesDown: Int,
+                                           sharpen: Float, grade: FloatArray, denoiseStep: Float, denoiseTolerance: Float): Boolean =
+        runCatching { VideoLayerNative.enhanceTexture(slot, texture, sourceWidth, sourceHeight, eyesAcross, eyesDown, sharpen,
+            grade.takeIf { it.size >= 11 }, denoiseStep, denoiseTolerance) }.getOrDefault(false)
     @UsedByGodot fun video_layer_limits(): String = runCatching { VideoLayerNative.compositorLimits() }.getOrDefault("0 0 0")
     @UsedByGodot fun pip_compositor_metrics(): String = runCatching { VideoLayerNative.pipMetrics() }.getOrDefault("0 0 0 0 0")
     @UsedByGodot fun pip_compositor_samples(request: Boolean): String =
@@ -875,9 +926,10 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         runCatching { VideoLayerNative.remapFisheye(slot, texture, external, params) }.getOrDefault(false)
     /** Picture quality mode for a frame shown in the eye buffers: see [VideoLayerNative.enhanceFrameTexture]. */
     @UsedByGodot fun enhance_frame_texture(texture: Int, external: Boolean, sourceWidth: Int, sourceHeight: Int, scaleX: Float, scaleY: Float,
-                                           width: Int, height: Int, sharpen: Float, denoiseStep: Float, denoiseTolerance: Float): Int =
+                                           width: Int, height: Int, eyesAcross: Int, eyesDown: Int, sharpen: Float, denoiseStep: Float,
+                                           denoiseTolerance: Float): Int =
         runCatching { VideoLayerNative.enhanceFrameTexture(texture, external, sourceWidth, sourceHeight, scaleX, scaleY, width, height,
-            sharpen, denoiseStep, denoiseTolerance) }.getOrDefault(0)
+            eyesAcross, eyesDown, sharpen, denoiseStep, denoiseTolerance) }.getOrDefault(0)
     /** The fisheye remap with picture quality mode: see [VideoLayerNative.enhanceFisheye]. */
     @UsedByGodot fun enhance_layer_fisheye(slot: Int, texture: Int, external: Boolean, params: FloatArray, look: FloatArray): Boolean =
         runCatching { VideoLayerNative.enhanceFisheye(slot, texture, external, params, look) }.getOrDefault(false)
@@ -899,6 +951,11 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         runCatching { VideoLayerNative.releaseImage(slot, mipmaps) }.getOrDefault(false)
     @UsedByGodot fun video_layer_color_scale_bias(): Boolean = runCatching { VideoLayerNative.colorScaleBias() }.getOrDefault(false)
     @UsedByGodot fun capture_probe_start() { activity?.let { CaptureProbe.install(it) } }
+    /** 1 when Godot's GL context lists the extension, 0 when not, -1 before the context was seen. */
+    @UsedByGodot fun gl_extension(name: String): Int = runCatching {
+        val extensions = JSONObject(graphicsSnapshot).optJSONArray("extensions") ?: return -1
+        if ((0 until extensions.length()).any { extensions.optString(it) == name }) 1 else 0
+    }.getOrDefault(-1)
     @UsedByGodot fun video_layer_qiyu_passthrough(): Boolean = runCatching { VideoLayerNative.qiyuPassthrough() }.getOrDefault(false)
     @UsedByGodot fun video_layer_qiyu_passthrough_layer(enabled: Boolean): Long =
         runCatching { VideoLayerNative.qiyuPassthroughLayer(enabled) }.getOrDefault(0L)
@@ -1172,6 +1229,6 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         webBrowser.close()
         WebBrowserDepthBridge.closeAll()
         activity?.let { ExternalInputProbe.close(it); CaptureProbe.close(it) }
-        if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); airplayReceiver.close(); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); sceneFiles.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); backgroundImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
+        if (closed.compareAndSet(false, true)) { localThumbnails.close(); dlna_receiver_enable(false); airplayReceiver.close(); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); sceneFiles.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); backgroundImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

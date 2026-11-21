@@ -226,6 +226,7 @@ internal object CloudLibrary {
         var rawIds = emptyList<String>()
         var actualOrder = order
         var provider = ""
+        var freshness = ListingFreshness.UNKNOWN
         if (path.isEmpty() || path == "/") {
             val accounts = accounts()
             for (i in 0 until accounts.length()) {
@@ -247,6 +248,7 @@ internal object CloudLibrary {
             pageSize = page.pageSize
             rawCount = page.rawCount
             rawIds = page.rawIds
+            freshness = page.freshness
             synchronized(this) {
                 if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
                 if (Thread.currentThread().isInterrupted || (http as? CloudCancellation)?.cancelled == true) throw CloudFailure()
@@ -259,6 +261,9 @@ internal object CloudLibrary {
         }
         JSONObject().put("path", path).put("offset", offset).put("order", actualOrder).put("order_fallback", actualOrder != order).put("next_offset", nextOffset)
             .put("total", total).put("page_size", pageSize).put("raw_count", rawCount).put("raw_ids", JSONArray(rawIds))
+            .put("freshness", freshness.wire)
+            .put("complete", freshness == ListingFreshness.FRESH && !subtitlesOnly &&
+                offset == 0 && nextOffset < 0 && (total < 0 || rawCount == total))
             .put("direct_jump", CloudPaging.direct(provider)).put("entries", entries)
             .apply { if (provider.isNotEmpty()) put("search_scopes", searchScopes(provider)).put("sort_orders", sortOrders(provider)) }
     }

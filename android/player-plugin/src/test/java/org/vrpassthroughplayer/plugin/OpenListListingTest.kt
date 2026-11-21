@@ -7,6 +7,24 @@ import org.junit.Test
 
 class OpenListListingTest {
     private val mount = "/12345678-1234-1234-1234-123456789abc"
+    @Test fun directoryFreshnessIsReturnedByBothRoutesAndNeverInferredFromRefresh() {
+        for (provider in listOf(CloudDrive.OPEN115, CloudDrive.WEBDAV)) {
+            var marker: Any? = true
+            val client = OpenListBackend.Client(mount, provider) { _, _, _ ->
+                val data = JSONObject().put("content", JSONArray()).put("total", 0).put("next_offset", -1)
+                if (provider == CloudDrive.OPEN115) data.put("paging", JSONObject().put("cache_hit", marker))
+                else data.put("cache_hit", marker)
+                JSONObject().put("data", data)
+            }
+            assertEquals(ListingFreshness.CACHED, client.page("/", 0, true).freshness)
+            marker = false
+            assertEquals(ListingFreshness.FRESH, client.page("/", 0, false).freshness)
+            marker = null
+            assertEquals(ListingFreshness.UNKNOWN, client.page("/", 0, true).freshness)
+            marker = "false"
+            assertEquals(ListingFreshness.UNKNOWN, client.page("/", 0, true).freshness)
+        }
+    }
     @Test fun known115FolderIdReachesFirstPageNextPageSortAndRefreshWithoutStat() {
         val calls = ArrayList<Pair<Int, Boolean>>()
         val client = OpenListBackend.Client(mount, CloudDrive.OPEN115, "9007199254740993") { _, route, body ->

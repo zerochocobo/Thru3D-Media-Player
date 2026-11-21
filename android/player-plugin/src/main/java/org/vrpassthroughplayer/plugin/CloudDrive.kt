@@ -6,9 +6,22 @@ import java.net.URI
 
 internal class CloudFile(val name: String, val folder: Boolean, val size: Long, val id: String, val pickCode: String = "", val modified: Long = -1, val objectId: String = id, val canDelete: Boolean = false, val canRename: Boolean = false)
 internal class CloudLink(val url: String, val headers: (URI) -> Map<String, String>)
-internal class CloudPage(val files: List<CloudFile>, val nextOffset: Int, val total: Int = -1,
+internal data class CloudPage(val files: List<CloudFile>, val nextOffset: Int, val total: Int = -1,
     val pageSize: Int = CloudDrive.PAGE_SIZE, val rawCount: Int = files.size,
-    val rawIds: List<String> = files.map { it.objectId.ifEmpty { it.id } })
+    val rawIds: List<String> = files.map { it.objectId.ifEmpty { it.id } },
+    val freshness: ListingFreshness = ListingFreshness.UNKNOWN)
+
+internal enum class ListingFreshness(val wire: String) {
+    FRESH("fresh"), CACHED("cached"), UNKNOWN("unknown");
+
+    companion object {
+        fun fromCacheHit(value: Any?): ListingFreshness = when (value) {
+            true -> CACHED
+            false -> FRESH
+            else -> UNKNOWN
+        }
+    }
+}
 
 /** Read-only legacy 115 adapter. Baidu accounts use OpenList OAuth exclusively. */
 internal class CloudDrive(val provider: String, private val cookie: String, private val http: CloudTransport = CloudHttp,
@@ -36,7 +49,7 @@ internal class CloudDrive(val provider: String, private val cookie: String, priv
         require(order == "source" || order in CloudSortedPages.ORDERS) { "directory.request: invalid sort order" }
         if (Thread.currentThread().isInterrupted) throw CloudFailure()
         if (refresh) metadata.invalidate(path)
-        metadata.page(path, offset, order)?.let { return it }
+        metadata.page(path, offset, order)?.let { return it.copy(freshness = ListingFreshness.CACHED) }
         val page = page115(path, offset, order)
         val keys = page.files.map { (if (it.folder) "d" else "f") + it.id }
         if (keys.toSet().size != keys.size) throw CloudFailure()
@@ -74,7 +87,8 @@ internal class CloudDrive(val provider: String, private val cookie: String, priv
         val count = json.getInt("count")
         if (items.length() == 0 && offset < count) throw CloudFailure()
         if (count < 0 || offset > count || next > count) throw CloudFailure(detail = "directory.page: inconsistent total or offset")
-        return CloudPage(result, if (next < count) next else -1, count)
+        return CloudPage(result, if (next < count) next else -1, count,
+            rawCount = items.length(), freshness = ListingFreshness.FRESH)
     }
     private fun visit(path: String, accept: (List<CloudFile>) -> Boolean) {
         var offset = 0

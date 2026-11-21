@@ -52,6 +52,9 @@ var enabled := false
 ## Halo spread, 0 (a tight ring) to 1 (the whole room).
 var reach := Model.DEFAULT_REACH
 var brightness := Model.DEFAULT_BRIGHTNESS
+## The picture's outer band dissolves into the halo, leaving no border between them, at the cost
+## of the band itself: the glow covers it. Off, the halo stays behind a hard-edged picture.
+var soft_edge := false
 var samples := 0
 var failures := 0
 var path := ""
@@ -266,7 +269,7 @@ func _place(frame: Dictionary, floor_y: float) -> void:
 	# A curved screen does not have the flat rectangle the halo is shaped around.
 	var flat := bool(frame.flat)
 	_glow.visible = flat and debug_parts.glow
-	_edge.visible = flat and bool(frame.get("edge", true)) and debug_parts.edge
+	_edge.visible = flat and soft_edge and bool(frame.get("edge", true)) and debug_parts.edge
 	if flat:
 		var margin := Model.halo_margin(reach)
 		var profile := Model.halo_profile(reach)
@@ -289,7 +292,7 @@ func _place(frame: Dictionary, floor_y: float) -> void:
 			material.set_shader_parameter("peak", profile.x)
 			material.set_shader_parameter("width", profile.y)
 			material.set_shader_parameter("power", Model.HALO_POWER)
-			material.set_shader_parameter("band", Model.EDGE_BAND)
+			material.set_shader_parameter("band", Model.EDGE_BAND if _edge.visible else 0.0)
 			material.set_shader_parameter("extent", margin)
 			material.set_shader_parameter("display_referred", bool(debug_look.get("encode", true)))
 			material.set_shader_parameter("dimming", float(debug_look.get("dimming", 1.0 if tint_room else SCENERY_DIMMING)))

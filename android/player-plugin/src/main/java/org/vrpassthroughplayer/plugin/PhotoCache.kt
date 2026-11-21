@@ -7,14 +7,21 @@ import java.nio.file.LinkOption.NOFOLLOW_LINKS
 /** Disposable photo/archive caches; never model programs, media originals or credentials. */
 internal object PhotoCache {
     val lock = Any()
-    private val names = listOf("photos", "photo-preloads", "photo-gallery", "pip-images", "comic-pages", "pdf-pages", "pdf-sources")
+    private val photoNames = listOf("photos", "photo-preloads", "photo-gallery", "pip-images")
+    private val readingNames = listOf("comic-pages", "pdf-pages", "pdf-sources")
     // Kept between runs: the user's cache cleanup and its size count include them, the cleanup at start does not.
     private val lasting = listOf(PhotoDepthStore.NAME)
 
-    fun usage(cache: File): Pair<Long, Long> = synchronized(lock) {
+    private fun directories(category: String, leftovers: Boolean = false): List<String> = when (category) {
+        "photo" -> photoNames + lasting
+        "reading" -> readingNames
+        else -> photoNames + readingNames + if (leftovers) emptyList() else lasting
+    }
+
+    fun usage(cache: File, category: String = ""): Pair<Long, Long> = synchronized(lock) {
         var count = 0L
         var bytes = 0L
-        for (name in names + lasting) {
+        for (name in directories(category)) {
             val root = File(cache, name).toPath()
             if (!Files.isDirectory(root, NOFOLLOW_LINKS)) continue
             Files.walk(root).use { paths -> paths.forEach { path ->
@@ -27,9 +34,9 @@ internal object PhotoCache {
         count to bytes
     }
 
-    fun clear(cache: File, protected: Set<File>, leftovers: Boolean = false) = synchronized(lock) {
+    fun clear(cache: File, protected: Set<File>, leftovers: Boolean = false, category: String = "") = synchronized(lock) {
         val active = protected.map { it.absoluteFile.toPath().normalize() }.toSet()
-        for (name in if (leftovers) names else names + lasting) {
+        for (name in directories(category, leftovers)) {
             val root = File(cache, name).absoluteFile.toPath().normalize()
             // An archive owns its original cache and extracted pages as one live session.
             if (root in active) continue

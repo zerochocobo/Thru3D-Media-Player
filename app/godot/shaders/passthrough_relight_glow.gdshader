@@ -20,6 +20,7 @@ uniform float strength = 1.0;
 // Screen heights past the picture where the mesh ends; the glow fades to nothing before it.
 uniform float extent = 3.0;
 // The picture's outer band that dissolves into the halo, and the radius of its corners.
+// Zero while the picture keeps its hard edge: the halo then follows the square corners.
 uniform float band = 0.1;
 // Bright colours are held back: colour / (1 + hold * luminance). Least in the picture's own
 // band, more at its edge, and most far from it, where a wide glow would wash the room out;
@@ -29,9 +30,9 @@ uniform float hold_near = 1.3;
 uniform float hold_far = 2.9;
 uniform float hold_span = 0.08;
 uniform float edge_gain = 1.3;
-// 0: the halo outside the picture. 1: the edge dissolve inside it. The picture is an opaque
-// compositor layer and cannot fade itself, so its outer band is covered by the glow colour
-// instead, meeting the halo without a seam.
+// 0: the halo outside the picture. 1: the edge dissolve inside it, drawn only when the viewer
+// asks for a soft edge. The picture is an opaque compositor layer and cannot fade itself, so
+// its outer band is covered by the glow colour instead, meeting the halo without a seam.
 uniform int part = 0;
 // The halo's curves give display-referred values, so the colour is sRGB-encoded on every
 // background: stored as it is (false) the halo shows at about a fifth of its brightness.

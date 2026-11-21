@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class MediaServerClientTest {
     internal data class Reply(val code: Int = 200, val headers: String = "", val body: ByteArray)
     internal class Fixture(val handle: (String, Map<String, String>, String) -> Reply) : Closeable {
-        private val socket = ServerSocket(0)
+        private val socket = ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
         val url = "http://127.0.0.1:${socket.localPort}"
         private val pool = Executors.newCachedThreadPool { Thread(it).apply { isDaemon = true } }
         init { pool.execute { while (!socket.isClosed) {

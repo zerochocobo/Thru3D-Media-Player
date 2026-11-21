@@ -116,6 +116,12 @@ func _run() -> void:
 	check(not menu._failure_open, "Starting another source closes the previous failure dialog")
 	video._on_error(20, JSON.stringify(original))
 	check(video.media.error_report.is_empty(), "A late previous-source failure cannot replace current diagnostics")
+	var unavailable := {"code": "MPV_FRAME_PIPELINE_FAILED", "reason": "http_error", "stage": "opening",
+		"http_status": 503, "mpv_code": -13, "detail": "MPV playback: loading failed",
+		"native_detail": "MPV playback: loading failed"}
+	video._on_error(21, JSON.stringify(unavailable))
+	check(menu._info.text.contains(I18n.t(Errors.REASONS.http_error)), "An HTTP 503 shows the media server failure")
+	check(Errors.details(video.media.error_report).contains("HTTP 503"), "The failed open retains HTTP 503 in its details")
 	for text in ["https://user:pass@nas/video?token=secret", "smb://user:pass@nas/folder/file", "Cookie: secret", "Authorization: Bearer secret", "password=secret", "{\"token\":\"secret\"}"]:
 		check(not Errors.details({"message": text}).contains("secret"), "Details redact credentials: " + text.get_slice(":", 0))
 	check(not Errors.clean({"message": "https://nas/?token=private"}).message.contains("private"), "Saved and logged reports use the same redaction boundary")

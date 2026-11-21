@@ -53,7 +53,7 @@ void fragment() {
             portrait_color(clamp(color_uv+vec2(0.0,step_uv.y),half_pixel,vec2(1.0)-half_pixel)),
             portrait_color(clamp(color_uv-vec2(0.0,step_uv.y),half_pixel,vec2(1.0)-half_pixel)));
     }
-    ALBEDO = color_grade(rgb);
+    ALBEDO = color_grade(rgb, FRAGCOORD.xy);
     ALPHA = portrait_outside(p) ? 0.0 : clamp((mask-alpha_edge.x) / max(0.001,alpha_edge.y-alpha_edge.x),0.0,1.0);
     // Soften a person clipped by the source frame, independently of the moving inference ROI.
     vec2 source_edge = min(raw, vec2(1.0)-raw);

@@ -73,6 +73,12 @@ const PHOTO_CACHE_ONE := 435
 const PHOTO_CACHE_TWO := 436
 const PHOTO_GROUND_VERTICAL_ON := 437
 const PHOTO_GROUND_VERTICAL_OFF := 439
+const PHOTO_DEPTH_MODE_BASE := 442 # + index in DEPTH_MODES
+const DEPTH_MODES := [
+	["progressive", "Fast, then fine", "Shows 3D right away, then switches to finer depth after a moment. The image shifts slightly when it switches."],
+	["quality", "Best quality", "Finest depth and edges. Each new image takes longer."],
+	["fast", "Fastest", "3D almost instantly. Edges are softer."],
+]
 const PHOTO_INSPECT := 402
 const PHOTO_RESET := 403
 const PHOTO_MINUS := 404
@@ -599,7 +605,8 @@ func _draw_panel() -> void:
 	var position_available: bool = _state.get("has_image", false) and int(_state.get("geometry", 0)) == 0 and not _state.get("native_stereo", false) and not _state.get("portrait_requested", false) and not _state.get("stereo", false)
 	var extra := 0.14 if position_available else 0.0
 	const GRADE_ROW := 0.11
-	_set_backdrop(Vector2(1.16, 1.205 + extra + GRADE_ROW), Vector2(0, -0.3275 - (extra + GRADE_ROW) / 2))
+	const DEPTH_MODE_ROW := 0.11
+	_set_backdrop(Vector2(1.16, 1.205 + extra + GRADE_ROW + DEPTH_MODE_ROW), Vector2(0, -0.3275 - (extra + GRADE_ROW + DEPTH_MODE_ROW) / 2))
 	_button(10, "", Vector2(-0.48, 0.2), Vector2(0.085, 0.065), true, "up")
 	_label(I18n.t("Images"), Vector3(0, 0.2, 0.004), 21)
 	_button(PHOTO_STRENGTH, I18n.t("3D depth") + "  " + _depth_caption(), Vector2(-0.26, 0.035), Vector2(0.49, 0.105), _can_depth(), "depth")
@@ -622,6 +629,14 @@ func _draw_panel() -> void:
 		_button(target, I18n.t("1 each" if count == 1 else "2 each"), Vector2(0.08 + (count - 1) * 0.28, -0.405 - extra), Vector2(0.25, 0.075))
 		if int(_state.get("cache_each", 1)) == count: _buttons.back().base_color = SELECTED
 		_tips[target] = I18n.t("Upper limit per side. Actual 3D and portrait caching adapts to memory and rendering headroom.")
+	_label(I18n.t("3D conversion"), Vector3(-0.385, -0.515 - extra, 0.004), TEXT_AUX)
+	for i in DEPTH_MODES.size():
+		var mode: Array = DEPTH_MODES[i]
+		_button(PHOTO_DEPTH_MODE_BASE + i, I18n.t(mode[1]), Vector2(-0.06 + i * 0.245, -0.515 - extra), Vector2(0.23, 0.075))
+		set_label_size(_buttons.back().node.get_child(0), 17)
+		if str(_state.get("depth_mode", "progressive")) == mode[0]: _buttons.back().base_color = SELECTED
+		_tips[PHOTO_DEPTH_MODE_BASE + i] = I18n.t(mode[2])
+	extra += DEPTH_MODE_ROW
 	var vertical: bool = _state.get("ground_vertical", false)
 	_label(I18n.t("Vertical to ground"), Vector3(-0.29, -0.515 - extra, 0.004), TEXT_AUX)
 	for enabled in [true, false]:
@@ -811,6 +826,8 @@ func _activate(target: int) -> void:
 		return
 	if target in [PHOTO_CACHE_ONE, PHOTO_CACHE_TWO]:
 		setting_requested.emit("photo_cache_each", 1 if target == PHOTO_CACHE_ONE else 2); refresh(); return
+	if target >= PHOTO_DEPTH_MODE_BASE and target < PHOTO_DEPTH_MODE_BASE + DEPTH_MODES.size():
+		setting_requested.emit("photo_depth_mode", DEPTH_MODES[target - PHOTO_DEPTH_MODE_BASE][0]); refresh(); return
 	if target==PHOTO_SPATIAL:
 		var operation:="photo_spatial_on" if _depth_open else "photo_spatial"
 		_mode_open=false; action_requested.emit(operation); refresh(); return

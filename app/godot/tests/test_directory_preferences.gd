@@ -56,7 +56,9 @@ func run() -> void:
 	menu.file_actions.choose_order("size_desc", false)
 	check(menu.rows.back().has("container"), "Mixed size treats folder size as unknown instead of recursive size")
 	menu.section = Menu.Section.SETTINGS; menu.tab = Menu.GENERAL_TAB; menu.refresh()
-	check(menu.rows.any(func(row): return row.get("key") == "library_default_order") and menu.rows.any(func(row): return row.get("key") == "library_default_folders_first"), "General settings expose both global defaults")
+	check(not menu.rows.any(func(row): return row.get("key") == "library_default_order"), "Browsing preferences start collapsed")
+	menu._choose(menu.rows.filter(func(row): return row.get("general_settings_group") == "files")[0])
+	check(menu.rows.any(func(row): return row.get("key") == "library_default_order") and menu.rows.any(func(row): return row.get("key") == "library_default_folders_first"), "File browsing group exposes both global defaults")
 	# Cloud order is a directory-wide protocol value, never a per-page client sort.
 	var platform := preload("res://tests/test_library_file_actions.gd").Platform.new()
 	menu.attach_platform(platform); menu.section = Menu.Section.CLOUD

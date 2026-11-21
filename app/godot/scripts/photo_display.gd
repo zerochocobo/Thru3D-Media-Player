@@ -138,6 +138,18 @@ var _depth_thread: Thread
 var _depth_job := {}
 var _depth_queue: Array[Dictionary] = []
 var _depth_rebuild_seconds := 0.0
+## Photo 3D conversion: "progressive" shows the fast model's 3D first and asks for the quality map once
+## the picture has stayed on screen REFINE_DWELL_MS; "quality" and "fast" use one model. A picture
+## refined (or converted in quality mode) earlier keeps its quality map in every mode.
+const DEPTH_MODES := ["progressive", "quality", "fast"]
+const REFINE_DWELL_MS := 800
+const REFINE_BLEND_SECONDS := 0.45
+var depth_mode := "progressive"
+var _refine_request := 0
+var _refine_due := {"id":0, "at":0}
+var _blend_previous: Texture2D
+var _blend_request := 0
+var _blend := 1.0
 var _depth_rect := Vector4(0, 0, 1, 1)
 var _texture: Texture2D
 var _display_proxy: Image
@@ -233,6 +245,7 @@ func restore_view_settings(settings: ConfigFile) -> void:
 	autoplay.set_effect(settings.get_value("photo", "autoplay_effect", "slide"))
 	ground_vertical = bool(settings.get_value("photo_screen", "ground_vertical", false))
 	cache_each = clampi(int(settings.get_value("photo", "cache_each", 1)), 1, 2)
+	set_depth_mode(str(settings.get_value("photo", "depth_mode", "progressive")))
 	magazine.right_to_left = bool(settings.get_value("photo_screen", "magazine_rtl", false))
 	reading_layout = int(settings.get_value("photo_screen", "reading_layout", -1))
 	if reading_layout not in [Gallery.Layout.SINGLE, Gallery.Layout.MAGAZINE]: reading_layout = -1
@@ -431,6 +444,8 @@ func _ready() -> void:
 		if platform.has_signal("photo_portrait"): platform.connect("photo_portrait", _on_portrait)
 		if platform.has_signal("photo_preload_portrait"): platform.connect("photo_preload_portrait", _on_prefetch_portrait)
 		if platform.has_signal("photo_preload_depth"): platform.connect("photo_preload_depth", _on_prefetch_depth)
+		if platform.has_signal("photo_depth_refined"): platform.connect("photo_depth_refined", _on_depth_refined)
+		_sync_depth_mode()
 	_spatial=preload("res://scripts/photo_spatial_scene.gd").new()
 	add_child(_spatial)
 	_spatial.completed.connect(_spatial_completed)
@@ -997,6 +1012,22 @@ func preview_navigation(offset: float) -> void:
 	surface.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, _placeholder_rotation if surface == _placeholder else deg_to_rad(screen_rotation)), Vector3.ZERO)
 	surface.position += flat_pose.basis * Vector3(_swipe_offset, 0, 0)
 
+## Photos with EXIF quarter turns from this size on are decoded upright by the plugin: Godot's in-place
+## rotate_90 follows permutation cycles across the buffer (1.47 s of a 2 s decode for 22 MP on Quest 3).
+const UPRIGHT_PIXELS := 2 * 1024 * 1024
+
+## The picture at [path] decoded by the plugin with orientation applied ([size] upright), or null.
+static func _decode_upright(path: String, orientation: int, size: Vector2i) -> Image:
+	if not Engine.has_singleton("QuestPlayer"): return null
+	var plugin := Engine.get_singleton("QuestPlayer")
+	if not Methods.supports(plugin, "decode_upright_raw"): return null
+	var source := ProjectSettings.globalize_path(path)
+	var output := source.get_base_dir().path_join("upright-%d.t3di" % Time.get_ticks_usec())
+	if not bool(plugin.decode_upright_raw(source, orientation, output)): return null
+	var image: Image = preload("res://scripts/raw_image.gd").read(output)
+	DirAccess.remove_absolute(output)
+	return image if image != null and image.get_size() == size else null
+
 static func _decode(job: Dictionary) -> Dictionary:
 	var decode_started := Time.get_ticks_usec()
 	var spread_encode_ms := 0.0
@@ -1045,11 +1076,19 @@ static func _decode(job: Dictionary) -> Dictionary:
 			if not raw or file.get_length() != int(header.width) * int(header.height) * 4: return {"error": "Image unavailable"}
 			file.seek(0)
 			image = Image.create_from_data(int(header.width), int(header.height), false, Image.FORMAT_RGBA8, file.get_buffer(file.get_length()))
-	else:
-		var bytes := FileAccess.get_file_as_bytes(path)
-		var code := image.load_jpg_from_buffer(bytes) if header.codec == "jpg" else (image.load_png_from_buffer(bytes) if header.codec == "png" else image.load_webp_from_buffer(bytes))
-		if code != OK or image.is_empty(): return {"error": "Image unavailable"}
-	Info.orient(image, int(info.get("orientation", 1)))
+	var orientation := int(info.get("orientation", 1))
+	var upright := false
+	if not raw and header.codec != "rgba":
+		if orientation >= 5 and orientation <= 8 and int(header.width) * int(header.height) >= UPRIGHT_PIXELS:
+			var turned := _decode_upright(path, orientation, Vector2i(int(header.height), int(header.width)))
+			if turned: image = turned; upright = true
+		if not upright:
+			var bytes := FileAccess.get_file_as_bytes(path)
+			var code := image.load_jpg_from_buffer(bytes) if header.codec == "jpg" else (image.load_png_from_buffer(bytes) if header.codec == "png" else image.load_webp_from_buffer(bytes))
+			if code != OK or image.is_empty(): return {"error": "Image unavailable"}
+	var steps := {"decode": Time.get_ticks_usec() - decode_started, "upright": upright}
+	if not upright: Info.orient(image, orientation)
+	steps.orient = Time.get_ticks_usec() - decode_started
 	DiagnosticLog.trail("photo.image.done", "idx=%d" % int(job.get("index", -1)))
 	var thumbnail: Image = null
 	# PDF directory previews must not generate thumbnails from rendered pages.
@@ -1083,7 +1122,9 @@ static func _decode(job: Dictionary) -> Dictionary:
 			spread_encode_ms = (Time.get_ticks_usec() - encode_started) / 1000.0
 	# RGBA here, off the render thread: the picture layer copies RGBA bands on the GPU (RGB textures
 	# cannot be copied into its RGBA swapchain), and RGBA textures upload without conversion.
+	steps.thumbnail = Time.get_ticks_usec() - decode_started
 	if image.get_format() != Image.FORMAT_RGBA8: image.convert(Image.FORMAT_RGBA8)
+	steps.rgba = Time.get_ticks_usec() - decode_started
 	# A small display proxy: the picture layer shows the full image, the eye buffers only need this
 	# for slides and the first frames (an upload a tenth of the full one).
 	var proxy: Image = null
@@ -1092,8 +1133,11 @@ static func _decode(job: Dictionary) -> Dictionary:
 		var scale := float(PROXY_SIZE) / maxi(image.get_width(), image.get_height())
 		proxy.resize(maxi(1, int(image.get_width() * scale)), maxi(1, int(image.get_height() * scale)), Image.INTERPOLATE_CUBIC)
 		proxy.generate_mipmaps()
+	steps.proxy = Time.get_ticks_usec() - decode_started
 	# Mipmaps improve stability when the source is much larger than its angular screen size.
 	image.generate_mipmaps()
+	steps.mipmaps = Time.get_ticks_usec() - decode_started
+	print("[PHOTO_DECODE] %dx%d %s" % [image.get_width(), image.get_height(), JSON.stringify(steps)])
 	# The library picture encoded here too: the render thread only writes the file.
 	var result := {"image": image, "proxy": proxy, "info": info,
 		"source_info": source_info, "magazine": spread, "comic_rects": comic_rects,
@@ -1122,6 +1166,8 @@ func _process(delta: float) -> void:
 	_process_layer()
 	if not _directory_result.is_empty() and not loading and not _thread: _replace_directory()
 	_process_depth_jobs()
+	_pump_refine()
+	_process_depth_blend(delta)
 	if _depth_rebuild_seconds > 0:
 		_depth_rebuild_seconds = maxf(0, _depth_rebuild_seconds - delta)
 		if _depth_rebuild_seconds == 0 and depth_requested:
@@ -1140,6 +1186,7 @@ func _process(delta: float) -> void:
 			if int(_decoding.id) == _request and loading and result.has("image"):
 				var job: Dictionary = _next_decode.duplicate()
 				job.merge({"id": _request, "serial": _serial, "index": pending_index, "direction": _requested_direction}, true)
+				job["thumbnail_generation"] = _decoding.get("thumbnail_generation", -1)
 				_next_decode = {}
 				_prepare_display(result, job)
 			elif _decoding.get("render_current", false) and int(_decoding.id) == _display_request and not loading and int(_decoding.epoch) == _cache_epoch:
@@ -1156,9 +1203,10 @@ func _process(delta: float) -> void:
 						queue[int(_decoding.index)]["photo_info"] = result.info
 					if result.has("image") and result.image.get_data_size() <= int(_decoding.get("cache_image_limit", CACHE_IMAGE_BYTES)): entry["result"] = result
 				var prefetched_uri := str(queue[int(_decoding.index)].uri)
-				if result.has("thumbnail_jpg") and Thumbnails.store_encoded(prefetched_uri, result.thumbnail_jpg):
+				var current_cache: bool = _decoding.get("thumbnail_generation", -1) == Thumbnails.generation
+				if current_cache and result.has("thumbnail_jpg") and Thumbnails.store_encoded(prefetched_uri, result.thumbnail_jpg, true):
 					result["thumbnail_cached"] = true
-				elif not result.has("thumbnail_jpg") and result.has("thumbnail") and Thumbnails.store(prefetched_uri, result.thumbnail):
+				elif current_cache and not result.has("thumbnail_jpg") and result.has("thumbnail") and Thumbnails.store(prefetched_uri, result.thumbnail, true):
 					result["thumbnail_cached"] = true
 		elif _decoding.serial == _serial and _decoding.id == _request:
 			_prepare_display(result, _decoding)
@@ -1173,6 +1221,7 @@ func _process(delta: float) -> void:
 	if not _thread and (not _next_decode.is_empty() or background_ready):
 		var foreground := not _next_decode.is_empty()
 		_decoding = _next_decode if foreground else _prefetch_decode
+		_decoding["thumbnail_generation"] = Thumbnails.generation
 		if foreground: _decoding["metadata_ready"] = _on_metadata
 		if foreground: _next_decode = {}
 		else: _prefetch_decode = {}
@@ -1463,6 +1512,65 @@ func _prepare_cached_effect(target: int, neighbors: Array[int]) -> bool:
 		_prefetch_depth_request = 0
 		resource_budget.defer_work()
 	return true
+
+func set_depth_mode(value: String) -> bool:
+	if value not in DEPTH_MODES: return false
+	depth_mode = value
+	_sync_depth_mode()
+	_refine_due = {"id":0, "at":0}
+	changed.emit()
+	return true
+
+func _sync_depth_mode() -> void:
+	if Methods.supports(platform, "set_photo_depth_mode"): platform.set_photo_depth_mode(depth_mode)
+
+## The shown 3D came from the fast model: after the dwell (none in quality mode) ask once for the
+## quality map. Turning pages before then never starts the slower inference.
+func _pump_refine() -> void:
+	var id := _display_request
+	if depth_mode == "fast" or id <= 0 or loading or not depth_enabled or _depth_busy or _depth_rebuild_seconds > 0.0 \
+		or portrait_requested or spatial_requested or animation.depth_mode or str(_display_depth_data.get("model", "")) != "fast" \
+		or int(_display_depth_data.get("source_id", 0)) != id or _refine_request == id or not Methods.supports(platform, "refine_photo_3d"):
+		return
+	var now := Time.get_ticks_msec()
+	if int(_refine_due.id) != id:
+		_refine_due = {"id":id, "at":now + (0 if depth_mode == "quality" else REFINE_DWELL_MS)}
+	if now < int(_refine_due.at): return
+	_refine_request = id
+	if not bool(platform.refine_photo_3d(id, depth_strength, DepthPosition.convergence(depth_position), _stereo_rotation(_depth_index(id)))):
+		DiagnosticLog.record("photo_depth_refine_rejected", {"request":id})
+
+func _on_depth_refined(id: int, payload: String) -> void:
+	if id != _display_request or id != _refine_request: return
+	var info: Variant = JSON.parse_string(payload)
+	if not info is Dictionary or info.get("state") != "ready" or not info.has("stereo_path"):
+		DiagnosticLog.record("photo_depth_refine_failed", {"request":id}); return
+	if int(info.get("stereo_rotation", 0)) != _stereo_rotation(_depth_index(id)): return
+	_depth_queue = _depth_queue.filter(func(job): return int(job.id) != id or not job.get("refine", false))
+	_depth_queue.append({"id":id, "payload":payload, "background":false, "serial":_serial, "rotation":int(info.get("stereo_rotation", 0)), "refine":true})
+
+## The quality pair replaces the fast one under a short crossfade, only while that picture, strength
+## and position still show the fast 3D. Otherwise its map waits on disk for the next conversion.
+func _finish_refined(id: int, data: Dictionary) -> void:
+	if data.is_empty() or id != _display_request or loading or str(_display_depth_data.get("model", "")) != "fast" or portrait_requested \
+		or not depth_enabled or not _rotation_matches(data, _depth_index(id)) or not is_equal_approx(float(data.get("strength", -1)), depth_strength) \
+		or not is_equal_approx(float(data.get("convergence", 0.35)), DepthPosition.convergence(depth_position)): return
+	data["source_id"] = id
+	var previous := _stereo_texture
+	_commit_depth_data(data)
+	if previous != null and _stereo_texture != null and previous.get_size() == _stereo_texture.get_size():
+		_blend_previous = previous; _blend_request = id; _blend = 0.0
+	DiagnosticLog.record("photo_depth_refined", {"request":id, "blend":_blend < 1.0})
+	_apply_geometry(); changed.emit()
+
+func _process_depth_blend(delta: float) -> void:
+	if _blend_previous == null: return
+	_blend = 1.0 if _blend_request != _display_request or _stereo_texture == null else minf(1.0, _blend + delta / REFINE_BLEND_SECONDS)
+	if _blend >= 1.0: _blend_previous = null
+	for target in [material, _detail_material]:
+		if target == null: continue
+		target.set_shader_parameter("stereo_previous", _blend_previous)
+		target.set_shader_parameter("stereo_blend", _blend if _blend_previous != null else 1.0)
 
 func set_cache_each(value: int) -> void:
 	cache_each = clampi(value, 1, 2)
@@ -1788,7 +1896,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	elif auto_depth and geometry == 0 and not stereo_sbs and retained.is_empty(): set_depth(true)
 	mark = _mark("depth", mark)
 	var thumbnail_key := str(queue[index].get("thumbnail_key", local_uri)) if index >= 0 and index < queue.size() else local_uri
-	if result.has("thumbnail") and (not result.get("thumbnail_cached", false) or not Thumbnails.has(thumbnail_key)):
+	if result.has("thumbnail") and int(job.get("thumbnail_generation", Thumbnails.generation)) == Thumbnails.generation and not Thumbnails.has_played_picture(thumbnail_key):
 		var stored := Thumbnails.store_encoded(thumbnail_key, result.thumbnail_jpg) if result.has("thumbnail_jpg") \
 			else Thumbnails.store(thumbnail_key, result.thumbnail)
 		if stored: result["thumbnail_cached"] = true
@@ -1941,6 +2049,8 @@ func _apply_geometry() -> void:
 		target.set_shader_parameter("depth_shift_axis", Vector2(cos(angle), -sin(angle) * _size.x / maxf(_size.y, 1.0)) if animation.depth_mode else Vector2.RIGHT)
 		target.set_shader_parameter("photo_stereo", depth_enabled and not _rotation_preview and _stereo_texture != null and not stereo_sbs and geometry == Geometry.Geometry.FLAT)
 		target.set_shader_parameter("stereo_texture", _stereo_texture)
+		target.set_shader_parameter("stereo_previous", _blend_previous)
+		target.set_shader_parameter("stereo_blend", _blend if _blend_previous != null and _blend_request == _display_request else 1.0)
 		target.set_shader_parameter("portrait_enabled", portrait_enabled and not _rotation_preview)
 		target.set_shader_parameter("portrait_texture", _portrait_texture)
 		target.set_shader_parameter("generated_size", Vector2(_stereo_texture.get_width() / 2.0, _stereo_texture.get_height()) if _stereo_texture else Vector2.ONE)
@@ -2322,7 +2432,9 @@ func _process_depth_jobs() -> void:
 		var data: Dictionary = _depth_thread.wait_to_finish()
 		_depth_thread = null
 		var id := int(_depth_job.id)
-		if (bool(_depth_job.background) or int(_depth_job.serial) == _serial) \
+		if _depth_job.get("refine", false):
+			if int(_depth_job.serial) == _serial: _finish_refined(id, data)
+		elif (bool(_depth_job.background) or int(_depth_job.serial) == _serial) \
 			and int(_depth_job.get("rotation", 0)) == _stereo_rotation(_depth_index(id)): _finish_depth(id, data, bool(_depth_job.background))
 		_depth_job = {}
 		if _deferred_depth_clear_ids.erase(id) and (id != _display_request or not depth_requested): _discard_native_depth(id)
@@ -2389,6 +2501,8 @@ func _finish_depth(id: int, data: Dictionary, background: bool) -> void:
 	_apply_geometry(); changed.emit()
 
 func _commit_depth_data(data: Dictionary) -> void:
+	# A fresh fast result (another strength or position) replaced the one a refinement was asked for.
+	if str(data.get("model", "")) == "fast" and _refine_request == _display_request: _refine_request = 0
 	_display_depth_data = data.duplicate()
 	_display_depth_data["source_id"] = _display_request
 	if not _display_result.is_empty(): _display_result["depth_data"] = _display_depth_data
@@ -2421,7 +2535,8 @@ static func _read_depth(payload: String) -> Dictionary:
 	var bytes := FileAccess.get_file_as_bytes(str(result.path))
 	if bytes.size() != w * h * 4: return {}
 	var depth := Image.create_from_data(w, h, false, Image.FORMAT_RF, bytes)
-	var data := {"image": depth, "rect": Vector4(rect[0], rect[1], rect[2], rect[3]), "cache_bytes":int(result.get("cache_bytes", 0))}
+	var data := {"image": depth, "rect": Vector4(rect[0], rect[1], rect[2], rect[3]), "cache_bytes":int(result.get("cache_bytes", 0)),
+		"model":str(result.get("depth_model", "quality"))}
 	if result.has("stereo_path"):
 		if not (result.get("stereo_strength") is float or result.get("stereo_strength") is int): return {}
 		var strength := float(result.get("stereo_strength", -1))
@@ -2431,19 +2546,26 @@ static func _read_depth(payload: String) -> Dictionary:
 		if result.get("stereo_strategy", "") != "video_soft_shift_gpu" or not is_finite(strength) or strength < 0 or strength > 2 \
 			or sw < 2 or sw % 2 != 0 or sw > 8192 or sh < 1 or sh > 4096 or sw * sh > 16 * 1024 * 1024: return {}
 		var stereo := Image.new()
+		var started := Time.get_ticks_usec()
+		var read_us := 0
 		if str(result.stereo_path).get_extension() == "rgba":
 			# Raw RGBA rows straight from the GPU pair: no PNG encode on Android, no decode here.
 			var pixels := FileAccess.get_file_as_bytes(str(result.stereo_path))
 			if pixels.size() != sw * sh * 4: return {}
+			read_us = Time.get_ticks_usec() - started
 			stereo = Image.create_from_data(sw, sh, false, Image.FORMAT_RGBA8, pixels)
 		else:
 			var header := Info.read_header(str(result.stereo_path))
 			if header.is_empty() or int(header.width) != sw or int(header.height) != sh: return {}
 			if stereo.load_png_from_buffer(FileAccess.get_file_as_bytes(str(result.stereo_path))) != OK or stereo.get_size() != Vector2i(sw, sh): return {}
+		var created_us := Time.get_ticks_usec() - started - read_us
 		stereo.generate_mipmaps()
+		print("[PHOTO_PAIR_READ] %dx%d read_ms=%.1f image_ms=%.1f mip_ms=%.1f" % [sw, sh, read_us / 1000.0, created_us / 1000.0,
+			(Time.get_ticks_usec() - started - read_us - created_us) / 1000.0])
 		var rotation := int(result.get("stereo_rotation", 0))
 		if rotation not in [0, 90, 180, 270]: return {}
-		data.merge({"stereo_image":stereo, "strength":strength, "strategy":str(result.stereo_strategy), "rotation":rotation, "convergence":float(plane)})
+		data.merge({"stereo_image":stereo, "strength":strength, "strategy":str(result.stereo_strategy), "rotation":rotation, "convergence":float(plane),
+			"gpu_pair":maxi(0, int(result.get("stereo_gpu_pair", 0)))})
 	return data
 
 func set_depth_position(value: Variant) -> bool:
@@ -2518,6 +2640,12 @@ func pictures_status() -> Dictionary:
 func save_to_pictures() -> bool:
 	if not can_save_pictures() or pictures_status().get("state","") in ["saving","saved"]: return false
 	return bool(platform.panorama_save_pictures(local_uri,display_name,geometry==Geometry.Geometry.EQUIRECT_360 and not stereo_sbs))
+## An open photo is only foreground work while it is being prepared or refined.
+func library_preview_idle() -> bool:
+	return (not loading and not _presentation_pending and _pending_display.is_empty()
+		and _depth_thread == null and _prefetch_request == 0 and _prefetch_depth_request == 0
+		and _prefetch_portrait_request == 0 and _refine_request == 0 and _blend_request == 0)
+
 func snapshot() -> Dictionary:
 	var position := pending_index if pending_index >= 0 else index
 	var title := str(queue[position].get("title", "")) if position >= 0 and position < queue.size() else display_name
@@ -2526,7 +2654,7 @@ func snapshot() -> Dictionary:
 	progress.elapsed_ms = Time.get_ticks_msec() - _loading_started_ms
 	# A ready autoplay picture held for one frame under the old one is not loading or preparing 3D.
 	var preparing := _presentation_pending and not (slideshow.waiting and _presentation_effects_ready())
-	return {"autoplay_enabled":autoplay.enabled,"autoplay_interval":autoplay.interval,"autoplay_effect":autoplay.effect,"ground_vertical":ground_vertical,"cache_each":cache_each,"animated":animation.available(),"animation_paused":animation.paused,"animation_ended":animation.ended,"animation_failed":animation.failed,"raw_preview":_metadata.get("raw_preview",false),
+	return {"autoplay_enabled":autoplay.enabled,"autoplay_interval":autoplay.interval,"autoplay_effect":autoplay.effect,"ground_vertical":ground_vertical,"cache_each":cache_each,"depth_mode":depth_mode,"depth_model":str(_display_depth_data.get("model", "")),"animated":animation.available(),"animation_paused":animation.paused,"animation_ended":animation.ended,"animation_failed":animation.failed,"raw_preview":_metadata.get("raw_preview",false),
 		"spatial_preferred":spatial_preferred,"spatial_requested":spatial_requested,"spatial_ready":_spatial.prepared if is_instance_valid(_spatial) else false,"spatial_available":can_spatial(),"spatial_error":spatial_error,
 		"spatial_report":_spatial.report if is_instance_valid(_spatial) else {},"has_image": _texture != null, "loading": loading or preparing, "loading_caption": Loading.caption(progress) if loading else "", "placeholder": placeholder_visible(), "preparing_depth": preparing or not _pending_display.is_empty(), "title": title, "index": position, "count": queue.size(),
 		"magazine_single": magazine.single(position), "magazine_pages": magazine.count(position) if magazine.active() else 1, "magazine_rtl": magazine.right_to_left,
@@ -2984,7 +3112,7 @@ func _layer_source() -> Dictionary:
 	if depth_enabled and _display_depth_data.has("stereo_image"):
 		var pair: Image = _display_depth_data.stereo_image
 		return {"key": "stereo:%d:%.3f:%dx%d:r%d:c%.4f" % [_display_request, float(_display_depth_data.get("strength", 0)), pair.get_width(), pair.get_height(), int(_display_depth_data.get("rotation", 0)), float(_display_depth_data.get("convergence", 0.35))],
-			"image": _display_depth_data.stereo_image, "stereo": 1}
+			"image": _display_depth_data.stereo_image, "stereo": 1, "gpu_pair": int(_display_depth_data.get("gpu_pair", 0))}
 	if depth_enabled:
 		return {} # the shader's own depth parallax
 	return {"key": "color:%d" % _display_request, "image": _full_image, "stereo": -1}
@@ -3035,7 +3163,7 @@ func _process_layer() -> void:
 		_hide_layer()
 		return
 	if eligible and _layer_key != source.key and str(_upload.get("key", "")) != source.key:
-		_upload = {"key": source.key, "image": source.image, "mask": source.get("mask"), "row": 0} # replaces an unfinished other picture
+		_upload = {"key": source.key, "image": source.image, "mask": source.get("mask"), "row": 0, "gpu_pair": int(source.get("gpu_pair", 0))} # replaces an unfinished other picture
 	if not _upload.is_empty():
 		_continue_upload()
 	var origin := _origin()
@@ -3211,6 +3339,14 @@ func _continue_upload() -> void:
 			_upload = {}
 			return
 		_upload.started = true
+		# The pair is still on the GPU: one copy instead of a band per frame from its CPU image.
+		if int(_upload.get("gpu_pair", 0)) > 0 and Methods.supports(platform, "copy_photo_pair_to_layer"):
+			started = Time.get_ticks_usec()
+			if platform.copy_photo_pair_to_layer(VideoLayer.PICTURE_SLOT, int(_upload.gpu_pair)):
+				_upload.timing.gpu_copy_us = Time.get_ticks_usec() - started
+				_upload.row = height
+				_release_upload()
+				return
 	var rows := clampi(UPLOAD_BYTES / (width * 4), 1, height - int(_upload.row))
 	var slice_started := Time.get_ticks_usec()
 	# A band of rows as a small Godot texture (the engine's own upload), then a GPU copy into place.
@@ -3235,16 +3371,19 @@ func _continue_upload() -> void:
 		_upload = {}
 		return
 	_upload.row = int(_upload.row) + rows
-	if int(_upload.row) >= height:
-		var release_started := Time.get_ticks_usec()
-		var released: bool = platform.release_layer_image(VideoLayer.PICTURE_SLOT, true)
-		_upload.timing.release_us = Time.get_ticks_usec() - release_started
-		if released:
-			_layer_key = str(_upload.key)
-			if _layer_key.begins_with("stereo:"): _apply_geometry() # the pair is up: its edge takes the depth map
-		elif _presentation_pending: _presentation_layer_failed = true
-		DiagnosticLog.record("photo_layer_uploaded", {"key": str(_upload.key), "released": released, "timing": _upload.timing})
-		_upload = {}
+	if int(_upload.row) >= height: _release_upload()
+
+## The whole picture is in the layer image: release it (the last step mipmaps it).
+func _release_upload() -> void:
+	var release_started := Time.get_ticks_usec()
+	var released: bool = platform.release_layer_image(VideoLayer.PICTURE_SLOT, true)
+	_upload.timing.release_us = Time.get_ticks_usec() - release_started
+	if released:
+		_layer_key = str(_upload.key)
+		if _layer_key.begins_with("stereo:"): _apply_geometry() # the pair is up: its edge takes the depth map
+	elif _presentation_pending: _presentation_layer_failed = true
+	DiagnosticLog.record("photo_layer_uploaded", {"key": str(_upload.key), "released": released, "timing": _upload.timing})
+	_upload = {}
 
 ## Debug report: where the photo is shown.
 func layer_snapshot() -> Dictionary:

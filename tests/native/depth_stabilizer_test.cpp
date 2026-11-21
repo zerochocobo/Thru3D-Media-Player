@@ -2,6 +2,7 @@
 // Build (Windows): tools/Test-DepthStabilizer.ps1
 #include "../../native/rvm/depth_stabilizer.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <random>
@@ -171,6 +172,35 @@ int main() {
         std::printf("same-shot reband speed %.1f step %d max error %.6f\n",options.first,options.second,error);
         check(error<1e-4,"same-shot affine reband preserves temporal history");
         check(!rescaled.last_cut()&&rescaled.cuts()==control.cuts(),"a model range jump is not reported as a scene cut");
+    }
+    // Rippling water: the motion residual stays far above kCutResidual for the whole shot. It must not
+    // re-cut every kCutResidualHold frames (each cut drops the temporal history and the map jumps),
+    // while a real cut out of it (another shot, same grade) is still found.
+    {
+        DepthStabilizer s(w, h);
+        auto bank = texture(w, h, 21), other = texture(w, h, 22);
+        int inside = 0, at_cut = 0;
+        for (int f = 0; f < 60; ++f) {
+            const bool after = f >= 45;
+            auto ripple = texture(w, h, 100 + f);
+            const float glint = 1.f + 0.8f * std::sin(1.3f * f);
+            for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+                const size_t p = static_cast<size_t>(y) * w + x;
+                const bool solid = after || y < h / 3;
+                const float r = solid ? (after ? other[p] : bank[p]) : ripple[p];
+                // Glints are white, so they also move the saturation histogram.
+                const float v = solid ? 0.15f + 2.5f * (r - 0.3f) : 0.4f + 0.8f * (r - 0.5f);
+                const float white = solid ? 0.f : std::fmax(0.f, r - 0.52f) * 3.f * glint;
+                rgb[p] = std::clamp(v + white, 0.f, 1.f); rgb[n + p] = std::clamp(0.7f * v + white, 0.f, 1.f);
+                rgb[2 * n + p] = std::clamp(0.4f * v + white, 0.f, 1.f);
+                inv[p] = 1.f + 2.f * y / h;
+            }
+            s.process(inv.data(), rgb.data(), 1, near.data());
+            if (s.last_cut() && f >= 2 && f < 45) ++inside;
+            if (s.last_cut() && f >= 45 && f <= 46) ++at_cut;
+        }
+        check(inside == 0, "rippling water inside one shot is not cut");
+        check(at_cut == 1, "a cut out of rippling water is found");
     }
     std::printf("depth stabilizer checks=%d failures=%d\n", checks, failures);
     return failures == 0 ? 0 : 1;

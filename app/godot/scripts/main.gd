@@ -537,6 +537,11 @@ func _ready() -> void:
 	recent_menu.file_delete_preparing.connect(_prepare_file_delete)
 	recent_menu.file_deleted.connect(_forget_deleted_file)
 	recent_menu.settings_provider = _library_settings
+	recent_menu.thumbnail_prefetch.configure(bool(settings.get_value("library", "thumbnail_prefetch", true)),
+		int(settings.get_value("library", "thumbnail_limit", LibraryMenu.ThumbnailPrefetch.DEFAULT_LIMIT)),
+		bool(settings.get_value("library", "thumbnail_smb", true)), bool(settings.get_value("library", "thumbnail_dlna", true)),
+		bool(settings.get_value("library", "thumbnail_frame_protection", true)))
+	recent_menu.thumbnail_prefetch.may_run = _library_preview_can_run
 	recent_menu.diagnostic_quick = quick_upload
 	recent_menu.chosen.connect(_on_library_chosen)
 	recent_menu.browser_opened.connect(_on_web_browser_opened)
@@ -598,6 +603,7 @@ func _ready() -> void:
 	video.depth_text_protection = false
 	player_menu = PlayerMenu.new()
 	player_menu.state_provider = _menu_state
+	player_menu.pointer_held = _trigger_held
 	player_menu.favorite_provider = _favorite_state
 	player_menu.favorite_requested.connect(_toggle_favorite)
 	player_menu.action_requested.connect(_on_menu_action)
@@ -628,6 +634,7 @@ func _ready() -> void:
 	photo_menu = PhotoMenu.new()
 	photo.animation.app_focused = func(): return _input_focused() and not _background_app_paused
 	photo_menu.state_provider = _photo_menu_state
+	photo_menu.pointer_held = _trigger_held
 	photo_menu.favorite_provider = _favorite_state
 	photo_menu.favorite_requested.connect(_toggle_favorite)
 	photo_menu.queue_provider = func(): return photo.queue
@@ -3341,6 +3348,10 @@ func _reset_picture() -> void:
 	_viewer().set_screen_distance(distance)
 	_save_screen()
 
+## The trigger as the bindings hold it: cleared by every release and cancel, whichever route takes it.
+func _trigger_held(hand: String) -> bool:
+	return controller_bindings.down.get(hand, {}).has("trigger_click")
+
 func _update_menu_pointer(hand: String, pressed: bool = false) -> bool:
 	var menu := _active_menu()
 	for previous in [recent_menu, video_menu, photo_menu, music_menu, scenery_menu]:
@@ -3349,6 +3360,8 @@ func _update_menu_pointer(hand: String, pressed: bool = false) -> bool:
 		return false
 	var ray: Variant = _ray(hand)
 	menu.head_pointers[hand] = _head_rays.get(hand, false)
+	menu.idle_dot = true
+	menu.pointer_held = _trigger_held
 	var tracked := ray != null
 	var origin: Vector3 = ray[0] if tracked else Vector3.ZERO
 	var direction: Vector3 = ray[1] if tracked else Vector3.ZERO
@@ -3371,6 +3384,7 @@ func _update_menu_pointer(hand: String, pressed: bool = false) -> bool:
 		if hand == interface_move.capture.hand:
 			menu.update_move_pointer(hand, origin, interface_move.capture.anchor, tracked)
 		return true
+	menu.miss_points[hand] = _media_move_anchor(_viewer(), ray) if tracked else null
 	menu.update_pointer(hand, origin, direction, tracked)
 	return true
 
@@ -3497,7 +3511,7 @@ func _finish_bar_appearance() -> void:
 	_show_full_library()
 	recent_menu.section = recent_menu.Section.SETTINGS
 	recent_menu.tab = recent_menu.DISPLAY_TAB
-	recent_menu.refresh()
+	recent_menu.reveal_display_interface()
 
 func _viewer() -> Node3D:
 	return photo if photo_active and photo else video
@@ -3711,13 +3725,16 @@ func _prepare_file_delete(uri: String) -> void:
 	_grab = {}; stick_controls.suspend()
 
 func _forget_deleted_file(uri: String) -> void:
+	ThumbnailCache.forget(uri)
 	video_queue = video_queue.filter(func(item): return str(item.get("uri", "")) != uri and not str(item.get("uri", "")).begins_with(uri.trim_suffix("/") + "/"))
 	# Photo preload readers must be released before removing a queued image.
 	if photo.queue.any(func(item): return str(item.get("uri", "")) == uri):
 		photo.close_image(); photo_active = false; player_menu = video_menu
 		_update_background()
 	for entry in video.recent_files.list_recent():
-		if str(entry.uri) == uri or str(entry.uri).begins_with(uri.trim_suffix("/") + "/"): video.recent_files.forget(str(entry.uri))
+		if str(entry.uri) == uri or str(entry.uri).begins_with(uri.trim_suffix("/") + "/"):
+			if str(entry.uri) != uri: ThumbnailCache.forget(str(entry.uri))
+			video.recent_files.forget(str(entry.uri))
 	video.recent_files.save()
 	_update_thumbnail_protection()
 
@@ -3890,6 +3907,8 @@ func _on_video_queue_failed(message: String) -> void:
 func _on_photo_changed() -> void:
 	_update_favorite_session()
 	if not photo_active: return
+	if recent_menu is LibraryMenu and not photo.loading and photo.panel.visible:
+		recent_menu.directory_artwork.observed(photo.local_uri)
 	var gallery_state := "%d/%s/%s" % [photo.gallery.mode, str(photo.gallery._scales), str(photo.gallery._distances)]
 	if gallery_state != _gallery_saved_state:
 		_gallery_saved_state = gallery_state; _gallery_save_after = Time.get_ticks_msec() + 450
@@ -3945,6 +3964,10 @@ func _on_photo_adjustment(key: String, value: Variant) -> void:
 			settings.set_value("photo", key, photo.depth_position)
 			if not photo_menu.has_pointer_capture(): settings.save(settings_path)
 		return
+	if key == "photo_depth_mode":
+		if not photo.set_depth_mode(str(value)): return
+		settings.set_value("photo", "depth_mode", photo.depth_mode); settings.save(settings_path)
+		photo_menu.refresh(); return
 	if key == "photo_cache_each":
 		if typeof(value) not in [TYPE_INT, TYPE_FLOAT] or not is_finite(float(value)): return
 		photo.set_cache_each(int(value))
@@ -4477,6 +4500,13 @@ func _has_open_media() -> bool:
 	if photo_active and photo: return not photo.local_uri.is_empty() or photo.loading or not photo.queue.is_empty()
 	return video != null and not video.local_uri.is_empty() and video.media.state not in ["closed", "failed"]
 
+func _library_preview_can_run() -> bool:
+	if not _input_focused() or _background_app_paused or video.cast_token > 0 or not video.captures.recording.is_empty():
+		return false
+	if photo_active:
+		return photo.library_preview_idle()
+	return video.local_uri.is_empty() or video.library_preview_idle()
+
 ## Return one visible layer at a time, even when the browser is attached to the player bar.
 func _navigate_back() -> void:
 	if ChineseInput.active(): ChineseInput.popup.navigate_back(); stick_controls.suspend(); return
@@ -4756,6 +4786,9 @@ func _diagnostic_header() -> String:
 		"alpha_fps": _alpha_fps(), "alpha_profile": video.default_profile, "background": str(settings.get_value("appearance", "background", "")),
 		"language": I18n.choice, "xr": display.capabilities() if display.has_method("capabilities") else {},
 		"controller_input": _controller_input_report()}
+	if recent_menu:
+		var thumbnails: Dictionary = recent_menu.thumbnail_prefetch.diagnostics_snapshot()
+		if not thumbnails.is_empty(): info["library_thumbnails"] = thumbnails
 	return "Player: " + JSON.stringify(info)
 
 func _on_diagnostic_log(payload: String) -> void:
@@ -5000,6 +5033,16 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			settings.set_value("library", "restore_position", bool(value)); settings.save(settings_path)
 			if recent_menu:
 				recent_menu.restore_directory_position = bool(value); recent_menu.refresh()
+		"library_thumbnail_prefetch", "library_thumbnail_smb", "library_thumbnail_dlna", "library_thumbnail_limit", "library_thumbnail_frame_protection":
+			var setting := key.trim_prefix("library_")
+			settings.set_value("library", setting, LibraryMenu.ThumbnailPrefetch.normalized_limit(value) if setting == "thumbnail_limit" else bool(value))
+			settings.save(settings_path)
+			if recent_menu:
+				recent_menu.thumbnail_prefetch.configure(bool(settings.get_value("library", "thumbnail_prefetch", true)),
+					int(settings.get_value("library", "thumbnail_limit", LibraryMenu.ThumbnailPrefetch.DEFAULT_LIMIT)),
+					bool(settings.get_value("library", "thumbnail_smb", true)), bool(settings.get_value("library", "thumbnail_dlna", true)),
+					bool(settings.get_value("library", "thumbnail_frame_protection", true)))
+				recent_menu.refresh()
 		"library_view_mode":
 			settings.set_value("library", "view_mode", recent_menu.Presentation.mode(value))
 			settings.save(settings_path)
@@ -5171,6 +5214,9 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			settings.set_value("video", "ambient_light", relight_wanted)
 			settings.save(settings_path)
 			DiagnosticLog.record("passthrough_relight", {"enabled": bool(value)})
+		"ambient_soft_edge":
+			settings.set_value("video", "ambient_soft_edge", bool(value))
+			settings.save(settings_path)
 		"stick_seek_overlay":
 			settings.set_value("ui", "stick_seek_overlay", bool(value))
 			settings.save(settings_path)
@@ -5235,7 +5281,7 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			if recent_menu: recent_menu.browse_policy_changed()
 			_migrate_protected_favorites(); _sync_native_privacy()
 			if favorites.protected:
-				ThumbnailCache.clear()
+				ThumbnailCache.clear_in_background()
 				preload("res://scripts/photo_preview_cache.gd").clear_disk()
 				if PlatformMethods.supports(platform_plugin, "clear_photo_cache"): platform_plugin.clear_photo_cache()
 				if PlatformMethods.supports(platform_plugin, "clear_playback_private_data"): platform_plugin.clear_playback_private_data()
@@ -5586,6 +5632,7 @@ func _save_audio_preferences() -> void:
 	settings.save(settings_path)
 
 func _exit_tree() -> void:
+	ThumbnailCache.finish()
 	ChineseInput.release_host(self)
 	_beach_video.detach()
 	if is_instance_valid(airplay_session): airplay_session.close()
@@ -5815,6 +5862,7 @@ func _audio_track_name(details: Dictionary) -> String:
 	return current if not current.is_empty() else "Auto"
 
 func _menu_error() -> String:
+	if video.picker_error == Video.CHECKING_ACCESS: return ""
 	var error: String = video.picker_error if not video.picker_error.is_empty() else video.media.error
 	if error.is_empty():
 		error = display.error_code
@@ -5943,6 +5991,8 @@ func _on_video_changed() -> void:
 	_update_seek_feedback(0.0)
 	if playback_status_overlay: playback_status_overlay.refresh()
 	if photo_active: return
+	if recent_menu is LibraryMenu and video.media.state in ["playing", "paused"] and not video.media.last_pair.is_empty():
+		recent_menu.directory_artwork.observed(video.local_uri)
 	_sync_playback_menu_depth()
 	_update_thumbnail_protection()
 	_update_background()
@@ -5956,8 +6006,10 @@ func _on_video_changed() -> void:
 		player_menu.refresh_values()
 	if recent_menu: recent_menu.refresh_alpha_sizes() # first-use compile of the Alpha model sizes
 
-func _on_video_thumbnail_ready(_uri: String) -> void:
-	if recent_menu and recent_menu.visible: recent_menu.refresh()
+func _on_video_thumbnail_ready(uri: String) -> void:
+	if not recent_menu: return
+	recent_menu.directory_artwork.observed(uri)
+	if recent_menu.visible: recent_menu.refresh()
 
 func _on_video_playback_failed() -> void:
 	if not _external_video_uri.is_empty() and video.local_uri == _external_video_uri:
@@ -6469,6 +6521,7 @@ func _update_passthrough_relight(delta: float) -> void:
 		passthrough_relight = PassthroughRelight.new(); passthrough_relight.name = "PassthroughRelight"; add_child(passthrough_relight)
 	var floor_y := xr_origin.global_position.y - XrFloor.offset() if xr_origin else 0.0
 	passthrough_relight.set_look(_ambient_value("ambient_range") / 100.0, _ambient_value("ambient_brightness") / 100.0)
+	passthrough_relight.soft_edge = bool(settings.get_value("video", "ambient_soft_edge", false))
 	# Only the camera picture can be tinted; other backgrounds get the halo and floor shadow.
 	passthrough_relight.tint_room = display.applied_passthrough
 	# An open browser window takes over from the video.
@@ -6487,7 +6540,8 @@ var relight_wanted := false
 
 ## For the Scene menu.
 func mood_light_state() -> Dictionary:
-	return {"on": relight_wanted, "ambient_range": _ambient_value("ambient_range"), "ambient_brightness": _ambient_value("ambient_brightness")}
+	return {"on": relight_wanted, "ambient_range": _ambient_value("ambient_range"), "ambient_brightness": _ambient_value("ambient_brightness"),
+		"ambient_soft_edge": bool(settings.get_value("video", "ambient_soft_edge", false))}
 
 ## Percent.
 func _ambient_value(key: String) -> float:
@@ -7876,7 +7930,9 @@ func _notification(what: int) -> void:
 	if puzzle_game and puzzle_game.active and what in [NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_APPLICATION_FOCUS_OUT]:
 		puzzle_game.show_panel(true)
 	if what in [NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_APPLICATION_FOCUS_OUT]:
-		if is_instance_valid(recent_menu): recent_menu.checkpoint_browse()
+		if is_instance_valid(recent_menu):
+			recent_menu.checkpoint_browse()
+			if recent_menu is LibraryMenu: recent_menu.thumbnail_prefetch.cancel()
 		if photo: photo.autoplay.reset()
 		if photo_menu: photo_menu.online.cancel()
 		_background_app_paused = true
@@ -8151,8 +8207,11 @@ func _clear_private_history(network_only: bool) -> void:
 		_privacy_cleanup_failed(); return
 	var keys := []
 	var private_uris := []
+	var known_local: Array[String] = []
 	for entry in video.recent_files.list_recent():
-		if network_only and Privacy.is_local(str(entry.uri)): continue
+		if network_only and Privacy.is_local(str(entry.uri)):
+			known_local.append(str(entry.uri))
+			continue
 		keys.append(Video.ModeMemory.key_for(entry.uri)); video.recent_files.forget(entry.uri)
 	if favorites:
 		for entry in favorites.list_records():
@@ -8163,8 +8222,11 @@ func _clear_private_history(network_only: bool) -> void:
 	if not network_only or not Privacy.is_local(video.local_uri):
 		video.discard_history_thumbnail()
 		if not video.local_uri.is_empty(): video.recent_files.suppressed[Video.ModeMemory.key_for(video.local_uri)] = true
-	if recent_menu: recent_menu._cancel_covers()
-	ThumbnailCache.clear(); preload("res://scripts/photo_preview_cache.gd").clear_disk()
+	if recent_menu:
+		recent_menu._cancel_covers()
+		recent_menu.thumbnail_prefetch.clear_diagnostics()
+	ThumbnailCache.clear_in_background(network_only, known_local)
+	preload("res://scripts/photo_preview_cache.gd").clear_disk()
 	for name in ["events.jsonl", "events.1.jsonl", "capabilities_latest.json"]:
 		var path: String = "user://diagnostics/" + name
 		if FileAccess.file_exists(path): DirAccess.remove_absolute(path)
@@ -8199,6 +8261,8 @@ func _sync_server_report_interval() -> void:
 		platform_plugin.set_media_server_report_interval(ServerPlayback.load_interval(settings))
 
 func _sync_native_privacy() -> void:
+	if recent_menu and (Privacy.mode != Privacy.ALL or (favorites != null and favorites.protected)):
+		recent_menu.thumbnail_prefetch.clear_diagnostics()
 	if PlatformMethods.supports(platform_plugin, "set_playback_privacy"):
 		platform_plugin.set_playback_privacy(Privacy.mode, favorites != null and favorites.protected)
 

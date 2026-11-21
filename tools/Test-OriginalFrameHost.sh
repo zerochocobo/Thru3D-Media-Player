@@ -11,8 +11,9 @@ if [[ ! -f config.h || ! -f frame-config.sha256 || $(cat frame-config.sha256) !=
     "$source/configure" --disable-everything --disable-autodetect --disable-doc --disable-programs \
         --disable-debug --disable-x86asm --enable-shared --disable-static \
         --disable-avdevice --disable-avfilter --disable-swresample \
-        --enable-demuxer=mov,matroska,mpegts --enable-decoder=h264,hevc \
-        --enable-parser=h264,hevc --enable-protocol=file,http,tcp
+        --enable-demuxer=mov,matroska,mpegts,mpegps,mpegvideo,m4v,avi,asf,flv \
+        --enable-decoder=h264,hevc,vp9,mpeg2video,mpeg1video,mpeg4,wmv2,flv \
+        --enable-parser=h264,hevc,vp9,mpeg4video,mpegvideo --enable-protocol=file,http,tcp
     printf '%s' "$fingerprint" >frame-config.sha256
 fi
 make -j4

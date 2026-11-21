@@ -20,11 +20,14 @@ func click(menu: Node3D, value: bool) -> void:
 		if item.get("key") == KEY and item.get("value") == value: target = int(id)
 	check(target >= 0, "Both security choices are directly visible ray buttons")
 	if target < 0: return
+	tap(menu, target)
+
+func tap(menu: Node3D, target: int) -> void:
 	var button: Dictionary = menu._buttons.filter(func(b): return b.target == target)[0]
 	var pose: Transform3D = button.node.global_transform
 	var origin := pose.origin + pose.basis.z * 0.3
 	var direction := -pose.basis.z
-	check(int(menu.ray_hit(origin, direction).get("target", -1)) == target, "Security choice receives the actual ray hit")
+	check(int(menu.ray_hit(origin, direction).get("target", -1)) == target, "AirPlay setting or its group receives the actual ray hit")
 	menu.press_pointer("right_hand", origin, direction, true)
 	menu.release_pointer("right_hand", origin, direction, true)
 
@@ -43,11 +46,13 @@ func run() -> void:
 	menu.settings_provider = func(): return {KEY: bool(main.settings.get_value("casting", KEY, false))}
 	menu.setting_changed.connect(main._on_setting_changed)
 	menu.refresh()
-	var index := -1
-	for i in menu.rows.size():
-		if menu.rows[i].get("key") == KEY: index = i
-	check(index >= 0 and not menu.rows[index].value, "General settings defaults to Off")
-	check(menu.rows[index - 1].title == menu.I18n.t("Privacy settings") and menu.rows[index + 1].get("diagnostic_group", false), "The setting is below Privacy and above Diagnostics")
+	check(not menu.rows.any(func(row): return row.get("key") == KEY), "AirPlay password is hidden while Privacy is collapsed")
+	var privacy_index: int = menu.rows.find_custom(func(row): return row.title == menu.I18n.t("Privacy settings"))
+	menu._set_scroll(maxi(0, privacy_index - 1))
+	tap(menu, Menu.ROW_BASE + privacy_index - menu._first_line())
+	var index: int = menu.rows.find_custom(func(row): return row.get("key") == KEY)
+	check(menu.collections.privacy_expanded and index == privacy_index + 2 and not menu.rows[index].value,
+		"Opening Privacy reveals the AirPlay setting after the archive password book, off by default")
 	menu._set_scroll(maxi(0, index - 3))
 	click(menu, true)
 	check(main.settings.get_value("casting", KEY) == true and platform.values.back(), "On persists the global option and applies it to native receiving")
@@ -74,6 +79,9 @@ func run() -> void:
 				menu.cancel_pointer("right_hand"); menu.cancel_pointer("left_hand")
 				await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 				check(viewport.get_texture().get_image().save_png(output.path_join("%s-%s.png" % [language, "on" if value else "off"])) == OK, "Localized preview saved")
+	menu.navigate_back()
+	check(not menu.collections.privacy_expanded and not menu.rows.any(func(row): return row.get("key") == KEY),
+		"Closing Privacy hides the AirPlay setting")
 	menu.visible = false
 	# Choice signals and deferred menu redraws may still hold these nodes this frame.
 	menu.queue_free(); viewport.queue_free(); restarted.queue_free(); main.queue_free(); platform.queue_free()

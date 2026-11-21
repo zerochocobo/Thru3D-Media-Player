@@ -125,6 +125,7 @@ func test_settings() -> void:
 	main.video.alpha_requested = true
 	var menu: Node3D = main.recent_menu
 	menu.section = Menu.Section.SETTINGS; menu.tab = Menu.VIDEO_TAB; menu.visible = true; menu.refresh()
+	menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group") == "alpha")[0])
 	var index := -1
 	for i in menu.rows.size():
 		if menu.rows[i].get("key") == "alpha_auto_from_filename": index = i

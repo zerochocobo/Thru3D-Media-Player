@@ -1316,8 +1316,15 @@ internal class MpvVideoBridge(
                     // Compose the user's track correction with automatic video hold, including
                     // revisions that no longer have a fanout. Both writers share the host lock.
                     synchronized(session.host) {
-                        val delay = if (session.layerAlpha) Math.round(session.host.frames?.holdMs ?: 0.0) / 1000.0 else 0.0
-                        if (Math.abs(delay - session.host.pipelineAudioDelay) >= 0.02 && MpvSourceNative.setAudioDelay(session.host.handle, delay + session.host.userAudioDelay))
+                        // 2D->3D holds frames for their own map, which delays the picture the same way. Its wait is
+                        // short and steady, so a finer step follows it; until a new generation (a seek) has
+                        // measured its own, the delay stays where it was.
+                        val depthDelay = if (session.depth) session.depthModel?.audioDelayMs else null
+                        val delay = if (session.layerAlpha) Math.round(session.host.frames?.holdMs ?: 0.0) / 1000.0
+                            else if (depthDelay != null) Math.round(depthDelay) / 1000.0
+                            else if (session.depth) session.host.pipelineAudioDelay else 0.0
+                        val step = if (session.depth) 0.008 else 0.02
+                        if (Math.abs(delay - session.host.pipelineAudioDelay) >= step && MpvSourceNative.setAudioDelay(session.host.handle, delay + session.host.userAudioDelay))
                             session.host.pipelineAudioDelay = delay
                         session.audioDelay = session.host.pipelineAudioDelay
                     }

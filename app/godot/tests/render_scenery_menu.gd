@@ -35,6 +35,16 @@ func _run() -> void:
 		menu.view=view; menu.refresh()
 		await create_timer(.15).timeout; await RenderingServer.frame_post_draw
 		save_frame(viewport,camera,menu,output.path_join(view+".png"))
+	# The mood light page: its switch, range, brightness and the soft edge option.
+	var plain: Callable=menu.state_provider
+	menu.state_provider=func(mode):
+		var state: Dictionary=plain.call(mode)
+		state["mood_light"]={"on":true,"ambient_range":35.0,"ambient_brightness":60.0,"ambient_soft_edge":false}
+		return state
+	menu.view="mood"; menu.refresh()
+	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
+	save_frame(viewport,camera,menu,output.path_join("mood.png"))
+	menu.state_provider=plain
 	menu.view="manage"; menu._activate(menu.HELP)
 	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
 	save_frame(viewport,camera,menu,output.path_join("requirements.png"))

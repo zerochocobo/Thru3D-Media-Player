@@ -56,6 +56,12 @@ func (d *WebDav) PlayerForget(remote string) {
 	delete(playerDAVCache, playerDAVKey{d, path.Join("/", d.RootFolderPath, remote)})
 }
 
+// Consult the same snapshot as PlayerPageSized. Native directory calls are serialized.
+func (d *WebDav) PlayerPageCacheHit(dir model.Obj) bool {
+	snapshot := playerDAVCache[playerDAVKey{d, dir.GetPath()}]
+	return snapshot != nil && time.Now().Before(snapshot.expires)
+}
+
 func (d *WebDav) PlayerPage(ctx context.Context, dir model.Obj, cursor, order string) ([]model.Obj, string, int64, error) {
 	return d.PlayerPageSized(ctx, dir, cursor, order, 48)
 }

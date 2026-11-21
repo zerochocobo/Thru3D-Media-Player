@@ -4,6 +4,31 @@
 #include <cstring>
 
 namespace quest::capture {
+struct CoverView { const uint8_t* data = nullptr; int size = 0; };
+inline CoverView find_embedded_cover(const AVFormatContext& format, int byte_limit) {
+    CoverView selected;
+    int best=100;
+    for(unsigned i=0;i<format.nb_streams;++i) {
+        const auto* stream=format.streams[i];const auto* codec=stream->codecpar;
+        const bool attached=(stream->disposition&AV_DISPOSITION_ATTACHED_PIC)!=0;
+        if(!attached&&codec->codec_type!=AVMEDIA_TYPE_ATTACHMENT)continue;
+        const uint8_t* data=attached?stream->attached_pic.data:codec->extradata;
+        const int size=attached?stream->attached_pic.size:codec->extradata_size;
+        if(!data||size<8||size>byte_limit)continue;
+        const bool jpeg=data[0]==0xff&&data[1]==0xd8&&data[2]==0xff;
+        const bool png=!std::memcmp(data,"\x89PNG\r\n\x1a\n",8);
+        if(!jpeg&&!png)continue;
+        auto* tag=av_dict_get(stream->metadata,"filename",nullptr,0);
+        std::string name=tag?tag->value:"";
+        std::transform(name.begin(),name.end(),name.begin(),[](unsigned char c){return std::tolower(c);});
+        name=name.substr(name.find_last_of("/\\")==std::string::npos?0:name.find_last_of("/\\")+1);
+        name=name.substr(0,name.find_last_of('.'));
+        const int rank=name=="cover_land"?0:name=="cover"?1:name=="small_cover_land"?2:
+            name=="small_cover"?3:name=="poster"?4:attached?5:100;
+        if(rank<best){best=rank;selected={data,size};}
+    }
+    return selected;
+}
 // Container headers only: no decoder, seek-to-frame, stream analysis or source copy.
 inline std::vector<uint8_t> embedded_cover(const std::string& path,const std::string& ca,Control& control) {
     Input input;
@@ -18,27 +43,8 @@ inline std::vector<uint8_t> embedded_cover(const std::string& path,const std::st
     const int opened=avformat_open_input(&input.ctx,path.c_str(),nullptr,&options);
     av_dict_free(&options);
     if(opened<0||control.cancelled.load())return {};
-    const uint8_t* selected=nullptr;size_t length=0;int best=100;
-    for(unsigned i=0;i<input.ctx->nb_streams;++i) {
-        const auto* stream=input.ctx->streams[i];const auto* codec=stream->codecpar;
-        const bool attached=(stream->disposition&AV_DISPOSITION_ATTACHED_PIC)!=0;
-        if(!attached&&codec->codec_type!=AVMEDIA_TYPE_ATTACHMENT)continue;
-        const uint8_t* data=attached?stream->attached_pic.data:codec->extradata;
-        const int size=attached?stream->attached_pic.size:codec->extradata_size;
-        if(!data||size<8||size>8*1024*1024)continue;
-        const bool jpeg=data[0]==0xff&&data[1]==0xd8&&data[2]==0xff;
-        const bool png=!std::memcmp(data,"\x89PNG\r\n\x1a\n",8);
-        if(!jpeg&&!png)continue;
-        auto* tag=av_dict_get(stream->metadata,"filename",nullptr,0);
-        std::string name=tag?tag->value:"";
-        std::transform(name.begin(),name.end(),name.begin(),[](unsigned char c){return std::tolower(c);});
-        name=name.substr(name.find_last_of("/\\")==std::string::npos?0:name.find_last_of("/\\")+1);
-        name=name.substr(0,name.find_last_of('.'));
-        const int rank=name=="cover_land"?0:name=="cover"?1:name=="small_cover_land"?2:
-            name=="small_cover"?3:name=="poster"?4:attached?5:100;
-        if(rank<best){best=rank;selected=data;length=size;}
-    }
-    if(!selected||control.cancelled.load())return {};
-    return {selected,selected+length};
+    const auto cover = find_embedded_cover(*input.ctx, 8 * 1024 * 1024);
+    if(!cover.data||control.cancelled.load())return {};
+    return {cover.data,cover.data+cover.size};
 }
 }

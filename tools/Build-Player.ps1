@@ -521,6 +521,10 @@ try {
     $photoVulkanManifest = Get-Content (Join-Path $workspace 'android\player-plugin\src\main\assets\depth-mnn\photo_vulkan_manifest.json') -Raw | ConvertFrom-Json
     if ($photoVulkanManifest.width -ne 518 -or $photoVulkanManifest.height -ne 518 -or $photoVulkanManifest.usage -ne 'photo' -or $photoVulkanManifest.mnn_file -ne 'photo_depth_vulkan.mnn') { throw 'Vulkan photo depth model profile differs.' }
     $requiredModels += ,@('depth-mnn/photo_depth_vulkan.mnn', $photoVulkanManifest.mnn_sha256)
+    # The fast first map of a photo (progressive and fast 3D conversion): 512x512 ZipDepth, OpenCL and Vulkan.
+    $photoFastManifest = Get-Content (Join-Path $workspace 'models/manifest/zipdepth_photo.json') -Raw | ConvertFrom-Json
+    if ($photoFastManifest.width -ne 512 -or $photoFastManifest.height -ne 512 -or $photoFastManifest.usage -ne 'photo' -or $photoFastManifest.mnn_file -ne 'photo_fast.mnn') { throw 'Fast photo depth model profile differs.' }
+    $requiredModels += ,@('depth-mnn/photo_fast.mnn', $photoFastManifest.mnn_sha256)
     if ($IncludeDiagnostics) { $requiredModels += ,@('rvm-mnn/rvm_quality.mnn', $mnnManifest.quality_mnn_sha256) }
     foreach ($model in $requiredModels) {
         $entry = $apkArchive.GetEntry('assets/' + $model[0])

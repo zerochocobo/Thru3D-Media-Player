@@ -49,6 +49,13 @@ func run() -> void:
 	video.requested_play = true; video.media.playback = {"details": {"paused_for_cache": "yes"}}
 	video._poll_loading(Time.get_ticks_msec() + 501)
 	check(video.loading_caption().contains(I18n.t("Buffering…")), "Rebuffering restores the visible status")
+	video.picker_error = Video.CHECKING_ACCESS
+	check(video.loading_caption() == I18n.t(Video.CHECKING_ACCESS), "A document access check shows as loading progress")
+	menu.state_provider = func(): return {"has_video": true, "error": "", "loading_caption": video.loading_caption()}
+	menu.refresh_values()
+	check(menu._status_text() == I18n.t(Video.CHECKING_ACCESS), "A document access check is not reported as a playback failure")
+	menu.state_provider = func(): return {"has_video": true, "loading_caption": video.loading_caption()}
+	video.picker_error = ""
 	video.media.state = "failed"; video.media.error = "Playback failed"
 	check(video.loading_caption().is_empty(), "An error replaces loading instead of remaining pending")
 	video.media.begin(8); video._waiting_first = true; video._loading_poll_ms = 0; video._loading_bytes = -1

@@ -22,10 +22,11 @@ type cursorCloudDriver interface {
 }
 
 type cursorCloudPage struct {
-	objects []model.Obj
-	next    int
-	total   int64
-	expires time.Time
+	objects  []model.Obj
+	next     int
+	total    int64
+	expires  time.Time
+	cacheHit bool
 }
 type cursorCloudSession struct {
 	storage driver.Driver
@@ -101,7 +102,7 @@ func cursorDirectory(c *gin.Context) {
 	for _, obj := range page.objects {
 		items = append(items, gin.H{"name": obj.GetName(), "id": obj.GetID(), "is_dir": obj.IsDir(), "size": obj.GetSize(), "modified_ms": cloudModified(obj)})
 	}
-	c.JSON(200, gin.H{"code": 200, "data": gin.H{"content": items, "total": page.total, "next_offset": page.next, "folder_id": req.FolderID}})
+	c.JSON(200, gin.H{"code": 200, "data": gin.H{"content": items, "total": page.total, "next_offset": page.next, "folder_id": req.FolderID, "cache_hit": page.cacheHit}})
 }
 
 func readCursorDirectory(ctx context.Context, storage driver.Driver, native cursorCloudDriver, mount, remote, folderID string, offset int, order string, refresh bool, requestedSize ...int) (cursorCloudPage, error) {
@@ -173,6 +174,7 @@ func readCursorDirectory(ctx context.Context, storage driver.Driver, native curs
 	session.expires = time.Now().Add(5 * time.Minute)
 	cached, wasCached := session.pages[offset]
 	if wasCached && time.Now().Before(cached.expires) {
+		cached.cacheHit = true
 		return cached, nil
 	}
 	cursor, ok := session.cursors[offset]
@@ -186,6 +188,10 @@ func readCursorDirectory(ctx context.Context, storage driver.Driver, native curs
 	var next string
 	var total int64
 	var err error
+	driverCacheHit := false
+	if cache, ok := native.(interface{ PlayerPageCacheHit(model.Obj) bool }); ok {
+		driverCacheHit = cache.PlayerPageCacheHit(session.folder)
+	}
 	if sized, ok := native.(sizedCursorCloudDriver); ok {
 		objects, next, total, err = sized.PlayerPageSized(ctx, session.folder, cursor, order, pageSize)
 	} else if pageSize == 48 {
@@ -218,7 +224,7 @@ func readCursorDirectory(ctx context.Context, storage driver.Driver, native curs
 		}
 		seen[id] = true
 	}
-	result := cursorCloudPage{objects: objects, total: total, next: -1, expires: time.Now().Add(2 * time.Minute)}
+	result := cursorCloudPage{objects: objects, total: total, next: -1, expires: time.Now().Add(2 * time.Minute), cacheHit: driverCacheHit}
 	if next != "" {
 		result.next = offset + pageSize
 	}

@@ -19,7 +19,7 @@ internal object PhotoDepthInput {
     const val WIDTH = 518
     const val HEIGHT = 518
     data class Content(val x: Int, val y: Int, val width: Int, val height: Int)
-    data class Input(val rgb: ByteBuffer, val content: Content)
+    data class Input(val rgb: ByteBuffer, val content: Content, val steps: String = "")
 
     // Video warmup removes obsolete files in its own directory. Keep photo programs separate.
     fun cacheDirectory(context: Context) = File(context.cacheDir, "photo-depth-mnn").apply { mkdirs() }
@@ -47,12 +47,15 @@ internal object PhotoDepthInput {
                 try { return encodeInput(bitmap,width,height) } finally { bitmap.recycle() }
             } finally { copy.delete() }
         }
+        val clock = PhotoStereo.StepClock()
         val bounds = PhotoBitmap.bounds(source)
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "PHOTO_DECODE_FAILED" }
         // Retain at least 518 pixels on the longest edge before the final filtered resize.
         var sample = 1
         while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxOf(width, height)) sample *= 2
+        clock.lap("bounds")
         val original = PhotoBitmap.decode(source, BitmapFactory.Options().apply { inSampleSize = sample }) ?: error("PHOTO_DECODE_FAILED")
+        clock.lap("decode")
         var upright = original
         try {
             val orientation = PhotoBitmap.orientation(source)
@@ -62,6 +65,7 @@ internal object PhotoDepthInput {
                 7 -> { setRotate(90f); postScale(1f, -1f) }; 8 -> setRotate(270f)
             } }
             upright = Bitmap.createBitmap(original, 0, 0, original.width, original.height, matrix, true)
+            clock.lap("orient")
             val content = Content(0, 0, width, height)
             val input = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
             try {
@@ -69,9 +73,34 @@ internal object PhotoDepthInput {
                     drawColor(Color.BLACK)
                     drawBitmap(upright, null, Rect(content.x, content.y, content.x + content.width, content.y + content.height), Paint(Paint.FILTER_BITMAP_FLAG))
                 }
-                return encodeInput(input,width,height)
+                clock.lap("resize")
+                val encoded = encodeInput(input,width,height)
+                clock.lap("float")
+                return encoded.copy(steps = "$clock decoded=${original.width}x${original.height} sample=$sample")
             } finally { input.recycle() }
         } finally { if (upright !== original) upright.recycle(); original.recycle() }
+    }
+
+    /** Bilinear float32 map resize by pixel centres. The fast model's 512x512 map becomes the 518x518
+     * map every consumer (stereo warp, portrait, kept maps, Godot) reads. */
+    fun resample(source: ByteBuffer, width: Int, height: Int, targetWidth: Int = WIDTH, targetHeight: Int = HEIGHT): ByteBuffer {
+        require(width > 0 && height > 0 && targetWidth > 0 && targetHeight > 0 && source.remaining() >= width * height * 4)
+        val input = source.duplicate().order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+        val values = FloatArray(width * height).also { input.get(it) }
+        val output = ByteBuffer.allocateDirect(targetWidth * targetHeight * 4).order(ByteOrder.LITTLE_ENDIAN)
+        for (y in 0 until targetHeight) {
+            val fy = ((y + 0.5f) * height / targetHeight - 0.5f).coerceIn(0f, height - 1f)
+            val y0 = fy.toInt(); val y1 = minOf(y0 + 1, height - 1); val wy = fy - y0
+            for (x in 0 until targetWidth) {
+                val fx = ((x + 0.5f) * width / targetWidth - 0.5f).coerceIn(0f, width - 1f)
+                val x0 = fx.toInt(); val x1 = minOf(x0 + 1, width - 1); val wx = fx - x0
+                val top = values[y0 * width + x0] * (1 - wx) + values[y0 * width + x1] * wx
+                val bottom = values[y1 * width + x0] * (1 - wx) + values[y1 * width + x1] * wx
+                output.putFloat(top * (1 - wy) + bottom * wy)
+            }
+        }
+        output.rewind()
+        return output
     }
 
     private fun encodeInput(bitmap: Bitmap, width: Int, height: Int): Input {

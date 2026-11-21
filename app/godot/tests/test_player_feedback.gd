@@ -96,8 +96,29 @@ func run() -> void:
 	check(menu._popup_surfaces[0].global_transform.is_equal_approx(cinema_popup),"New cinema popups use the locked head reference")
 	main._clear_controls_locks(); menu.cinema_world_anchor=false
 	main.xr_camera.position=Vector3(0,1.6,0); main._recenter()
-	main._on_setting_changed("bar_transparency",true)
+	main._show_full_library()
+	main.recent_menu.section = main.recent_menu.Section.SETTINGS
+	main.recent_menu.tab = main.recent_menu.DISPLAY_TAB
+	main.recent_menu.refresh()
+	var transparency_button: Dictionary = {}
+	for button in main.recent_menu._buttons:
+		var action: Dictionary = main.recent_menu.choices.targets.get(button.target, {})
+		if action.get("key") == "bar_transparency":
+			transparency_button = button
+			break
+	check(transparency_button.get("enabled", false), "Display exposes an Adjust button for transparency")
+	if not transparency_button.is_empty():
+		var button_node: Node3D = transparency_button.node
+		check(button_node.get_child(0).text == main.recent_menu.I18n.t("Adjust"), "The transparency button has an action label")
+		var origin := button_node.to_global(Vector3(0, 0, 0.5))
+		var direction := -button_node.global_basis.z.normalized()
+		main.recent_menu.press_pointer("right_hand", origin, direction, true)
+		check(main.recent_menu.visible, "The adjustment opens on release")
+		main.recent_menu.release_pointer("right_hand", origin, direction, true)
 	check(menu._adjustment=="bar_transparency" and menu.visible and not main.recent_menu.visible, "Display setting previews actual control bar")
+	if menu._adjustment != "bar_transparency":
+		for failure in failures: printerr(failure)
+		quit(1); return
 	check(menu._adjust_rows[menu.BAR_TRANSPARENCY].key=="bar_transparency", "Opacity slider available without a movie")
 	main._on_playback_adjustment("bar_transparency",55)
 	check(is_equal_approx(menu._backdrop.material_override.get_shader_parameter("surface_color").a,.45), "Preview changes only control plate")
@@ -135,6 +156,9 @@ func run() -> void:
 	capture.free()
 	menu._activate(menu.BAR_DONE)
 	check(main.recent_menu.visible and main.recent_menu.tab==main.recent_menu.DISPLAY_TAB, "Done returns to Display settings")
+	var transparency_index: int = main.recent_menu.rows.find_custom(func(row): return row.get("setting") == ["bar_transparency", true])
+	check(transparency_index >= 0 and transparency_index < main.recent_menu._lines() and is_zero_approx(main.recent_menu.scroll),
+		"Returning keeps the top-level transparency action visible")
 	var saved := ConfigFile.new(); saved.load(settings_path)
 	check(saved.get_value("ui","bar_transparency")==80.0,"Transparency is persisted")
 	main.photo_active=true; main.player_menu=main.photo_menu; main._open_bar_appearance()

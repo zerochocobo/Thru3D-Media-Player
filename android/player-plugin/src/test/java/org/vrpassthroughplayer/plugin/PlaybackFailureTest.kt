@@ -68,7 +68,24 @@ class PlaybackFailureTest {
         val report = PlaybackFailure.report("MPV_FRAME_PIPELINE_FAILED", PlaybackFailureException(native), "output")
         assertEquals("unknown", report.getString("reason"))
         assertEquals(-13, report.getInt("mpv_code"))
+        assertEquals(0, report.getInt("http_status"))
         assertTrue(report.getString("detail").contains("loading failed"))
+    }
+
+    @Test fun primaryHttpOpenStatusSurvivesTheFramePipelineReport() {
+        val status = JSONObject().put("mpv_code", -13).put("failure_reason", "unknown")
+            .put("failure_stage", "opening").put("error", "MPV playback: loading failed")
+        for ((httpStatus, reason) in listOf(503 to "http_error", 403 to "access_denied", 404 to "not_found")) {
+            val native = PlaybackFailure.native(status.put("http_status", httpStatus))
+            val report = PlaybackFailure.report("MPV_FRAME_PIPELINE_FAILED", PlaybackFailureException(native), "output")
+            assertEquals(reason, report.getString("reason"))
+            assertEquals("opening", report.getString("stage"))
+            assertEquals(httpStatus, report.getInt("http_status"))
+            assertEquals(-13, report.getInt("mpv_code"))
+            assertEquals("MPV playback: loading failed", report.getString("native_detail"))
+        }
+        assertEquals(0, PlaybackFailure.native(status.put("http_status", 200)).httpStatus)
+        assertEquals(0, PlaybackFailure.native(status.put("http_status", 503).put("mpv_code", -17)).httpStatus)
     }
 
     @Test fun proxyFailureAddsUpstreamCauseAndRetainsNativeFailure() {
@@ -83,6 +100,28 @@ class PlaybackFailureTest {
         assertEquals("video_output_failed", PlaybackFailure.report("pipeline", PlaybackFailureException(output), "output", PlaybackFailure.http(403)).getString("reason"))
         val preflight = PlaybackFailure.report("MPV_LOCAL_SOURCE_FAILED", IOException("Media preflight could not read the source"), "parsing", PlaybackFailure.http(403))
         assertEquals("Media preflight could not read the source", preflight.getString("native_detail"))
+
+        val gateway = PlaybackFailure.native(JSONObject().put("mpv_code", -13).put("http_status", 502)
+            .put("error", "MPV playback: loading failed"))
+        assertEquals(502, PlaybackFailure.report("pipeline", PlaybackFailureException(gateway), "output").getInt("http_status"))
+    }
+
+    @Test fun loopbackProxyStatusYieldsToTheLeaseDiagnosis() {
+        // LocalStreamServer answers 404 for a revoked token, 416 for an unknown size and 502 for upstream reads.
+        for (proxyStatus in listOf(404, 416, 502)) {
+            val native = PlaybackFailureException(PlaybackFailure.native(JSONObject().put("mpv_code", -13)
+                .put("http_status", proxyStatus).put("error", "MPV playback: loading failed")))
+            val upstream = PlaybackFailure.report("pipeline", native, "output", PlaybackFailure.http(503))
+            assertEquals("http_error", upstream.getString("reason"))
+            assertEquals(503, upstream.getInt("http_status"))
+            assertEquals(-13, upstream.getInt("mpv_code"))
+            assertEquals("MPV playback: loading failed", upstream.getString("native_detail"))
+            val unexplained = PlaybackFailure.report("pipeline", native, "output",
+                PlaybackFailure(stage = "reading", detail = "Stream reset"))
+            assertEquals("unknown", unexplained.getString("reason"))
+            assertEquals(0, unexplained.getInt("http_status"))
+            assertEquals(-13, unexplained.getInt("mpv_code"))
+        }
     }
 
     @Test fun providerReasonAndNestedTransportCauseSurviveWrappers() {

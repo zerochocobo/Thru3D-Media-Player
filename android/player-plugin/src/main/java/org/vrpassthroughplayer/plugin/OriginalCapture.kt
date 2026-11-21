@@ -35,6 +35,8 @@ internal object OriginalClipNative {
     @JvmStatic external fun progress(id: Int): Int
     @JvmStatic external fun cover(id: Int, source: String, caFile: String): ByteArray
     @JvmStatic external fun frame(id: Int, source: String, positionUs: Long, caFile: String): Bitmap?
+    @JvmStatic external fun thumbnail(input: ThumbnailVideoReader, size: Long, byteLimit: Int, maxPixels: Long, seekable: Boolean): Bitmap?
+    @JvmStatic external fun thumbnailImageInput(bytes: ByteArray): Int
 }
 
 /** One independent source lease per request; no access to the decoder or headset eye buffers. */
@@ -194,8 +196,11 @@ internal class OriginalCapture(private val context: () -> Context?, private val 
                         val position = request.getLong("position_us")
                         timings.put("source_setup_ms", SystemClock.elapsedRealtime() - setupAt)
                         val decodeAt = SystemClock.elapsedRealtime()
-                        fun systemFrame(option: Int): Bitmap? = if (Build.VERSION.SDK_INT >= 30)
-                            retriever.getFrameAtTime(position, option, params) else retriever.getFrameAtTime(position, option)
+                        // Android 10 (QIYU) hands back an all-black bitmap for 10-bit HEVC instead of null
+                        // (user, 2026-11-20): a uniform frame goes to the independent decoder too.
+                        fun systemFrame(option: Int): Bitmap? = (if (Build.VERSION.SDK_INT >= 30)
+                            retriever.getFrameAtTime(position, option, params) else retriever.getFrameAtTime(position, option))
+                            ?.let { frame -> if (uniformFrame(frame)) { frame.recycle(); null } else frame }
                         // Playing: fast independent sync frame. User-paused: the displayed PTS first.
                         val exact = request.optBoolean("exact_frame", false)
                         var selection = if (exact) "closest_frame" else "keyframe"
@@ -334,5 +339,12 @@ internal class OriginalCapture(private val context: () -> Context?, private val 
             "Recording is empty", "Recording is too short", "Clip export failed", "Clip export cancelled", "Source interrupted during export",
             "Audio track unavailable for export", "Could not capture source frame", "Full resolution capture unavailable", "Lossless container unavailable",
             "Keyframe too far from recording start", "Clip timestamps unavailable", "Picture in picture capture unavailable", "Capture is busy", "Invalid loop range")
+
+        /** A 32×32 grid of one color: a failed system decode, or a flat frame the fallback decodes as well. */
+        private fun uniformFrame(frame: Bitmap): Boolean = uniformPixels(IntArray(GRID * GRID) { index ->
+            frame.getPixel((index % GRID * 2 + 1) * frame.width / (GRID * 2), (index / GRID * 2 + 1) * frame.height / (GRID * 2))
+        })
+        internal fun uniformPixels(pixels: IntArray): Boolean = pixels.all { it == pixels[0] }
+        private const val GRID = 32
     }
 }

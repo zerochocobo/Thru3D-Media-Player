@@ -34,11 +34,20 @@ func _run() -> void:
 		state.subtitle_size = 125.0; state.subtitle_style = "yellow_black"
 		state.subtitle_line = 2
 		menu._activate(Library.TAB_BASE + Library.VIDEO_TAB)
-		check(menu.rows.filter(func(row): return row.has("video_settings_group")).map(func(row): return row.video_settings_group) == ["alpha", "subtitles"] and not menu.rows.any(func(row): return row.get("key", "") in ["alpha_fps", "subtitle_size"]), "Video defaults keep Alpha and subtitle groups collapsed: " + language)
+		check(menu.rows.filter(func(row): return row.has("video_settings_group")).map(func(row): return row.video_settings_group) == ["output", "depth", "alpha", "subtitles"]
+			and not menu.rows.any(func(row): return row.get("key", "") in ["output_width", "depth_render", "alpha_fps", "subtitle_size"]),
+			"Video defaults keep all four groups collapsed: " + language)
 		await shot(viewport, output.path_join("video_" + language + ".png"))
+		for group in ["output", "depth"]:
+			menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group", "") == group)[0])
+			await shot(viewport, output.path_join(group + "_" + language + ".png"))
+			menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group", "") == group)[0])
 		menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group", "") == "alpha")[0])
-		check(["alpha_profile", "alpha_fps", "alpha_feather", "alpha_shrink"].all(func(key): return menu.rows.any(func(row): return row.get("key", "") == key)), "All four Alpha controls expand: " + language)
+		check(["alpha_auto_from_filename", "alpha_keep_background", "alpha_profile", "alpha_fps", "alpha_feather", "alpha_shrink", "alpha_mask_blend"]
+			.all(func(key): return menu.rows.any(func(row): return row.get("key", "") == key)), "Both behavior settings and the AI controls expand under Alpha: " + language)
 		await shot(viewport, output.path_join("alpha_" + language + ".png"))
+		menu._set_scroll(menu._max_scroll())
+		await shot(viewport, output.path_join("alpha_bottom_" + language + ".png"))
 		menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group", "") == "alpha")[0])
 		menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group", "") == "subtitles")[0])
 		menu._choose(menu.rows.filter(func(row): return row.get("subtitle_settings_group", "") == "appearance")[0])

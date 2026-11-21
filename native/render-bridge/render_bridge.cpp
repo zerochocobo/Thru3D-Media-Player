@@ -2,6 +2,7 @@
 #include <EGL/eglext.h>
 #include <GLES3/gl31.h>
 #include <GLES2/gl2ext.h>
+#include <android/bitmap.h>
 #include <android/hardware_buffer.h>
 #include <android/hardware_buffer_jni.h>
 #include <jni.h>
@@ -10,10 +11,12 @@
 #include <cstdio>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <chrono>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -255,16 +258,43 @@ void main() {
     }
 }
 )";
-constexpr const char* warp_classify = R"(
-layout(local_size_x = 8, local_size_y = 8) in;
-layout(rgba16f, binding = 0) writeonly uniform highp image2D map;
+// The rim test, shared by the keep pass and classify.
+constexpr const char* warp_rim = R"(
 uniform int rim;     // background-side rim cleanup width (fw_hole_from_inv)
-uniform int fg_win;  // sliver window (fw_fg_bad_local)
 // Stills only. A stretched band (gradient-limited ramp) leaves 1-2 px gaps between winners; the
 // inverse lookup there uses the unsnapped near, reads other columns and shreds hair and text into
 // streaks. Bridged pixels instead take their source column from the nearest kept winners on the row:
 // interpolated across one surface, the far side's edge texel across a depth step (gate = -3).
 uniform int bridge;
+// Bridged stills (see warp_keep): two bit planes of the pair, 32 columns to a word: 0 wide holes,
+// 1 kept winners.
+layout(std430, binding = 1) buffer Kept { highp uint plane_bits[]; };
+int row_words() { return (2 * size.x + 31) / 32; }
+int plane_row(int plane, int y) { return (plane * size.y + y) * row_words(); }
+uint span(int a, int b) { return (b >= 31 ? 0xffffffffu : (1u << uint(b + 1)) - 1u) & ~((1u << uint(a)) - 1u); }
+bool any_set(int plane, int y, int a, int b) { // a column in a..b set
+    int base = plane_row(plane, y);
+    for (int w = a >> 5; a <= b && w <= (b >> 5); ++w)
+        if ((plane_bits[base + w] & span(max(a - w * 32, 0), min(b - w * 32, 31))) != 0u) return true;
+    return false;
+}
+int last_set(int plane, int y, int a, int b) { // the highest set column in a..b, -1 for none
+    int base = plane_row(plane, y);
+    for (int w = b >> 5; a <= b && w >= (a >> 5); --w) {
+        uint m = plane_bits[base + w] & span(max(a - w * 32, 0), min(b - w * 32, 31));
+        if (m != 0u) return w * 32 + findMSB(m);
+    }
+    return -1;
+}
+int first_set(int plane, int y, int a, int b) { // the lowest set column in a..b, -1 for none
+    int base = plane_row(plane, y);
+    for (int w = a >> 5; a <= b && w <= (b >> 5); ++w) {
+        uint m = plane_bits[base + w] & span(max(a - w * 32, 0), min(b - w * 32, 31));
+        if (m != 0u) return w * 32 + findLSB(m);
+    }
+    return -1;
+}
+bool kept_at(int x, int y) { return ((plane_bits[plane_row(1, y) + (x >> 5)] >> uint(x & 31)) & 1u) != 0u; }
 bool wide_hole(int x, int y, int lo, int hi) {
     if (key_at(x, y) != 0u) return false;
     int n = 1;
@@ -283,10 +313,42 @@ bool rim_at(int x, int y, int eye, int lo, int hi, uint k) {
     }
     return false;
 }
-bool kept(int x, int y, int eye, int lo, int hi) {
-    uint k = key_at(x, y);
-    return k != 0u && !rim_at(x, y, eye, lo, hi, k);
+)";
+// Bridged stills, one invocation per 32 columns, run twice (stage 0: wide holes, 1: kept winners).
+// Classify's rim test walked up to `rim` columns per texel, and its bridge search up to 1.25 x the
+// parallax re-running that test at every step: the still map's cost grew with width cubed (0.3-0.47 s
+// for a 3547-wide eye on Quest 3). With the planes, the rim test (rim_at) is a bit-range test and the
+// bridge search a few words with findMSB/findLSB.
+constexpr const char* warp_keep = R"(
+layout(local_size_x = 64) in;
+uniform int stage;
+void main() {
+    int words = row_words(), w = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+    if (w >= words || y >= size.y) return;
+    int W = size.x;
+    uint bits = 0u;
+    for (int b = 0; b < 32; ++b) {
+        int x = w * 32 + b;
+        if (x >= 2 * W) break;
+        int lo = x < W ? 0 : W, hi = lo + W;
+        bool set;
+        if (stage == 0) set = wide_hole(x, y, lo, hi);
+        else {
+            uint k = key_at(x, y);
+            // rim_at: a wide hole within `rim` columns toward the gap (right of the left eye's texel).
+            bool rimmed = k != 0u && rim > 0 && near_of(k) < 0.5 &&
+                (lo == 0 ? any_set(0, y, x + 1, min(x + rim, hi - 1)) : any_set(0, y, max(x - rim, lo), x - 1));
+            set = k != 0u && !rimmed;
+        }
+        if (set) bits |= 1u << uint(b);
+    }
+    plane_bits[plane_row(stage, y) + w] = bits;
 }
+)";
+constexpr const char* warp_classify = R"(
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(rgba16f, binding = 0) writeonly uniform highp image2D map;
+uniform int fg_win;  // sliver window (fw_fg_bad_local)
 void main() {
     ivec2 o = ivec2(gl_GlobalInvocationID.xy);
     int W = size.x;
@@ -295,7 +357,7 @@ void main() {
     uint k = key_at(o.x, o.y);
     float z = near_of(k);
     float src = float(k & 4095u);
-    bool inv = k == 0u || rim_at(o.x, o.y, eye, lo, hi, k);
+    bool inv = bridge != 0 ? !kept_at(o.x, o.y) : (k == 0u || rim_at(o.x, o.y, eye, lo, hi, k));
     if (inv) {
         float n = near_at(ex, o.y, false);
         src = clamp(float(ex) + (eye == 0 ? -1.0 : 1.0) * (n - shift.y) * shift.x, 0.0, float(W - 1));
@@ -331,9 +393,8 @@ void main() {
     }
     if (bridge != 0 && inv) {
         int reach = int(ceil(shift.x * 1.25)) + 12;
-        int l = -1, r = -1;
-        for (int s = 1; s <= reach && o.x - s >= lo; ++s) if (kept(o.x - s, o.y, eye, lo, hi)) { l = o.x - s; break; }
-        for (int s = 1; s <= reach && o.x + s < hi; ++s) if (kept(o.x + s, o.y, eye, lo, hi)) { r = o.x + s; break; }
+        int l = last_set(1, o.y, max(lo, o.x - reach), o.x - 1);
+        int r = first_set(1, o.y, o.x + 1, min(hi - 1, o.x + reach));
         if (l >= 0 || r >= 0) {
             uint kl = l >= 0 ? key_at(l, o.y) : 0u, kr = r >= 0 ? key_at(r, o.y) : 0u;
             float sl = float(kl & 4095u), sr = float(kr & 4095u), zl = near_of(kl), zr = near_of(kr);
@@ -782,8 +843,9 @@ struct Bridge final {
     std::array<SharedImage, 2> zc_scout_out; // one scout runs at a time; read on the CPU right after
     uint64_t zero_copy_commits = 0;
     // 2D->3D stereo (mono sources only): see warp_common.
-    GLuint warp_keys = 0, warp_map = 0;
-    GLuint warp_clear_prog = 0, warp_scatter_prog = 0, warp_classify_prog = 0, warp_frame_2d_prog = 0, warp_frame_oes_prog = 0;
+    GLuint warp_keys = 0, warp_map = 0, warp_kept = 0;
+    std::string photo_passes; // a still's last render_warp, per pass in ms
+    GLuint warp_clear_prog = 0, warp_scatter_prog = 0, warp_keep_prog = 0, warp_classify_prog = 0, warp_frame_2d_prog = 0, warp_frame_oes_prog = 0;
     bool warp_failed = false;
     // Video pair eye size: the fill warp keeps the source size, edge stretching may scale it.
     int warp_width = 0, warp_height = 0;
@@ -895,9 +957,10 @@ struct Bridge final {
         if (scale_oes) glDeleteProgram(scale_oes);
         if (freeze_oes) glDeleteProgram(freeze_oes);
         if (warp_keys) glDeleteBuffers(1, &warp_keys);
+        if (warp_kept) glDeleteBuffers(1, &warp_kept);
         if (warp_map) glDeleteTextures(1, &warp_map);
         if (stretch_sampler) glDeleteSamplers(1, &stretch_sampler);
-        for (GLuint prog : {warp_clear_prog, warp_scatter_prog, warp_classify_prog, warp_frame_2d_prog, warp_frame_oes_prog,
+        for (GLuint prog : {warp_clear_prog, warp_scatter_prog, warp_keep_prog, warp_classify_prog, warp_frame_2d_prog, warp_frame_oes_prog,
                             stretch_2d_prog, stretch_oes_prog})
             if (prog) glDeleteProgram(prog);
     }
@@ -1429,10 +1492,11 @@ struct Bridge final {
         if (warp_failed || layout != 0 || width > 2560 || height > 2160) return 0;
         warp_width = width; warp_height = height;
         State state;
-        GLint unit1_2d = 0, unit1_sampler = 0, ssbo = 0, ssbo0 = 0, image0 = 0;
+        GLint unit1_2d = 0, unit1_sampler = 0, ssbo = 0, ssbo0 = 0, ssbo1 = 0, image0 = 0;
         glActiveTexture(GL_TEXTURE1); glGetIntegerv(GL_TEXTURE_BINDING_2D, &unit1_2d); glGetIntegerv(GL_SAMPLER_BINDING, &unit1_sampler);
         glBindSampler(1, 0); glActiveTexture(GL_TEXTURE0);
         glGetIntegerv(GL_SHADER_STORAGE_BUFFER_BINDING, &ssbo); glGetIntegeri_v(GL_SHADER_STORAGE_BUFFER_BINDING, 0, &ssbo0);
+        glGetIntegeri_v(GL_SHADER_STORAGE_BUFFER_BINDING, 1, &ssbo1);
         glGetIntegeri_v(GL_IMAGE_BINDING_NAME, 0, &image0);
         GLint unit2_2d = 0, unit2_sampler = 0;
         glActiveTexture(GL_TEXTURE2); glGetIntegerv(GL_TEXTURE_BINDING_2D, &unit2_2d); glGetIntegerv(GL_SAMPLER_BINDING, &unit2_sampler);
@@ -1443,7 +1507,8 @@ struct Bridge final {
             warp_failed = true;
             __android_log_print(ANDROID_LOG_WARN, "QuestRenderBridge", "2D->3D warp unavailable: %s", failure.what());
         }
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLuint>(ssbo0)); glBindBuffer(GL_SHADER_STORAGE_BUFFER, static_cast<GLuint>(ssbo));
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLuint>(ssbo0));
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, static_cast<GLuint>(ssbo1)); glBindBuffer(GL_SHADER_STORAGE_BUFFER, static_cast<GLuint>(ssbo));
         if (!image0) glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
         glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(unit1_2d));
         glBindSampler(1, static_cast<GLuint>(unit1_sampler)); glActiveTexture(GL_TEXTURE0);
@@ -1476,12 +1541,30 @@ struct Bridge final {
         GLint major = 0, minor = 0; glGetIntegerv(GL_MAJOR_VERSION, &major); glGetIntegerv(GL_MINOR_VERSION, &minor);
         if (major * 10 + minor < 31) throw std::runtime_error("OpenGL ES 3.1 compute unavailable");
         const int W2 = width * 2;
+        // Stills time each pass for the depth log (glFinish between them; the call waits for its readback anyway).
+        const bool timed = photo_half >= 0.f;
+        auto pass_started = std::chrono::steady_clock::now();
+        photo_passes.clear();
+        const auto pass = [&](const char* name) {
+            if (!timed) return;
+            glFinish();
+            const auto now = std::chrono::steady_clock::now();
+            char text[48]; std::snprintf(text, sizeof(text), "%s%s=%.1f", photo_passes.empty() ? "" : " ", name,
+                std::chrono::duration<double, std::milli>(now - pass_started).count());
+            photo_passes += text; pass_started = now;
+        };
+        // Programs may come from an earlier still's bridge (photo_stereo keeps them); buffers are per size.
         if (!warp_frame_oes_prog) {
             warp_clear_prog = compute_program(warp_clear); warp_scatter_prog = compute_program(warp_scatter);
-            warp_classify_prog = compute_program(warp_classify);
+            warp_keep_prog = compute_program((std::string(warp_rim) + warp_keep).c_str());
+            warp_classify_prog = compute_program((std::string(warp_rim) + warp_classify).c_str());
             warp_frame_2d_prog = warp_frame_program(warp_frame_2d); warp_frame_oes_prog = warp_frame_program(warp_frame_oes);
+        }
+        if (!warp_keys) {
             glGenBuffers(1, &warp_keys); glBindBuffer(GL_SHADER_STORAGE_BUFFER, warp_keys);
             glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(W2) * height * 4, nullptr, GL_DYNAMIC_COPY);
+            glGenBuffers(1, &warp_kept); glBindBuffer(GL_SHADER_STORAGE_BUFFER, warp_kept);
+            glBufferData(GL_SHADER_STORAGE_BUFFER, photo_half >= 0.f ? static_cast<GLsizeiptr>((W2 + 31) / 32) * height * 2 * 4 : 4, nullptr, GL_DYNAMIC_COPY);
             image(warp_map, W2, height, GL_RGBA16F);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
             if (glGetError() != GL_NO_ERROR) throw std::runtime_error("2D->3D warp allocation GL error");
@@ -1506,20 +1589,36 @@ struct Bridge final {
             };
             glBindTexture(GL_TEXTURE_2D, slot.alpha);
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, warp_keys);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, warp_kept);
             const int count = W2 * height;
+            const int rim = std::max(2, static_cast<int>(std::lround(width / 120.0)));
+            const int bridge = photo_half >= 0.f ? 1 : 0;
             uniforms(warp_clear_prog); glUniform1i(glGetUniformLocation(warp_clear_prog, "count"), count);
             glDispatchCompute(static_cast<GLuint>((count + 255) / 256), 1, 1);
             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
             uniforms(warp_scatter_prog);
             glDispatchCompute(static_cast<GLuint>((width + 7) / 8), static_cast<GLuint>((height + 7) / 8), 1);
             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+            pass("scatter");
+            if (bridge) {
+                uniforms(warp_keep_prog);
+                glUniform1i(glGetUniformLocation(warp_keep_prog, "rim"), rim);
+                glUniform1i(glGetUniformLocation(warp_keep_prog, "bridge"), 1);
+                for (int stage = 0; stage < 2; ++stage) { // holes, then the kept winners they decide
+                    glUniform1i(glGetUniformLocation(warp_keep_prog, "stage"), stage);
+                    glDispatchCompute(static_cast<GLuint>(((W2 + 31) / 32 + 63) / 64), static_cast<GLuint>(height), 1);
+                    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+                }
+                pass("keep");
+            }
             uniforms(warp_classify_prog);
-            glUniform1i(glGetUniformLocation(warp_classify_prog, "rim"), std::max(2, static_cast<int>(std::lround(width / 120.0))));
+            glUniform1i(glGetUniformLocation(warp_classify_prog, "rim"), rim);
             glUniform1i(glGetUniformLocation(warp_classify_prog, "fg_win"), std::max(2, static_cast<int>(std::lround(width / 240.0))));
-            glUniform1i(glGetUniformLocation(warp_classify_prog, "bridge"), photo_half >= 0.f ? 1 : 0);
+            glUniform1i(glGetUniformLocation(warp_classify_prog, "bridge"), bridge);
             glBindImageTexture(0, warp_map, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
             glDispatchCompute(static_cast<GLuint>((W2 + 7) / 8), static_cast<GLuint>((height + 7) / 8), 1);
             glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
+            pass("classify");
             map_timer.stop();
             if (glGetError() != GL_NO_ERROR) throw std::runtime_error("2D->3D warp map GL error");
             map_near = slot.near; map_text = text_regions; map_text_weights = text_weights; map_half = half; map_convergence = convergence; warp_maps++;
@@ -1553,6 +1652,7 @@ struct Bridge final {
         }
         glDrawArrays(GL_TRIANGLES, 0, 3);
         frame_timer.stop();
+        pass("frame");
         dump_warp();
         if (glGetError() != GL_NO_ERROR) throw std::runtime_error("2D->3D warp GL error");
         // The pair is ready when the warp is complete, not just the mask upload.
@@ -1615,43 +1715,128 @@ float* float_buffer(JNIEnv* env, jobject buffer, size_t bytes, bool writable = t
     return address;
 }
 
-// Still photos use the very same compute/fragment passes as video, once per strength.
-// An isolated worker context avoids doing inference, readback or PNG encoding on Godot's GL thread.
-struct PhotoEgl final {
-    EGLDisplay display = EGL_NO_DISPLAY, previous_display = eglGetCurrentDisplay();
-    EGLContext context = EGL_NO_CONTEXT, previous_context = eglGetCurrentContext();
-    EGLSurface surface = EGL_NO_SURFACE, previous_draw = eglGetCurrentSurface(EGL_DRAW), previous_read = eglGetCurrentSurface(EGL_READ);
+// Still photos use the very same compute/fragment passes as video, once per strength, on a worker
+// context of their own (no inference or readback on Godot's GL thread). The context and the warp
+// programs are kept between photos: building them took 50-110 ms a photo on Quest 3. Once Godot's
+// context is known (photoShareContext, from its GL thread) the worker context shares its objects:
+// a finished pair then stays a GPU texture the picture layer copies in one step, instead of 22 frames
+// of band uploads from the CPU image.
+struct PhotoGpu final {
+    std::mutex context_mutex; // the worker context: one still at a time
+    EGLDisplay display = EGL_NO_DISPLAY;
+    EGLContext context = EGL_NO_CONTEXT, shared_with = EGL_NO_CONTEXT;
+    EGLSurface surface = EGL_NO_SURFACE;
+    bool sharing = false;
+    std::array<GLuint, 6> programs{}; // Bridge warp programs, see keep_programs
+    struct Pair { GLuint texture = 0; int width = 0, height = 0; EGLContext group = EGL_NO_CONTEXT; GLsync used = nullptr; int busy = 0; };
+    std::mutex pairs_mutex; // Godot's thread copies pairs while the worker makes the next one
+    std::map<jint, Pair> pairs; // by token, oldest first
+    jint next_token = 0;
+};
+PhotoGpu photo_gpu;
+std::atomic<EGLDisplay> godot_display{EGL_NO_DISPLAY};
+std::atomic<EGLContext> godot_context{EGL_NO_CONTEXT};
+// The shown pair and one prefetched neighbour each side: 3 x ~45 MB for a 4 MP eye.
+constexpr size_t kPhotoPairs = 3;
+
+// Deletes a pair after Godot's last copy of it completed. Worker context current.
+void delete_pair(PhotoGpu::Pair& pair) {
+    if (pair.used) {
+        glClientWaitSync(pair.used, 0, 200'000'000);
+        glDeleteSync(pair.used);
+    }
+    glDeleteTextures(1, &pair.texture);
+}
+// Pairs Godot is not copying now, all or past kPhotoPairs - keep; then delete them outside the lock.
+void evict_pairs(size_t keep) {
+    std::vector<PhotoGpu::Pair> victims;
+    {
+        std::lock_guard<std::mutex> lock(photo_gpu.pairs_mutex);
+        for (auto it = photo_gpu.pairs.begin(); it != photo_gpu.pairs.end() && photo_gpu.pairs.size() > keep;) {
+            if (it->second.busy) { ++it; continue; }
+            victims.push_back(it->second); it = photo_gpu.pairs.erase(it);
+        }
+    }
+    for (auto& pair : victims) delete_pair(pair);
+}
+
+// Makes the kept worker context current for one still (context_mutex held), (re)creating it when
+// Godot's context appeared or changed; restores the thread's previous context afterwards.
+struct PhotoCurrent final {
+    EGLDisplay previous_display = eglGetCurrentDisplay();
+    EGLContext previous_context = eglGetCurrentContext();
+    EGLSurface previous_draw = eglGetCurrentSurface(EGL_DRAW), previous_read = eglGetCurrentSurface(EGL_READ);
     EGLenum previous_api = eglQueryAPI();
-    PhotoEgl() {
+    explicit PhotoCurrent(PhotoGpu& gpu) {
         try {
-            display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-            if (display == EGL_NO_DISPLAY || !eglInitialize(display, nullptr, nullptr)) throw std::runtime_error("Photo EGL unavailable");
+            const EGLContext share = godot_context.load();
+            if (gpu.context != EGL_NO_CONTEXT && gpu.shared_with == share) {
+                if (!eglBindAPI(EGL_OPENGL_ES_API) || !eglMakeCurrent(gpu.display, gpu.surface, gpu.surface, gpu.context))
+                    throw std::runtime_error("Photo EGL context unavailable");
+                return;
+            }
+            drop(gpu);
+            const EGLDisplay known = godot_display.load();
+            gpu.display = known != EGL_NO_DISPLAY ? known : eglGetDisplay(EGL_DEFAULT_DISPLAY);
+            if (gpu.display == EGL_NO_DISPLAY || !eglInitialize(gpu.display, nullptr, nullptr)) throw std::runtime_error("Photo EGL unavailable");
             const EGLint config_attributes[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
                 EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_NONE};
             EGLConfig config{}; EGLint count = 0;
-            if (!eglChooseConfig(display, config_attributes, &config, 1, &count) || count != 1 || !eglBindAPI(EGL_OPENGL_ES_API))
+            if (!eglChooseConfig(gpu.display, config_attributes, &config, 1, &count) || count != 1 || !eglBindAPI(EGL_OPENGL_ES_API))
                 throw std::runtime_error("Photo EGL configuration unavailable");
             const EGLint surface_attributes[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
             const EGLint context_attributes[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
-            surface = eglCreatePbufferSurface(display, config, surface_attributes);
-            context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attributes);
-            if (surface == EGL_NO_SURFACE || context == EGL_NO_CONTEXT || !eglMakeCurrent(display, surface, surface, context))
+            gpu.surface = eglCreatePbufferSurface(gpu.display, config, surface_attributes);
+            gpu.context = share != EGL_NO_CONTEXT ? eglCreateContext(gpu.display, config, share, context_attributes) : EGL_NO_CONTEXT;
+            gpu.sharing = gpu.context != EGL_NO_CONTEXT;
+            // Without Godot's context (or if sharing is refused) the pair still goes through its CPU image.
+            if (!gpu.sharing) gpu.context = eglCreateContext(gpu.display, config, EGL_NO_CONTEXT, context_attributes);
+            gpu.shared_with = share;
+            if (gpu.surface == EGL_NO_SURFACE || gpu.context == EGL_NO_CONTEXT || !eglMakeCurrent(gpu.display, gpu.surface, gpu.surface, gpu.context))
                 throw std::runtime_error("Photo EGL context unavailable");
-        } catch (...) { dispose(); throw; }
+            if (share != EGL_NO_CONTEXT && !gpu.sharing) __android_log_print(ANDROID_LOG_WARN, "QuestPhotoStereo", "Context sharing with Godot refused");
+        } catch (...) { drop(gpu); restore(); throw; }
     }
-    void dispose() {
-        if (context != EGL_NO_CONTEXT && eglGetCurrentContext() == context) eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-        if (context != EGL_NO_CONTEXT) eglDestroyContext(display, context);
-        if (surface != EGL_NO_SURFACE) eglDestroySurface(display, surface);
-        context = EGL_NO_CONTEXT; surface = EGL_NO_SURFACE;
+    ~PhotoCurrent() { restore(); }
+    void restore() const {
         eglBindAPI(previous_api);
         if (previous_display != EGL_NO_DISPLAY) eglMakeCurrent(previous_display, previous_draw, previous_read, previous_context);
+        else if (photo_gpu.display != EGL_NO_DISPLAY) eglMakeCurrent(photo_gpu.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    }
+    // Objects shared with Godot outlive a destroyed context: delete the pairs and programs first.
+    static void drop(PhotoGpu& gpu) {
+        if (gpu.context != EGL_NO_CONTEXT && eglMakeCurrent(gpu.display, gpu.surface, gpu.surface, gpu.context)) {
+            evict_pairs(0);
+            for (auto& program : gpu.programs) if (program) glDeleteProgram(program);
+            eglMakeCurrent(gpu.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        }
+        {
+            std::lock_guard<std::mutex> lock(gpu.pairs_mutex);
+            gpu.pairs.clear(); // only pairs Godot was copying at a context change: their names die with it
+        }
+        gpu.programs.fill(0);
+        if (gpu.context != EGL_NO_CONTEXT) eglDestroyContext(gpu.display, gpu.context);
+        if (gpu.surface != EGL_NO_SURFACE) eglDestroySurface(gpu.display, gpu.surface);
+        gpu.context = EGL_NO_CONTEXT; gpu.surface = EGL_NO_SURFACE; gpu.shared_with = EGL_NO_CONTEXT; gpu.sharing = false;
         // This process's EGL display is shared with Godot: never eglTerminate it here.
     }
-    ~PhotoEgl() { dispose(); }
 };
 
-void photo_stereo(const unsigned char* rgba, int w, int h, const float* near, int mw, int mh,
+// Lends the kept programs to a still's bridge, and takes back what it compiled before it is destroyed.
+void lend_programs(Bridge& bridge) {
+    auto& p = photo_gpu.programs;
+    bridge.warp_clear_prog = p[0]; bridge.warp_scatter_prog = p[1]; bridge.warp_keep_prog = p[2];
+    bridge.warp_classify_prog = p[3]; bridge.warp_frame_2d_prog = p[4]; bridge.warp_frame_oes_prog = p[5];
+}
+void keep_programs(Bridge& bridge) {
+    photo_gpu.programs = {bridge.warp_clear_prog, bridge.warp_scatter_prog, bridge.warp_keep_prog,
+                          bridge.warp_classify_prog, bridge.warp_frame_2d_prog, bridge.warp_frame_oes_prog};
+    bridge.warp_clear_prog = bridge.warp_scatter_prog = bridge.warp_keep_prog = 0;
+    bridge.warp_classify_prog = bridge.warp_frame_2d_prog = bridge.warp_frame_oes_prog = 0;
+}
+
+// Returns the pair's token for photoPairBegin when it stays on the GPU (0: CPU image only).
+jint photo_stereo(const unsigned char* rgba, int w, int h, const float* near, int mw, int mh,
                   const std::array<float, 4>& rect, float strength, unsigned char* output, int turns = 0, float convergence = 0.35f) {
     if (w < 1 || h < 1 || w > 4096 || h > 4096 || static_cast<int64_t>(w) * h > 8LL * 1024 * 1024 ||
         mw < 1 || mh < 1 || mw > 518 || mh > 518 || turns < 0 || turns > 3 || !std::isfinite(strength) || strength < 0.f || strength > 2.f)
@@ -1660,12 +1845,25 @@ void photo_stereo(const unsigned char* rgba, int w, int h, const float* near, in
     for (float v : rect) if (!std::isfinite(v)) throw std::runtime_error("Photo stereo content invalid");
     if (rect[0] < 0 || rect[1] < 0 || rect[2] <= 0 || rect[3] <= 0 || rect[0]+rect[2] > 1.000001f || rect[1]+rect[3] > 1.000001f)
         throw std::runtime_error("Photo stereo content out of bounds");
-    PhotoEgl egl;
+    // Step timing for the depth log; glFinish puts each step's GPU work in its own lap.
+    auto last = std::chrono::steady_clock::now();
+    char steps[256] = {}; size_t used = 0;
+    const auto lap = [&](const char* name) {
+        glFinish();
+        const auto now = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(now - last).count(); last = now;
+        if (used < sizeof(steps)) used += std::max(0, std::snprintf(steps + used, sizeof(steps) - used, "%s%s=%.1f", used ? " " : "", name, ms));
+    };
+    std::lock_guard<std::mutex> lock(photo_gpu.context_mutex);
+    PhotoCurrent current(photo_gpu);
+    lap("egl");
     GLint maximum = 0; glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maximum);
     const int rw = turns % 2 ? h : w, rh = turns % 2 ? w : h;
     const int rmw = turns % 2 ? mh : mw, rmh = turns % 2 ? mw : mh;
     if (std::max(w, rw) * 2 > maximum || std::max(h, rh) > maximum) throw std::runtime_error("Photo stereo exceeds GPU texture limit");
     Bridge bridge(rw, rh, rmw, rmh, 0);
+    lend_programs(bridge);
+    struct Loan { Bridge& bridge; ~Loan() { keep_programs(bridge); } } loan{bridge}; // before ~Bridge, on any exit
     // Only the still's own colour, mask and warp are allocated; no video slots/decoder/model inputs.
     glGenVertexArrays(1, &bridge.vao); glGenFramebuffers(1, &bridge.fbo);
     const auto rotated_rect = quest::photo_rotated_rect(rect, turns);
@@ -1674,6 +1872,7 @@ void photo_stereo(const unsigned char* rgba, int w, int h, const float* near, in
     image(slot.color, w, h);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    lap("upload");
     // Limit the near map's falls for this strength (render_warp's own half shift, in model columns),
     // so the unchanged hole fill cannot repeat the subject's contour outside it.
     std::vector<float> limited(static_cast<size_t>(mw) * mh);
@@ -1689,21 +1888,35 @@ void photo_stereo(const unsigned char* rgba, int w, int h, const float* near, in
     quest::photo_limit_gradient(limited.data(), rmw, rmh, cx, cy, cw, ch, half * rotated_rect[2] * rmw / rw);
     std::vector<float> right(limited);
     bridge.upload_alpha(1, limited.data(), right.data());
+    lap("near");
     // Use render_warp directly: the video width cap is a realtime budget, not a still-photo cap.
     bridge.render_warp(slot, 0.035f * strength, convergence, half, turns);
+    lap("warp");
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0); glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, w * 2, h, GL_RGBA, GL_UNSIGNED_BYTE, output);
     check_gl("Photo stereo readback");
+    lap("readback");
+    jint token = 0;
+    if (photo_gpu.sharing && slot.warp) {
+        evict_pairs(kPhotoPairs - 1);
+        std::lock_guard<std::mutex> pairs(photo_gpu.pairs_mutex);
+        token = ++photo_gpu.next_token;
+        if (token <= 0) token = photo_gpu.next_token = 1;
+        photo_gpu.pairs[token] = {slot.warp, w * 2, h, photo_gpu.shared_with, nullptr, 0};
+        slot.warp = 0; // the registry owns it now; the readback above finished its writes
+    }
+    __android_log_print(ANDROID_LOG_INFO, "QuestPhotoStereo", "%dx%d %s pair=%d passes=[%s]", w, h, steps, token, bridge.photo_passes.c_str());
+    return token;
 }
 } // namespace
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_photoStereo(JNIEnv* env, jclass, jobject rgba, jint w, jint h,
-    jobject near, jint mw, jint mh, jfloatArray content, jfloat strength, jfloat convergence, jint turns, jobject output) {
+    jobject near, jint mw, jint mh, jfloatArray content, jfloat strength, jfloat convergence, jint turns, jobject output, jintArray pair) {
     try {
         // Validate dimensions before calculating buffer sizes or reading arrays.
         if (w < 1 || h < 1 || w > 4096 || h > 4096 || static_cast<int64_t>(w)*h > 8LL*1024*1024 ||
-            mw < 1 || mh < 1 || mw > 518 || mh > 518 || !content || env->GetArrayLength(content) != 4)
+            mw < 1 || mh < 1 || mw > 518 || mh > 518 || !content || env->GetArrayLength(content) != 4 || !pair || env->GetArrayLength(pair) != 1)
             throw std::runtime_error("Photo stereo input invalid");
         const auto* color = static_cast<unsigned char*>(direct_buffer(env, rgba, static_cast<size_t>(w)*h*4, false));
         const auto* depth = float_buffer(env, near, static_cast<size_t>(mw)*mh*4, false);
@@ -1711,9 +1924,109 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_photoStereo(JNIEnv* env, 
         std::array<float, 4> rect{}; env->GetFloatArrayRegion(content, 0, 4, rect.data());
         if (env->ExceptionCheck()) return 0;
         const auto started = std::chrono::steady_clock::now();
-        photo_stereo(color, w, h, depth, mw, mh, rect, strength, result, turns, convergence);
+        const jint token = photo_stereo(color, w, h, depth, mw, mh, rect, strength, result, turns, convergence);
+        env->SetIntArrayRegion(pair, 0, 1, &token);
         return std::max<jlong>(1, std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-started).count());
     } catch (const std::exception& e) { error(env, e.what()); return 0; }
+}
+
+// Any thread, CPU only: an RGBA8 bitmap turned upright for EXIF orientation 5-8 (the same pixels as
+// Godot's ImageInfo.orient) and written as a T3DI v2 file. Godot's in-place rotate_90 follows permutation
+// cycles across the whole buffer: 1.47 s for a 22 MP photo on Quest 3. Here 64 output rows are built at a
+// time, each reading one 256-byte run per source row, and streamed to the file.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_writeUprightRaw(JNIEnv* env, jclass, jobject bitmap, jint orientation, jstring path) {
+    AndroidBitmapInfo info{};
+    if (orientation < 5 || orientation > 8 || AndroidBitmap_getInfo(env, bitmap, &info) != ANDROID_BITMAP_RESULT_SUCCESS ||
+        info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 || info.width < 1 || info.height < 1 || info.width > 8192 || info.height > 8192)
+        return JNI_FALSE;
+    const char* name = env->GetStringUTFChars(path, nullptr);
+    if (!name) return JNI_FALSE;
+    const std::string target = name;
+    env->ReleaseStringUTFChars(path, name);
+    const std::string partial = target + ".part";
+    void* pixels = nullptr;
+    if (AndroidBitmap_lockPixels(env, bitmap, &pixels) != ANDROID_BITMAP_RESULT_SUCCESS || !pixels) return JNI_FALSE;
+    const int w = static_cast<int>(info.width), h = static_cast<int>(info.height);
+    const size_t stride = info.stride / 4;
+    const auto* in = static_cast<const uint32_t*>(pixels);
+    bool ok = false;
+    if (FILE* file = std::fopen(partial.c_str(), "wb")) {
+        // Header: "T3DI", width, height, version 2 (straight alpha), little-endian. The output is h x w.
+        const uint32_t header[] = {0x49443354u, static_cast<uint32_t>(h), static_cast<uint32_t>(w), 2u};
+        ok = std::fwrite(header, sizeof(header), 1, file) == 1;
+        constexpr int kStrip = 64;
+        std::vector<uint32_t> strip(static_cast<size_t>(h) * kStrip);
+        const bool rows_forward = orientation == 5 || orientation == 8; // out column x reads source row x
+        const bool columns_forward = orientation == 5 || orientation == 6; // out row y reads source column y
+        for (int top = 0; ok && top < w; top += kStrip) {
+            const int rows = std::min(kStrip, w - top);
+            for (int x = 0; x < h; ++x) {
+                const uint32_t* source = in + static_cast<size_t>(rows_forward ? x : h - 1 - x) * stride;
+                for (int r = 0; r < rows; ++r) {
+                    const int y = top + r;
+                    strip[static_cast<size_t>(r) * h + x] = source[columns_forward ? y : w - 1 - y];
+                }
+            }
+            ok = std::fwrite(strip.data(), sizeof(uint32_t), static_cast<size_t>(rows) * h, file) == static_cast<size_t>(rows) * h;
+        }
+        ok = std::fclose(file) == 0 && ok;
+    }
+    AndroidBitmap_unlockPixels(env, bitmap);
+    ok = ok && std::rename(partial.c_str(), target.c_str()) == 0;
+    if (!ok) std::remove(partial.c_str());
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+// Godot's GL thread: the context photo pairs are shared with. Taking effect at the next still.
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_photoShareContext(JNIEnv*, jclass) {
+    const EGLContext context = eglGetCurrentContext();
+    if (context == EGL_NO_CONTEXT) return;
+    godot_display.store(eglGetCurrentDisplay());
+    godot_context.store(context);
+}
+
+// Godot's GL thread: the GL name of pair [token] for one copy, or 0 when it is gone (evicted, or
+// another share group). Every non-zero result is followed by photoPairEnd.
+extern "C" JNIEXPORT jint JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_photoPairBegin(JNIEnv*, jclass, jint token) {
+    std::lock_guard<std::mutex> lock(photo_gpu.pairs_mutex);
+    const auto found = photo_gpu.pairs.find(token);
+    if (found == photo_gpu.pairs.end() || found->second.group != eglGetCurrentContext()) return 0;
+    auto& pair = found->second;
+    // Binding it here makes the worker context's finished writes visible to this one.
+    GLint bound = 0; glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+    glBindTexture(GL_TEXTURE_2D, pair.texture); glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(bound));
+    ++pair.busy;
+    return static_cast<jint>(pair.texture);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_photoPairEnd(JNIEnv*, jclass, jint token) {
+    {
+        std::lock_guard<std::mutex> lock(photo_gpu.pairs_mutex);
+        const auto found = photo_gpu.pairs.find(token);
+        if (found == photo_gpu.pairs.end()) return;
+        auto& pair = found->second;
+        if (pair.used) glDeleteSync(pair.used);
+        pair.used = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0); // eviction waits for this copy
+        pair.busy = std::max(0, pair.busy - 1);
+    }
+    glFlush();
+}
+
+// Photo viewing closed: free the pairs' GPU memory (the context and programs stay).
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_photoReleasePairs(JNIEnv*, jclass) {
+    try {
+        std::lock_guard<std::mutex> lock(photo_gpu.context_mutex);
+        if (photo_gpu.context == EGL_NO_CONTEXT) return;
+        PhotoCurrent current(photo_gpu);
+        evict_pairs(0);
+    } catch (const std::exception& e) {
+        __android_log_print(ANDROID_LOG_WARN, "QuestPhotoStereo", "Releasing pairs failed: %s", e.what());
+    }
 }
 
 extern "C" JNIEXPORT jlongArray JNICALL

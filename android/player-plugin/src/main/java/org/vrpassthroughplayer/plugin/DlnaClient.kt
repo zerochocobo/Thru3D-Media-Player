@@ -125,10 +125,83 @@ internal object DlnaClient {
     private const val MAX_BROWSE_BYTES = 8 * 1024 * 1024
     private data class BrowsePage(val entries: JSONArray, val ids: List<String>, val total: Int?, val update: String?)
 
+    /** Counts from the response before filtering, and from the rows used by the player. */
+    class BrowseDiagnostics(private val targetId: String? = null) {
+        var phase = "request"
+        var httpStatus: Int? = null
+        var pageDeclared: Int? = null
+        private var pages = 0
+        private var pageObjects = 0
+        private var objects = 0
+        private var idMatches = 0
+        private var resources = 0
+        private var nonblankAddresses = 0
+        private var httpAddresses = 0
+        private var videoHttpAddresses = 0
+        private var parsedRows = 0
+        private var parsedVideos = 0
+        private var parsedHttpVideos = 0
+
+        fun beginPage() {
+            phase = "request"
+            httpStatus = null
+            pageDeclared = null
+            pageObjects = 0
+        }
+
+        fun inspect(doc: Document?, ids: List<String>, base: String) {
+            pages++
+            pageObjects = ids.size
+            objects += pageObjects
+            val target = targetId ?: return
+            idMatches += ids.count { it == target }
+            val items = doc?.getElementsByTagNameNS("*", "item") ?: return
+            for (index in 0 until items.length) {
+                val item = items.item(index) as Element
+                if (item.getAttribute("id") != target) continue
+                val links = item.getElementsByTagNameNS("*", "res")
+                resources += links.length
+                for (link in 0 until links.length) {
+                    val resource = links.item(link) as Element
+                    val address = resource.textContent.trim()
+                    if (address.isBlank()) continue
+                    nonblankAddresses++
+                    val http = httpUri(address, base) ?: continue
+                    httpAddresses++
+                    val mime = resource.getAttribute("protocolInfo").split(':', limit = 4).getOrNull(2).orEmpty()
+                    val extension = http.path.orEmpty().substringAfterLast('/').substringAfterLast('.', "").lowercase()
+                    if (mime.startsWith("video/", ignoreCase = true) || extension in VIDEO_EXTENSIONS) videoHttpAddresses++
+                }
+            }
+        }
+
+        fun complete(entries: JSONArray) {
+            for (index in 0 until entries.length()) {
+                val entry = entries.getJSONObject(index)
+                if (targetId != null && entry.optString("id") != targetId) continue
+                parsedRows++
+                if (entry.optString("kind") != "video") continue
+                parsedVideos++
+                if (targetId != null && httpUri(entry.optString("uri")) != null) parsedHttpVideos++
+            }
+            phase = "complete"
+        }
+
+        override fun toString(): String {
+            val status = "phase=$phase http=${httpStatus ?: "-"} pages=$pages didl_objects=$objects " +
+                "page_declared=${pageDeclared ?: "-"} page_objects=$pageObjects"
+            return if (targetId == null) "$status parsed_rows=$parsedRows parsed_videos=$parsedVideos"
+                else "$status id_matches=$idMatches resources=$resources nonblank_addresses=$nonblankAddresses " +
+                    "http_addresses=$httpAddresses video_http_addresses=$videoHttpAddresses " +
+                    "parsed_matches=$parsedRows parsed_videos=$parsedVideos parsed_http_videos=$parsedHttpVideos"
+        }
+    }
+
     /** Read the complete level before client-side name sorting. Offsets include unsupported items. */
-    fun browse(server: Server, objectId: String, metadata: Boolean = false): JSONArray {
+    fun browse(server: Server, objectId: String, metadata: Boolean = false, diagnostics: BrowseDiagnostics? = null): JSONArray {
         val deadline = System.nanoTime() + 60_000_000_000L
-        if (metadata) return browsePage(server, objectId, 0, true, deadline).entries
+        if (metadata) return browsePage(server, objectId, 0, true, deadline, diagnostics).entries
+            .also { diagnostics?.complete(it) }
         val entries = JSONArray()
         val seen = HashSet<String>()
         var offset = 0
@@ -136,7 +209,8 @@ internal object DlnaClient {
         var update: String? = null
         while (true) {
             check(!Thread.currentThread().isInterrupted && System.nanoTime() < deadline) { "DLNA server unavailable" }
-            val page = browsePage(server, objectId, offset, false, deadline)
+            val page = browsePage(server, objectId, offset, false, deadline, diagnostics)
+            diagnostics?.phase = "directory_validation"
             page.total?.let {
                 check(total == null || total == it) { "DLNA server unavailable" }
                 total = it
@@ -151,28 +225,41 @@ internal object DlnaClient {
             offset += page.ids.size
             check(total == null || offset <= total!!) { "DLNA server unavailable" }
             for (i in 0 until page.entries.length()) entries.put(page.entries.getJSONObject(i))
-            if (total != null && offset == total) return entries
+            if (total != null && offset == total) break
             if (page.ids.isEmpty()) {
                 check(total == null) { "DLNA server unavailable" }
-                return entries
+                break
             }
             // Servers can impose a lower page size, so a short page is not an end marker.
         }
+        diagnostics?.complete(entries)
+        return entries
     }
 
-    private fun browsePage(server: Server, objectId: String, offset: Int, metadata: Boolean, deadline: Long): BrowsePage {
+    private fun browsePage(
+        server: Server, objectId: String, offset: Int, metadata: Boolean, deadline: Long, diagnostics: BrowseDiagnostics?,
+        requested: Int = BROWSE_PAGE_SIZE, preview: LocalThumbnailPrefetch.Work? = null,
+    ): BrowsePage {
+        diagnostics?.beginPage()
         val body = """<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
 <s:Body><u:Browse xmlns:u="${server.serviceType}"><ObjectID>${escape(objectId)}</ObjectID>
 <BrowseFlag>${if (metadata) "BrowseMetadata" else "BrowseDirectChildren"}</BrowseFlag><Filter>*</Filter><StartingIndex>$offset</StartingIndex>
-<RequestedCount>$BROWSE_PAGE_SIZE</RequestedCount><SortCriteria></SortCriteria></u:Browse></s:Body></s:Envelope>"""
+<RequestedCount>$requested</RequestedCount><SortCriteria></SortCriteria></u:Browse></s:Body></s:Envelope>"""
         val connection = URL(server.controlUrl).openConnection() as HttpURLConnection
         connection.connectTimeout = 5000; connection.readTimeout = 15000
+        if (preview != null) {
+            connection.instanceFollowRedirects = false
+            connection.connectTimeout = 650
+            connection.readTimeout = 650
+        }
         connection.requestMethod = "POST"; connection.doOutput = true
         connection.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"")
         connection.setRequestProperty("SOAPACTION", "\"${server.serviceType}#Browse\"")
-        try {
+        fun fetch(): BrowsePage = try {
             connection.outputStream.use { it.write(body.toByteArray()) }
+            diagnostics?.phase = "response"
+            diagnostics?.httpStatus = connection.responseCode
             val response = connection.inputStream.use { input ->
                 val output = ByteArrayOutputStream()
                 val buffer = ByteArray(8192)
@@ -180,27 +267,44 @@ internal object DlnaClient {
                     check(!Thread.currentThread().isInterrupted && System.nanoTime() < deadline) { "DLNA server unavailable" }
                     val count = input.read(buffer)
                     if (count < 0) break
-                    check(output.size() + count <= MAX_BROWSE_BYTES) { "Folder too large to sort" }
+                    val maxBytes = if (preview == null) MAX_BROWSE_BYTES else 96 * 1024
+                    check(output.size() + count <= maxBytes) { "Folder too large to sort" }
                     output.write(buffer, 0, count)
                 }
                 output.toString(Charsets.UTF_8.name())
             }
             check(System.nanoTime() < deadline) { "DLNA server unavailable" }
+            diagnostics?.phase = "soap"
             val envelope = parse(response)
             fun value(name: String) = envelope.getElementsByTagNameNS("*", name).item(0)?.textContent?.trim()
             fun count(name: String): Int? = value(name)?.let { text ->
                 text.toIntOrNull()?.takeIf { it >= 0 } ?: error("DLNA server unavailable")
             }
             val result = value("Result") ?: error("DLNA server unavailable")
+            diagnostics?.phase = "didl"
             val doc = result.takeIf { it.isNotEmpty() }?.let(::parseDidl)
             val ids = ArrayList<String>()
             for (tag in listOf("container", "item")) {
                 val nodes = doc?.getElementsByTagNameNS("*", tag) ?: continue
                 for (i in 0 until nodes.length) ids.add((nodes.item(i) as Element).getAttribute("id"))
             }
-            check(count("NumberReturned")?.let { it == ids.size } != false) { "DLNA server unavailable" }
-            return BrowsePage(doc?.let { didl(it, server.location) } ?: JSONArray(), ids, count("TotalMatches"), value("UpdateID"))
+            diagnostics?.inspect(doc, ids, server.location)
+            diagnostics?.phase = "response_counts"
+            val returned = count("NumberReturned")
+            diagnostics?.pageDeclared = returned
+            check(returned == null || returned == ids.size) { "DLNA server unavailable" }
+            val total = count("TotalMatches")
+            diagnostics?.phase = "classify_entries"
+            BrowsePage(doc?.let { didl(it, server.location) } ?: JSONArray(), ids, total, value("UpdateID"))
         } finally { connection.disconnect() }
+        return if (preview == null) fetch() else preview.interruptible(connection::disconnect, ::fetch)
+    }
+
+    fun thumbnailChildren(server: Server, objectId: String, job: LocalThumbnailPrefetch.Work): JSONArray {
+        val limit = job.request.directoryLimit.coerceIn(1, 8)
+        val page = browsePage(server, objectId, 0, false, System.nanoTime() + 1_100_000_000L, null, limit, job)
+        job.sampled = minOf(page.ids.size, limit)
+        return if (page.ids.size <= limit) page.entries else JSONArray()
     }
 
     /** DIDL-Lite -> entries {id, title, container, uri?, size?, duration_ms?, width?, height?}. */
@@ -211,8 +315,10 @@ internal object DlnaClient {
         val containers = doc.getElementsByTagNameNS("*", "container")
         for (i in 0 until containers.length) {
             val c = containers.item(i) as Element
-            out.put(JSONObject().put("id", c.getAttribute("id")).put("title", title(c)).put("container", true)
-                .put("child_count", c.getAttribute("childCount").toIntOrNull() ?: -1))
+            val entry = JSONObject().put("id", c.getAttribute("id")).put("title", title(c)).put("container", true)
+                .put("child_count", c.getAttribute("childCount").toIntOrNull() ?: -1)
+            folderCover(c, base)?.let { entry.put("cover", it) }
+            out.put(entry)
         }
         val items = doc.getElementsByTagNameNS("*", "item")
         for (i in 0 until items.length) {
@@ -248,10 +354,34 @@ internal object DlnaClient {
             res.getAttribute("resolution").split('x').mapNotNull { it.toIntOrNull() }.takeIf { it.size == 2 }?.let {
                 entry.put("width", it[0]).put("height", it[1])
             }
-            cover(item, resources)?.let { entry.put("cover", it) }
+            if (kind == "image") {
+                folderCover(item, base)?.takeIf { it != entry.optString("uri") }?.let { entry.put("thumbnail_uri", it) }
+            } else cover(item, resources, base)?.let { entry.put("cover", it) }
             out.put(entry)
         }
         return out
+    }
+
+    private fun folderCover(container: Element, base: String): String? {
+        fun imageUrl(value: String): String? = httpUri(value.trim(), base)
+            ?.takeIf { it.rawUserInfo == null }?.toString()
+        val art = container.getElementsByTagNameNS("*", "albumArtURI")
+        for (index in 0 until art.length) {
+            val value = art.item(index).textContent
+            if (value.isNotBlank()) imageUrl(value)?.let { return it }
+        }
+        val resources = container.getElementsByTagNameNS("*", "res")
+        for (index in 0 until resources.length) {
+            val resource = resources.item(index) as Element
+            val protocol = resource.getAttribute("protocolInfo")
+            if (!protocol.contains(":image/", ignoreCase = true)) continue
+            val profile = protocol.substringAfter("DLNA.ORG_PN=", "").substringBefore(';')
+            val size = resource.getAttribute("resolution").split('x').mapNotNull(String::toIntOrNull)
+            val small = size.size == 2 && size.all { it in 1..512 }
+            if (!profile.endsWith("_TN") && !small) continue
+            if (resource.textContent.isNotBlank()) imageUrl(resource.textContent)?.let { return it }
+        }
+        return null
     }
 
     /** Keep the server's title, including an original suffix when it offers a transcoded stream. */
@@ -356,11 +486,14 @@ internal object DlnaClient {
 
     /** Cover picture the server offers for an item: upnp:albumArtURI, else an image resource
      * (DLNA thumbnail). Never derived from the video itself. */
-    private fun cover(item: Element, resources: org.w3c.dom.NodeList): String? {
+    private fun cover(item: Element, resources: org.w3c.dom.NodeList, base: String): String? {
         val art = item.getElementsByTagNameNS("*", "albumArtURI").item(0)?.textContent?.trim()
         val image = (0 until resources.length).map { resources.item(it) as Element }
             .firstOrNull { it.getAttribute("protocolInfo").contains(":image/") }?.textContent?.trim()
-        return listOf(art, image).firstOrNull { !it.isNullOrEmpty() && (it.startsWith("http://") || it.startsWith("https://")) }
+        return listOfNotNull(art, image).firstNotNullOfOrNull { value ->
+            value.takeIf { it.isNotBlank() }?.let { httpUri(it, base) }
+                ?.takeIf { it.rawUserInfo == null }?.toString()
+        }
     }
 
     private fun title(element: Element) = element.getElementsByTagNameNS("*", "title").item(0)?.textContent?.trim() ?: ""

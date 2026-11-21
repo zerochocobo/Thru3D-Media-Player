@@ -50,6 +50,16 @@ func reveal(footer: Node3D) -> void:
 	footer.observe_ray("right_hand",origin,-footer.global_basis.z,true,now)
 	footer.observe_ray("right_hand",origin,-footer.global_basis.z,true,now+150)
 	now += 150
+func hover_status(router: Node3D, footer: Node3D) -> void:
+	var input := ray(footer, Actions.STATUS)
+	var hit: Dictionary = router.ray_hit(input[0], input[1])
+	check(hit.get("footer", false) and hit.get("window") == footer.host.window_id and hit.get("target") == Actions.STATUS, "Status ray resolves to the owning footer")
+	router.update_pointer("right_hand", input[0], input[1], true)
+	now += Actions.ENTER_MS
+	router.update_pointer("right_hand", input[0], input[1], true)
+	check(footer.app_actions.expanded and not router.app_actions.expanded, "Only the footer opens a status popup after a deliberate hover")
+	router.update_pointer("right_hand", input[0], input[1], true)
+	check(router._pointers["right_hand"].dot.visible and router._hover["right_hand"] == Actions.STATUS, "Window continues drawing the pointer on the expanded footer")
 func snapshot(platform: Object, browser: RefCounted, ids: Array, focused: int) -> void:
 	platform.browser.windows = []; platform.browser.tab_list = []; platform.browser.focused_window = focused
 	for id in ids:
@@ -68,6 +78,7 @@ func run() -> void:
 	var browser: RefCounted = menu.web_browser
 	browser.window_created = func(window):
 		main._connect_session_controls(window.effect_controls)
+		window.app_actions.now_provider = func(): return now
 		window.effect_controls.app_actions.now_provider = func(): return now
 	browser.open("https://example.test/1"); snapshot(platform,browser,[1],1)
 	var window: Node3D = browser.windows[1]
@@ -96,10 +107,7 @@ func run() -> void:
 		footer.observe_ray("right_hand",footer.to_global(point),-footer.global_basis.z,true,now)
 		check(footer.visible, "Continuous two-row reveal corridor keeps controls alive")
 	# Status hover and original confirmation state machine work with hand identity/release.
-	var input := ray(footer,Actions.STATUS)
-	window.update_pointer("right_hand",input[0],input[1],true)
-	now += 260; window.update_pointer("right_hand",input[0],input[1],true)
-	check(footer.app_actions.expanded, "Hover opens original status popup through the browser")
+	hover_status(window, footer)
 	press(window,footer,Actions.QUIT,"right_hand",false)
 	check(footer.app_actions.armed == "quit_app" and not main.calls.has("quit_app"), "First click only arms exit")
 	press(window,footer,Actions.QUIT,"right_hand",false)
@@ -122,6 +130,13 @@ func run() -> void:
 	check(browser.footer_window_id == 4 and not footer.global_footer and footer.app_actions.armed.is_empty(), "Closing owner transfers to focused live window and cancels old confirmation")
 	window = browser.windows[4]; footer = window.effect_controls; reveal(footer)
 	check(footer.global_footer and footer.device_status.is_visible_in_tree() and footer.app_actions.armed.is_empty(), "New owner presents clean shared controls")
+	var peer: Node3D = browser.windows[2]
+	hover_status(peer, footer)
+	var toolbar_ray := ray(peer, browser.BASE + 2)
+	peer.update_pointer("right_hand", toolbar_ray[0], toolbar_ray[1], true)
+	now += Actions.LEAVE_MS
+	peer.update_pointer("right_hand", toolbar_ray[0], toolbar_ray[1], true)
+	check(not footer.app_actions.expanded and peer._hover["right_hand"] == browser.BASE + 2, "Moving back to peer chrome closes the footer popup and updates the pointer target")
 	snapshot(platform,browser,[2,3],99)
 	check(browser.footer_window_id == 2, "Missing focus falls back to a stable remaining window")
 	window = browser.windows[2]; footer = window.effect_controls; reveal(footer)

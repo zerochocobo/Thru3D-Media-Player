@@ -366,6 +366,8 @@ var _access_pending: Dictionary = {}
 var _audio_pending := false
 var local_uri := ""
 var display_name := ""
+## Progress, not a failure: shown as a loading caption while the document grant is checked.
+const CHECKING_ACCESS := "Checking file access..."
 var picker_error := ""
 var _picker_request := 0
 var profile := AUTOMATIC_PROFILE # ROI default: one square input for full-eye and zoom windows
@@ -640,6 +642,7 @@ func _maybe_capture_thumbnail() -> void:
 		return
 	var uri := local_uri
 	var sequence := _thumbnail_sequence
+	var cache_generation := Thumbnails.generation
 	var pair := media.last_pair.duplicate(true)
 	var layer := _binding.layer
 	var image: Image
@@ -671,7 +674,7 @@ func _maybe_capture_thumbnail() -> void:
 		binding.unbind()
 		platform.release_mpv_pair_pin(int(pair.session_id), int(pair.slot_token))
 	_thumbnail_busy = false
-	if sequence != _thumbnail_sequence or uri != local_uri: return
+	if sequence != _thumbnail_sequence or uri != local_uri or cache_generation != Thumbnails.generation: return
 	if not image or image.is_empty():
 		_thumbnail_result = {"state": "capture_failed", "layer": layer, "reason": failure}
 		# A runtime whose layer surface cannot be copied fails every time: stop after a few tries.
@@ -795,7 +798,7 @@ func _on_selected(payload: String) -> void:
 		_picker_request = 0
 		picker_error = ""
 	elif result.get("state") == "checking":
-		picker_error = "Checking file access..."
+		picker_error = CHECKING_ACCESS
 	changed.emit()
 	if result.get("state") == "error": playback_failed.emit()
 
@@ -849,7 +852,7 @@ func open_recent(uri: String, from_start: bool = false, metadata: Dictionary = {
 		changed.emit()
 		playback_failed.emit()
 		return false
-	picker_error = "Checking file access..."
+	picker_error = CHECKING_ACCESS
 	changed.emit()
 	return true
 
@@ -1011,7 +1014,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_thumb_after_ms = -1
 	# A server cover (DLNA albumArt, media servers) is the library picture: no frame is needed.
 	var server_cover := str(metadata.get("cover", recent_files.lookup(uri).get("cover", "")))
-	if not _web_handoff and _thumbnail_source(uri) and Thumbnails.texture(uri) == null and not RecentFiles.valid_cover(server_cover):
+	if not _web_handoff and _thumbnail_source(uri) and not Thumbnails.has_played_picture(uri) and not RecentFiles.valid_cover(server_cover):
 		_thumb_after_ms = 0
 	local_uri = uri
 	if not pip.reopening:
@@ -3335,9 +3338,16 @@ func hud_caption() -> String:
 		return I18n.t("Hardware decoding unavailable for %s · playback may stutter") % ("%d×%d" % [int(media.format.width), int(media.format.height)])
 	return listening.status_caption(listening.playback_position(control.display_position_ms() / 1000.0 - audio_delay))
 
+func library_preview_idle() -> bool:
+	if media.state in ["closed", "failed"]: return true
+	return (not requested_play and media.state in ["paused", "ended"] and not _waiting_first
+		and not mode_transition.active() and not _scrub_hold and not control.pending
+		and control.in_flight <= 0 and _pending_revision.is_empty())
+
 func loading_caption() -> String:
 	var listening_caption: String = listening.preparation_caption()
 	if not listening_caption.is_empty(): return listening_caption
+	if picker_error == CHECKING_ACCESS: return I18n.t(CHECKING_ACCESS)
 	if not media.accepts(media.session_id) or not media.error.is_empty(): return ""
 	if NarrationSettings.FEATURE_ENABLED and narration.enabled:
 		var report: Dictionary = media.playback.get("narration", {})
@@ -4496,6 +4506,8 @@ func _upscale_kind() -> int:
 ## own when there is nothing to enlarge) and whether it is a VR picture. Zero sizes: not known yet.
 func picture_upscale_sizes() -> Dictionary:
 	var source := Vector2i(int(media.format.get("width", 0)), int(media.format.get("height", 0)))
+	# 2D->3D enlarges each eye of the bridge's pair, which may be smaller than the source (4K: 2560 wide).
+	if _binding.warped: source = Vector2i(Binding.warp_size(_binding.ticket).x / 2, Binding.warp_size(_binding.ticket).y)
 	var across := 2 if stereo_sbs and not top_bottom else 1
 	var down := 2 if stereo_sbs and top_bottom else 1
 	var cap := _copy_width_cap()
@@ -4521,10 +4533,15 @@ func shown_picture() -> Dictionary:
 			size = source # the decoder's own surface
 	elif _frame_picture or _fisheye_picture:
 		size = _frame_picture_size; upscaled = _picture_upscaled
+	elif _depth_picture:
+		# 2D->3D: one eye of the stereo pair, as the source is one picture.
+		size = Vector2i(_depth_picture_size.x / 2, _depth_picture_size.y)
+		upscaled = _depth_picture_size != Binding.warp_size(_binding.ticket)
 	elif not _binding.ticket.is_empty():
-		var frame := Vector2i(int(_binding.ticket.width), int(_binding.ticket.height))
+		var frame := Binding.warp_size(_binding.ticket) if _binding.warped else Vector2i(int(_binding.ticket.width), int(_binding.ticket.height))
 		size = _binding.enhanced_size() if _binding.enhanced() else frame
 		upscaled = _binding.enhanced() and size != frame
+		if _binding.warped: size.x /= 2
 	# A remapped fisheye picture differs from the source by its projection, not by being reduced.
 	var reduced := not upscaled and not _fisheye_picture and size.x > 0 and source.x > 0 and size.x < source.x
 	return {"size": [size.x, size.y], "upscaled": upscaled, "reduced": reduced}
@@ -4682,7 +4699,7 @@ var _eye_quality_failed := 0 # the session it failed in: that one keeps its fram
 func _sync_eye_quality() -> void:
 	var ticket := _binding.ticket
 	var wanted := _quality_wanted() and _eye_quality_possible() and not _layer_session and not _binding.layer and _binding.material != null \
-		and not ticket.is_empty() and not _frame_picture and not _fisheye_picture and not _processed_picture \
+		and not ticket.is_empty() and not _frame_picture and not _fisheye_picture and not _processed_picture and not _depth_picture \
 		and _eye_quality_failed != media.session_id
 	var values := _picture_values() if wanted else PackedFloat32Array()
 	var source := Vector2i.ZERO
@@ -4702,8 +4719,10 @@ func _sync_eye_quality() -> void:
 	if stamp == _eye_quality_stamp and _binding.enhanced(): return
 	var external := str(ticket.get("color_target", "")) == "external"
 	var scale: Array = ticket.get("color_uv_scale", [1.0, 1.0]) if external else [1.0, 1.0]
+	var two_eyes: bool = stereo_sbs or _binding.warped
 	var drawn: int = platform.enhance_frame_texture(RenderingServer.texture_get_native_handle(_binding.color_texture()), external,
-		source.x, source.y, float(scale[0]), float(scale[1]), size.x, size.y, values[0], values[17], values[18])
+		source.x, source.y, float(scale[0]), float(scale[1]), size.x, size.y, 2 if two_eyes and not top_bottom else 1,
+		2 if two_eyes and top_bottom else 1, values[0], values[17], values[18])
 	if drawn <= 0 or not _binding.show_enhanced(drawn, size):
 		_eye_quality_failed = media.session_id
 		_binding.enhance_expected = false
@@ -4716,13 +4735,15 @@ func _sync_eye_quality() -> void:
 ## the mode cannot work on.
 var alpha_copy_packed := false
 
-## The mode can carry this playback: not 2D to 3D yet (its GPU load leaves the eye buffers' draw no room
-## that has been measured). Alpha on the layer shows the copy's picture under its mask; off the layer
-## the eye buffers' draw sharpens what the shader shows.
+## The mode can carry this playback. Alpha on the layer shows the copy's picture under its mask; off the
+## layer the eye buffers' draw sharpens what the shader shows. 2D to 3D takes it wherever its picture is:
+## the stereo pair on the picture layer, or the frame the shader's parallax reads in the eye buffers (the
+## user asked for it at any size, 4K too, with the frame rate it costs; 2026-11-21).
 func picture_quality_available(uri: String = "") -> bool:
 	if uri.is_empty(): uri = local_uri
 	return picture_quality_supported() and (not alpha_requested or (not alpha_copy_packed if _layer_alpha() else _eye_quality_possible())) \
-		and not depth_requested and not packed_file \
+		and (not depth_requested or (_eye_quality_possible() and PlatformMethods.supports(platform, "enhance_layer_texture"))) \
+		and not packed_file \
 		and (geometry != Geometry.Geometry.FISHEYE or _fisheye_quality_possible()) and (uri.is_empty() or (uri != _quality_refused_uri \
 		and (uri != _layer_blocked_uri or PlatformMethods.supports(platform, "enhance_layer_texture"))))
 
@@ -4737,7 +4758,16 @@ func _quality_copying() -> bool:
 ## on the decoder surface, or by the picture layer's own draw of a software-decoded frame.
 func layer_picture_baked(source_kind: int = VideoLayer.SURFACE) -> bool:
 	if source_kind == VideoLayer.SURFACE: return _layer_session and _quality_requested
-	return (_frame_picture and _frame_quality_drawn) or (_fisheye_picture and _fisheye_quality_drawn)
+	return (_frame_picture and _frame_quality_drawn) or (_fisheye_picture and _fisheye_quality_drawn) \
+		or (_binding.warped and not _frame_picture and not _fisheye_picture and _depth_quality_drawn)
+
+## 2D->3D's stereo pair on the picture layer (_show_depth_picture), and what picture quality mode did to it.
+var _depth_picture := false
+var _depth_picture_look := []
+var _depth_quality_drawn := false
+var _depth_picture_size := Vector2i.ZERO # both eyes
+var _depth_quality_failed := 0 # the session the draw failed in
+var _depth_upscale_failed := 0 # the session the runtime refused the enlarged pair in
 
 ## Picture quality mode for frames a software decoder made (a DVD's MPEG-2, Profile 5...): they never
 ## pass the layer copy, so the picture layer draws them enlarged, sharpened and graded itself.
@@ -4975,8 +5005,10 @@ func _update_layer() -> void:
 			1 if pip.compositor.main_eyes == 2 else 0, Vector2.ZERO, Vector4(0, 0, 1, 1), VideoLayer.SOURCE_ALPHA, extras, true)
 	if not shown and _frame_picture: shown = _show_frame_picture(origin, extras)
 	if not shown and _fisheye_picture: shown = _show_fisheye_picture(origin, extras)
+	_depth_picture = false
 	if not shown and not _layer_session and origin != null:
 		shown = _show_depth_picture(origin, extras)
+		_depth_picture = shown
 	var overlays_shown := false
 	if not shown and not pip_layers.is_empty() and not pip.compositor.needs_main():
 		overlays_shown = video_layer.show_overlays(self, pip_layers)
@@ -5214,28 +5246,52 @@ func _copy_subtitle_canvas(canvas: SubViewport) -> bool:
 	return platform.release_layer_image(VideoLayer.SUBTITLE_SLOT, false) and copied
 
 ## 2D->3D: the bridge's stereo pair of each frame, copied into the picture layer once per pair.
+## Picture quality mode draws the pair there instead: each eye denoised, enlarged and sharpened on its
+## own, and graded. Its settings redraw the pair on show, so a paused picture follows the sliders.
 ## Until the model's first map (shader parallax) the frame stays in the eye buffers.
 func _show_depth_picture(origin: XROrigin3D, extras: Array = []) -> bool:
 	var ticket := _binding.ticket
+	var quality := _quality_wanted() and PlatformMethods.supports(platform, "enhance_layer_texture") \
+		and _depth_quality_failed != media.session_id
 	if not _binding.warped or geometry != Geometry.Geometry.FLAT or not video_layer.available() \
-		or not video_layer.supports_surface(self) or not video_layer.grades(color_grade) \
+		or not video_layer.supports_surface(self) or not (quality or video_layer.grades(color_grade)) \
 		or not PlatformMethods.supports(platform, "copy_layer_texture"):
 		return false
-	var size := Binding.warp_size(ticket)
+	var source := Binding.warp_size(ticket)
+	var look := _picture_values() if quality else PackedFloat32Array()
+	var size := upscale_size(source, _upscale_kind(), 2, 1, int(look[13])) \
+		if quality and look[13] > 0.5 and _depth_upscale_failed != media.session_id else source
 	var token := int(ticket.get("slot_token", 0))
-	if token != _picture_token or _picture_refresh > 0:
+	var stamp := [quality, size, look]
+	if token != _picture_token or _picture_refresh > 0 or stamp != _depth_picture_look:
 		_picture_refresh = maxi(0, _picture_refresh - 1)
 		var warp := int(ticket.get("warp_texture_id", 0))
 		var created: bool = warp > 0 and platform.create_layer_image(VideoLayer.PICTURE_SLOT, size.x, size.y, 1, false)
+		if warp > 0 and not created and size != source:
+			# A runtime may refuse the enlarged swapchain: this session shows the pair at its own size.
+			DiagnosticLog.record("depth_upscale_failed", {"source": [source.x, source.y], "size": [size.x, size.y]})
+			_depth_upscale_failed = media.session_id
+			size = source
+			stamp[1] = size
+			created = platform.create_layer_image(VideoLayer.PICTURE_SLOT, size.x, size.y, 1, false)
 		if created and Vector2i(video_layer.picture_size) != size:
 			video_layer.invalidate() # a new swapchain for this size
 			video_layer.picture_size = Vector2(size)
 		if not created or platform.acquire_layer_image(VideoLayer.PICTURE_SLOT) <= 0:
 			return false
-		var copied: bool = platform.copy_layer_texture(VideoLayer.PICTURE_SLOT, warp)
+		var copied: bool = platform.enhance_layer_texture(VideoLayer.PICTURE_SLOT, warp, source.x, source.y, 2, 1,
+			look[0], look.slice(2, 13) if look[1] > 0.5 else PackedFloat32Array(), look[17], look[18]) if quality \
+			else platform.copy_layer_texture(VideoLayer.PICTURE_SLOT, warp)
 		if not platform.release_layer_image(VideoLayer.PICTURE_SLOT, false) or not copied:
+			if quality:
+				# This session keeps its pairs as the bridge drew them.
+				_depth_quality_failed = media.session_id
+				DiagnosticLog.record("depth_quality_failed", {"source": [source.x, source.y], "size": [size.x, size.y]})
 			return false
 		_picture_token = token
+		_depth_picture_look = stamp
+		_depth_quality_drawn = quality
+		_depth_picture_size = size
 	return video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(size), 1, Vector2.ZERO, Vector4(0, 0, 1, 1),
 		VideoLayer.OPAQUE, extras)
 
@@ -5275,7 +5331,7 @@ func _show_frame_picture(origin: XROrigin3D, extras: Array) -> bool:
 		if platform.acquire_layer_image(VideoLayer.PICTURE_SLOT) <= 0:
 			return false
 		var copied: bool = platform.enhance_layer_texture(VideoLayer.PICTURE_SLOT, int(ticket.color_texture_id), source.x, source.y,
-			look[0], look.slice(2, 13) if look[1] > 0.5 else PackedFloat32Array(), look[17], look[18]) if quality \
+			2 if stereo_sbs and not top_bottom else 1, 2 if stereo_sbs and top_bottom else 1, look[0], look.slice(2, 13) if look[1] > 0.5 else PackedFloat32Array(), look[17], look[18]) if quality \
 			else platform.copy_layer_texture(VideoLayer.PICTURE_SLOT, int(ticket.color_texture_id))
 		if not platform.release_layer_image(VideoLayer.PICTURE_SLOT, false) or not copied:
 			_frame_picture_failed = true

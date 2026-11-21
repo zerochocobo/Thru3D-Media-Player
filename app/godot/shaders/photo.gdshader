@@ -3,6 +3,9 @@ render_mode unshaded, cull_disabled, depth_draw_never, blend_mix;
 uniform sampler2D photo_texture : source_color, filter_linear_mipmap, repeat_disable;
 uniform sampler2D depth_texture : filter_linear, repeat_disable;
 uniform sampler2D stereo_texture : source_color, filter_linear_mipmap, repeat_disable;
+// The fast-model pair being replaced by the quality pair (same size), faded out over stereo_blend.
+uniform sampler2D stereo_previous : source_color, filter_linear_mipmap, repeat_disable;
+uniform float stereo_blend = 1.0;
 uniform bool photo_stereo = false;
 uniform bool portrait_enabled = false;
 uniform sampler2D portrait_texture : filter_linear_mipmap, repeat_disable;
@@ -48,6 +51,7 @@ vec4 photo_color(vec2 p) {
 	if (photo_stereo) {
 		vec2 local = clamp(color_uv(p), vec2(0.5) / generated_size, vec2(1.0) - vec2(0.5) / generated_size);
 		local.x = (local.x + float(eye_index)) * 0.5;
+		if (stereo_blend < 1.0) { return mix(texture(stereo_previous, local), texture(stereo_texture, local), stereo_blend); }
 		return texture(stereo_texture, local);
 	}
 	return texture(photo_texture, color_uv(p));
@@ -110,7 +114,7 @@ void fragment() {
 			photo_color(shown + vec2(step_uv.x, 0.0)).rgb,
 			photo_color(shown - vec2(step_uv.x, 0.0)).rgb);
 	}
-	ALBEDO = outside ? vec3(0.0) : color_grade(color.rgb);
+	ALBEDO = outside ? vec3(0.0) : color_grade(color.rgb, FRAGCOORD.xy);
 	ALPHA = outside ? (video_geometry == 0 ? 0.0 : 1.0) : color.a;
 	if (video_geometry == 0 && any(greaterThan(edge_feather, vec2(0.0)))) {
 		// Surface UV is per eye, independent of packed SBS/TB and depth reprojection.

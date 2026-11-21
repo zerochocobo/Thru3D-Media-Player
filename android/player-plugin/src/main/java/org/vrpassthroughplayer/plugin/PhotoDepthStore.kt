@@ -17,14 +17,21 @@ internal class PhotoDepthStore(cache: File, private val limit: Long = 256L * 102
     private val root = File(cache, NAME)
 
     /** [variant] separates maps of one file that differ by model or by the eye they describe. */
-    fun key(source: File, variant: String): String {
+    fun key(source: File, variant: String): String = keys(source, listOf(variant)).getValue(variant)
+
+    /** [key] for several variants, reading the file once. */
+    fun keys(source: File, variants: List<String>): Map<String, String> {
         val digest = MessageDigest.getInstance("SHA-256")
         source.inputStream().use { input ->
             val bytes = ByteArray(1 shl 16)
             while (true) { val count = input.read(bytes); if (count < 0) break; digest.update(bytes, 0, count) }
         }
-        digest.update(variant.toByteArray())
-        return digest.digest().take(20).joinToString("") { "%02x".format(it) }
+        return variants.associateWith { variant ->
+            (digest.clone() as MessageDigest).run {
+                update(variant.toByteArray())
+                digest().take(20).joinToString("") { "%02x".format(it) }
+            }
+        }
     }
 
     /** Float32 near map (width x height, little endian) or null: absent, another size, or damaged. */
@@ -95,6 +102,8 @@ internal class PhotoDepthStore(cache: File, private val limit: Long = 256L * 102
             true
         }.getOrDefault(false)
     }
+
+    fun remove(key: String) = synchronized(lock) { File(root, "$key.$EXTENSION").delete() }
 
     private fun prune() {
         val entries = root.listFiles()?.filter { it.extension == EXTENSION }?.sortedBy { it.lastModified() } ?: return

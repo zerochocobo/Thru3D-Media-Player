@@ -10,6 +10,7 @@ func run() -> void:
 	var camera := Camera3D.new(); camera.fov = 60; viewport.add_child(camera)
 	var menu := Menu.new(); camera.add_child(menu); menu.set_process(false); menu.visible = true
 	menu.section = Menu.Section.SETTINGS; menu.tab = Menu.VIDEO_TAB
+	menu._video_settings_expanded["alpha"] = true
 	for language in ["zh", "zh_Hant", "en", "ja"]:
 		menu.I18n.use(language)
 		for enabled in [true, false]:

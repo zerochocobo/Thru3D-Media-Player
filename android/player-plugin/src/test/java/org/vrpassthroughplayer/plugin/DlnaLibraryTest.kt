@@ -15,6 +15,21 @@ class DlnaLibraryTest {
         """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"><u:Result>${escape(didl)}</u:Result><NumberReturned>$returned</NumberReturned><TotalMatches>$total</TotalMatches><UpdateID>$update</UpdateID></u:BrowseResponse></s:Body></s:Envelope>"""
     private val description = """<root><device><friendlyName>PT server</friendlyName><UDN>uuid:pt</UDN><serviceList><service><serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType><controlURL>/control/cds</controlURL></service></serviceList></device></root>"""
 
+    @Test fun folderArtUsesDeclaredAlbumArtThenConfirmedSmallImageResource() {
+        val rows = DlnaClient.didl(xml("""
+            <container id="a"><albumArtURI>/art.jpg</albumArtURI>
+                <res protocolInfo="http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_TN">/tiny.jpg</res></container>
+            <container id="b"><res protocolInfo="http-get:*:image/png:*" resolution="320x180">/small.png</res></container>
+            <container id="c"><res protocolInfo="http-get:*:image/jpeg:*" resolution="6000x3000">/original.jpg</res></container>
+            <container id="d"><albumArtURI>ftp://nas/image.jpg</albumArtURI>
+                <res protocolInfo="http-get:*:video/mp4:*">/original.mp4</res></container>
+        """), "http://nas:8200/control/cds")
+        assertEquals("http://nas:8200/art.jpg", rows.getJSONObject(0).getString("cover"))
+        assertEquals("http://nas:8200/small.png", rows.getJSONObject(1).getString("cover"))
+        assertFalse(rows.getJSONObject(2).has("cover"))
+        assertFalse(rows.getJSONObject(3).has("cover"))
+    }
+
     @Test fun advertisedDlnaSubtitleLeaseIsUsableForCloneSamplingWithoutFfmpegIndex() {
         CaptionFixture().use { fixture ->
             val library=fixture.library()
@@ -66,6 +81,23 @@ class DlnaLibraryTest {
         }
     }
 
+    @Test fun photoPreviewUsesDeclaredSmallResourceWhileOpeningUsesOriginal() {
+        val rows = DlnaClient.didl(xml("""
+            <item id="photo"><class>object.item.imageItem.photo</class>
+                <res protocolInfo="http-get:*:image/jpeg:*" resolution="6000x4000">/original.jpg</res>
+                <res protocolInfo="http-get:*:image/jpeg:DLNA.ORG_PN=JPEG_TN" resolution="160x120">/tiny.jpg</res>
+            </item>
+            <item id="large"><class>object.item.imageItem.photo</class>
+                <res protocolInfo="http-get:*:image/jpeg:*" resolution="6000x4000">/large.jpg</res>
+            </item>
+        """), "http://nas/device.xml")
+        val photo = rows.getJSONObject(0)
+        assertEquals("http://nas/original.jpg", photo.getString("uri"))
+        assertEquals("http://nas/tiny.jpg", photo.getString("thumbnail_uri"))
+        assertFalse(rows.getJSONObject(1).has("thumbnail_uri"))
+        assertFalse(rows.getJSONObject(1).has("cover"))
+    }
+
     @Test fun audioSamplesUseAudioResourcesInsteadOfAlbumArtOrVideoPreviews() {
         val entries = DlnaClient.didl(xml("""<item id="a"><dc:title>Sample</dc:title><class>object.item.audioItem.musicTrack</class>
             <res protocolInfo="http-get:*:image/jpeg:*">http://nas:8200/cover.jpg</res>
@@ -106,6 +138,8 @@ class DlnaLibraryTest {
         var downloadAvailable = true
         var includeOther = false
         var unrelatedCount = 0
+        var directoryVideoId = "v_1"
+        var directoryResource = "/movie.mp4"
         val requests = mutableListOf<String>()
         val payload = "1\n00:00:00,000 --> 00:00:02,000\nFixture subtitle\n".toByteArray()
         val fixture = MediaServerClientTest.Fixture { request, _, body ->
@@ -122,19 +156,25 @@ class DlnaLibraryTest {
                     if ((!metadata && !parentAvailable) || (metadata && mode == "http_error"))
                         MediaServerClientTest.Reply(503, body = byteArrayOf())
                     else {
-                        fun video(id: String = "v_1", captions: Boolean = true, changed: Boolean = false): String =
-                            """<item id="$id"${if (metadata && parentInMetadata) " parentID=\"0\"" else ""}><dc:title>Movie</dc:title><res protocolInfo="http-get:*:video/mp4:*">/movie.mp4${if (changed) "?token=new" else ""}</res>${if (captions) "<res protocolInfo=\"http-get:*:text/srt:*\">/${if (id == "v_1") "movie" else "other"}.srt</res>" else ""}</item>"""
+                        fun video(id: String = "v_1", captions: Boolean = true, path: String = "/movie.mp4"): String =
+                            """<item id="${escape(id)}"${if (metadata && parentInMetadata) " parentID=\"0\"" else ""}><dc:title>Movie</dc:title><res protocolInfo="http-get:*:video/mp4:*">${escape(path)}</res>${if (captions) "<res protocolInfo=\"http-get:*:text/srt:*\">/${if (id == "v_1") "movie" else "other"}.srt</res>" else ""}</item>"""
                         val entries = if (!metadata && id == "unrelated") (0 until unrelatedCount).joinToString("") {
                             """<item id="unrelated-$it"><dc:title>Other $it</dc:title><res protocolInfo="http-get:*:video/mp4:*">/other-$it.mp4</res></item>"""
                         } else if (metadata) when (mode) {
                             "empty" -> ""
                             "omits" -> video(captions = false)
-                            "changed_uri" -> video(changed = true)
+                            "changed_uri" -> video(path = "/movie.mp4?token=new")
+                            "blank_video_address" -> item("<res protocolInfo=\"http-get:*:video/mp4:*\"> </res>")
+                            "no_address" -> item("")
+                            "no_video_resource" -> item("<res protocolInfo=\"http-get:*:text/srt:*\">/movie.srt</res>")
+                            "unrecognized_video" -> item("<res protocolInfo=\"http-get:*:VIDEO/MP4:*\">/private-name?token=secret-value</res>")
                             "wrong_id" -> video(id = "other")
                             else -> video(captions = parentCaptions)
-                        } else (if (mode == "removed_video") "" else video(captions = parentCaptions)) +
+                        } else (if (mode == "removed_video") "" else video(directoryVideoId, parentCaptions, directoryResource)) +
                             if (includeOther) video(id = "other") else ""
-                        MediaServerClientTest.Reply(body = soap(xml(entries)).toByteArray())
+                        val response = if (metadata && mode == "bad_count") soap(xml(entries), returned = 0)
+                            else soap(xml(entries))
+                        MediaServerClientTest.Reply(body = response.toByteArray())
                     }
                 }
             }
@@ -160,6 +200,166 @@ class DlnaLibraryTest {
             f.unrelatedCount = 300; library.browse("id", "unrelated")
             f.mode = "changed_uri"
             assertEquals(f.fixture.url + "/movie.mp4?token=new", f.library().playable("dlna://id/v_1"))
+        }
+    }
+
+    @Test fun incompleteMetadataRechecksTheListedObjectAndUsesItsCurrentResource() {
+        CaptionFixture().use { f ->
+            val library = f.library()
+            f.browse(library)
+            for (mode in listOf("empty", "no_video_resource", "wrong_id")) {
+                f.mode = mode
+                f.directoryResource = "/movie.mp4?token=$mode"
+                f.requests.clear()
+                assertEquals(f.fixture.url + f.directoryResource, library.playable("dlna://id/v_1"))
+                assertEquals(listOf("metadata:v_1", "children:0"), f.requests)
+            }
+        }
+    }
+
+    @Test fun historyKeepsTheKnownParentWhenCompleteMetadataOmitsIt() {
+        CaptionFixture().use { f ->
+            val library = f.library()
+            f.browse(library)
+            f.mode = "changed_uri"
+            f.requests.clear()
+            val fresh = library.playable("dlna://id/v_1")
+            assertEquals(f.fixture.url + "/movie.mp4?token=new", fresh)
+            assertEquals(listOf("metadata:v_1"), f.requests)
+            library.subtitles(fresh) // Pins the played item in the same bank used after restart.
+            f.unrelatedCount = 300
+            library.browse("id", "unrelated")
+            f.mode = "empty"
+            f.directoryResource = "/movie.mp4?token=replay"
+            f.requests.clear()
+            assertEquals(f.fixture.url + f.directoryResource, f.library().playable("dlna://id/v_1"))
+            assertEquals(listOf("metadata:v_1", "children:0"), f.requests)
+        }
+    }
+
+    @Test fun parentLookupRequiresTheSameServerAndExactLiveObject() {
+        CaptionFixture().use { f ->
+            val data = JSONObject(f.state)
+            val servers = data.getJSONArray("servers")
+            servers.put(JSONObject(servers.getJSONObject(0).toString()).put("id", "other-server"))
+            f.state = data.toString()
+            val library = f.library()
+            f.directoryVideoId = "v/+ &%20中"
+            f.browse(library)
+            f.mode = "empty"
+            val path = "v%2F%2B%20%26%2520%E4%B8%AD"
+            val requested = "metadata:v/+ &amp;%20中"
+            f.requests.clear()
+            assertEquals("DLNA item unavailable", assertThrows(IllegalStateException::class.java) {
+                library.playable("dlna://other-server/$path")
+            }.message)
+            assertEquals(listOf(requested), f.requests)
+            assertEquals(f.fixture.url + f.directoryResource, library.playable("dlna://id/$path"))
+            f.directoryVideoId = "different" // Same URL and title, different item.
+            f.requests.clear()
+            assertEquals("DLNA item unavailable", assertThrows(IllegalStateException::class.java) {
+                library.playable("dlna://id/$path")
+            }.message)
+            assertEquals(listOf(requested, "children:0"), f.requests)
+        }
+    }
+
+    @Test fun invalidMetadataCountsAndUnavailableParentResourcesStayFailures() {
+        CaptionFixture().use { f ->
+            val library = f.library()
+            f.browse(library)
+            f.requests.clear()
+            f.mode = "bad_count"
+            assertEquals("DLNA server unavailable", assertThrows(IllegalStateException::class.java) {
+                library.playable("dlna://id/v_1")
+            }.message)
+            assertEquals(listOf("metadata:v_1"), f.requests)
+
+            f.mode = "empty"
+            f.directoryResource = "file:///movie.mp4"
+            assertEquals("DLNA item unavailable", assertThrows(IllegalStateException::class.java) {
+                library.playable("dlna://id/v_1")
+            }.message)
+            f.parentAvailable = false
+            assertThrows(java.io.IOException::class.java) { library.playable("dlna://id/v_1") }
+            library.clearPlaybackReferences()
+            f.requests.clear()
+            assertEquals("DLNA item unavailable", assertThrows(IllegalStateException::class.java) {
+                library.playable("dlna://id/v_1")
+            }.message)
+            assertEquals(listOf("metadata:v_1"), f.requests)
+        }
+    }
+
+    @Test fun playbackDiagnosticsCompareTheServerResponseWithThePlayerMatch() {
+        val previousLog = DlnaClient.log
+        val previousMode = PlaybackPrivacy.mode
+        val previouslyProtected = PlaybackPrivacy.protectedFavorites
+        val messages = mutableListOf<String>()
+        DlnaClient.log = { messages.add(it) }
+        try {
+            PlaybackPrivacy.mode = "all"
+            PlaybackPrivacy.protectedFavorites = false
+            CaptionFixture().use { f ->
+                val library = f.library()
+                f.directoryResource = "/private-name.mp4?token=secret-value"
+                f.browse(library)
+                assertTrue(messages.single().startsWith("library_listing {phase=complete http=200"))
+                assertTrue(messages.single().contains("parsed_rows=1 parsed_videos=1"))
+                val counts = mapOf(
+                    "empty" to "id_matches=0 resources=0 nonblank_addresses=0 http_addresses=0 video_http_addresses=0",
+                    "wrong_id" to "id_matches=0 resources=0 nonblank_addresses=0 http_addresses=0 video_http_addresses=0",
+                    "no_address" to "id_matches=1 resources=0 nonblank_addresses=0 http_addresses=0 video_http_addresses=0",
+                    "no_video_resource" to "id_matches=1 resources=1 nonblank_addresses=1 http_addresses=1 video_http_addresses=0",
+                    "unrecognized_video" to "id_matches=1 resources=1 nonblank_addresses=1 http_addresses=1 video_http_addresses=1",
+                )
+                for ((mode, expectedCounts) in counts) {
+                    messages.clear()
+                    f.requests.clear()
+                    f.mode = mode
+                    assertEquals(f.fixture.url + f.directoryResource, library.playable("dlna://id/v_1"))
+                    assertEquals(listOf("metadata:v_1", "children:0"), f.requests)
+                    val message = messages.single()
+                    assertTrue(message.startsWith("playback_lookup outcome=parent_selected metadata={phase=complete http=200"))
+                    assertTrue(message.contains("$expectedCounts parsed_matches=0 parsed_videos=0 parsed_http_videos=0} parent={"))
+                    assertTrue(message.endsWith("parsed_matches=1 parsed_videos=1 parsed_http_videos=1}"))
+                    assertEquals(if (mode == "empty") 0 else 1, Regex("didl_objects=(\\d+)").find(message)!!.groupValues[1].toInt())
+                    assertEquals(message, DiagnosticLogs.redact(DiagnosticLogs.condense(message)).trimEnd())
+                    for (privateValue in listOf("v_1", "private-name", "secret-value", f.fixture.url)) {
+                        assertFalse(message.contains(privateValue))
+                    }
+                }
+                f.mode = "blank_video_address"
+                messages.clear()
+                library.playable("dlna://id/v_1")
+                assertTrue(messages.single().contains("nonblank_addresses=0 http_addresses=0 video_http_addresses=0"))
+                assertTrue(messages.single().contains("parsed_videos=1 parsed_http_videos=0"))
+
+                f.mode = "bad_count"
+                messages.clear()
+                assertThrows(IllegalStateException::class.java) { library.playable("dlna://id/v_1") }
+                assertTrue(messages.single().contains("phase=response_counts http=200 pages=1 didl_objects=1 page_declared=0 page_objects=1"))
+                assertTrue(messages.single().endsWith("parent=not_queried"))
+
+                f.mode = "empty"
+                f.parentAvailable = false
+                messages.clear()
+                assertThrows(java.io.IOException::class.java) { library.playable("dlna://id/v_1") }
+                assertTrue(messages.single().startsWith("playback_lookup outcome=failed metadata={phase=complete"))
+                assertTrue(messages.single().contains("parent={phase=response http=503"))
+
+                PlaybackPrivacy.mode = "none"
+                f.mode = "full"
+                f.parentAvailable = true
+                messages.clear()
+                f.browse(library)
+                assertEquals(f.fixture.url + "/movie.mp4", library.playable("dlna://id/v_1"))
+                assertTrue(messages.isEmpty())
+            }
+        } finally {
+            DlnaClient.log = previousLog
+            PlaybackPrivacy.mode = previousMode
+            PlaybackPrivacy.protectedFavorites = previouslyProtected
         }
     }
 

@@ -1,4 +1,5 @@
-// Video 2D->3D and portrait depth: ZipDepth base on MNN OpenCL. Still photos retain DA2 Small.
+// Video 2D->3D and portrait depth: ZipDepth base on MNN OpenCL. Still photos use DA2 Small, with a
+// 512x512 ZipDepth graph for the fast first map (and the fast-only photo setting).
 // The render bridge stages the
 // frame as float32 CHW RGB in [0, 1]; the model returns relative inverse depth (larger = nearer).
 // DepthStabilizer turns it into the 0..1 near map exactly as PTMediaServer's realtime path does
@@ -42,6 +43,8 @@ constexpr const char* kPhotoModelAsset = "depth-mnn/photo_depth.mnn";
 // Same network for the Vulkan fallback: MNN's Vulkan backend places the OpenCL graph's LayerNorm
 // and batched attention products on the CPU (see prepare_depth_mnn.py --photo --vulkan).
 constexpr const char* kPhotoVulkanModelAsset = "depth-mnn/photo_depth_vulkan.mnn";
+// Convolutional, so one graph serves OpenCL and Vulkan (prepare_zipdepth_mnn.py --photo).
+constexpr const char* kPhotoFastModelAsset = "depth-mnn/photo_fast.mnn";
 
 void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
@@ -76,11 +79,12 @@ AssetPtr open_model(JNIEnv* env, jobject assets, const char* path = kModelAsset)
     return asset;
 }
 // Compiled programs belong to one graph: the cache is named after the model bytes (as RVM's).
-// ZipDepth's convolution graph uses images; the independent photo ViT keeps buffers.
+// ZipDepth's convolution graphs use images; the photo ViT keeps buffers. Vulkan tunes only video:
+// photo sessions are built while the viewer opens.
 // Debug builds can compare: adb shell setprop debug.vrpp.depth.gpumode <MNN_GPU_* bits>.
-int gpu_mode(bool photo = false) {
+int gpu_mode(bool photo = false, bool vit = false) {
     if (quest::mnn_uses_vulkan()) return quest::mnn_vulkan_mode(!photo);
-    int mode = MNN_GPU_TUNING_FAST | (photo ? MNN_GPU_MEMORY_BUFFER : 0); // Default image mode.
+    int mode = MNN_GPU_TUNING_FAST | (vit ? MNN_GPU_MEMORY_BUFFER : 0); // Default image mode.
     char value[PROP_VALUE_MAX] = {};
     if (__system_property_get("debug.vrpp.depth.gpumode", value) > 0) {
         const int requested = std::atoi(value);
@@ -106,7 +110,7 @@ int depth_priority(bool photo = false) {
     return 0;
 }
 
-std::string cache_path(const void* model, size_t bytes, const std::string& directory, bool photo = false) {
+std::string cache_path(const void* model, size_t bytes, const std::string& directory, bool photo = false, bool vit = false) {
     if (directory.empty()) return {};
     const auto* data = static_cast<const unsigned char*>(model);
     uint64_t hash = 1469598103934665603ull; // FNV-1a over 8-byte words, then the tail (as RVM's cache name)
@@ -120,7 +124,7 @@ std::string cache_path(const void* model, size_t bytes, const std::string& direc
     char tag[17];
     snprintf(tag, sizeof(tag), "%016llx", static_cast<unsigned long long>(hash));
     // Tuned kernels belong to one memory mode: each mode keeps its own cache.
-    return directory + (quest::mnn_uses_vulkan() ? "/mnn_depth_vulkan_fp32_" : "/mnn_depth_fp16_") + tag + "_m" + std::to_string(gpu_mode(photo)) + ".cache";
+    return directory + (quest::mnn_uses_vulkan() ? "/mnn_depth_vulkan_fp32_" : "/mnn_depth_fp16_") + tag + "_m" + std::to_string(gpu_mode(photo, vit)) + ".cache";
 }
 
 // Changes with every installation: Android loads this library from a directory named anew for
@@ -152,10 +156,12 @@ struct Depth final {
     std::mutex post; // Stabilizer state: CPU stage, may overlap the next inference.
     std::atomic<bool> closed{false};
     bool photo = false;
+    bool vit = false; // DA2 photo graph; the fast photo graph is ZipDepth
     int mode = 0;
 
-    Depth(const void* model, size_t bytes, const std::string& cache, bool for_photo = false) : photo(for_photo) {
-        mode = gpu_mode(photo);
+    Depth(const void* model, size_t bytes, const std::string& cache, bool for_photo = false, bool for_vit = false)
+        : photo(for_photo), vit(for_vit) {
+        mode = gpu_mode(photo, vit);
         const auto started = std::chrono::steady_clock::now();
         net.reset(MNN::Interpreter::createFromBuffer(model, bytes), MNN::Interpreter::destroy);
         require(net != nullptr, "MNN depth model rejected");
@@ -384,11 +390,26 @@ Java_org_vrpassthroughplayer_plugin_DepthNative_describe(JNIEnv* env, jclass, jl
         const auto depth = find(handle);
         std::ostringstream json;
         json << "{\"width\":" << depth->width << ",\"height\":" << depth->height << ",\"gpu_mode\":" << depth->mode << ",\"priority\":" << depth_priority(depth->photo) << ",\"prepare_ms\":" << depth->prepare_ms
-             << ",\"model\":\"" << (depth->photo ? "DA2 Small" : "ZipDepth base") << "\",\"precision\":\"" << (quest::mnn_uses_vulkan() ? "fp32" : "fp16") << "\""
+             << ",\"model\":\"" << (depth->vit ? "DA2 Small" : "ZipDepth base") << "\",\"precision\":\"" << (quest::mnn_uses_vulkan() ? "fp32" : "fp16") << "\""
              << ",\"backend\":\"" << (quest::mnn_uses_vulkan() ? "MNN_Vulkan" : "MNN_OpenCL") << "\""
              << ",\"gpu_ops\":" << depth->gpu_ops << ",\"cpu_fallback_ops\":" << depth->host_ops.size() << '}';
         return env->NewStringUTF(json.str().c_str());
     } catch (const std::exception& error) { fail(env, error.what()); return nullptr; }
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_DepthNative_createPhotoFast(JNIEnv* env, jclass, jobject assets, jstring directory) {
+    try {
+        const auto model = open_model(env, assets, kPhotoFastModelAsset);
+        const void* data = AAsset_getBuffer(model.get());
+        const auto bytes = static_cast<size_t>(AAsset_getLength64(model.get()));
+        auto depth = std::make_shared<Depth>(data, bytes, cache_path(data, bytes, text(env, directory), true, false), true, false);
+        require(depth->width == 512 && depth->height == 512, "Fast photo depth model shape differs");
+        std::lock_guard<std::mutex> guard(registry_mutex);
+        const jlong handle = next_handle++;
+        registry.emplace_back(handle, std::move(depth));
+        return handle;
+    } catch (const std::exception& error) { fail(env, error.what()); return 0; }
 }
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -397,7 +418,7 @@ Java_org_vrpassthroughplayer_plugin_DepthNative_createPhoto(JNIEnv* env, jclass,
         const auto model = open_model(env, assets, quest::mnn_uses_vulkan() ? kPhotoVulkanModelAsset : kPhotoModelAsset);
         const void* data = AAsset_getBuffer(model.get());
         const auto bytes = static_cast<size_t>(AAsset_getLength64(model.get()));
-        auto depth = std::make_shared<Depth>(data, bytes, cache_path(data, bytes, text(env, directory), true), true);
+        auto depth = std::make_shared<Depth>(data, bytes, cache_path(data, bytes, text(env, directory), true, true), true, true);
         require(depth->width == 518 && depth->height == 518, "Photo depth model shape differs");
         std::lock_guard<std::mutex> guard(registry_mutex);
         const jlong handle = next_handle++;

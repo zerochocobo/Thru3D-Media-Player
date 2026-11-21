@@ -1,0 +1,158 @@
+--- a/stream/stream.h
++++ b/stream/stream.h
+@@ -346,6 +346,7 @@
+     int flags;                  // STREAM_READ etc.
+     const stream_info_t *sinfo; // NULL = autoprobe, otherwise force stream impl.
+     void *special_arg;          // specific to impl., use only with sinfo
++    int *open_http_status;      // optional result for the rejected HTTP probe
+ };
+ 
+ int stream_create_with_args(struct stream_open_args *args, struct stream **ret);
+--- a/stream/stream_curl.c
++++ b/stream/stream_curl.c
+@@ -182,6 +182,7 @@
+     // Probe state. Set on the curl thread read by curl_open after.
+     bool probed;
+     bool stream_ok;
++    int open_http_status;
+ 
+     // Shared state, protected by mtx.
+     mp_mutex mtx;
+@@ -488,6 +489,8 @@
+         return;
+ 
+     if (!is_http_success(resp)) {
++        if (resp >= 400 && resp <= 599)
++            p->open_http_status = resp;
+         MP_ERR(p, "HTTP error %ld\n", resp);
+         goto done;
+     }
+@@ -1007,10 +1010,15 @@
+     mp_mutex_lock(&p->mtx);
+     while (!p->probed && !atomic_load_explicit(&p->aborted, memory_order_relaxed))
+         mp_cond_wait(&p->cond, &p->mtx);
++    int http_status = p->probed ? p->open_http_status : 0;
+     mp_mutex_unlock(&p->mtx);
+ 
+-    if (!p->stream_ok || atomic_load(&p->aborted))
++    bool aborted = atomic_load(&p->aborted);
++    if (!p->stream_ok || aborted) {
++        if (!aborted && args->open_http_status)
++            *args->open_http_status = http_status;
+         return STREAM_ERROR;
++    }
+ 
+     char *content_type = NULL;
+     curl_easy_getinfo(p->curl, CURLINFO_CONTENT_TYPE, &content_type);
+--- a/demux/demux.h
++++ b/demux/demux.h
+@@ -222,6 +222,7 @@
+     bool allow_playlist_create;
+     // result
+     bool demuxer_failed;
++    int open_http_status;
+ };
+ 
+ typedef struct demuxer {
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -3763,8 +3763,14 @@
+         mp_cancel_set_parent(priv_cancel, cancel);
+     struct stream *s = params->external_stream;
+     if (!s) {
+-        s = stream_create(url, STREAM_READ | params->stream_flags,
+-                          priv_cancel, global);
++        struct stream_open_args args = {
++            .global = global,
++            .cancel = priv_cancel,
++            .url = url,
++            .flags = STREAM_READ | params->stream_flags,
++            .open_http_status = &params->open_http_status,
++        };
++        stream_create_with_args(&args, &s);
+         if (s && params->init_fragment.len) {
+             s = create_webshit_concat_stream(global, priv_cancel,
+                                              params->init_fragment, s);
+--- a/player/core.h
++++ b/player/core.h
+@@ -481,6 +481,7 @@
+     //     to true.
+     struct demuxer *open_res_demuxer;
+     int open_res_error;
++    int open_res_http_status;
+ 
+     struct mp_als *als_state; // lazily initialized on first use
+ } MPContext;
+--- a/player/loadfile.c
++++ b/player/loadfile.c
+@@ -1277,6 +1277,7 @@
+     struct demuxer *demux =
+         demux_open_url(mpctx->open_url, &p, mpctx->open_cancel, mpctx->global);
+     mpctx->open_res_demuxer = demux;
++    mpctx->open_res_http_status = p.open_http_status;
+ 
+     if (demux) {
+         MP_VERBOSE(mpctx, "Opening done: %s\n", mpctx->open_url);
+@@ -1353,8 +1354,9 @@
+     mpctx->open_active = true;
+ }
+ 
+-static void open_demux_reentrant(struct MPContext *mpctx)
+-{
++static void open_demux_reentrant(struct MPContext *mpctx, int *http_status)
++{
++    *http_status = 0;
+     char *url = mpctx->stream_open_filename;
+ 
+     if (mpctx->open_active) {
+@@ -1407,6 +1409,7 @@
+         mp_cancel_set_parent(mpctx->demuxer->cancel, mpctx->playback_abort);
+     } else {
+         mpctx->error_playing = mpctx->open_res_error;
++        *http_status = mpctx->open_res_http_status;
+     }
+ 
+ cancel:
+@@ -1891,14 +1894,14 @@
+         goto terminate_playback;
+     }
+ 
+-    open_demux_reentrant(mpctx);
++    open_demux_reentrant(mpctx, &end_event.http_status);
+     if (!mpctx->stop_play && !mpctx->demuxer) {
+         process_hooks(mpctx, "on_load_fail");
+         if (strcmp(mpctx->stream_open_filename, mpctx->filename) != 0 &&
+             !mpctx->stop_play)
+         {
+             mpctx->error_playing = MPV_ERROR_LOADING_FAILED;
+-            open_demux_reentrant(mpctx);
++            open_demux_reentrant(mpctx, &end_event.http_status);
+         }
+     }
+     if (!mpctx->demuxer || mpctx->stop_play)
+--- a/include/mpv/client.h
++++ b/include/mpv/client.h
+@@ -1547,6 +1547,8 @@
+      * Since API version 1.108.
+      */
+     int playlist_insert_num_entries;
++    // Thru3D: status from the final failed primary HTTP open, or zero.
++    int http_status;
+ } mpv_event_end_file;
+ 
+ typedef struct mpv_event_client_message {
+--- a/player/client.c
++++ b/player/client.c
+@@ -1993,8 +1993,11 @@
+                                eef->playlist_insert_num_entries);
+         }
+ 
+-        if (eef->reason == MPV_END_FILE_REASON_ERROR)
++        if (eef->reason == MPV_END_FILE_REASON_ERROR) {
+             node_map_add_string(dst, "file_error", mpv_error_string(eef->error));
++            if (eef->error == MPV_ERROR_LOADING_FAILED && eef->http_status)
++                node_map_add_int64(dst, "http_status", eef->http_status);
++        }
+         break;
+     }
+ 

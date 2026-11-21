@@ -39,6 +39,10 @@ internal class MediaSources(
     fun rememberWebVideo(descriptor: WebVideoDescriptor) = webVideo.remember(descriptor)
     fun webVideoProjection(uri: String): String = webVideo.descriptor(uri)?.projection?.toString() ?: "{}"
     private val smb by lazy { SmbLibrary(context() ?: error("Activity unavailable")) { streams() } }
+    fun smbThumbnail(uri: String): StreamSource.Reader = smb.thumbnailReader(uri)
+    fun dlnaThumbnail(server: String, url: String): DlnaThumbnailReader? = dlna.thumbnailReader(server, url)
+    fun dlnaThumbnailChildren(server: String, objectId: String, job: LocalThumbnailPrefetch.Work): JSONArray =
+        dlna.thumbnailChildren(server, objectId, job)
     private val smbBrowseRequests = SmbBrowseRequests(stalled = { smb.retire(it) }) { id, json -> if (!stopped) emit(id, json) }
     private val mediaServers = MediaServerLibrary(::context, ::streams, ::nextId, emit = emit)
     fun serverRequest(json: String): Int = mediaServers.request(json)
@@ -117,6 +121,7 @@ internal class MediaSources(
 
     fun dlnaBrowse(serverId: String, objectId: String): Int = run("dlna") {
         JSONObject().put("server_id", serverId).put("object_id", objectId)
+            .put("freshness", "fresh").put("complete", true)
             .put("entries", dlna.browse(serverId, objectId.ifEmpty { "0" }))
     }
 
@@ -155,7 +160,8 @@ internal class MediaSources(
         val id = nextId()
         fun reply(result: JSONObject) = result.put("source", "smb").put("server_id", serverId).put("path", path).toString()
         smbBrowseRequests.submit(id, serverId, {
-            reply(try { JSONObject().put("entries", smb.browse(serverId, path, subtitlesOnly)).put("state", "ready") }
+            reply(try { JSONObject().put("entries", smb.browse(serverId, path, subtitlesOnly)).put("state", "ready")
+                .put("freshness", "fresh").put("complete", !subtitlesOnly) }
             catch (error: Throwable) { smbFailure(error) })
         }, { reply(JSONObject().put("state", "error").put("error", "SMB server not responding. Refresh to retry")) })
         return id

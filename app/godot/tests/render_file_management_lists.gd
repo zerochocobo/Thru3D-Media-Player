@@ -47,7 +47,9 @@ func _run() -> void:
 			if view == "folder_rename":
 				menu.section = Menu.Section.CLOUD; menu._cloud_stack = [{"id":"/account", "title":"115"}]
 				menu.file_actions.rename.open({"title":"旅行.2026", "uri":"cloud://account/folder", "folder":true, "can_rename":true})
-			if view.begins_with("settings"): menu.section = Menu.Section.SETTINGS; menu.tab = Menu.GENERAL_TAB; menu.refresh()
+			if view in ["settings", "settings_hint"]:
+				menu.section = Menu.Section.SETTINGS; menu.tab = Menu.GENERAL_TAB
+				menu._set_general_settings_group("files", true); menu.refresh()
 			if view == "settings_entry":
 				menu.section = Menu.Section.LOCAL; menu.refresh(); menu._activate(Actions.EDIT_MODE)
 			menu._draw()

@@ -10,6 +10,7 @@ func run() -> void:
 	var camera := Camera3D.new(); camera.fov = 60; viewport.add_child(camera)
 	var menu := Menu.new(); camera.add_child(menu); menu.set_process(false); menu.visible = true
 	menu.section = Menu.Section.SETTINGS; menu.tab = Menu.GENERAL_TAB
+	menu._set_general_settings_group("files", true)
 	for language in ["zh", "en"]:
 		menu.I18n.use(language)
 		for enabled in [true, false]:

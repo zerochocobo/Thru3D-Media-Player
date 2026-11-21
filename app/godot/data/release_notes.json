@@ -2,6 +2,147 @@
   "schema": 1,
   "entries": [
     {
+      "version": "0.18.6",
+      "date": "2026-11-21",
+      "title": {
+        "zh": "媒体预览、照片3D与交互改进",
+        "zh_Hant": "媒體預覽、照片3D與互動改善",
+        "en": "Media previews, photo 3D and interaction improvements",
+        "ja": "メディアプレビュー・写真3D・操作性の改善"
+      },
+      "items": [
+        {
+          "id": "photo-3d-loading-speed",
+          "text": {
+            "zh": "加快照片3D的左右眼画面生成与显示，减少首张照片转换的等待；优化带EXIF方向信息的竖图解码和转正，改善竖图进入3D的速度。",
+            "zh_Hant": "加快照片3D的左右眼畫面生成與顯示，減少首張照片轉換的等待；最佳化帶EXIF方向資訊的直式照片解碼和轉正，改善直式照片進入3D的速度。",
+            "en": "Speed up photo 3D stereo-image generation and display to reduce the first photo's conversion wait. Faster decoding and orientation of portrait photos with EXIF rotation also reduce the wait for 3D.",
+            "ja": "写真3Dの左右画像の生成と表示を高速化し、最初の写真の変換待ち時間を短縮しました。EXIF回転情報を持つ縦写真のデコードと向きの補正も高速化し、3D表示までの待ち時間を減らしました。"
+          }
+        },
+        {
+          "id": "picture-quality-under-video-3d",
+          "text": {
+            "zh": "实时2D转3D可同时开启画质模式，支持兼容的1080p和4K片源使用锐度、降噪、超级分辨率和调色；可用放大尺寸按设备能力调整，增强处理会增加设备负担。",
+            "zh_Hant": "即時2D轉3D可同時開啟畫質模式，支援相容的1080p和4K片源使用銳度、降噪、超級解析度和調色；可用放大尺寸依裝置能力調整，增強處理會增加裝置負擔。",
+            "en": "Use Picture Quality Mode with real-time 2D-to-3D on compatible 1080p and 4K videos, including sharpness, denoising, Super Resolution and color controls. Upscaling follows device capabilities, and enhancement increases device load.",
+            "ja": "対応する1080p・4K動画で、リアルタイム2Dから3Dへの変換と画質モードを併用できるようになりました。シャープネス、ノイズ除去、超解像、色を調整できます。拡大サイズは端末の能力に応じて調整され、画質処理は端末の負荷を増やします。"
+          }
+        },
+        {
+          "id": "library-media-previews",
+          "text": {
+            "zh": "媒体库自动补全本地存储、SMB和DLNA中缺少的视频及照片预览图，优先复用现有配图和缓存；预读设置统一收纳到「预读取文件预览图」。卡顿时可暂停预读并在恢复后补试，手动刷新可重试可见的缺图项。",
+            "zh_Hant": "媒體庫自動補齊本機儲存、SMB和DLNA中缺少的影片及照片預覽圖，優先重用現有配圖和快取；預讀設定統一收納至「預讀取檔案預覽圖」。頓挫時可暫停預讀並在恢復後補試，手動重新整理可重試可見的缺圖項目。",
+            "en": "Automatically fill missing video and photo previews for local storage, SMB and DLNA, reusing existing artwork and caches first. Prefetch settings are grouped together. Prefetching can pause when frame timing worsens and retry after recovery; manual refresh can retry visible entries with missing previews.",
+            "ja": "ローカルストレージ、SMB、DLNAで不足している動画・写真のプレビューを自動生成し、既存の画像とキャッシュを優先して再利用します。先読み設定も一か所にまとめました。フレーム時間が悪化すると先読みを一時停止し、回復後に再試行できます。手動更新でも表示中の不足分を再試行できます。"
+          }
+        },
+        {
+          "id": "progressive-photo-3d",
+          "text": {
+            "zh": "照片3D新增「先快后精」「画质优先」「速度优先」三种转换方式，默认先显示快速结果，再补充精细结果；已有精细缓存优先复用。",
+            "zh_Hant": "照片3D新增「先快後精」「畫質優先」「速度優先」三種轉換方式，預設先顯示快速結果，再補上精細結果；已有精細快取優先重用。",
+            "en": "Photo 3D offers Fast, then fine, Best quality and Fastest conversion modes. The default shows a fast result first and refines it afterward, reusing a cached quality result when available.",
+            "ja": "写真3Dに高速表示後に精細化、画質優先、速度優先の3方式を追加しました。既定では高速な結果を先に表示してから精細化し、精細なキャッシュがある場合は優先して利用します。"
+          }
+        },
+        {
+          "id": "video-own-depth-synchronization",
+          "text": {
+            "zh": "实时2D转3D短暂等待画面对应的深度图，减少画面与深度错帧；等待上限80毫秒，较慢设备自动停止等待，并按实际等待调整音频延迟。",
+            "zh_Hant": "即時2D轉3D短暫等待畫面對應的深度圖，減少畫面與深度錯幀；等待上限80毫秒，較慢裝置自動停止等待，並依實際等待調整音訊延遲。",
+            "en": "Real-time 2D-to-3D briefly waits for each processed frame to receive its own depth map, up to 80 ms. Slower devices stop waiting automatically, and audio delay follows the measured wait.",
+            "ja": "リアルタイム2Dから3Dへの変換で、処理対象フレームに対応する深度マップを最大80ミリ秒待ち、映像と深度のずれを減らします。遅い端末では待機を自動停止し、音声遅延は実測待機時間に追従します。"
+          }
+        },
+        {
+          "id": "video-depth-cut-detection",
+          "text": {
+            "zh": "减少运动镜头中深度稳定器反复误判切镜造成的重置。",
+            "zh_Hant": "減少運動鏡頭中深度穩定器反覆誤判切鏡造成的重設。",
+            "en": "Reduce repeated false scene-cut resets in the video depth stabilizer during moving shots.",
+            "ja": "動きのあるショットで深度安定化が誤ってカットを繰り返し検出し、リセットする頻度を減らしました。"
+          }
+        },
+        {
+          "id": "picture-controls-clear-view",
+          "text": {
+            "zh": "按住画面或字幕滑条、画质或字幕显示选项时暂时隐藏其他菜单内容，松手恢复；修复数值刷新时菜单重新遮挡画面的问题，并减少按住扳机时的提示遮挡。",
+            "zh_Hant": "按住畫面或字幕滑桿、畫質或字幕顯示選項時暫時隱藏其他選單內容，放開後恢復；修復數值更新時選單重新遮擋畫面的問題，並減少按住扳機時的提示遮擋。",
+            "en": "Temporarily hide other menu content while holding supported picture or subtitle sliders and display options, then restore it on release. Value refreshes no longer bring the hidden menu back, and tooltips interfere less while a trigger is held.",
+            "ja": "対応する画面・字幕スライダーや表示項目を押している間は他のメニュー内容を一時的に隠し、離すと戻します。値の更新で隠したメニューが再表示される問題を修正し、トリガーを押している間のヒント表示による遮りも減らしました。"
+          }
+        },
+        {
+          "id": "halo-edge-and-pointer",
+          "text": {
+            "zh": "氛围光不再覆盖画面外沿，并提供画面边缘柔化选项；菜单外射线在命中屏幕处结束，光标点位于射线末端。",
+            "zh_Hant": "氛圍光不再覆蓋畫面外沿，並提供畫面邊緣柔化選項；選單外射線在命中螢幕處結束，游標點位於射線末端。",
+            "en": "Keep ambient light outside the picture edge and offer an optional soft picture edge. Outside menus, the ray ends where it reaches the screen, with the pointer dot at its tip.",
+            "ja": "アンビエントライトが映像の外周を覆わないようにし、映像端のソフト化を選択可能にしました。メニュー外のレイはスクリーンに当たる位置で終わり、その先端にポインターを表示します。"
+          }
+        },
+        {
+          "id": "dlna-fresh-playback-selection",
+          "text": {
+            "zh": "DLNA播放前重新核对所在目录，改善目录内容变化后的视频匹配，并将预览和查询诊断纳入问题报告。",
+            "zh_Hant": "DLNA播放前重新核對所在目錄，改善目錄內容變動後的影片比對，並將預覽和查詢診斷納入問題報告。",
+            "en": "Recheck the parent DLNA listing before playback to improve video matching after directory changes. Problem reports include preview and query diagnostics.",
+            "ja": "DLNA再生前に親フォルダーの一覧を再確認し、内容変更後の動画の照合を改善しました。問題報告にはプレビューと検索の診断情報も含めます。"
+          }
+        },
+        {
+          "id": "document-access-loading",
+          "text": {
+            "zh": "USB或系统文件选择器检查文件访问权限时显示加载状态，避免暂时误报播放失败。",
+            "zh_Hant": "USB或系統檔案選擇器檢查檔案存取權限時顯示載入狀態，避免暫時誤報播放失敗。",
+            "en": "Show a loading state during USB or system file picker access checks instead of temporarily reporting playback failure.",
+            "ja": "USBやシステムファイル選択でアクセス権を確認する間は読み込み状態を表示し、一時的に再生失敗と表示されるのを防ぎます。"
+          }
+        },
+        {
+          "id": "qiyu-dark-gradients",
+          "text": {
+            "zh": "奇遇运行时在兼容的线性眼缓冲路径加入抖动处理，尝试减轻暗部色阶断层；系统取帧返回纯黑图时改用备用解码器重试。",
+            "zh_Hant": "奇遇執行環境在相容的線性眼緩衝路徑加入抖色處理，嘗試減輕暗部色階斷層；系統取幀傳回純黑圖時改用備用解碼器重試。",
+            "en": "On QIYU, add dithering on compatible linear eye-buffer paths to reduce dark gradient banding. Retry with a fallback decoder when system frame capture returns an all-black image.",
+            "ja": "QIYUの対応するリニアアイバッファ経路にディザリングを追加し、暗部の階調段差の軽減を図ります。システムのフレーム取得が真っ黒な画像を返す場合は代替デコーダーで再試行します。"
+          },
+          "scope": [
+            "qiyu"
+          ]
+        },
+        {
+          "id": "settings-groups",
+          "text": {
+            "zh": "重新整理常规、视频和显示设置，按文件管理、隐私、输出与性能、3D、透视和字幕等分类折叠。显示页首保留界面配色、手表样式、控制栏透明度和场景身高，透明度可通过「调整」按钮打开。",
+            "zh_Hant": "重新整理一般、影片和顯示設定，依檔案管理、隱私、輸出與效能、3D、透視和字幕等分類摺疊。顯示頁首保留介面配色、手錶樣式、控制列透明度和場景身高，透明度可透過「調整」按鈕開啟。",
+            "en": "Reorganize General, Video and Display settings into collapsible groups for file management, privacy, output and performance, 3D, passthrough and subtitles. Appearance, watch style, control bar transparency and scene height stay at the top of Display; an Adjust button opens transparency controls.",
+            "ja": "一般・動画・表示設定を、ファイル管理、プライバシー、出力と性能、3D、パススルー、字幕などの折りたたみグループに整理しました。表示設定の先頭には配色、時計のスタイル、操作バーの透明度、シーン内の身長を配置し、「調整」ボタンから透明度を変更できます。"
+          }
+        },
+        {
+          "id": "file-management-setting-shortcut",
+          "text": {
+            "zh": "从媒体库开启文件管理时，可直接定位到对应设置，返回后保留原来的来源、目录和浏览位置。",
+            "zh_Hant": "從媒體庫開啟檔案管理時，可直接定位至對應設定，返回後保留原本的來源、目錄和瀏覽位置。",
+            "en": "The library's file-management entry takes you directly to its setting. Returning preserves the source, folder and browsing position.",
+            "ja": "ライブラリのファイル管理入口から対応する設定へ直接移動できます。戻ると元のソース、フォルダー、閲覧位置が保たれます。"
+          }
+        },
+        {
+          "id": "network-playback-error-reasons",
+          "text": {
+            "zh": "网络视频打开失败时保留媒体服务返回的HTTP错误信息，让服务不可用、访问受限等原因更清楚。",
+            "zh_Hant": "網路影片開啟失敗時保留媒體服務傳回的HTTP錯誤資訊，讓服務無法使用、存取受限等原因更清楚。",
+            "en": "Preserve the media service's HTTP error details when a network video fails to open, making causes such as service unavailability and access restrictions clearer.",
+            "ja": "ネットワーク動画を開けない場合にメディアサービスのHTTPエラー情報を保持し、サービス停止やアクセス制限などの原因をわかりやすくしました。"
+          }
+        }
+      ]
+    },
+    {
       "version": "0.18.5",
       "date": "2026-11-20",
       "title": {

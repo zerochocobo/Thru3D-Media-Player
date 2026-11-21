@@ -140,7 +140,9 @@ var unread_from := ""
 var release_notes := preload("res://scripts/release_notes_dialog.gd").new()
 var _about_page := 0 # app, credits
 var _video_settings_expanded := {}
+var _display_settings_expanded := {}
 var _subtitle_settings_expanded := ""
+var _general_settings_expanded := {}
 ## VR subtitle distances (metres); the text keeps its angular size at any distance.
 const SubtitleDepth := preload("res://scripts/subtitle_depth.gd")
 const SubtitleStyle := preload("res://scripts/subtitle_style.gd")
@@ -197,6 +199,9 @@ const FILTER_BASE := 70
 const MEDIA_FILTERS := ["All", "Video", "Images"]
 const FOLDER_FILTER := 3 # Keep existing video/image filter IDs and saved positions stable.
 const ImageInfo := preload("res://scripts/image_info.gd")
+const DirectoryArtwork := preload("res://scripts/library_directory_artwork.gd")
+const ThumbnailPrefetch := preload("res://scripts/library_thumbnail_prefetch.gd")
+const MediaLocation := preload("res://scripts/media_location.gd")
 const DiscTitles := preload("res://scripts/disc_titles.gd")
 const Presentation := preload("res://scripts/library_presentation.gd")
 const VIEW_LIST := 88
@@ -320,7 +325,15 @@ var _field := 1
 var _shift := false
 var _symbols := false
 var _side: Node3D                  # navigation column, angled towards the viewer
-var _covers := {}                  # DLNA cover URL -> HTTPRequest while it downloads
+var _covers := {}                  # Other cover URLs -> HTTPRequest while downloading
+var directory_artwork := DirectoryArtwork.new()
+var thumbnail_prefetch := ThumbnailPrefetch.new(self)
+var _thumbnail_reading := false
+var _thumbnail_indicator: MeshInstance3D
+var _folder_covers := preload("res://scripts/library_folder_cover_fetch.gd").new(self)
+var _manual_refresh_start := false
+var _manual_refresh_id := -1
+var _manual_refresh_scope := ""
 
 ## The browser stays a child of the transport while expanded. Data and requests remain shared.
 var compact := false
@@ -525,6 +538,7 @@ func toggle() -> void:
 			_load_cloud(); refresh()
 
 func dismiss() -> void:
+	thumbnail_prefetch.cancel()
 	if release_notes.opened: release_notes.close(self); return
 	_cancel_smb_connect(false)
 	if theme_editor.opened: theme_editor.close(false)
@@ -538,7 +552,9 @@ func dismiss() -> void:
 	archives.hide()
 	cloud_pagination.settings_expanded = false
 	_video_settings_expanded.clear()
+	_display_settings_expanded.clear()
 	_subtitle_settings_expanded = ""
+	_general_settings_expanded.clear()
 	file_actions.return_from_settings(false)
 	if voice_manager.opened: voice_manager.close()
 	_voice_drag.clear()
@@ -1019,6 +1035,12 @@ func stick_scroll_horizontal(x: float, delta: float) -> void:
 		server_browser.gallery.stick_scroll(x, delta)
 
 func _process(delta: float) -> void:
+	Thumbnails.poll()
+	_apply_loaded_thumbnail()
+	thumbnail_prefetch.tick(delta)
+	if directory_artwork.busy() and directory_artwork.tick(_artwork_scope()) and visible:
+		_update_thumbnail_buttons()
+	_folder_covers.tick()
 	web_video.tick()
 	web_browser.tick()
 	if release_notes.opened: return
@@ -1075,6 +1097,7 @@ func _set_scroll(value: float, user_activity: bool = true) -> void:
 	# An open dropdown follows its field, so a full list still redraws it at each line.
 	var redraw := floori(clamped + 0.001) != _visible_line() and (not _full_list() or not choices.opened.is_empty())
 	scroll = clamped
+	thumbnail_prefetch.cancel()
 	_browse_focus = {}
 	if user_activity: _browse_activity()
 	else:
@@ -1684,6 +1707,7 @@ func refresh_cloud_mutation() -> void:
 # --- requests -------------------------------------------------------------------------------
 
 func _request(kind: String, id: Variant) -> void:
+	if kind in ["local", "smb_browse", "dlna_browse"]: thumbnail_prefetch.cancel()
 	if id is int and id > 0:
 		if kind in ["local", "smb_browse", "dlna_browse"] and (_browse_loaded_scope != _browse_scope() or \
 			(kind == "local" and _local_entries.is_empty()) or (kind == "smb_browse" and _smb_entries.is_empty()) or (kind == "dlna_browse" and _dlna_entries.is_empty())):
@@ -1701,6 +1725,8 @@ func _request(kind: String, id: Variant) -> void:
 			for previous in _pending.keys():
 				if _pending[previous] == kind: _pending.erase(previous)
 		_pending[id] = kind
+		if _manual_refresh_start and kind in ["local", "smb_browse", "dlna_browse", "cloud"]:
+			_manual_refresh_id = id
 		if kind == "local":
 			for previous in _pending.keys():
 				if previous != id and _pending[previous] == "local": _pending.erase(previous)
@@ -1876,6 +1902,7 @@ func _on_media_list(id: int, payload: String) -> void:
 				cloud_search.observe(result)
 				file_actions.commit_cloud(str(result.get("order", "")))
 				_cloud_entries = result.get("entries", [])
+				directory_artwork.accept(_artwork_location(), result)
 				_cloud_page = _cloud_requested_page
 				_cloud_next = int(result.get("next_offset", -1))
 				_cloud_total = int(result.get("total", -1))
@@ -1888,6 +1915,7 @@ func _on_media_list(id: int, payload: String) -> void:
 			"local":
 				if str(result.get("path", "")) == _local_path():
 					_local_entries = result.get("entries", [])
+					directory_artwork.accept(_artwork_location() if section == Section.LOCAL else {}, result)
 					_local_volumes = result.get("volumes", _local_entries.filter(func(entry): return entry.get("volume",false)) if _local_path().is_empty() else _local_volumes)
 					_local_all_files = bool(result.get("all_files", true))
 					_restore_folder_position()
@@ -1900,6 +1928,7 @@ func _on_media_list(id: int, payload: String) -> void:
 			"smb_browse":
 				if str(result.get("server_id")) == _smb_server and str(result.get("path")) == _smb_path:
 					_smb_entries = result.get("entries", [])
+					directory_artwork.accept(_artwork_location(), result)
 					_restore_folder_position()
 			"dlna_servers", "dlna_discover", "dlna_save", "dlna_remove":
 				_dlna_servers = result.get("servers", [])
@@ -1910,9 +1939,13 @@ func _on_media_list(id: int, payload: String) -> void:
 				var current_object := str(_dlna_stack.back().id) if not _dlna_stack.is_empty() else "0"
 				if str(result.get("server_id")) == _dlna_server and str(result.get("object_id", current_object)) == current_object:
 					_dlna_entries = result.get("entries", [])
+					directory_artwork.accept(_artwork_location(), result)
 					_restore_folder_position()
 	if visible:
 		refresh()
+		if (id == _manual_refresh_id and state == "ready" and result.get("freshness") == "fresh"
+				and kind in ["local", "smb_browse", "dlna_browse"] and _artwork_scope() == _manual_refresh_scope):
+			thumbnail_prefetch.refreshed(_manual_refresh_scope)
 		if kind == "cloud" and state == "ready" and not _return_uri.is_empty() and rows.any(func(row):return str(row.get("uri", "")) == _return_uri):
 			remember_playback_context(_return_uri)
 	if changed_order and state == "ready": directory_order_changed.emit()
@@ -2143,8 +2176,13 @@ func _rebuild_rows() -> void:
 						continue
 					rows.append({"title": str(found.name), "detail": str(found.host), "icon": "plus", "smb_found": found})
 			else:
+				var sidecars := ThumbnailPrefetch.smb_sidecars(_smb_entries)
 				for entry in _smb_entries:
-					rows.append(_entry_row(entry))
+					var row := _entry_row(entry)
+					if row.get("kind") == "video":
+						var sidecar := ThumbnailPrefetch.smb_sidecar(sidecars, str(entry.get("title", "")))
+						if not sidecar.is_empty(): row["thumbnail_sidecar"] = sidecar
+					rows.append(row)
 		Section.DLNA:
 			if _dlna_server.is_empty():
 				for server in _dlna_servers:
@@ -2165,52 +2203,15 @@ func _rebuild_rows() -> void:
 				rows.append({"title": I18n.t("Seek step"), "key": SeekStep.KEY,
 					"value": SeekStep.normalize(settings.get(SeekStep.KEY, SeekStep.DEFAULT)),
 					"slider": true, "span": Vector3(SeekStep.MIN, SeekStep.MAX, 1), "unit": " s", "decimals": 0, "reset_value": float(SeekStep.DEFAULT)})
-				var hdr := HdrToSdr.choice(str(settings.get("hdr_to_sdr", HdrToSdr.ON)))
-				hdr.title = I18n.t(HdrToSdr.TITLE)
-				rows.append(hdr)
-				var auto_3d := VideoAuto3D.choice(bool(settings.get("video_auto_3d", false)))
-				auto_3d.title = I18n.t(VideoAuto3D.TITLE); auto_3d.info = VideoAuto3D.HINT
-				rows.append(auto_3d)
-				rows.append(_choice_row("2D to 3D effect", "depth_render", str(settings.get("depth_render", "stretch")),
-					[{"value": "fill", "label": "Fill gaps", "hint": "Fills the background behind moving edges"},
-					{"value": "stretch", "label": "Stretch edges", "hint": "Stretches edges, like spatial photos"}], true))
-				var position := preload("res://scripts/depth_position.gd").row(settings.get("depth_position_default", 0), "depth_position_default")
-				position.title = I18n.t("3D position"); position.info = position.hint; position.erase("hint")
-				rows.append(position)
-				var outputs: Array = []
-				for option in [[Quality.AUTO_OUTPUT, "Auto"], [0, "Original size"], [5760, "6K"], [4096, "4K"]]:
-					var hint: String = Quality.QIYU_OUTPUT_AUTO_HINT if option[0] == Quality.AUTO_OUTPUT and settings.get("qiyu", false) else Quality.OUTPUT_HINTS[option[0]]
-					outputs.append({"value": option[0], "label": option[1], "hint": hint})
-				var output_row := _choice_row("Output resolution", "output_width", int(settings.get("output_width", Quality.AUTO_OUTPUT)), outputs, true)
-				output_row.info = Quality.OUTPUT_INFO; rows.append(output_row)
-				var memories: Array = []
-				for option in [[Quality.MEMORY_AUTO, "Auto"], [Quality.MEMORY_STANDARD, "Standard"], [Quality.MEMORY_SAVER, "Saver"]]:
-					memories.append({"value": option[0], "label": option[1], "hint": Quality.MEMORY_HINTS[option[0]]})
-				var memory_row := _choice_row("Memory", "memory_mode", int(settings.get("memory_mode", Quality.MEMORY_AUTO)), memories, true)
-				memory_row.info = Quality.MEMORY_INFO; rows.append(memory_row)
-				var auto_passthrough_row := _choice_row("Auto passthrough from filename", "alpha_auto_from_filename", bool(settings.get("alpha_auto_from_filename", true)),
-					[{"value": false, "label": "Off", "hint": AUTO_PASSTHROUGH_HINT}, {"value": true, "label": "On", "hint": AUTO_PASSTHROUGH_HINT}])
-				auto_passthrough_row.info = AUTO_PASSTHROUGH_HINT; rows.append(auto_passthrough_row)
-				rows.append(_choice_row("Keep background during passthrough", "alpha_keep_background", bool(settings.get("alpha_keep_background", false)),
-					[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
-				rows.append(_video_settings_group("alpha", "AI portrait passthrough (Alpha)"))
+				rows.append(_video_settings_group("output", "Output and performance"))
+				if _video_settings_expanded.get("output", false):
+					rows.append_array(_video_output_rows(settings))
+				rows.append(_video_settings_group("depth", "2D to 3D"))
+				if _video_settings_expanded.get("depth", false):
+					rows.append_array(_video_depth_rows(settings))
+				rows.append(_video_settings_group("alpha", "Video passthrough (Alpha)"))
 				if _video_settings_expanded.get("alpha", false):
-					rows.append(_alpha_size_row(settings))
-					rows.append({"title": I18n.t("Alpha passthrough FPS limit"), "key": "alpha_fps", "value": int(settings.get("alpha_fps", 30)),
-						"slider": true, "span": Vector3(10, 40, 1), "unit": " FPS", "reset_value": float(settings.get("alpha_fps_default", 30)), "hint": "Headset performance limits keep the cut-out a little behind the picture"})
-					# The same Alpha edge as the player settings (AlphaEdge defaults).
-					rows.append({"title": I18n.t("Alpha feather"), "key": "alpha_feather", "value": int(settings.get("alpha_feather", 100)),
-						"slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 100.0})
-					rows.append({"title": I18n.t("Alpha edge shrink"), "key": "alpha_shrink", "value": int(settings.get("alpha_shrink", 40)),
-						"slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 40.0})
-					rows.append(_choice_row("Cut-out interpolation", "alpha_mask_blend", bool(settings.get("alpha_mask_blend", true)),
-						[{"value": false, "label": "Off", "hint": AlphaEdgeSettings.MASK_BLEND_OFF_HINT}, {"value": true, "label": "On", "hint": AlphaEdgeSettings.MASK_BLEND_ON_HINT}]))
-					if Quality.ALPHA_PRECISION_SHOWN:
-						var precisions: Array = []
-						for option in [[Quality.ALPHA_PRECISION_AUTO, "Auto"], [Quality.ALPHA_PRECISION_FAST, "Fast"], [Quality.ALPHA_PRECISION_PRECISE, "Precise"]]:
-							precisions.append({"value": option[0], "label": option[1], "hint": Quality.ALPHA_PRECISION_HINTS[option[0]]})
-						var precision_row := _choice_row("AI precision", "alpha_precision", int(settings.get("alpha_precision", Quality.ALPHA_PRECISION_AUTO)), precisions, true)
-						precision_row.info = Quality.ALPHA_PRECISION_INFO; rows.append(precision_row)
+					rows.append_array(_video_alpha_rows(settings))
 				rows.append(_video_settings_group("subtitles", "Subtitles"))
 				if _video_settings_expanded.get("subtitles", false):
 					rows.append_array(_subtitle_rows(settings))
@@ -2218,34 +2219,18 @@ func _rebuild_rows() -> void:
 				var languages: Array = []
 				for value in I18n.CHOICES: languages.append({"value": value, "label": LANGUAGE_NAMES[value]})
 				rows.append(_choice_row("Language", "language", I18n.choice, languages))
-				if ChineseInput.browser_choice_available():
-					rows.append(_choice_row("Web keyboard", "web_keyboard", ChineseInput.browser_keyboard,
-						[{"value": "builtin", "label": "Built-in keyboard"}, {"value": "system", "label": "System keyboard"}]))
-				if ChineseInput.available():
-					var input_label := "App Chinese input" if ChineseInput.is_generic_openxr() else "中文输入法"
-					rows.append(_choice_row(input_label, ChineseInput.app_setting_key(), ChineseInput.selected,
-						[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
-				var management_hint := "Delete or rename files in supported library sections. Managing files is easier in list view. Available actions depend on the source and permissions."
-				rows.append(_choice_row("Allow file management", "file_editing", file_actions.enabled,
-					[{"value": false, "label": "Off", "hint": management_hint}, {"value": true, "label": "On", "hint": management_hint}]))
-				rows.append_array(cloud_pagination.settings_rows(settings))
-				rows.append_array(file_actions.settings_rows())
-				rows.append(_choice_row("Restore folder position", "library_restore_position", restore_directory_position,
-					[{"value": false, "label": "Off", "hint": BROWSE_POSITION_HINT}, {"value": true, "label": "On", "hint": BROWSE_POSITION_HINT}], false, BROWSE_POSITION_HINT))
-				if float(settings.get("scene_body_height", 0.0)) > 0.0:
-					rows.append({"title": I18n.t("Body height"), "key": "scene_body_height", "value": int(settings.get("scene_body_height", 170)),
-						"slider": true, "span": Vector3(140, 200, 1), "unit": " cm", "decimals": 0, "reset_value": 170.0,
-						"info": "In your own 3D scenes, standing, sitting and lying set your eye height from this, whatever your real posture."})
-				# Library thumbnails plus Android photo/depth/SBS files.
-				# Scanned off the main thread (one file open per thumbnail); the size shows once known.
-				if _cache_usage == null: _scan_cache_usage()
-				var cache: Vector2i = _cache_usage if _cache_usage is Vector2i else Vector2i(-1, 0)
-				var armed := _confirm == "clear_cache"
-				rows.append({"title": I18n.t("Clear cache"), "detail": _bytes(cache.y) if cache.x > 0 else "", "icon": "check" if armed else "trash",
-					"selected": armed, "clear_cache": true, "empty": cache.x == 0})
-				rows.append({"title": I18n.t("Privacy settings"), "group_header": true, "icon": "chevron_down" if collections.privacy_expanded else "next"})
+				rows.append_array(_keyboard_settings_rows())
+				rows.append_array(_file_browsing_settings_rows(settings))
+				rows.append_array(_thumbnail_prefetch_rows())
+				rows.append_array(_storage_cache_rows())
+				rows.append({"title": I18n.t("Privacy settings"), "group_header": true, "privacy_group": true,
+					"icon": "chevron_down" if collections.privacy_expanded else "next"})
 				if collections.privacy_expanded:
 					rows.append({"title": I18n.t("Archive password book"), "icon": "lock", "archive_password_book": true})
+					var airplay_password_hint := "Require the four-digit code shown in the headset for each AirPlay connection. Changing this setting disconnects the current AirPlay session."
+					rows.append(_choice_row("Require AirPlay password", "airplay_require_password", bool(settings.get("airplay_require_password", false)),
+						[{"value": true, "label": "On", "hint": airplay_password_hint}, {"value": false, "label": "Off", "hint": airplay_password_hint}]))
+					rows.back().info = airplay_password_hint
 					rows.append(_choice_row("Playback and browsing history", "privacy_mode", settings.get("privacy_mode", "all"),
 						[{"value": "all", "label": "Record all"}, {"value": "local", "label": "Local only"}, {"value": "none", "label": "Do not record"}]))
 					rows.append(_choice_row("Per-file settings", "file_settings_memory", settings.get("file_settings_memory", "all"),
@@ -2260,59 +2245,31 @@ func _rebuild_rows() -> void:
 							if not favorite_store.locked:
 								rows.append({"title": I18n.t("Lock favorites"), "icon": "lock", "privacy_action": "lock"})
 								rows.append({"title": I18n.t("Remove favorites password"), "icon": "unlock", "privacy_action": "disable"})
-					rows.append({"title": I18n.t("Confirm clearing history" if _confirm == str(["privacy_clear", "all"]) else "Clear existing history"), "icon": "check" if _confirm == str(["privacy_clear", "all"]) else "trash", "selected": _confirm == str(["privacy_clear", "all"]), "setting": ["privacy_clear", "all"]})
-					rows.append({"title": I18n.t("Confirm clearing network history" if _confirm == str(["privacy_clear", "network"]) else "Clear network history"), "icon": "check" if _confirm == str(["privacy_clear", "network"]) else "trash", "selected": _confirm == str(["privacy_clear", "network"]), "setting": ["privacy_clear", "network"]})
-					rows.append({"title": I18n.t("Confirm clearing file settings" if _confirm == str(["file_settings_clear", "all"]) else "Clear file settings"), "icon": "check" if _confirm == str(["file_settings_clear", "all"]) else "trash", "selected": _confirm == str(["file_settings_clear", "all"]), "setting": ["file_settings_clear", "all"]})
-					rows.append({"title": I18n.t("Confirm clearing network file settings" if _confirm == str(["file_settings_clear", "network"]) else "Clear network file settings"), "icon": "check" if _confirm == str(["file_settings_clear", "network"]) else "trash", "selected": _confirm == str(["file_settings_clear", "network"]), "setting": ["file_settings_clear", "network"]})
-				var airplay_password_hint := "Require the four-digit code shown in the headset for each AirPlay connection. Changing this setting disconnects the current AirPlay session."
-				rows.append(_choice_row("Require AirPlay password", "airplay_require_password", bool(settings.get("airplay_require_password", false)),
-					[{"value": true, "label": "On", "hint": airplay_password_hint}, {"value": false, "label": "Off", "hint": airplay_password_hint}]))
-				rows.back().info = airplay_password_hint
+					rows.append_array(_record_cleanup_rows())
 				rows.append_array(_diagnostic_rows(settings.get("diagnostic_log", {})))
 			elif tab == DISPLAY_TAB:
 				var theme_row := UiTheme.row(settings.get(UiTheme.KEY, UiTheme.current))
 				theme_row.title = I18n.t(theme_row.title); rows.append(theme_row)
 				var watch_row := WatchPalette.row(settings.get("watch_color", WatchPalette.DEFAULT))
 				watch_row.title = I18n.t(watch_row.title); rows.append(watch_row)
-				rows.append(_choice_row("Hand model", "hand_model", str(settings.get("hand_model", "auto")),
-					[{"value": "auto", "label": "Auto", "hint": "Hidden in passthrough"}, {"value": "show", "label": "On"}, {"value": "hide", "label": "Off"}]))
-				rows.append({"title": I18n.t("Control bar transparency"), "icon": "settings", "setting": ["bar_transparency", true]})
-				var qiyu: bool = settings.get("qiyu", false)
-				var quality_choices: Array = [{"value": Quality.AUTO, "label": "Auto", "hint": Quality.QIYU_SCALE_AUTO_HINT if qiyu else Quality.SCALE_AUTO_HINT}]
-				for i in Quality.SCALES.size():
-					quality_choices.append({"value": i, "label": Quality.NAMES[i], "hint": Quality.SCALE_HINTS[i]})
-				var scale_row := _choice_row("Render scale", "display_quality", int(settings.get("display_quality", Quality.DEFAULT)),
-					quality_choices, true, "Restart to apply" if settings.get("display_quality_pending", false) else "")
-				scale_row.info = Quality.SCALE_INFO; rows.append(scale_row)
-				var refresh_choices: Array = []
-				for cap in Quality.refresh_choices(bool(settings.get("low_end_gpu", false))):
-					refresh_choices.append({"value": cap, "label": Quality.REFRESH_NAMES[cap], "hint": Quality.REFRESH_HINTS[cap]})
-				var refresh_row := _choice_row("Playback refresh rate", "refresh_cap", int(settings.get("refresh_cap", Quality.DEFAULT_REFRESH_CAP)), refresh_choices, true)
-				refresh_row.info = Quality.REFRESH_INFO; rows.append(refresh_row)
-				var supersampling_choices: Array = []
-				for i in Quality.SUPERSAMPLING_NAMES.size():
-					supersampling_choices.append({"value": i, "label": Quality.SUPERSAMPLING_NAMES[i], "hint": Quality.SUPERSAMPLING_HINTS[i]})
-				var supersampling_row := _choice_row("Supersampling", "supersampling", int(settings.get("supersampling", Quality.DEFAULT_SUPERSAMPLING)), supersampling_choices, true)
-				supersampling_row.info = Quality.SUPERSAMPLING_INFO; rows.append(supersampling_row)
-				var sharpness_choices: Array = []
-				for i in Quality.SHARPNESS.size():
-					sharpness_choices.append({"value": Quality.SHARPNESS[i], "label": Quality.SHARPNESS_NAMES[i], "hint": Quality.SHARPNESS_HINTS[i]})
-				var sharpness_row := _choice_row("Sharpness", "sharpness", float(settings.get("sharpness", Quality.DEFAULT_VIDEO_SHARPNESS)), sharpness_choices, true)
-				sharpness_row.info = Quality.SHARPNESS_INFO; rows.append(sharpness_row)
-				var status_row := _choice_row("Show status information", "show_status_info", bool(settings.get("show_status_info", true)),
-					[{"value": false, "label": "Off"}, {"value": true, "label": "On"}])
-				status_row.info = "Show subtitle, narration and loading status in the upper left."
-				for option in status_row.choices: option.hint = status_row.info
-				rows.append(status_row)
-				rows.append(_choice_row("Show FPS", "show_fps", bool(settings.get("show_fps", false)),
-					[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
-				rows.append(_choice_row(PlaybackMenuDepth.TITLE, PlaybackMenuDepth.KEY,
-					str(settings.get(PlaybackMenuDepth.KEY, PlaybackMenuDepth.DEFAULT)), PlaybackMenuDepth.choices(), true))
-				var seek_row := _choice_row("Thumbstick progress bar", "stick_seek_overlay", bool(settings.get("stick_seek_overlay", true)),
-					[{"value": false, "label": "Off"}, {"value": true, "label": "On"}])
-				seek_row.info = "Show a progress bar when seeking with the thumbstick. Turn off for greater immersion."
-				for option in seek_row.choices: option.hint = seek_row.info
-				rows.append(seek_row)
+				rows.append({"title": I18n.t("Control bar transparency"), "button_label": "Adjust", "setting": ["bar_transparency", true]})
+				var body_height := float(settings.get("scene_body_height", 0.0))
+				if body_height > 0.0:
+					rows.append({"title": I18n.t("Height in scene"), "key": "scene_body_height", "value": int(body_height),
+						"slider": true, "span": Vector3(140, 200, 1), "unit": " cm", "decimals": 0, "reset_value": 170.0,
+						"info": "In your own 3D scenes, standing, sitting and lying set your eye height from this, whatever your real posture."})
+				rows.append(_display_settings_group("interface", "Interface and control bar"))
+				if _display_settings_expanded.get("interface", false):
+					rows.append_array(_display_interface_rows(settings))
+				var rendering := _display_settings_group("rendering", "Rendering and performance")
+				if rendering.icon == "next" and settings.get("display_quality_pending", false):
+					rendering.detail = I18n.t("Restart to apply")
+				rows.append(rendering)
+				if _display_settings_expanded.get("rendering", false):
+					rows.append_array(_display_rendering_rows(settings))
+				rows.append(_display_settings_group("overlays", "Playback overlays"))
+				if _display_settings_expanded.get("overlays", false):
+					rows.append_array(_display_overlay_rows(settings))
 			elif tab == BACKGROUND_TAB:
 				rows.append({"title":I18n.t("Scene"),"icon":"panorama","setting":["scene_open",true]})
 			elif tab == ABOUT_TAB:
@@ -2500,7 +2457,16 @@ func _turn_cloud_page(step: int) -> void:
 	_load_cloud(false, false, page)
 	refresh()
 
+func _artwork_location() -> Dictionary:
+	if archives.browsing or image_picker_mode or audio_import_mode or voice_picker_mode or subtitle_picker_mode or cloud_search.active:
+		return {}
+	return MediaLocation.capture(self, {}) if section in [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] else {}
+
+func _artwork_scope() -> String:
+	return DirectoryArtwork.scope(_artwork_location())
+
 func _entry_row(entry: Dictionary) -> Dictionary:
+	var artwork_location := _artwork_location()
 	if bool(entry.get("container", false)):
 		var folder_row := {"title": str(entry.title), "detail": "", "icon": "folder", "container": entry, "folder": true,
 			"delete_uri": str(entry.get("delete_uri", "")), "can_delete": bool(entry.get("can_delete", false)), "delete_reason": str(entry.get("delete_reason", "File deletion unavailable for this source"))}
@@ -2508,6 +2474,12 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 			folder_row.icon = Icons.provider(str(entry.get("provider", "")))
 		for field in ["size", "modified", "cloud_id", "delete_effect", "child_count", "type", "can_rename"]:
 			if entry.has(field): folder_row[field] = entry[field]
+		if not artwork_location.is_empty() and not bool(entry.get("volume", false)):
+			var folder := DirectoryArtwork.child_scope(artwork_location, entry)
+			if not folder.is_empty(): folder_row["folder_thumb_scope"] = folder
+			if section == Section.DLNA and not folder.is_empty() and not str(entry.get("cover", "")).is_empty():
+				folder_row["folder_cover_url"] = str(entry.cover)
+				folder_row["folder_cover_key"] = "dlna-cover://" + JSON.stringify([folder, folder_row.folder_cover_url]).sha1_text()
 		return folder_row
 	var subtitle: bool = subtitle_picker_mode and SubtitleSources.supported(str(entry.title))
 	var photo: bool = not subtitle and (entry.get("kind", "") == "image" or ImageInfo.is_image(str(entry.get("uri", "")), str(entry.title)))
@@ -2529,8 +2501,14 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 		row.title = DiscTitles.folder_title(row.uri, "DVD"); row.icon = "disc"
 		row.can_delete = false; row.can_rename = false
 	if section == Section.DLNA and row.has("id") and not _dlna_server.is_empty():
+		var declared := str(entry.get("thumbnail_uri", ""))
+		if row.kind == "image" and not declared.is_empty() and declared != row.uri: row.cover = declared
+		row["thumbnail_resource"] = row.uri
 		row.uri = "dlna://" + _dlna_server.uri_encode() + "/" + str(row.id).uri_encode()
 	row.location = preload("res://scripts/media_location.gd").capture(self, row)
+	if not artwork_location.is_empty() and row.kind in ["image", "video"]:
+		row["thumb_scope"] = DirectoryArtwork.scope(artwork_location)
+		row["thumb_item"] = DirectoryArtwork.descriptor(artwork_location, entry)
 	return row
 
 func photo_directory_context() -> Dictionary:
@@ -2572,6 +2550,7 @@ static func _leaf(path: String) -> String:
 	return parts[parts.size() - 1] if parts.size() > 0 else path
 
 static func _bytes(bytes: int) -> String:
+	if bytes == 0: return "0 KB"
 	if bytes >= 1048576:
 		return "%.1f MB" % (bytes / 1048576.0)
 	return "%d KB" % maxi(1, bytes / 1024)
@@ -2588,26 +2567,65 @@ static func _size(entry: Dictionary) -> String:
 var _confirm := ""
 var _cache_usage: Variant = null   # thumbnail and photo files/bytes, read on opening settings
 var _cache_task := -1
-var _cache_result := Vector2i.ZERO
+var _cache_result: Dictionary = {}
 var _cache_rescan := false
+var _cache_expanded := false
+
+const CACHE_CATEGORIES := {
+	"thumbnails": "Library thumbnails",
+	"posters": "Media server posters",
+	"photos": "Photo and depth previews",
+	"reading": "Temporary reading files",
+}
+
+func _storage_cache_rows() -> Array:
+	if _cache_usage == null: _scan_cache_usage()
+	var details := ""
+	if _cache_usage is Vector2i:
+		details = _bytes(_cache_usage.y)
+		if int(_cache_result.free) >= 0:
+			details += " · " + (I18n.t("%s free") % _bytes(int(_cache_result.free)))
+	var entries := [{"title": I18n.t("Storage and cache"), "detail": details,
+		"icon": "chevron_down" if _cache_expanded else "next", "storage_cache": true, "group_header": true}]
+	if not _cache_expanded: return entries
+	for category in CACHE_CATEGORIES:
+		entries.append(_cache_clear_row(category, str(CACHE_CATEGORIES[category])))
+	entries.append(_cache_clear_row("all", "Clear all caches"))
+	return entries
+
+func _cache_clear_row(category: String, title: String) -> Dictionary:
+	var armed := _confirm == "clear_cache/" + category
+	var size := ""
+	if category != "all" and _cache_usage is Vector2i:
+		size = _bytes(_cache_result[category].y)
+	return {"title": I18n.t(title), "detail": size, "icon": "check" if armed else "trash",
+		"selected": armed, "clear_cache": category}
 
 func _scan_cache_usage() -> void:
 	_cache_usage = false # scanning
+	if Thumbnails.clearing(): _cache_rescan = true; return
 	if _cache_task >= 0: _cache_rescan = true; return
 	_cache_task = WorkerThreadPool.add_task(func(): _cache_result = _read_cache_usage())
 
 ## Applies a finished scan; a scan requested meanwhile (the cache was cleared) runs again first.
 func _poll_cache_usage() -> void:
+	if _cache_task < 0 and _cache_rescan and not Thumbnails.clearing():
+		_cache_rescan = false; _scan_cache_usage()
 	if _cache_task < 0 or not WorkerThreadPool.is_task_completed(_cache_task): return
 	WorkerThreadPool.wait_for_task_completion(_cache_task)
 	_cache_task = -1
 	if _cache_rescan:
 		_cache_rescan = false; _scan_cache_usage(); return
 	if not _cache_usage is bool: return # reset, or applied
-	_cache_usage = _cache_result
+	_cache_usage = _cache_result.thumbnails + _cache_result.posters + _cache_result.photos + _cache_result.reading
 	if visible and section == Section.SETTINGS and tab == GENERAL_TAB: refresh()
 
+func _enter_tree() -> void:
+	thumbnail_prefetch.attach()
+
 func _exit_tree() -> void:
+	thumbnail_prefetch.close()
+	_folder_covers.finish()
 	account_panel.close()
 	if is_instance_valid(account_panel.web_surface): account_panel.web_surface.queue_free()
 	web_browser.close()
@@ -2617,13 +2635,39 @@ func _exit_tree() -> void:
 	system_text_input.cancel()
 	if _cache_task >= 0: WorkerThreadPool.wait_for_task_completion(_cache_task); _cache_task = -1
 
-func _read_cache_usage() -> Vector2i:
-	var usage := Thumbnails.usage() + preload("res://scripts/photo_preview_cache.gd").disk_usage()
+func _read_cache_usage() -> Dictionary:
+	var directory := DirAccess.open("user://")
+	var usage := {"thumbnails": Thumbnails.usage(true), "posters": Vector2i.ZERO,
+		"photos": preload("res://scripts/photo_preview_cache.gd").disk_usage(), "reading": Vector2i.ZERO,
+		"free": directory.get_space_left() if directory else -1}
 	if is_instance_valid(platform) and PlatformMethods.supports(platform, "photo_cache_usage"):
 		var photo_usage: Variant = JSON.parse_string(str(platform.photo_cache_usage()))
 		if photo_usage is Dictionary:
-			usage += Vector2i(maxi(0, int(photo_usage.get("files", 0))), maxi(0, int(photo_usage.get("bytes", 0))))
+			var reading := Vector2i(maxi(0, int(photo_usage.get("reading_files", 0))), maxi(0, int(photo_usage.get("reading_bytes", 0))))
+			usage.reading = reading
+			usage.photos += Vector2i(maxi(0, int(photo_usage.get("files", 0))), maxi(0, int(photo_usage.get("bytes", 0)))) - reading
+	if is_instance_valid(platform) and PlatformMethods.supports(platform, "media_server_cache_usage"):
+		var posters: Variant = JSON.parse_string(str(platform.media_server_cache_usage()))
+		if posters is Dictionary:
+			usage.posters = Vector2i(maxi(0, int(posters.get("files", 0))), maxi(0, int(posters.get("bytes", 0))))
 	return usage
+
+func _clear_storage_cache(category: String) -> void:
+	if category in ["thumbnails", "all"]:
+		thumbnail_prefetch.cancel()
+		_cancel_covers()
+		Thumbnails.clear_in_background()
+	if category in ["posters", "all"]:
+		server_browser.clear_poster_memory()
+		if PlatformMethods.supports(platform, "clear_media_server_cache"): platform.clear_media_server_cache()
+	if category in ["photos", "all"]:
+		preload("res://scripts/photo_preview_cache.gd").clear_disk()
+	if category == "all" and PlatformMethods.supports(platform, "clear_photo_cache"):
+		platform.clear_photo_cache()
+	elif category == "photos" and PlatformMethods.supports(platform, "clear_photo_preview_cache"):
+		platform.clear_photo_preview_cache()
+	elif category == "reading" and PlatformMethods.supports(platform, "clear_reading_cache"):
+		platform.clear_reading_cache()
 
 ## Video state changes arrive several times a second: redraw only when the Alpha profiles
 ## (current, compiling, cold) shown on the Alpha tab change.
@@ -2696,7 +2740,9 @@ func _activate(target: int) -> void:
 		_browse_return_restore = false
 		cloud_pagination.settings_expanded = false
 		_video_settings_expanded.clear()
+		_display_settings_expanded.clear()
 		_subtitle_settings_expanded = ""
+		_general_settings_expanded.clear()
 		file_actions.settings_return.clear()
 		_save_folder_position()
 		archives.suspended = true
@@ -2723,7 +2769,9 @@ func _activate(target: int) -> void:
 		subtitle_queue_open = false
 		cloud_pagination.settings_expanded = false
 		_video_settings_expanded.clear()
+		_display_settings_expanded.clear()
 		_subtitle_settings_expanded = ""
+		_general_settings_expanded.clear()
 		controls_page.reset()
 		tab = VIDEO_TAB if target == TAB_BASE + SUBTITLES_TAB else target - TAB_BASE
 		scroll = 0.0
@@ -2812,7 +2860,11 @@ func _choose(row: Dictionary) -> void:
 		return
 	if row.get("cloud_paging_group", false):
 		cloud_pagination.settings_expanded = not cloud_pagination.settings_expanded
-		choices.reset(); refresh(); return
+		_refresh_settings_group(row, cloud_pagination.settings_expanded); return
+	if row.get("privacy_group", false):
+		collections.privacy_expanded = not collections.privacy_expanded
+		if not collections.privacy_expanded: _set_general_settings_group("records", false)
+		_refresh_settings_group(row, collections.privacy_expanded); return
 	if row.get("diagnostic_note", false):
 		_edit_diagnostic_note(str(row.get("note", ""))); return
 	if row.get("diagnostic_group", false):
@@ -2833,15 +2885,18 @@ func _choose(row: Dictionary) -> void:
 				break
 		_drag.clear(); _fling = 0.0
 		refresh(); return
-	if row.has("video_settings_group"):
-		var group := str(row.video_settings_group)
-		var expanded := not bool(_video_settings_expanded.get(group, false))
-		choices.reset()
-		_video_settings_expanded[group] = expanded
-		var index := maxi(0, rows.find(row))
-		scroll = float(index) if expanded else minf(scroll, float(index))
-		_drag.clear(); _fling = 0.0
-		refresh(); return
+	if row.has("video_settings_group") or row.has("display_settings_group"):
+		var is_display := row.has("display_settings_group")
+		var group := str(row.display_settings_group if is_display else row.video_settings_group)
+		var expanded_groups := _display_settings_expanded if is_display else _video_settings_expanded
+		var expanded := not bool(expanded_groups.get(group, false))
+		expanded_groups[group] = expanded
+		_refresh_settings_group(row, expanded); return
+	if row.has("general_settings_group"):
+		var group := str(row.general_settings_group)
+		var expanded := not _general_settings_expanded.has(group)
+		_set_general_settings_group(group, expanded)
+		_refresh_settings_group(row, expanded); return
 	if not bool(row.get("enabled", true)): return
 	if subtitle_picker_mode and row.has("uri") and not str(row.uri).is_empty() and not row.get("folder", false):
 		var uri := str(row.uri)
@@ -2855,6 +2910,11 @@ func _choose(row: Dictionary) -> void:
 		var uri := str(row.uri)
 		if audio_selection.has(uri): audio_selection.erase(uri)
 		else: audio_selection[uri] = {"uri": uri, "title": str(row.title)}
+		refresh()
+		return
+	if row.get("storage_cache", false):
+		_cache_expanded = not _cache_expanded
+		_confirm = ""
 		refresh()
 		return
 	if collections.choose(row): return
@@ -2897,6 +2957,7 @@ func _choose(row: Dictionary) -> void:
 		server_browser.choose(row)
 		return
 	if row.has("uri") and not str(row.uri).is_empty():
+		directory_artwork.select(str(row.uri), str(row.get("thumb_scope", "")), row.get("thumb_item", {}))
 		_save_folder_position(row)
 		collections.selected_location = preload("res://scripts/media_location.gd").capture(self, row)
 		collections.selected_entry = row.duplicate(true)
@@ -2945,17 +3006,14 @@ func _choose(row: Dictionary) -> void:
 		_restore_folder_key = _folder_key()
 		refresh()
 	elif row.has("clear_cache"):
-		if bool(row.get("empty", false)):
-			return
-		if _confirm != "clear_cache":
-			_confirm = "clear_cache"
+		var category := str(row.clear_cache)
+		var confirmation := "clear_cache/" + category
+		if _confirm != confirmation:
+			_confirm = confirmation
 			refresh()
 			return
 		_confirm = ""
-		_cancel_covers()
-		Thumbnails.clear()
-		preload("res://scripts/photo_preview_cache.gd").clear_disk()
-		if PlatformMethods.supports(platform, "clear_photo_cache"): platform.clear_photo_cache()
+		_clear_storage_cache(category)
 		_cache_usage = null
 		refresh()
 	elif row.get("subtitle_queue", false):
@@ -2983,9 +3041,6 @@ func navigate_back() -> bool:
 	if archives.browsing: archives.back(); return true
 	if archives.opened: archives.close(); refresh(); return true
 	if cloud_pagination.opened: cloud_pagination.action(CloudPagination.CLOSE); return true
-	if section == Section.SETTINGS and tab == GENERAL_TAB and cloud_pagination.settings_expanded:
-		if not choices.opened.is_empty(): choices.reset(); refresh(); return true
-		cloud_pagination.settings_expanded = false; refresh(); return true
 	if theme_editor.opened: theme_editor.close(); return true
 	if voice_manager.opened: voice_manager.back(); return true
 	if system_text_input.active(): system_text_input.cancel("", true); return true
@@ -3001,10 +3056,18 @@ func navigate_back() -> bool:
 		return true
 	if web_browser.library.back(): return true
 	if collections.active(): collections.close(); return true
-	if section == Section.SETTINGS and tab == GENERAL_TAB and collections.privacy_expanded:
-		collections.privacy_expanded = false; choices.reset(); refresh(); return true
-	if section == Section.SETTINGS and tab == GENERAL_TAB and _diagnostic_expanded:
-		_diagnostic_expanded = false; choices.reset(); refresh(); return true
+	if section == Section.SETTINGS and tab == GENERAL_TAB:
+		if not choices.opened.is_empty(): choices.reset(); refresh(); return true
+		if file_actions.return_from_settings(): return true
+		if cloud_pagination.settings_expanded:
+			cloud_pagination.settings_expanded = false; refresh(); return true
+		for group in ["records", "previews", "files", "input"]:
+			if not _general_settings_expanded.has(group): continue
+			_set_general_settings_group(group, false); refresh(); return true
+		if collections.privacy_expanded:
+			collections.privacy_expanded = false; refresh(); return true
+		if _diagnostic_expanded:
+			_diagnostic_expanded = false; refresh(); return true
 	if collections.has_selection(): collections.selection.clear(); refresh(); return true
 	if has_pointer_capture() or not server_browser.gallery.capture.is_empty():
 		for hand in ["left_hand", "right_hand"]: cancel_pointer(hand)
@@ -3167,6 +3230,15 @@ func _go_to(level: int) -> void:
 func _refresh_source() -> void:
 	if not platform:
 		return
+	var scope := _artwork_scope()
+	if not scope.is_empty() and scope == _manual_refresh_scope and _pending.has(_manual_refresh_id): return
+	_manual_refresh_scope = scope
+	_manual_refresh_id = -1
+	_manual_refresh_start = true
+	_refresh_source_once()
+	_manual_refresh_start = false
+
+func _refresh_source_once() -> void:
 	if section == Section.CLOUD:
 		_load_cloud(false, true, _cloud_page)
 		refresh()
@@ -3484,6 +3556,7 @@ func _draw_compact_rows() -> void:
 	_place_list()
 
 func _draw() -> void:
+	_thumbnail_indicator = null
 	# Reuse the compositor's region key to retire login bounds when returning to the library.
 	# Same-page redraws keep grow-only bounds and all existing swapchains.
 	var login_region := ""
@@ -3792,9 +3865,17 @@ func _draw_crumbs(crumbs: Array, base: int = CRUMB_BASE) -> void:
 		label.modulate = ACCENT if current else MUTED
 		if current:
 			_buttons.back().base_color = Color(TILE, 0.0)
+			if section == Section.LOCAL and not archives.browsing and not compact:
+				_thumbnail_indicator = _icon("image", Vector3(minf(x + width + 0.012, 0.48), _header_y(), 0.004), 0.035, MUTED)
+				_thumbnail_indicator.visible = _thumbnail_reading
 		x += width + 0.035
 		if not current:
 			_label("›", Vector3(x - 0.0175, _header_y(), 0.004), 19).modulate = MUTED
+
+func _set_thumbnail_reading(reading: bool) -> void:
+	if _thumbnail_reading == reading: return
+	_thumbnail_reading = reading
+	if is_instance_valid(_thumbnail_indicator): _thumbnail_indicator.visible = reading
 
 func _header_title() -> String:
 	if archives.browsing: return " / ".join(archives.crumbs())
@@ -3898,7 +3979,7 @@ func _draw_row(i: int) -> void:
 		if row.has("task_actions"):
 			_subtitle_task_entry(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
 			return
-		if row.has("choices") or row.get("slider", false):
+		if row.has("choices") or row.get("slider", false) or row.has("button_label"):
 			_setting_field(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
 			return
 		_row_button(ROW_BASE + k, str(row.title), "" if row.get("about_info", false) else str(row.get("detail", "")), str(row.get("icon", "video")),
@@ -4074,6 +4155,93 @@ func refresh_alpha_sizes() -> void:
 func _choice_row(title: String, key: String, value: Variant, options: Array, compact: bool = false, hint: String = "") -> Dictionary:
 	return {"title": I18n.t(title), "key": key, "value": value, "choices": options, "compact": compact, "hint": hint}
 
+func _general_settings_group(group: String, title: String, subgroup: bool = false) -> Dictionary:
+	return {"title": I18n.t(title), "group_header": true, "subgroup": subgroup, "general_settings_group": group,
+		"icon": "chevron_down" if _general_settings_expanded.has(group) else "next"}
+
+func _set_general_settings_group(group: String, expanded: bool) -> void:
+	if expanded:
+		_general_settings_expanded[group] = true
+	else:
+		_general_settings_expanded.erase(group)
+		if group == "files": cloud_pagination.settings_expanded = false
+		if group == "records": _confirm = ""
+
+func _refresh_settings_group(row: Dictionary, expanded: bool) -> void:
+	choices.reset()
+	var index := maxi(0, rows.find(row))
+	scroll = float(index) if expanded else minf(scroll, float(index))
+	_drag.clear(); _fling = 0.0
+	refresh()
+
+func reveal_file_management_setting() -> void:
+	_set_general_settings_group("files", true)
+	refresh()
+	var index := rows.find_custom(func(row): return row.get("key") == "file_editing")
+	if index >= 0: _set_scroll(maxi(0, index - 1))
+
+func _keyboard_settings_rows() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	var web_keyboard := ChineseInput.browser_choice_available()
+	var chinese_input := ChineseInput.available()
+	if not (web_keyboard or chinese_input):
+		_general_settings_expanded.erase("input")
+		return entries
+	entries.append(_general_settings_group("input", "Keyboard and input methods"))
+	if not _general_settings_expanded.has("input"): return entries
+	if web_keyboard:
+		entries.append(_choice_row("Web keyboard", "web_keyboard", ChineseInput.browser_keyboard,
+			[{"value": "builtin", "label": "Built-in keyboard"}, {"value": "system", "label": "System keyboard"}]))
+	if chinese_input:
+		var title := "App Chinese input" if ChineseInput.is_generic_openxr() else "中文输入法"
+		entries.append(_choice_row(title, ChineseInput.app_setting_key(), ChineseInput.selected,
+			[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
+	return entries
+
+func _file_browsing_settings_rows(settings: Dictionary) -> Array[Dictionary]:
+	var entries: Array[Dictionary] = [_general_settings_group("files", "File browsing and management")]
+	if not _general_settings_expanded.has("files"): return entries
+	var management_hint := "Delete or rename files in supported library sections. Managing files is easier in list view. Available actions depend on the source and permissions."
+	entries.append(_choice_row("Allow file management", "file_editing", file_actions.enabled,
+		[{"value": false, "label": "Off", "hint": management_hint}, {"value": true, "label": "On", "hint": management_hint}]))
+	entries.append_array(file_actions.settings_rows())
+	entries.append(_choice_row("Restore folder position", "library_restore_position", restore_directory_position,
+		[{"value": false, "label": "Off", "hint": BROWSE_POSITION_HINT}, {"value": true, "label": "On", "hint": BROWSE_POSITION_HINT}], false, BROWSE_POSITION_HINT))
+	entries.append_array(cloud_pagination.settings_rows(settings))
+	return entries
+
+func _record_cleanup_rows() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = [_general_settings_group("records", "Clear records", true)]
+	if not _general_settings_expanded.has("records"): return entries
+	for action in [
+		[["privacy_clear", "all"], "Clear existing history", "Confirm clearing history"],
+		[["privacy_clear", "network"], "Clear network history", "Confirm clearing network history"],
+		[["file_settings_clear", "all"], "Clear file settings", "Confirm clearing file settings"],
+		[["file_settings_clear", "network"], "Clear network file settings", "Confirm clearing network file settings"],
+	]:
+		var armed := _confirm == str(action[0])
+		entries.append({"title": I18n.t(action[2] if armed else action[1]), "icon": "check" if armed else "trash",
+			"selected": armed, "setting": action[0]})
+	return entries
+
+func _thumbnail_prefetch_rows() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = [_general_settings_group("previews", "Prefetch file previews")]
+	if not _general_settings_expanded.has("previews"): return entries
+	var toggles := [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]
+	var local_row := _choice_row("Local files", "library_thumbnail_prefetch", thumbnail_prefetch.enabled, toggles)
+	local_row.info = "Prefetch photo and video previews from internal storage. For videos without a preview, try capturing a frame."
+	var smb_row := _choice_row("SMB", "library_thumbnail_smb", thumbnail_prefetch.smb_enabled, toggles)
+	smb_row.info = "Prefetch from SMB shares. Use matching cover images first, then try capturing a frame for videos without a preview."
+	var dlna_row := _choice_row("DLNA", "library_thumbnail_dlna", thumbnail_prefetch.dlna_enabled, toggles)
+	dlna_row.info = "Use DLNA server covers first and try capturing a frame to fill in missing video previews."
+	var protection_row := _choice_row("Low frame rate protection during prefetch", "library_thumbnail_frame_protection", thumbnail_prefetch.budget.protect_preview_frames, toggles)
+	protection_row.info = "Pause preview reads when the frame rate drops to reduce stutter. Retry once after it stabilizes."
+	var amounts := ThumbnailPrefetch.LIMITS.map(func(count): return {"value": count, "label": str(count)})
+	var amount_row := _choice_row("Prefetch limit", "library_thumbnail_limit", thumbnail_prefetch.limit, amounts)
+	amount_row.info = "Maximum number of files and folders checked for previews per folder visit."
+	entries.append_array([local_row, smb_row, dlna_row, protection_row, amount_row])
+	return entries
+
 ## Report a problem, last in General (About links to it): upload the diagnostic log to the developer
 ## for a code to quote, save it to Download/Thru3D/logs, or serve it on the headset's Wi-Fi address
 ## (a headset has no share target to a phone), and read recent warnings in place.
@@ -4143,9 +4311,123 @@ func _edit_diagnostic_note(current: String) -> void:
 		setting_changed.emit("diagnostic_note", value); refresh()
 	system_text_input.begin("diagnostic_note", current, DIAGNOSTIC_NOTE_LIMIT, update, update)
 
+func _display_settings_group(group: String, title: String) -> Dictionary:
+	return {"title": I18n.t(title), "group_header": true, "display_settings_group": group,
+		"icon": "chevron_down" if _display_settings_expanded.get(group, false) else "next"}
+
+func reveal_display_interface() -> void:
+	scroll = 0.0
+	refresh()
+
+func _display_interface_rows(settings: Dictionary) -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	entries.append(_choice_row("Hand model", "hand_model", str(settings.get("hand_model", "auto")),
+		[{"value": "auto", "label": "Auto", "hint": "Hidden in passthrough"}, {"value": "show", "label": "On"}, {"value": "hide", "label": "Off"}]))
+	entries.append(_choice_row(PlaybackMenuDepth.TITLE, PlaybackMenuDepth.KEY,
+		str(settings.get(PlaybackMenuDepth.KEY, PlaybackMenuDepth.DEFAULT)), PlaybackMenuDepth.choices(), true))
+	return entries
+
+func _display_rendering_rows(settings: Dictionary) -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	var qiyu: bool = settings.get("qiyu", false)
+	var quality_choices: Array = [{"value": Quality.AUTO, "label": "Auto", "hint": Quality.QIYU_SCALE_AUTO_HINT if qiyu else Quality.SCALE_AUTO_HINT}]
+	for i in Quality.SCALES.size():
+		quality_choices.append({"value": i, "label": Quality.NAMES[i], "hint": Quality.SCALE_HINTS[i]})
+	var scale_row := _choice_row("Render scale", "display_quality", int(settings.get("display_quality", Quality.DEFAULT)),
+		quality_choices, true, "Restart to apply" if settings.get("display_quality_pending", false) else "")
+	scale_row.info = Quality.SCALE_INFO; entries.append(scale_row)
+	var refresh_choices: Array = []
+	for cap in Quality.refresh_choices(bool(settings.get("low_end_gpu", false))):
+		refresh_choices.append({"value": cap, "label": Quality.REFRESH_NAMES[cap], "hint": Quality.REFRESH_HINTS[cap]})
+	var refresh_row := _choice_row("Playback refresh rate", "refresh_cap", int(settings.get("refresh_cap", Quality.DEFAULT_REFRESH_CAP)), refresh_choices, true)
+	refresh_row.info = Quality.REFRESH_INFO; entries.append(refresh_row)
+	var supersampling_choices: Array = []
+	for i in Quality.SUPERSAMPLING_NAMES.size():
+		supersampling_choices.append({"value": i, "label": Quality.SUPERSAMPLING_NAMES[i], "hint": Quality.SUPERSAMPLING_HINTS[i]})
+	var supersampling_row := _choice_row("Supersampling", "supersampling", int(settings.get("supersampling", Quality.DEFAULT_SUPERSAMPLING)), supersampling_choices, true)
+	supersampling_row.info = Quality.SUPERSAMPLING_INFO; entries.append(supersampling_row)
+	var sharpness_choices: Array = []
+	for i in Quality.SHARPNESS.size():
+		sharpness_choices.append({"value": Quality.SHARPNESS[i], "label": Quality.SHARPNESS_NAMES[i], "hint": Quality.SHARPNESS_HINTS[i]})
+	var sharpness_row := _choice_row("Sharpness", "sharpness", float(settings.get("sharpness", Quality.DEFAULT_VIDEO_SHARPNESS)), sharpness_choices, true)
+	sharpness_row.info = Quality.SHARPNESS_INFO; entries.append(sharpness_row)
+	return entries
+
+func _display_overlay_rows(settings: Dictionary) -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	var status_row := _choice_row("Show status information", "show_status_info", bool(settings.get("show_status_info", true)),
+		[{"value": false, "label": "Off"}, {"value": true, "label": "On"}])
+	status_row.info = "Show subtitle, narration and loading status in the upper left."
+	for option in status_row.choices: option.hint = status_row.info
+	entries.append(status_row)
+	entries.append(_choice_row("Show FPS", "show_fps", bool(settings.get("show_fps", false)),
+		[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
+	var seek_row := _choice_row("Thumbstick progress bar", "stick_seek_overlay", bool(settings.get("stick_seek_overlay", true)),
+		[{"value": false, "label": "Off"}, {"value": true, "label": "On"}])
+	seek_row.info = "Show a progress bar when seeking with the thumbstick. Turn off for greater immersion."
+	for option in seek_row.choices: option.hint = seek_row.info
+	entries.append(seek_row)
+	return entries
+
 func _video_settings_group(group: String, title: String) -> Dictionary:
 	return {"title": I18n.t(title), "group_header": true, "video_settings_group": group,
 		"icon": "chevron_down" if _video_settings_expanded.get(group, false) else "next"}
+
+func _video_output_rows(settings: Dictionary) -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	var hdr := HdrToSdr.choice(str(settings.get("hdr_to_sdr", HdrToSdr.ON)))
+	hdr.title = I18n.t(HdrToSdr.TITLE)
+	entries.append(hdr)
+	var outputs: Array = []
+	for option in [[Quality.AUTO_OUTPUT, "Auto"], [0, "Original size"], [5760, "6K"], [4096, "4K"]]:
+		var hint: String = Quality.QIYU_OUTPUT_AUTO_HINT if option[0] == Quality.AUTO_OUTPUT and settings.get("qiyu", false) else Quality.OUTPUT_HINTS[option[0]]
+		outputs.append({"value": option[0], "label": option[1], "hint": hint})
+	var output_row := _choice_row("Output resolution", "output_width", int(settings.get("output_width", Quality.AUTO_OUTPUT)), outputs, true)
+	output_row.info = Quality.OUTPUT_INFO; entries.append(output_row)
+	var memories: Array = []
+	for option in [[Quality.MEMORY_AUTO, "Auto"], [Quality.MEMORY_STANDARD, "Standard"], [Quality.MEMORY_SAVER, "Saver"]]:
+		memories.append({"value": option[0], "label": option[1], "hint": Quality.MEMORY_HINTS[option[0]]})
+	var memory_row := _choice_row("Memory", "memory_mode", int(settings.get("memory_mode", Quality.MEMORY_AUTO)), memories, true)
+	memory_row.info = Quality.MEMORY_INFO; entries.append(memory_row)
+	return entries
+
+func _video_depth_rows(settings: Dictionary) -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	var auto_3d := VideoAuto3D.choice(bool(settings.get("video_auto_3d", false)))
+	auto_3d.title = I18n.t(VideoAuto3D.TITLE); auto_3d.info = VideoAuto3D.HINT
+	entries.append(auto_3d)
+	entries.append(_choice_row("2D to 3D effect", "depth_render", str(settings.get("depth_render", "stretch")),
+		[{"value": "fill", "label": "Fill gaps", "hint": "Fills the background behind moving edges"},
+		{"value": "stretch", "label": "Stretch edges", "hint": "Stretches edges, like spatial photos"}], true))
+	var position := preload("res://scripts/depth_position.gd").row(settings.get("depth_position_default", 0), "depth_position_default")
+	position.title = I18n.t("3D position"); position.info = position.hint; position.erase("hint")
+	entries.append(position)
+	return entries
+
+func _video_alpha_rows(settings: Dictionary) -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	var auto_passthrough_row := _choice_row("Auto passthrough from filename", "alpha_auto_from_filename", bool(settings.get("alpha_auto_from_filename", true)),
+		[{"value": false, "label": "Off", "hint": AUTO_PASSTHROUGH_HINT}, {"value": true, "label": "On", "hint": AUTO_PASSTHROUGH_HINT}])
+	auto_passthrough_row.info = AUTO_PASSTHROUGH_HINT; entries.append(auto_passthrough_row)
+	entries.append(_choice_row("Keep background during passthrough", "alpha_keep_background", bool(settings.get("alpha_keep_background", false)),
+		[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
+	entries.append(_alpha_size_row(settings))
+	entries.append({"title": I18n.t("Alpha passthrough FPS limit"), "key": "alpha_fps", "value": int(settings.get("alpha_fps", 30)),
+		"slider": true, "span": Vector3(10, 40, 1), "unit": " FPS", "reset_value": float(settings.get("alpha_fps_default", 30)), "hint": "Headset performance limits keep the cut-out a little behind the picture"})
+	# The same Alpha edge as the player settings (AlphaEdge defaults).
+	entries.append({"title": I18n.t("Alpha feather"), "key": "alpha_feather", "value": int(settings.get("alpha_feather", 100)),
+		"slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 100.0})
+	entries.append({"title": I18n.t("Alpha edge shrink"), "key": "alpha_shrink", "value": int(settings.get("alpha_shrink", 40)),
+		"slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 40.0})
+	entries.append(_choice_row("Cut-out interpolation", "alpha_mask_blend", bool(settings.get("alpha_mask_blend", true)),
+		[{"value": false, "label": "Off", "hint": AlphaEdgeSettings.MASK_BLEND_OFF_HINT}, {"value": true, "label": "On", "hint": AlphaEdgeSettings.MASK_BLEND_ON_HINT}]))
+	if Quality.ALPHA_PRECISION_SHOWN:
+		var precisions: Array = []
+		for option in [[Quality.ALPHA_PRECISION_AUTO, "Auto"], [Quality.ALPHA_PRECISION_FAST, "Fast"], [Quality.ALPHA_PRECISION_PRECISE, "Precise"]]:
+			precisions.append({"value": option[0], "label": option[1], "hint": Quality.ALPHA_PRECISION_HINTS[option[0]]})
+		var precision_row := _choice_row("AI precision", "alpha_precision", int(settings.get("alpha_precision", Quality.ALPHA_PRECISION_AUTO)), precisions, true)
+		precision_row.info = Quality.ALPHA_PRECISION_INFO; entries.append(precision_row)
+	return entries
 
 func _subtitle_rows(settings: Dictionary) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
@@ -4218,17 +4500,27 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 	name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	name.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	name.position = Vector3(0, -0.06, 0.004)
-	var picture := icon in ["video", "image"]
+	var folder_art := row.has("folder_thumb_scope")
+	var picture := icon in ["video", "image"] or folder_art
 	var area := _quad(Vector2(TILE_SIZE.x - 0.02, 0.165), Vector3(0, 0.04, 0.003), UiTheme.color("placeholder") if picture else Color(TILE, 0.0), 12)
 	node.add_child(area)
 	var shown: Texture2D = _picture(row) if picture else null
+	if picture:
+		button.thumbnail_row = row
+		button.thumbnail_area = area
 	if shown:
 		var frame := _material(Color.WHITE, 12)
 		frame.albedo_texture = shown
 		area.material_override = frame
-	else:
-		var glyph := _icon(icon, Vector3(0, 0.04, 0.005), 0.065 if picture else 0.1, MUTED if picture else (FOLDER if icon == "folder" else UiTheme.color("text")), node)
-		glyph.material_override.render_priority = 13
+	var glyph := _icon(icon, Vector3(0, 0.04, 0.005), 0.065 if picture and not folder_art else 0.1, FOLDER if folder_art else MUTED if picture else UiTheme.color("text"), node)
+	glyph.material_override.render_priority = 13
+	glyph.visible = shown == null
+	if picture: button.thumbnail_placeholder = glyph
+	if folder_art:
+		var mark := _icon("folder", Vector3(-0.092, 0.097, 0.006), 0.03, FOLDER, node)
+		mark.material_override.render_priority = 14
+		mark.visible = shown != null
+		button.thumbnail_folder_badge = mark
 	if file_actions.editing and not file_actions.row_uri(row).is_empty():
 		var marker := _icon("check" if file_actions.is_selected(row) else "circle", Vector3(-0.115, 0.095, 0.009), 0.035, ACCENT, node)
 		marker.material_override.render_priority = 14
@@ -4254,19 +4546,67 @@ func _lit(selected: bool) -> void:
 
 ## A played video's frame, or the cover a DLNA server offers (fetched once, then cached).
 ## Never reads a video to make one.
-func _picture(row: Dictionary) -> Texture2D:
+var _thumbnail_revision := 0
+var _thumbnail_generation := 0
+var _reference_load_revision := 0
+var _thumbnail_clearing := false
+
+func _apply_loaded_thumbnail() -> void:
+	var clearing := Thumbnails.clearing()
+	if _reference_load_revision != Thumbnails.References.load_revision or _thumbnail_generation != Thumbnails.generation or _thumbnail_clearing != clearing:
+		_reference_load_revision = Thumbnails.References.load_revision
+		_thumbnail_generation = Thumbnails.generation
+		_thumbnail_clearing = clearing
+		_thumbnail_revision = Thumbnails.revision
+		if visible: _update_thumbnail_buttons()
+		return
+	if _thumbnail_revision == Thumbnails.revision: return
+	_thumbnail_revision = Thumbnails.revision
+	if not visible: return
+	_update_thumbnail_buttons(Thumbnails.loaded_key)
+
+func _update_thumbnail_buttons(loaded: String = "") -> void:
+	for button in _buttons:
+		if not button.has("thumbnail_row") or not is_instance_valid(button.thumbnail_area): continue
+		var row: Dictionary = button.thumbnail_row
+		if not loaded.is_empty() and not _thumbnail_matches(row, loaded): continue
+		var shown := _picture(row, false)
+		if shown:
+			var frame := _material(Color.WHITE, 12)
+			frame.albedo_texture = shown
+			button.thumbnail_area.material_override = frame
+		elif not bool(button.get("thumbnail_list", false)):
+			button.thumbnail_area.material_override = _material(UiTheme.color("placeholder"), 12)
+		button.thumbnail_area.visible = shown != null or not bool(button.get("thumbnail_list", false))
+		var placeholder: Variant = button.get("thumbnail_placeholder")
+		if is_instance_valid(placeholder): placeholder.visible = shown == null
+		var folder_badge: Variant = button.get("thumbnail_folder_badge")
+		if is_instance_valid(folder_badge): folder_badge.visible = shown != null
+
+func _thumbnail_matches(row: Dictionary, digest: String) -> bool:
+	for field in ["thumbnail_key", "uri", "cover", "folder_cover_key"]:
+		if str(row.get(field, "")).sha1_text() == digest: return true
+	if row.has("folder_thumb_scope"):
+		return Thumbnails.References.cover(row.folder_thumb_scope).get("picture") == digest
+	return false
+
+func _picture(row: Dictionary, permit_request: bool = true) -> Texture2D:
+	if row.has("folder_thumb_scope"):
+		var declared := Thumbnails.texture(str(row.get("folder_cover_key", "")))
+		return declared if declared else DirectoryArtwork.texture(row.folder_thumb_scope)
 	if row.has("thumbnail_key"): return Thumbnails.texture(str(row.thumbnail_key))
 	if row.has("scene"):
 		var server_picture: Texture2D = server_browser.cover(row)
 		return server_picture if server_picture else Thumbnails.texture(str(row.get("uri", "")))
 	var cover := str(row.get("cover", ""))
-	var played := Thumbnails.texture(str(row.get("uri", "")))
+	var allowed := directory_artwork.allowed_picture(str(row.get("thumb_scope", "")), row.get("thumb_item", {}))
+	var played := Thumbnails.texture(str(row.get("uri", ""))) if allowed else null
 	if cover.is_empty():
 		return played
 	var cached := Thumbnails.texture(cover)
 	if cached:
 		_cache_cover_for_rows(cover, cached.get_image() if not played else null)
-	if not cached and not _covers.has(cover) and _covers.size() < 4:
+	if permit_request and section != Section.DLNA and not compact and not Thumbnails.clearing() and not cached and not Thumbnails.has(cover) and not _covers.has(cover) and _covers.size() < 4 and _folder_covers._active.is_empty():
 		_fetch_cover(cover)
 	return cached if cached else played
 
@@ -4283,14 +4623,14 @@ func _fetch_cover(url: String) -> void:
 	request.timeout = 10.0
 	add_child(request)
 	_covers[url] = request
+	var generation := Thumbnails.generation
 	request.request_completed.connect(func(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray):
 		_covers.erase(url)
 		request.queue_free()
-		if result != HTTPRequest.RESULT_SUCCESS or code != 200:
-			return
+		if generation != Thumbnails.generation: return
+		if result != HTTPRequest.RESULT_SUCCESS or code != 200: return
 		var image := Image.new()
-		if image.load_jpg_from_buffer(body) != OK and image.load_png_from_buffer(body) != OK and image.load_webp_from_buffer(body) != OK:
-			return
+		if image.load_jpg_from_buffer(body) != OK and image.load_png_from_buffer(body) != OK and image.load_webp_from_buffer(body) != OK: return
 		if Thumbnails.store(url, image):
 			_cache_cover_for_rows(url, image)
 			if visible: _draw())
@@ -4299,6 +4639,7 @@ func _fetch_cover(url: String) -> void:
 		request.queue_free()
 
 func _cancel_covers() -> void:
+	_folder_covers.cancel()
 	for request in _covers.values():
 		request.cancel_request()
 		request.queue_free()
@@ -4345,7 +4686,22 @@ func _media_row_button(target: int, row: Dictionary, centre: Vector2) -> void:
 	label.position = Vector3(text_x, 0.023, 0.004)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	if label.text != str(row.title): _tips[target] = str(row.title)
-	_icon(str(row.get("icon", "video")), Vector3(-0.51 if managing else -0.565, 0, 0.004), 0.045, FOLDER if info.folder else _buttons.back().foreground, node)
+	var glyph := _icon(str(row.get("icon", "video")), Vector3(-0.51 if managing else -0.565, 0, 0.004), 0.045, FOLDER if info.folder else _buttons.back().foreground, node)
+	if row.has("folder_thumb_scope") or row.get("kind") in ["video", "image"]:
+		var button: Dictionary = _buttons.back()
+		var area := _quad(Vector2(0.069, 0.039), glyph.position, Color.WHITE, 12)
+		node.add_child(area)
+		button.thumbnail_row = row
+		button.thumbnail_area = area
+		button.thumbnail_placeholder = glyph
+		button.thumbnail_list = true
+		var shown := _picture(row, false)
+		area.visible = shown != null
+		glyph.visible = shown == null
+		if shown:
+			var frame := _material(Color.WHITE, 12)
+			frame.albedo_texture = shown
+			area.material_override = frame
 	var subtitle_width := (0.76 if float(info.ratio) >= 0 else 1.02) - (0.11 if managing else 0.0)
 	var subtitle := _label(_fit_title(str(info.subtitle), "", subtitle_width, 16), Vector3(text_x, -0.025, 0.004), 16, node)
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; subtitle.modulate = MUTED

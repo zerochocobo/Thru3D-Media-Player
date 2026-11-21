@@ -19,6 +19,12 @@ class CloudPaginationTest {
         }
         return CloudResponse(JSONObject().put("state", true).put("offset", offset).put("count", count).put("data", data))
     }
+    /** A cached page reuses the fetched entries and says so (folder listing freshness). */
+    private fun assertCached(fetched: CloudPage, cached: CloudPage) {
+        assertSame(fetched.files, cached.files)
+        assertEquals(fetched.nextOffset, cached.nextOffset); assertEquals(fetched.total, cached.total)
+        assertEquals(ListingFreshness.FRESH, fetched.freshness); assertEquals(ListingFreshness.CACHED, cached.freshness)
+    }
     @Test fun tenThousandEntriesFetchOnlyRequestedPagesAndReuseMetadataForPlaybackAndFolders() {
         val requests = ArrayList<Map<String, String>>()
         val drive = CloudDrive(CloudDrive.P115, "UID=test", CloudTransport { url, _, _ ->
@@ -32,7 +38,7 @@ class CloudPaginationTest {
         assertEquals(10_001, first.total); assertEquals(48, first.nextOffset)
         val next = drive.page("/", first.nextOffset)
         assertEquals(2, requests.size); assertEquals(96, next.nextOffset)
-        assertSame(first, drive.page("/"))
+        assertCached(first, drive.page("/"))
         assertEquals("pick-49", drive.find("/片名 49.mp4").pickCode)
         assertEquals(2, requests.size)
         assertTrue(drive.page("/目录 0").files.isEmpty())
@@ -51,7 +57,7 @@ class CloudPaginationTest {
         })
         val first = drive.page("/")
         try { drive.page("/", 48); fail() } catch (_: CloudFailure) {}
-        assertSame(first, drive.page("/")); assertEquals(2, requests)
+        assertCached(first, drive.page("/")); assertEquals(2, requests)
         fail = false
         assertEquals(48, drive.page("/", 48).files.size); assertEquals(3, requests)
     }

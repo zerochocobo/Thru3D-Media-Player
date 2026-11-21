@@ -26,6 +26,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -331,6 +332,7 @@ struct Source final {
     uint64_t snapshot_sequence = 0; // control thread only
     std::string state = "opening", details = "{}", error, render_error, tls_ca_file, failure_reason, failure_stage;
     int mpv_failure_code = 0; // status_mutex
+    int failure_http_status = 0; // status_mutex
     quest::PlaybackFailure source_failure; // control thread, opening hints only
     double pixel_aspect = 1.0; // status_mutex; output coordinates remain packed source pixels
     std::string stereo_mode; // status_mutex; MPV's demuxed stereo-in, never inferred from title
@@ -415,12 +417,14 @@ struct Source final {
         void* symbol = reinterpret_cast<void*>(eglGetProcAddress(name));
         return symbol ? symbol : dlsym(library, name);
     }
-    void set_state(std::string value, std::string failure = "", int code = 0, std::string reason = "", std::string stage = "") {
+    void set_state(std::string value, std::string failure = "", int code = 0, std::string reason = "",
+                   std::string stage = "", int http_status = 0) {
         std::lock_guard<std::mutex> lock(status_mutex);
         state = std::move(value);
         if (!failure.empty()) {
             error = std::move(failure); mpv_failure_code = code;
             failure_reason = std::move(reason); failure_stage = std::move(stage);
+            failure_http_status = http_status;
         }
     }
     void clear_pgs() {
@@ -1087,7 +1091,7 @@ struct Source final {
                     debug_steps_applied.fetch_add(1);
                 }
 #endif
-                const auto* event = mpv_wait_event(core, 0.01);
+                auto* event = mpv_wait_event(core, 0.01);
                 require(event != nullptr, "MPV source event unavailable");
                 if (event->event_id == MPV_EVENT_LOG_MESSAGE) {
                     const auto* log = static_cast<const mpv_event_log_message*>(event->data);
@@ -1205,10 +1209,32 @@ struct Source final {
                         software_fallback.store(true);
                         next_snapshot = std::chrono::steady_clock::now();
                     } else if (end->error < 0) {
-                        const auto diagnosis = quest::playback_end_failure(end->error, source_failure);
+                        int http_status = 0;
+                        if (end->error == MPV_ERROR_LOADING_FAILED) {
+                            // The source-frame build attaches the primary probe's status to this
+                            // end event. libmpv's separate log queue has no request identity.
+                            mpv_node data{};
+                            if (mpv_event_to_node(&data, event) >= 0) {
+                                if (data.format == MPV_FORMAT_NODE_MAP) {
+                                    const auto* map = data.u.list;
+                                    for (int i = 0; i < map->num; ++i) {
+                                        const auto& value = map->values[i];
+                                        if (std::string_view(map->keys[i]) == "http_status" &&
+                                            value.format == MPV_FORMAT_INT64 &&
+                                            value.u.int64 >= 400 && value.u.int64 <= 599) {
+                                            http_status = static_cast<int>(value.u.int64);
+                                            break;
+                                        }
+                                    }
+                                }
+                                mpv_free_node_contents(&data);
+                            }
+                        }
+                        const auto diagnosis = quest::playback_end_failure(end->error,
+                            http_status != 0 ? quest::PlaybackFailure{} : source_failure);
                         const std::string detail = std::string("MPV playback: ") + mpv_error_string(end->error) +
                             (diagnosis.detail.empty() ? "" : "; " + diagnosis.detail);
-                        set_state("failed", detail, end->error, diagnosis.reason, diagnosis.stage);
+                        set_state("failed", detail, end->error, diagnosis.reason, diagnosis.stage, http_status);
                         break;
                     }
                     set_state(end->reason == MPV_END_FILE_REASON_EOF ? "ended" : "stopped");
@@ -1700,9 +1726,10 @@ struct Source final {
             ",\"decoder\":" + quote(hardware_decoding.load() ? "hardware" : "software") + "}";
     }
     std::string status() {
-        std::string snapshot, state_copy, error_copy, reason_copy, stage_copy, render_error_copy, final_copy = "null"; int held = 0, retiring = 0, code_copy = 0;
+        std::string snapshot, state_copy, error_copy, reason_copy, stage_copy, render_error_copy, final_copy = "null";
+        int held = 0, retiring = 0, code_copy = 0, http_status_copy = 0;
         { std::lock_guard<std::mutex> lock(status_mutex); snapshot = details; state_copy = state; error_copy = error;
-            code_copy = mpv_failure_code; reason_copy = failure_reason; stage_copy = failure_stage; }
+            code_copy = mpv_failure_code; reason_copy = failure_reason; stage_copy = failure_stage; http_status_copy = failure_http_status; }
         { std::lock_guard<std::mutex> lock(frames_mutex); render_error_copy = render_error;
             if (core_eof.load() && final_ticket.frame_id > 0 && final_ticket.source_epoch >= epoch_floor.load())
                 final_copy = "{\"source_epoch\":" + std::to_string(final_ticket.source_epoch) +
@@ -1712,6 +1739,7 @@ struct Source final {
         }
         return "{\"backend\":\"Android_libmpv\",\"state\":" + quote(state_copy) + ",\"error\":" + quote(error_copy) +
             ",\"mpv_code\":" + std::to_string(code_copy) + ",\"failure_reason\":" + quote(reason_copy) + ",\"failure_stage\":" + quote(stage_copy) +
+            ",\"http_status\":" + std::to_string(http_status_copy) +
             ",\"render_error\":" + quote(render_error_copy) + ",\"done\":" + (done.load() ? "true" : "false") +
             ",\"close_wait\":" + close_wait() +
             ",\"render_failed\":" + (render_failed.load() ? "true" : "false") + ",\"closing\":" + (closing.load() ? "true" : "false") +

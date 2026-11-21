@@ -145,8 +145,10 @@ internal object OpenListBackend {
             if (keys.toSet().size != files.size) throw CloudFailure(detail = "directory.page: duplicate object IDs")
             val next = if (canDelete) { if (offset + items.length() < total) offset + items.length() else -1 } else data.getInt("next_offset")
             if (!canDelete && next != -1 && next != offset + pageSize) throw CloudFailure(detail = "directory.page: invalid continuation")
+            val cacheHit = if (canDelete) data.optJSONObject("paging")?.opt("cache_hit") else data.opt("cache_hit")
             return CloudPage(files, next, total, pageSize, items.length(),
-                (0 until items.length()).map { items.getJSONObject(it).optString("id", items.getJSONObject(it).optString("name")) })
+                (0 until items.length()).map { items.getJSONObject(it).optString("id", items.getJSONObject(it).optString("name")) },
+                ListingFreshness.fromCacheHit(cacheHit))
         }
         override fun list(path: String): List<CloudFile> {
             val files = ArrayList<CloudFile>()

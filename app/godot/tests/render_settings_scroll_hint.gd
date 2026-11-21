@@ -15,6 +15,7 @@ func run() -> void:
 	var menu := Menu.new(); camera.add_child(menu); menu.set_process(false); menu.visible = true
 	menu.I18n.use("zh")
 	menu.section = Menu.Section.SETTINGS; menu.tab = Menu.DISPLAY_TAB
+	menu._display_settings_expanded = {"interface": true, "rendering": true, "overlays": true}
 	menu.settings_provider = func(): return {"watch_color": "violet"}
 	menu.refresh()
 	for state in ["top", "float-high", "float-low", "fractional", "bottom", "short"]:

@@ -17,6 +17,7 @@
   "aaudio_clock_patch_sha256": "13ea52f8aea8f4e110a43989de56b813f59245d75af01a1f0e34f57e26d906cc",
   "layer_cadence_patch_sha256": "fc2d1907643af88c949b430fc2dafb2c46a9b082021668716253bcc0bc18d448",
   "mediacodec_priority_patch_sha256": "df1b36c3dcdf97ce273f0ef13adffe3d565c99ce8f94334acb1533f6b271ee11",
+  "open_http_status_patch_sha256": "2d7f9777ab092f38dc250ed3c735117d26faaaba97149e5dc8fda908a82a89c9",
   "dovi_rpu_patch_sha256": "ac25f48b5dce159a0cdf5880500dbe13055b8b72bf03fd8763971ddd0367ad3a",
   "architecture": "arm64-v8a",
   "elf_page_alignment": 16384,
@@ -57,9 +58,9 @@
   "libraries": [
     {
       "name": "libmpv.so",
-      "sha256": "a19fa607b8c503ac058231b667e54134717db39a775bcb4e296a20565af3def8",
-      "bytes": 8268960,
-      "built_sha256": "69f108f270b4d081670239d08d297cd488d73a43e2626b088b186c27738e48a0",
+      "sha256": "b398e82e0de946f679ad1d34d592d51508cdf2596f415298cc477eb7d898134a",
+      "bytes": 8269264,
+      "built_sha256": "5406de200129c2762b0a08f2ed3c875a0a62653f920980983c8da4ea36dfc8e5",
       "needed": [
         "libm.so",
         "libz.so",
@@ -170,7 +171,7 @@
     }
   ],
   "host_packages_sha256": "0d42dd4ec021254111a439214a2681bf37ca44ba2af04a9d97af479f2bd1dd33",
-  "build_receipt_sha256": "0aa600f9e244d96e9beae7e3fc71bda3e003a7150eaf4b4467c0d27661d482b8",
+  "build_receipt_sha256": "dcaf16946cbc4adc8168f9ae50e308083105faa9e8d20dbc80906488c31489b4",
   "meson": "1.11.0",
   "ninja": "1.11.1",
   "mvc_inputs_sha256": {

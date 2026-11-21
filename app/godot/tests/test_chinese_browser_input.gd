@@ -13,21 +13,35 @@ func run() -> void:
 	# Export features are injected here; no device or Android IME is required.
 	for profile in [[true, true, false, "quest"], [true, false, true, "pico"], [true, false, false, "openxr"], [false, false, false, "desktop"]]:
 		Chinese.android = profile[0]; Chinese.quest = profile[1]; Chinese.pico = profile[2]
+		var settings_menu := Menu.new(); root.add_child(settings_menu); settings_menu.set_process(false)
+		settings_menu.section = Menu.Section.SETTINGS; settings_menu.tab = Menu.GENERAL_TAB
+		var openxr: bool = profile[3] == "openxr"
+		var input_keys := ["web_keyboard", "quest_chinese_keyboard", "openxr_chinese_keyboard"]
 		for language in ["zh", "zh_Hant", "en", "ja", "auto"]:
 			for selected in [false, true]:
 				I18n.use(language); Chinese.configure(selected)
 				var quest_input: bool = profile[1] and selected and I18n.language == "zh"
-				var openxr: bool = profile[3] == "openxr"
 				check(Chinese.enabled() == (quest_input or (openxr and selected)), "App input policy: %s/%s/%s" % [profile[3], language, selected])
 				check(Chinese.browser_enabled() == (quest_input or openxr), "Browser input policy: %s/%s/%s" % [profile[3], language, selected])
 				Chinese.configure_browser("system")
 				check(Chinese.browser_enabled() == quest_input, "System web choice is independent of the OpenXR app preference")
 				Chinese.configure_browser("invalid")
 				check(Chinese.browser_keyboard == "builtin", "Unknown setting safely defaults to built-in")
-		var settings_menu := Menu.new(); root.add_child(settings_menu)
-		settings_menu.section = Menu.Section.SETTINGS; settings_menu.tab = Menu.GENERAL_TAB; settings_menu.refresh()
-		check(settings_menu.rows.any(func(row): return row.get("key", "") == "web_keyboard") == (profile[3] == "openxr"), "Web keyboard setting is restricted to generic Android/OpenXR")
-		check(settings_menu.rows.any(func(row): return row.get("key", "") == "openxr_chinese_keyboard") == (profile[3] == "openxr"), "OpenXR app switch is restricted to the generic Android export")
+			settings_menu.refresh()
+			var label := "%s/%s" % [profile[3], language]
+			var quest_supported: bool = profile[1] and I18n.language == "zh"
+			var is_supported := quest_supported or openxr
+			var input_group: Array = settings_menu.rows.filter(func(row): return row.get("general_settings_group") == "input")
+			check(input_group.size() == int(is_supported), "Whole keyboard group follows the available options: " + label)
+			check(not settings_menu.rows.any(func(row): return row.get("key") in input_keys)
+				and not settings_menu._general_settings_expanded.has("input"), "Hidden or collapsed keyboard group leaves no controls or open state: " + label)
+			if input_group.is_empty(): continue
+			settings_menu._choose(input_group[0])
+			var options := settings_menu.rows.filter(func(row): return row.get("key") in input_keys)
+			var expected := ["web_keyboard", "openxr_chinese_keyboard"] if openxr else ["quest_chinese_keyboard"]
+			check(options.map(func(row): return row.key) == expected, "Expanded group offers the supported keyboard options: " + label)
+			# Keep a Quest group open across the first language switch to catch stale expansion when it disappears.
+			if not (quest_supported and language == "zh"): settings_menu.navigate_back()
 		settings_menu.queue_free()
 		await process_frame
 	await check_saved_choice()

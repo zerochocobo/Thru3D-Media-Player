@@ -280,6 +280,7 @@ func _command(operation: String,value: Variant) -> void:
 			var mode:=str(value.mode); var key:=str(value.key)
 			if key=="mood_light": app._on_setting_changed("passthrough_relight",bool(value.value))
 			elif key in ["ambient_range","ambient_brightness"]: app._on_playback_adjustment(key,float(value.value))
+			elif key=="ambient_soft_edge": app._on_setting_changed(key,bool(value.value))
 			elif key=="scene_screen_light": app.scene_import.set_screen_light(float(value.value))
 			elif key=="scene_bake": app.scene_import.set_bake(float(value.value))
 			elif key=="scene_play_dim": app.scene_import.set_play_dim(float(value.value))

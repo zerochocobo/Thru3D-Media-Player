@@ -14,11 +14,19 @@ class PhotoCacheHost extends RefCounted:
 	var files := 3
 	var bytes := 12582912
 	var clears := 0
+	var poster_clears := 0
+	var poster_bytes := 4096
 	func photo_cache_usage() -> String:
 		return JSON.stringify({"files": files, "bytes": bytes})
 	func clear_photo_cache() -> bool:
 		clears += 1
 		files = 0; bytes = 0
+		return true
+	func media_server_cache_usage() -> String:
+		return JSON.stringify({"files": int(poster_bytes > 0), "bytes": poster_bytes})
+	func clear_media_server_cache() -> bool:
+		poster_clears += 1
+		poster_bytes = 0
 		return true
 
 func check(value: bool, message: String) -> void:
@@ -82,25 +90,33 @@ func _run() -> void:
 	menu.section = Menu.Section.SETTINGS
 	menu.tab = menu.GENERAL_TAB
 	menu.refresh()
-	check(str(menu.rows[menu.rows.find_custom(func(r): return r.has("clear_cache"))].detail) == "", "Switching to General does not wait for the disk scan")
+	check(str(menu.rows[menu.rows.find_custom(func(r): return r.has("storage_cache"))].detail) == "", "Switching to General does not wait for the disk scan")
 	await _cache_scanned(menu)
-	var index := menu.rows.find_custom(func(r): return r.has("clear_cache"))
+	menu._choose(menu.rows[menu.rows.find_custom(func(r): return r.has("storage_cache"))])
+	var index := menu.rows.find_custom(func(r): return r.get("clear_cache") == "thumbnails")
 	check(index >= 0 and str(menu.rows[index].detail) != "", "Clear cache row shows the size")
 	menu._choose(menu.rows[index])
-	check(Thumbnails.has("file:///v.mp4") and menu._confirm == "clear_cache", "First press only arms")
+	check(Thumbnails.has("file:///v.mp4") and menu._confirm == "clear_cache/thumbnails", "First press only arms")
 	menu._choose(menu.rows[menu.rows.find_custom(func(r): return r.has("clear_cache"))])
-	check(not Thumbnails.has("file:///v.mp4") and Thumbnails.usage().x == 0, "Second press clears the cache")
 	await _cache_scanned(menu)
+	check(not Thumbnails.has("file:///v.mp4") and Thumbnails.usage().x == 0, "Second press clears the cache")
 	var photo_host := PhotoCacheHost.new()
 	menu.platform = photo_host
 	menu._cache_usage = null
 	menu.refresh()
 	await _cache_scanned(menu)
-	var photo_row: Dictionary = menu.rows[menu.rows.find_custom(func(r): return r.has("clear_cache"))]
-	check(not photo_row.empty and menu._cache_usage == Vector2i(3, 12582912), "Photo-only cache is counted and can be cleared without thumbnails")
-	menu._choose(photo_row)
+	var all_row: Dictionary = menu.rows[menu.rows.find_custom(func(r): return r.get("clear_cache") == "all")]
+	check(menu._cache_result.photos == Vector2i(3, 12582912) and menu._cache_result.posters == Vector2i(1, 4096),
+		"Photo and poster caches are each counted without thumbnails")
+	var poster_row: Dictionary = menu.rows[menu.rows.find_custom(func(r): return r.get("clear_cache") == "posters")]
+	menu._choose(poster_row)
+	menu._choose(poster_row)
+	await _cache_scanned(menu)
+	check(photo_host.poster_clears == 1 and photo_host.clears == 0 and menu._cache_usage == Vector2i(3, 12582912),
+		"Clearing posters leaves the photo cache")
+	menu._choose(all_row)
 	check(photo_host.clears == 0, "First press does not delete photo files")
-	menu._choose(menu.rows[menu.rows.find_custom(func(r): return r.has("clear_cache"))])
+	menu._choose(all_row)
 	await _cache_scanned(menu)
 	check(photo_host.clears == 1 and menu._cache_usage == Vector2i.ZERO, "Confirmed clear reaches Android and refreshes the remaining size")
 	menu.platform = null
@@ -148,4 +164,5 @@ func _run() -> void:
 
 	Thumbnails.clear()
 	print("thumbnail checks=%d failures=%d" % [checks, failures.size()])
+	Thumbnails.finish()
 	quit(1 if failures.size() > 0 else 0)

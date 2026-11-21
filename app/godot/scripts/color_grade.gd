@@ -159,6 +159,7 @@ func apply(material: ShaderMaterial) -> void:
 	var p := values()
 	material.set_shader_parameter("grade_enabled", preset != "Original")
 	material.set_shader_parameter("display_decode", QiyuController.runtime and QiyuController.page_decode)
+	material.set_shader_parameter("display_dither", QiyuController.runtime and QiyuController.page_decode and QiyuController.linear_eye_buffer)
 	material.set_shader_parameter("grade_gain", gain())
 	material.set_shader_parameter("grade_gamma", Vector3(p.red_gamma, p.green_gamma, p.blue_gamma) * p.gamma)
 	material.set_shader_parameter("grade_offset", Vector3(p.red_offset, p.green_offset, p.blue_offset))

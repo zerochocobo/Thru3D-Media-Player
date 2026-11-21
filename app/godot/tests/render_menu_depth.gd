@@ -178,6 +178,20 @@ func _run() -> void:
 					var pixel := rendered.get_pixel(x, y)
 					if pixel.r > 0.8 and pixel.g > 0.4 and pixel.b < 0.4: colored += 1
 			check(colored > 30, "Blank panel renders a round amber dot, not only the thin line")
+		else:
+			# The aimed-at menu keeps the dot at the beam's far end while the beam is off its panels,
+			# and the beam stops at the screen it reaches.
+			menu.idle_dot = true
+			menu.update_pointer("right_hand", origin, direction, true)
+			var idle: Vector3 = menu._pointers.right_hand.dot.global_position
+			check(menu._pointers.right_hand.dot.visible and absf(idle.distance_to(origin) - menu.ray_max_distance) < 0.01
+				and (idle - origin).normalized().dot(direction) > 0.999, "A beam off the panel keeps its dot at its far end")
+			var screen := origin + direction.normalized() * 2.5
+			menu.miss_points["right_hand"] = screen
+			menu.update_pointer("right_hand", origin, direction, true)
+			check(menu._pointers.right_hand.dot.global_position.distance_to(screen) < 0.01, "A beam off the panel stops at the screen it reaches")
+			menu.miss_points.clear()
+			menu.idle_dot = false
 	viewport.free()
 	for failure in failures: push_error(failure)
 	print("Menu depth pixels: %d checks, %d failures" % [checks, failures.size()])

@@ -74,7 +74,7 @@ static func choice_label(provider: String, value: int) -> String:
 	return "Auto (%d)" % int(DEFAULTS.get(provider, 200)) if value == 0 else str(value)
 
 func settings_rows(settings: Dictionary) -> Array[Dictionary]:
-	var rows: Array[Dictionary] = [{"title": menu.I18n.t("Cloud page sizes"), "group_header": true,
+	var rows: Array[Dictionary] = [{"title": menu.I18n.t("Cloud page sizes"), "group_header": true, "subgroup": true,
 		"cloud_paging_group": true, "icon": "chevron_down" if settings_expanded else "next"}]
 	if not settings_expanded: return rows
 	for name in DEFAULTS:
@@ -234,6 +234,7 @@ func receive(id: int, payload: String) -> bool:
 	var next := int(result.get("next_offset", -1))
 	if not entries is Array or count < 0 or count > page_size() or entries.size() > count or (next != -1 and next <= int(request.offset)):
 		_fail({"error": "Cloud connection failed", "error_detail": "cloud.paging: invalid count or continuation"}); return true
+	menu.directory_artwork.accept(menu._artwork_location(), result)
 	if next >= 0: offsets[at_page + 1] = next
 	offsets[at_page] = int(request.offset); _trim_offsets(at_page)
 	menu._cloud_total = int(result.get("total", -1))
