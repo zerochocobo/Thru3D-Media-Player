@@ -1,11 +1,16 @@
 package org.vrpassthroughplayer.plugin
 
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
 class SidecarSubtitlesTest {
+    @get:Rule val episodeFixture = TemporaryFolder()
+
     @Test fun pickerFiltersFilesAndKeepsDirectoriesWithoutExposingUnsupportedFormats() {
         val rows = org.json.JSONArray().put(org.json.JSONObject().put("title", "Subtitles").put("container", true))
         for (name in listOf("字幕.SRT", "film.ass", "film.ssa", "film.vtt", "film.smi", "film.sami", "film.sub", "film.mp4", "film.sup", "film.idx", ".hidden.srt", "../bad.srt"))
@@ -79,6 +84,65 @@ class SidecarSubtitlesTest {
             check(folder.canonicalFile.parentFile == java.io.File(System.getProperty("java.io.tmpdir")).canonicalFile)
             folder.deleteRecursively()
         }
+    }
+
+    @Test fun localEpisodeFoldersKeepIdenticalLanguageNamesBoundToTheCurrentVideo() {
+        val languages = listOf("2_Korean.srt", "3_English.srt", "4_Chinese.srt", "5_Japanese.srt")
+        val subs = episodeFixture.newFolder("sUbS")
+        fun cue(text: String) = "1\n00:00:00,100 --> 00:00:01,900\n$text\n"
+        val videos = (1..2).map { number ->
+            val stem = "剧集 #1 S01Ep0$number"
+            val folder = File(subs, stem.replace("Ep", "EP")).apply { check(mkdir()) }
+            File(episodeFixture.root, "$stem.srt").writeText(cue("same-directory $number"))
+            for (name in languages) File(folder, name).writeText(cue("episode $number $name"))
+            File(folder, "$stem.srt").writeText(cue("duplicate of current same-directory name"))
+            File(folder, "0_Empty.srt").createNewFile()
+            File(folder, "0_Directory.srt").mkdir()
+            File(folder, "Notes.txt").writeText("not a subtitle")
+            File(episodeFixture.root, "$stem.mp4").apply { writeText("fixture") }
+        }
+        File(subs, "剧集 #1 S01Ep020").apply {
+            check(mkdir())
+            File(this, "6_WrongEpisode.srt").writeText(cue("different episode"))
+        }
+        for (index in listOf(0, 1, 0)) {
+            val video = videos[index]
+            val sameDirectoryName = "${video.nameWithoutExtension}.srt"
+            val tracks = SidecarSubtitles.forLocal(video)
+            assertEquals(listOf(sameDirectoryName) + languages, tracks.map { it.title })
+            val expected = listOf("same-directory ${index + 1}") + languages.map { "episode ${index + 1} $it" }
+            assertEquals(expected.map(::cue), tracks.map { File(it.location).readText() })
+        }
+    }
+
+    @Test fun optionalEpisodeLookupKeepsExistingTracksAndHonorsTheNativeTrackLimit() {
+        val stem = "Series S01Ep01"
+        val siblings = (1..7).map { "$stem.$it.srt" }
+        val children = listOf("1_English.srt", "2_Chinese.srt")
+        val opened = mutableListOf<String>()
+        val tracks = SidecarSubtitles.forDirectoryVideo("$stem.mp4",
+            list = { path -> when (path) {
+                "" -> siblings + "Subs/"
+                "Subs" -> listOf("$stem/", "Series S01Ep02/")
+                "Subs/$stem" -> children
+                else -> error("Unexpected directory: $path")
+            } },
+            isDirectory = { _, entry -> entry.endsWith('/') },
+            open = { path, name ->
+                opened.add(name)
+                SidecarSubtitles.Track("$path/$name", name)
+            })
+        assertEquals(siblings + children.first(), tracks.map { it.title })
+        assertEquals(tracks.map { it.title }, opened)
+
+        val inaccessible = SidecarSubtitles.forDirectoryVideo("$stem.mp4",
+            list = { path ->
+                if (path.isNotEmpty()) throw java.nio.file.AccessDeniedException(path)
+                siblings + "Subs/"
+            },
+            isDirectory = { _, entry -> entry.endsWith('/') },
+            open = { path, name -> SidecarSubtitles.Track("$path/$name", name) })
+        assertEquals(siblings, inaccessible.map { it.title })
     }
 
     @Test fun sitestMatchesOnlyTheSelectedPart() {

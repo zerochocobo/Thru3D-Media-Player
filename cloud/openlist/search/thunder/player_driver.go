@@ -265,12 +265,10 @@ func (d *PlayerThunder) Link(ctx context.Context, file model.Obj, _ model.LinkAr
 	}
 	var result Files
 	if err := d.request(ctx, FILE_API_URL+"/"+url.PathEscape(file.GetID()), func(r *resty.Request) {
-		r.SetQueryParam("space", d.Space)
-		// Request a playback URL: omitting usage can issue a throttled download
-		// URL even for the same authorized original file.
-		if playerStreamFile(file.GetName()) {
-			r.SetQueryParam("usage", "PLAY")
-		}
+		// Every read is for viewing: without usage, self-uploaded files (photos
+		// measured at 15–37 KiB/s or EOF) get a throttled download URL. PLAY
+		// returns the same original bytes for photos, PDFs, archives and ISOs.
+		r.SetQueryParam("space", d.Space).SetQueryParam("usage", "PLAY")
 	}, &result); err != nil {
 		return nil, err
 	}
@@ -285,17 +283,6 @@ func (d *PlayerThunder) Link(ctx context.Context, file model.Obj, _ model.LinkAr
 	// Keep the original bytes/size. Medias may be transcoded files and must not
 	// replace this URL under an existing file-bound Range lease.
 	return &model.Link{URL: result.WebContentLink, Header: http.Header{"User-Agent": {d.DownloadUserAgent}}, Expiration: &expiry}, nil
-}
-
-func playerStreamFile(name string) bool {
-	// Match player video/audio extensions; disc images and document/archive
-	// reads retain their original download request semantics.
-	switch strings.ToLower(path.Ext(name)) {
-	case ".mp4", ".mkv", ".mk3d", ".mov", ".m4v", ".webm", ".ts", ".m2ts", ".avi", ".wmv", ".flv", ".mpg", ".mpeg", ".vob",
-		".mp3", ".m4a", ".ogg", ".wav", ".flac", ".dts", ".dtshd":
-		return true
-	}
-	return false
 }
 
 // The shared bound-stream endpoint also serves ordinary video. Cold playback

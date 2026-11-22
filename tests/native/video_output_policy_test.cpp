@@ -4,6 +4,24 @@
 #include <cassert>
 #include <iostream>
 int main() {
+    // A seek read with the old playing intent still arms; Godot's pause follows it.
+    auto retry = quest::SeekFrameRetry::arm(72199, false, 4, false, true);
+    assert(retry.floor == 4);
+    assert(quest::SeekFrameRetry::arm(72199, false, 4, true, true).floor == 0); // The layer keeps its own frame.
+    assert(quest::SeekFrameRetry::arm(72199, false, 4, false, false).floor == 0); // Software frames are not mapped.
+    assert(!retry.ready(4, 3, 4, 2000000)); // Waiting for the seek's restart, even after a mapping failure.
+    retry.restarted(2000000);
+    retry.restarted(2250000); // Another restart notification does not move the deadline.
+    assert(!retry.ready(4, 3, 4, 2499999));
+    assert(retry.ready(4, 3, 4, 2500000) && retry.position_ms == 72199 && !retry.exact);
+    assert(retry.may_issue(false, false, 4, 3, 4, 2500000)); // Paused by the time the retry is due.
+    assert(!retry.may_issue(true, false, 4, 3, 4, 2500000)); // Playing decodes fresh frames instead.
+    assert(!retry.may_issue(false, true, 4, 3, 4, 2500000)); // A queued user seek replaces the retry.
+    assert(!retry.ready(4, 4, 4, 2500000)); // A fresh native frame supersedes the lost one.
+    assert(!retry.ready(4, 3, 3, 2500000)); // A failure from a prior seek cannot arm this one.
+    assert(!retry.ready(5, 3, 4, 2500000)); // A newer seek supersedes the retry.
+    retry = {};
+    assert(!retry.ready(5, 3, 5, 3500000)); // The internal retry cannot arm another retry.
     using quest::layer_video_chain_failed;
     const auto failure = "Could not initialize video chain.\n";
     assert(layer_video_chain_failed(true, false, true, "cplayer", failure));

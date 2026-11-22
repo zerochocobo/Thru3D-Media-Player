@@ -32,6 +32,15 @@ internal object VideoLayerNative {
                                                 scaleX: Float, scaleY: Float, width: Int, height: Int, eyesAcross: Int, eyesDown: Int,
                                                 sharpen: Float, denoiseStep: Float, denoiseTolerance: Float): Int
     @JvmStatic external fun enhanceFisheye(slot: Int, texture: Int, external: Boolean, params: FloatArray, look: FloatArray): Boolean
+    /** Picture quality mode for browser pages, all three on one browser effect thread (its EGL context):
+     * [enhanceToWindow] draws a page texture into the current surface, enhanced inside [region] (x0, y0, x1,
+     * y1 of each eye's UV); grade is 11 values or null (see video_layer.cpp). */
+    @JvmStatic external fun createEnhancer(): Long
+    @JvmStatic external fun enhanceToWindow(enhancer: Long, texture: Int, sourceWidth: Int, sourceHeight: Int, eyesAcross: Int,
+                                            sharpen: Float, grade: FloatArray?, denoiseStep: Float, denoiseTolerance: Float,
+                                            region: FloatArray, keepAlpha: Boolean): Boolean
+    @JvmStatic external fun destroyEnhancer(enhancer: Long)
+    fun available() = loaded
     /** Runtime graphics limits: max layer count, swapchain image width, height. */
     @JvmStatic external fun compositorLimits(): String
     @JvmStatic external fun pipMetrics(): String

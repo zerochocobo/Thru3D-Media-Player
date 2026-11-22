@@ -53,6 +53,7 @@ func run() -> void:
 	var portrait := Portrait.new(); portrait.automatic = false
 	portrait.update(binding,panel,Vector2(2,1.5),Vector3(0,0,2))
 	portrait.material.set_shader_parameter("portrait_relief",0.0)
+	portrait.sync_core(binding) # direct uniform edits reach the opaque body pass too
 	var flat := await frame(view)
 	check(flat.get_pixel(160,120).a>.98 and flat.get_pixel(80,120).a<.01,"Original alpha keeps opaque body and transparent contour")
 	var full_mask := mask.duplicate(); full_mask.fill(Color.WHITE); textures[1].update(full_mask)
@@ -62,6 +63,7 @@ func run() -> void:
 	textures[1].update(mask)
 	portrait.material.set_shader_parameter("portrait_distance",1.2)
 	portrait.material.set_shader_parameter("portrait_relief",.18)
+	portrait.sync_core(binding)
 	var near_image := await frame(view)
 	var max_error := 0.0
 	for y in range(48,192,7):
@@ -77,6 +79,7 @@ func run() -> void:
 	# Model crop outside the ROI remains transparent, rather than stretching a border texel.
 	base.set_shader_parameter("model_content_rect",Vector4(-.5,0,2,1))
 	binding.share_with(portrait.material,{},true)
+	portrait.sync_core(binding)
 	var cropped := await frame(view)
 	check(cropped.get_pixel(280,120).a < .01,"ROI exterior is transparent")
 	for key in ["portrait_frame_id","portrait_slot_token","portrait_pts_us"]:

@@ -259,8 +259,9 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                 }
                 require(selected.video.projectionHint.isEmpty() || projection != null) { "Missing immersive metadata" }
                 require(selected.video.pageLayout.isEmpty() || projection != null) { "Unsupported page layout" }
+                val bilibiliCid = if (bilibiliEnabled) info.getString("bilibili_cid") else null
                 val descriptor = WebVideoDescriptor(selected.page, selected.title, selected.video, selected.audio,
-                    selected.durationSeconds, projection = projection, silent = selected.silent)
+                    selected.durationSeconds, projection = projection, silent = selected.silent, bilibiliCid = bilibiliCid)
                 // EME or SPA replacement can arrive while network probes run. Never publish an
                 // old representation after the page switched content or acquired MediaKeys.
                 if (media != null) {
@@ -327,7 +328,8 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     if (bilibiliEnabled) {
                         val current = WebVideoBilibiliCapture.formats(page, latest) ?: throw ExtractionFailure(WebVideoBilibiliCapture.unavailableReason(latest))
                         val pair = selectBilibiliFormat(page, current, capabilities, id)
-                        if (pair.video.url != selected.video.url || pair.audio?.url != selected.audio?.url)
+                        if (current.optString("bilibili_cid") != bilibiliCid ||
+                            pair.video.url != selected.video.url || pair.audio?.url != selected.audio?.url)
                             throw ExtractionFailure("browser_stream_changed")
                     }
                     if (browserQuality && !WebVideoNetworkCapture.keepsQuality(selected.video, latest))

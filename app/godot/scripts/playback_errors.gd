@@ -35,6 +35,7 @@ const REASONS := {
 	"source_missing": "The media file or cloud account was not found.",
 	"link_expired": "The media link has expired.",
 	"file_changed": "The media file changed. Refresh the folder.",
+	"location_expired": "Cloud folder location expired. Open it again from its cloud folder.",
 	"disc_incomplete": "The DVD folder is incomplete. Play its VOB files instead.",
 	"network_timeout": "Reading media timed out.",
 	"tls_failed": "Cannot verify the media server's certificate. Check its HTTPS configuration.",
@@ -66,7 +67,7 @@ const MPV_REASONS := {-14: "audio_output_failed", -15: "video_output_failed", -1
 ## A one-tap log upload files the failure under the problem type the user would most likely pick
 ## (library_menu DIAGNOSTIC_CATEGORIES): reaching the media, AI passthrough, audio, or playback.
 const FILES_NETWORK_REASONS := ["access_denied", "login_required", "not_found", "storage_provider_failed", "source_missing",
-	"link_expired", "file_changed", "disc_incomplete", "network_timeout", "tls_failed", "host_not_found", "connection_failed",
+	"link_expired", "file_changed", "location_expired", "disc_incomplete", "network_timeout", "tls_failed", "host_not_found", "connection_failed",
 	"http_error", "not_media", "range_unsupported", "invalid_range", "invalid_response", "redirect_failed", "stream_interrupted"]
 const FILES_NETWORK_CODES := ["MPV_OPEN_TIMEOUT", "MPV_BUFFER_TIMEOUT", "LOCAL_DOCUMENT_PROVIDER_FAILED",
 	"PERMISSION_LOST", "LOCAL_DOCUMENT_PERMISSION_LOST", "MISSING", "LOCAL_DOCUMENT_MISSING", "TIMEOUT", "LOCAL_DOCUMENT_TIMEOUT", "UNREADABLE"]

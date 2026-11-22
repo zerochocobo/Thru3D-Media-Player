@@ -136,6 +136,7 @@ class PlaybackFailureTest {
         val shortcut = StrmFailure("STRM_TARGET_UNAVAILABLE", login)
         assertEquals("login_required", PlaybackFailure.report(shortcut.code, shortcut, "resolving").getString("reason"))
         assertEquals("source_missing", PlaybackFailure.from(CloudFailure("cloud_file_missing")).reason)
+        assertEquals("location_expired", PlaybackFailure.from(CloudFailure("cloud_location_expired")).reason)
     }
 
     @Test fun detailsNeverContainSignedAddressesCredentialsOrResponseBodies() {

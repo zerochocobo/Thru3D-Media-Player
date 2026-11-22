@@ -96,6 +96,7 @@ internal object DiagnosticLogs {
         append(if (full) "Detail: full\n\n" else "Detail: compact (VrApi every 10 s and whenever frames, stale frames or free memory go wrong; " +
             "other periodic lines every 30 s; repeated messages merged)\n\n")
         append(webBetaSection()).append('\n')
+        append(webBrowserSection()).append('\n')
         append(redact(CrashRecords.exportSection(context))).append('\n')
         append(events(context, if (full) 6000 else 1500)).append('\n')
         append("== Log of this session ==\n")
@@ -106,6 +107,15 @@ internal object DiagnosticLogs {
     internal fun webBetaSection(): String = buildString {
         append("== Playback Beta (this session, oldest first) ==\n")
         val steps = CrashTrail.recentWebBetaSteps()
+        if (steps.isEmpty()) append("(none recorded)\n")
+        else steps.forEach { append(redact(it)).append('\n') }
+    }
+
+    /** Gecko loads, paints, Surfaces, composites, media and Godot's page layer; "now" lines are the
+     * windows' live state when the log was taken. Search "web.white_suspect" first. */
+    internal fun webBrowserSection(): String = buildString {
+        append("== Web browser (this session, oldest first) ==\n")
+        val steps = WebBrowserTrail.recent()
         if (steps.isEmpty()) append("(none recorded)\n")
         else steps.forEach { append(redact(it)).append('\n') }
     }

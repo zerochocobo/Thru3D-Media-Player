@@ -319,7 +319,7 @@ func present(allowed: bool) -> bool:
 func _place_screen() -> void:
 	var video: Node = app.get("video")
 	if video == null or app.get("photo_active") or video.geometry != Geometry.Geometry.FLAT or not video.has_method("set_flat_world_pose"): return
-	if _pin is Transform3D and _shown:
+	if screen_pinned():
 		# Kept by the middle of its bottom edge, so a resized screen still stands where it stood.
 		var pose: Transform3D = _root.global_transform * (_pin as Transform3D)
 		pose.origin += pose.basis.y * _screen_height(video) * 0.5
@@ -375,6 +375,9 @@ func _exit_tree() -> void:
 
 ## Whether the flat video stays where the viewer fixed it in this scene, rather than in front of them.
 func screen_pinned() -> bool:
+	# A cut-out person (Alpha) is placed on its own: the pin is where the movie screen stands.
+	var portrait: Variant = app.get("portrait_screen")
+	if portrait != null and portrait.active: return false
 	var video: Node = app.get("video")
 	return _shown and _pin is Transform3D and video != null and not app.get("photo_active") and video.geometry == Geometry.Geometry.FLAT
 

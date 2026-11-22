@@ -110,6 +110,7 @@ const PlaybackMenuDepth := preload("res://scripts/playback_menu_depth.gd")
 const SeekPolicy := preload("res://scripts/seek_policy.gd")
 const SeekStep := preload("res://scripts/seek_step.gd")
 const VideoAuto3D := preload("res://scripts/video_auto_3d.gd")
+const DepthEdgeSteady := preload("res://scripts/depth_edge_steady.gd")
 const HdrToSdr := preload("res://scripts/hdr_to_sdr.gd")
 const ChoiceFields := preload("res://scripts/choice_fields.gd")
 var choices := ChoiceFields.new(self)
@@ -4399,6 +4400,10 @@ func _video_depth_rows(settings: Dictionary) -> Array[Dictionary]:
 	entries.append(_choice_row("2D to 3D effect", "depth_render", str(settings.get("depth_render", "stretch")),
 		[{"value": "fill", "label": "Fill gaps", "hint": "Fills the background behind moving edges"},
 		{"value": "stretch", "label": "Stretch edges", "hint": "Stretches edges, like spatial photos"}], true))
+	var steady := DepthEdgeSteady.choice(bool(settings.get(DepthEdgeSteady.KEY, DepthEdgeSteady.DEFAULT)))
+	steady.title = I18n.t(DepthEdgeSteady.TITLE); steady.info = DepthEdgeSteady.HINT
+	# Fill gaps warps from the model's own map: nothing for this to change there.
+	if str(settings.get("depth_render", "stretch")) == "stretch": entries.append(steady)
 	var position := preload("res://scripts/depth_position.gd").row(settings.get("depth_position_default", 0), "depth_position_default")
 	position.title = I18n.t("3D position"); position.info = position.hint; position.erase("hint")
 	entries.append(position)

@@ -78,7 +78,7 @@ internal object PhotoPortrait {
         near.put(nearFile.readBytes()); near.rewind()
         val rect = depth.getJSONArray("rect")
         // Same oriented dimensions, gradient limits, convergence and disocclusion as colour.
-        val pair = PhotoStereo.prepare(sourceMask,near,FloatArray(4) { rect.getDouble(it).toFloat() },strength,token,rotation)
+        val pair = PhotoStereo.prepare(sourceMask,near,FloatArray(4) { rect.getDouble(it).toFloat() },strength,token,rotation,keepColour = false)
         require(pair.getInt("stereo_width") == w && pair.getInt("stereo_height") == h)
         val raw = File(pair.getString("stereo_path"))
         if (target.length() != w.toLong()*h) {

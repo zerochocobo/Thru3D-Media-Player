@@ -110,6 +110,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         PlaybackPrivacy.protectedFavorites = protectedFavorites
         sources.serverPlaybackPrivacyChanged()
         webBrowser.setHistoryEnabled(PlaybackPrivacy.mode == "all" && !protectedFavorites)
+        WebBrowserTrail.hosts = PlaybackPrivacy.diagnostics
         runCatching { MpvSourceNative.setPrivacy(!PlaybackPrivacy.diagnostics) }
         playbackPrivacyConfigured = true
         activity?.let { host -> CrashRecords.privacyReady(host, PlaybackPrivacy.mode) { path ->
@@ -123,6 +124,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
     @UsedByGodot fun clear_playback_private_data() {
         webBrowser.clearHistory()
+        WebBrowserTrail.clear()
         sources.clearPlaybackReferences()
         activity?.applicationContext?.let { app ->
             CrashRecords.clear(app)
@@ -210,8 +212,11 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun panorama_regions_status(id: Int): String = if (closed.get()) "{}" else panoramaRegions.snapshot(id)
     @UsedByGodot fun panorama_regions_request(id: Int, column: Int, row: Int): Boolean = !closed.get() && panoramaRegions.request(id, column, row)
     @UsedByGodot fun panorama_regions_close(id: Int) { if (!closed.get()) panoramaRegions.release(id) }
-    private val webBrowser = WebBrowser { activity }
+    private val webBrowser = WebBrowser { activity }.apply {
+        translate = { text -> activity?.applicationContext?.let { UiLanguage.tr(it, text, text) } ?: text }
+    }
     private val webVideoResolver = WebVideoResolver({ activity?.applicationContext }, sources::rememberWebVideo, webBrowser::cookiesForExtraction, webBrowser::mediaForExtraction, webBrowser::mediaForSelectedExtraction)
+    private val bilibiliDanmaku = BilibiliDanmaku()
     @UsedByGodot fun web_browser_navigate(url: String) { if (!closed.get()) webBrowser.navigate(url) }
     @UsedByGodot fun web_browser_status(): String {
         if (closed.get()) return "{}"
@@ -341,6 +346,9 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun web_video_status(): String = if (closed.get()) "{}" else webVideoResolver.snapshot()
     @UsedByGodot fun web_video_projection(uri: String): String = if (closed.get()) "{}" else sources.webVideoProjection(uri)
     @UsedByGodot fun web_video_cancel() = webVideoResolver.cancel()
+    @UsedByGodot fun bilibili_danmaku_fetch(cid: String, segment: Int): Int = bilibiliDanmaku.fetch(cid, segment)
+    @UsedByGodot fun bilibili_danmaku_poll(id: Int): String = bilibiliDanmaku.poll(id)
+    @UsedByGodot fun bilibili_danmaku_cancel(id: Int) = bilibiliDanmaku.cancel(id)
     private val mpv: MpvVideoBridge = MpvVideoBridge({ activity?.applicationContext }, {
         check(controlledRenderTasks.offer(it)) { "Player render task capacity exhausted" }
     }, { name, id, json -> if (!closed.get()) emitSignal(name, id, json) }, sources::playable, sources::sidecarAudio,
@@ -375,7 +383,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun pdf_open_at(uri: String, identity: String): Int = if (closed.get()) -1 else pdfs.openAt(sources.nextId(), uri, identity)
     @UsedByGodot fun pdf_retain(session: String): Boolean = !closed.get() && pdfs.retain(session)
     @UsedByGodot fun pdf_close(session: String) = pdfs.release(session)
-    private fun resolveImage(uri: String, edge: Int): String = if (uri.startsWith("pdfpage://")) pdfs.resolve(uri, edge) else sources.playable(uri)
+    private fun resolveImage(uri: String, edge: Int): String = if (uri.startsWith("pdfpage://")) pdfs.resolve(uri, edge) else sources.photoPlayable(uri)
     private fun releaseImage(uri: String) {
         if (!readingPages.release(uri)) { pdfs.releaseImage(uri); sources.releasePhotoStream(uri) }
     }
@@ -401,13 +409,13 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
             readingPages.window(list("keep"), list("ahead"))
         }
     }
-    private val photos = PhotoBridge({ activity?.applicationContext }, sources::playable, ::releaseImage,
+    private val photos = PhotoBridge({ activity?.applicationContext }, sources::photoPlayable, ::releaseImage,
         resolveRequest = { id, uri -> if (ReadingPageCache.supported(uri)) readingPages.resolve(id, uri) else resolveImage(uri, 3072) }) { name, id, json ->
         if (!closed.get()) emitSignal(name, id, json)
     }
-    private val photoPreloads = PhotoBridge({ activity?.applicationContext }, sources::playable, ::releaseImage,
+    private val photoPreloads = PhotoBridge({ activity?.applicationContext }, sources::photoPlayable, ::releaseImage,
         "photo-preloads", true,
-        resolveRequest = { _, uri -> if (ReadingPageCache.supported(uri)) readingPages.acquireCached(uri) else sources.playable(uri) }) { name, id, json ->
+        resolveRequest = { _, uri -> if (ReadingPageCache.supported(uri)) readingPages.acquireCached(uri) else sources.photoPlayable(uri) }) { name, id, json ->
         if (!closed.get()) emitSignal(if (name == "photo_depth") "photo_preload_depth" else name, id, json)
     }
     @UsedByGodot fun open_photo(uri: String): Int {
@@ -428,7 +436,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         !closed.get() && photos.uploadAnimation(id,token,texture,mipmaps)
     @UsedByGodot fun photo_animation_pixels(id: Int,token: Long): ByteArray =
         if(closed.get())ByteArray(0) else photos.animationPixels(id,token)
-    private val photoPreviews = PhotoPreviewBridge({ activity?.applicationContext }, sources::playable, sources::releasePhotoStream) { id, json ->
+    private val photoPreviews = PhotoPreviewBridge({ activity?.applicationContext }, sources::photoPlayable, sources::releasePhotoStream) { id, json ->
         if (!closed.get()) emitSignal("photo_preview_ready", id, json)
     }
     @UsedByGodot fun open_photo_preview(uri: String): Int {
@@ -531,6 +539,10 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun cancel_preloaded_photo_depth() { photoPreloads.cancelBackgroundDepth(); photos.cancelBackgroundDepth() }
     /** progressive | quality | fast (PhotoDepthMode); unknown values are ignored. */
     @UsedByGodot fun set_photo_depth_mode(mode: String) { PhotoDepthMode.of(mode)?.let { PhotoDepthRuntime.mode = it } }
+    /** A registered magazine spread: [split] is the left page's share of its width; 3D then treats the pages apart. */
+    @UsedByGodot fun set_photo_pages(id: Int, split: Double): Boolean = !closed.get() && PhotoPages.set(id, split.toFloat())
+    /** fill (default) | stretch: how a still's pair covers what the near content uncovers. */
+    @UsedByGodot fun set_photo_fill_mode(mode: String) { if (mode == "fill" || mode == "stretch") PhotoStereo.stretch = mode == "stretch" }
     /** Quality map for the picture on screen, shown with the fast one; reported as photo_depth_refined. */
     @UsedByGodot fun refine_photo_3d(id: Int, strength: Double, convergence: Double, rotation: Int): Boolean = !closed.get() &&
         (photos.depth(id,strength.toFloat(),true,false,rotation=rotation,convergence=convergence.toFloat(),refine=true)
@@ -836,6 +848,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         MpvVideoBridge.depthStretch = mode == "stretch"
         return true
     }
+    /** Video 2D->3D steady edges (with edge stretching): depth contours follow the picture's own. */
+    @UsedByGodot fun set_depth_edge_steady(enabled: Boolean) { mpv.setDepthSteady(enabled) }
     @UsedByGodot fun set_depth_text_protection(enabled: Boolean) { mpv.setTextProtection(enabled) }
     @Volatile private var rvmModel = "fast"
     /** "fast" (default) or "quality"; Alpha sessions opened afterwards use it. */
@@ -1226,8 +1240,10 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     private fun close() {
         CrashRecords.cleanExit()
         webVideoResolver.close()
+        bilibiliDanmaku.close()
         webBrowser.close()
         WebBrowserDepthBridge.closeAll()
+        WebBrowserQualityBridge.closeAll()
         activity?.let { ExternalInputProbe.close(it); CaptureProbe.close(it) }
         if (closed.compareAndSet(false, true)) { localThumbnails.close(); dlna_receiver_enable(false); airplayReceiver.close(); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); sceneFiles.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); backgroundImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }

@@ -328,6 +328,13 @@ internal class MediaSources(
         CloudLibrary.audioDownload(uri, streams())
     } else playable(uri)
 
+    /** Photo channels (viewer, preloads, gallery, PiP, backgrounds) each own their cloud lease:
+     * playable() revokes every other cloud stream, so opening a photo cut an in-flight preload or preview. */
+    fun photoPlayable(uri: String): String = if (uri.startsWith("cloud://")) {
+        CloudLibrary.start(context() ?: error("Activity unavailable"))
+        CloudLibrary.photoDownload(uri, streams())
+    } else playable(uri)
+
     fun voiceReference(uri: String): String {
         require(uri.startsWith("cloud://"))
         CloudLibrary.start(context() ?: error("Activity unavailable"))

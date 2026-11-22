@@ -274,18 +274,13 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
 
     fun sidecarSubtitles(uri: String): List<SidecarSubtitles.Track> {
         val rest = uri.removePrefix("smb://")
-        val id = rest.substringBefore('/')
-        val server = server(id)
+        val server = server(rest.substringBefore('/'))
         val path = rest.substringAfter('/')
         val folder = path.substringBeforeLast('/', "")
         if (folder.isEmpty() && !server.host.contains('/')) return emptyList()
-        val video = path.substringAfterLast('/')
-        val names = SmbClientPolicy.file("smb://${server.host}/" + if (folder.isEmpty()) "" else "$folder/", cifs(server)).use { it.list().toList() }
-        return SidecarSubtitles.select(video, names).mapNotNull { name ->
-            // One inaccessible subtitle must not hide other tracks or fail video playback.
-            runCatching {
-                SidecarSubtitles.Track(stream("smb://$id/" + listOf(folder, name).filter(String::isNotEmpty).joinToString("/")), name)
-            }.getOrNull()
+        val directory = "smb://${server.host}/" + if (folder.isEmpty()) "" else "$folder/"
+        return smbSubtitleTracks(path.substringAfterLast('/'), directory, connection(server)) { source, name ->
+            streams().publish(source, name)
         }
     }
 
@@ -347,9 +342,7 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
         val server = server(rest.substringBefore('/'))
         val path = rest.substringAfter('/')
         val url = "smb://${server.host}/$path"
-        val connection = connection(server)
-        val size = connection.read { current -> SmbClientPolicy.file(url, current).use { it.length() } }
-        return SmbStreamSource(url, connection, size)
+        return smbStreamSource(url, connection(server))
     }
 
     fun thumbnailReader(uri: String): StreamSource.Reader {
@@ -490,6 +483,25 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
     } catch (_: Throwable) { "" } // Key lost (e.g. backup restore): the user re-enters the password.
 
     companion object { private const val KEY = "quest_player_smb" }
+}
+
+internal fun smbSubtitleTracks(video: String, directory: String, connection: SmbConnection<CIFSContext>,
+                               publish: (StreamSource, String) -> String): List<SidecarSubtitles.Track> {
+    fun url(path: String): String = directory + if (path.isEmpty()) "" else "$path/"
+    return SidecarSubtitles.forDirectoryVideo(video,
+        list = { path ->
+            connection.read { current -> SmbClientPolicy.file(url(path), current).use { it.list().toList() } }
+        },
+        isDirectory = { _, entry -> entry.endsWith('/') },
+        open = { path, name ->
+            val source = smbStreamSource(url(path) + name, connection)
+            if (source.size <= 0) null else SidecarSubtitles.Track(publish(source, name), name)
+        })
+}
+
+private fun smbStreamSource(url: String, connection: SmbConnection<CIFSContext>): SmbStreamSource {
+    val size = connection.read { current -> SmbClientPolicy.file(url, current).use { it.length() } }
+    return SmbStreamSource(url, connection, size)
 }
 
 /** Each reader opens its own SMB handle, so a fork reads the same file independently. */

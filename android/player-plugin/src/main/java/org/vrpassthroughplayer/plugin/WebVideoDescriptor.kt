@@ -157,7 +157,7 @@ internal class WebVideoTrack(
 
 internal class WebVideoDescriptor(val page: WebVideoPage, val title: String, val video: WebVideoTrack,
     val audio: WebVideoTrack?, val durationSeconds: Double, val resolvedAtMs: Long = System.currentTimeMillis(),
-    val projection: JSONObject? = null, val silent: Boolean = false) {
+    val projection: JSONObject? = null, val silent: Boolean = false, val bilibiliCid: String? = null) {
     init {
         require(video.hasVideo && (video.hasAudio || audio?.hasAudio == true || silent)) { "Video or audio stream missing" }
         require(audio == null || !audio.hasVideo) { "Invalid separate audio track" }
@@ -169,6 +169,7 @@ internal class WebVideoDescriptor(val page: WebVideoPage, val title: String, val
         .put("fps", video.fps).put("codec", video.videoCodec).put("separate_audio", audio != null).put("silent", silent)
         .put("projection", projection?.optString("kind") ?: "flat")
         .put("geometry", projection?.optInt("geometry") ?: 0).put("stereo_mode", projection?.optInt("stereo_mode") ?: 0)
+        .put("bilibili_cid", bilibiliCid)
     override fun toString() = "WebVideoDescriptor(${page.site}, ${video.width}x${video.height})"
 }
 

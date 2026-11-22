@@ -38,6 +38,9 @@ var pixels := PIXELS
 var resize_at := 0
 var requested_pixels := PIXELS
 var preparation_api: Object
+var _trail_at := 0
+var _trail_sent := ""
+var _quad := Vector2.ZERO
 
 func _release_for_transition() -> bool:
 	if not attached: return true
@@ -105,14 +108,21 @@ func _create_layer() -> void:
 	var convert: bool = menu != null and (menu.depth.enabled or menu.depth.matte) and not menu.selecting
 	var matte: bool = menu != null and menu.depth.matte and not menu.selecting
 	var crop: Rect2 = menu.focus_crop() if menu else Rect2(0, 0, 1, 1)
-	if not layer.create(window_id, pixels, convert, crop, 1024 if menu and menu.browser.low_end else 1536, matte):
+	var enhance := menu != null and _enhanced_2d(menu, convert)
+	if not layer.create(window_id, pixels, convert, crop, 1024 if menu and menu.browser.low_end else 1536, matte, enhance):
 		if convert and menu:
 			menu.depth.enabled = false; menu.depth.matte = false; menu.depth.error = "3D unavailable"; menu.refresh(); menu.browser.effects_changed.emit()
+		elif enhance: menu.picture_failed = true
 		status = "surface_unavailable"; layer = null; return
 	if page:
 		# The page keeps updating this material: a menu overlay must not swap in a copy.
 		hole.material_override = layer.material; hole.set_meta("menu_overlay_own", true)
 	if menu: menu.set_meta("menu_browser_layer", true)
+
+## A 2D page goes through the picture quality thread while the mode is on; there is no such thread on
+## runtimes that put the page in the eye buffer.
+static func _enhanced_2d(menu: Node, conversion: bool) -> bool:
+	return not conversion and menu.picture_enhanced() and not Page.needed()
 
 func present(value: bool, bounds: Rect2) -> void:
 	shown = value; rect = bounds
@@ -146,6 +156,7 @@ func _process(_delta: float) -> void:
 	var menu: Node3D = target.get_ref() if target else null
 	if not menu:
 		_session_stop(); queue_free(); return
+	_trail_layer(menu)
 	if not menu.browser.active() or not menu.visible:
 		_release_idle_surface()
 		return
@@ -164,7 +175,11 @@ func _process(_delta: float) -> void:
 	elif not conversion and preparation_api:
 		preparation_api.clearPreparation(window_id)
 		if OS.get_name()=="Android": JavaClassWrapper.get_exception()
-	if layer and not preparation_pending and (layer.stereo != conversion or layer.alpha != matte or (conversion and layer.source_crop != menu.focus_crop())):
+	if layer and layer.quality and not layer.picture_failure().is_empty():
+		menu.picture_failed = true; status = "picture_" + layer.picture_error
+	var enhance := _enhanced_2d(menu, conversion)
+	if layer and not preparation_pending and (layer.stereo != conversion or layer.alpha != matte or (conversion and layer.source_crop != menu.focus_crop())
+			or (not conversion and layer.quality != enhance)):
 		if attached:
 			if not _release_for_transition(): status="surface_switch_pending";return
 		if not layer.destroy(true): status = "surface_switch_pending"; return
@@ -195,6 +210,7 @@ func _process(_delta: float) -> void:
 			menu.depth.state = layer.effect_state; menu.refresh()
 		if not issue.is_empty():
 			status = issue; menu.depth.enabled = false; menu.depth.matte = false; menu.depth.error = "3D unavailable"; menu.refresh(); menu.browser.effects_changed.emit(); layer.hide(); hole.visible = false; return
+	layer.configure_picture(menu.picture_values(layer.stereo))
 	var layout: Dictionary = menu.page_layout()
 	global_transform = layout.pose
 	var distance: float = global_position.distance_to(menu.head().origin)
@@ -240,10 +256,27 @@ func _process(_delta: float) -> void:
 			if JavaClassWrapper.get_exception(): attached = false; status = "surface_attach_failed"
 	if attached and int(state.get("generation", 0)) == generation and state.get("attached", false):
 		var ready: bool = layer.present(layout.pose, layout.size, menu.focus_crop())
+		_quad = layout.size
 		hole.mesh.size = layout.size
 		hole.visible = ready
 	else:
 		layer.hide(); hole.visible = false
+
+## This window's page-layer state for the white-page trail (WebBrowserTrail "web.layer"), sent on
+## change: whether the XR layer is submitted, its pixels and quad size, and the Gecko Surface binding.
+func _trail_layer(menu: Node3D) -> void:
+	if Time.get_ticks_msec() < _trail_at: return
+	_trail_at = Time.get_ticks_msec() + 500
+	var path := "none" if not layer else ("eye" if layer is Page else "xr")
+	var submitted := false
+	if layer is Page: submitted = hole.visible
+	elif layer and Layer.provider: submitted = Layer.provider.entries.has(window_id)
+	var detail := "w=%d path=%s on=%d menu=%d att=%d gen=%d/%d bound=%d sub=%d px=%dx%d quad=%.2fx%.2f st=%s" % [window_id, path,
+		int(shown), int(menu.is_visible_in_tree()), int(attached), generation, int(state.get("generation", 0)),
+		int(state.get("attached", false)), int(submitted), pixels.x, pixels.y, _quad.x, _quad.y, status]
+	if detail == _trail_sent: return
+	_trail_sent = detail
+	DiagnosticLog.trail("web.layer", detail)
 
 func _release_idle_surface() -> void:
 	if hole: hole.visible = false

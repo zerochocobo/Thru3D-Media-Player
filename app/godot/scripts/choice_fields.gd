@@ -227,7 +227,8 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 		label.position = Vector3(0, 0.045, 0.006)
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sliders[target] = {"span": row.span, "left": left, "width": rail_width, "fill": fill, "knob": knob,
-		"label": label, "unit": row.unit, "node": node, "signed": row.get("signed", false), "decimals": row.get("decimals", 1)}
+		"label": label, "unit": row.unit, "node": node, "signed": row.get("signed", false), "decimals": row.get("decimals", 1),
+		"value_labels": row.get("value_labels", [])}
 	if row.has("nudge_step"):
 		for index in 2:
 			var step := float(row.nudge_step) * (-1 if index == 0 else 1)
@@ -273,6 +274,9 @@ func _refresh_slider(target: int, value: float) -> void:
 	slider.label.text = ("%.0f" % value if slider.unit in ["%", " FPS"] else ("%+.0f" % value if slider.unit == "°" and value != 0 else ("%.0f" % value if slider.unit == "°" else "%.1f" % value))) + slider.unit
 	if slider.get("signed", false): slider.label.text = ((("%+.2f" if not is_zero_approx(value) else "%.2f") if slider.get("decimals", 1) == 2 else ("%+.1f" if not is_zero_approx(value) else "%.1f")) % value) + slider.unit
 	if slider.get("decimals", 1) == 0: slider.label.text = (("%+.0f" if slider.get("signed", false) and not is_zero_approx(value) else "%.0f") % value) + slider.unit
+	# Stepped levels read as their names (Off, Low...) rather than numbers.
+	var names: Array = slider.get("value_labels", [])
+	if not names.is_empty(): slider.label.text = menu.I18n.t(str(names[clampi(roundi((value - slider.span.x) / slider.span.z), 0, names.size() - 1)]))
 	if slider.has("reset"):
 		slider.reset.enabled = not same(value, slider.reset_value)
 		if slider.get("reset_when_changed", false): slider.reset.node.visible = slider.reset.enabled

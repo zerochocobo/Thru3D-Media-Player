@@ -228,6 +228,7 @@ struct Source final {
     std::atomic<bool> core_eof{false};
     std::atomic<bool> seek_in_progress{false}, render_in_progress{false};
     std::atomic<uint64_t> stale_seek_frames_discarded{0};
+    std::atomic<uint64_t> seek_retry_floor{0}, seek_render_failure_floor{0}, seek_render_retries{0};
     std::atomic<uint64_t> dimensions{0}, last_epoch{0}, epoch_floor{0};
     std::atomic<int> source_rotation{0}; // output-frame rotation; RGBA bakes it once, decoder images do not
     std::atomic<uint64_t> rendered{0}, skipped{0}, published{0}, acquired{0}, released{0};
@@ -248,6 +249,8 @@ struct Source final {
     // Direct mode (Alpha): publish MPV's exported MediaCodec images; no full-resolution RGBA render.
     std::atomic<bool> direct{false};
     std::atomic<bool> dolby_profile5{false};
+    // MediaCodec decoders that opened with Profile 5 RPU parsing (one per decoder init).
+    std::atomic<int> dolby_rpu_decoders{0};
     // Once HDR is observed, keep MPV's full color pass for this source session.
     // This also covers HDR10, HLG and the HDR-compatible base of Dolby Profile 8.
     std::atomic<bool> hdr_source{false};
@@ -616,6 +619,7 @@ struct Source final {
             ",\"sdr_color_conversion\":" + (!layer() && needs_color_conversion() ? "true" : "false") +
             ",\"color_conversion_ready\":" + (color_conversion_ready.load() ? "true" : "false") +
             ",\"dolby_rendered_frames\":" + std::to_string(dolby_frames.load()) +
+            ",\"dolby_rpu_decoders\":" + std::to_string(dolby_rpu_decoders.load()) +
             ",\"capture_mode\":" + quote(capture_metadata(core)) +
             ",\"capture_audio_layout_applied\":" + (capture_audio_layout_applied?"true":"false") +
             ",\"position_seconds\":" + quote(position) + ",\"duration_seconds\":" + quote(duration) +
@@ -929,6 +933,7 @@ struct Source final {
             mpv_get_property(core, "demuxer-readahead-secs", MPV_FORMAT_DOUBLE, &ordinary_readahead_seconds);
             auto format_deadline = std::chrono::steady_clock::time_point::max();
             quest::NetworkSeekPattern network_seeks;
+            quest::SeekFrameRetry seek_retry;
             auto next_snapshot = std::chrono::steady_clock::now();
             quest::WhisperAudio whisper([&](const std::vector<std::string>& args) {
                 std::vector<const char*> command;
@@ -1052,11 +1057,9 @@ struct Source final {
                     subtitle_command_applied = std::max(subtitle_command_applied, subtitle_delay_command);
                     next_snapshot = std::chrono::steady_clock::now();
                 }
-                if (seek >= 0) {
-                    // A user jump is not evidence of alternating audio/video
-                    // reads. Start a fresh observation window after each jump,
-                    // while still detecting a real storm that begins afterwards.
-                    network_seeks = quest::NetworkSeekPattern{};
+                const bool retry_seek = seek < 0 && seek_retry.floor && seek_retry.ready(epoch_floor.load(), last_epoch.load(),
+                    seek_render_failure_floor.load(), startup_us());
+                if (seek >= 0 || retry_seek) {
                     // Flush cannot invalidate a MediaCodec surface while the
                     // worker is mapping that surface. The worker still serves
                     // advanced-control update tasks while new renders wait.
@@ -1067,18 +1070,46 @@ struct Source final {
                         std::this_thread::sleep_for(std::chrono::milliseconds(1));
                     if (closing.load()) break;
                     require(!render_in_progress.load() && !render_failed.load(), "MPV seek renderer did not quiesce");
-                    awaiting_seek_event = true; core_eof.store(false);
-                    __android_log_print(ANDROID_LOG_INFO, "QuestMpvSource", "Seek request %lld ms; epoch=%llu floor=%llu mode=%s",
-                        static_cast<long long>(seek), static_cast<unsigned long long>(last_epoch.load()),
-                        static_cast<unsigned long long>(epoch_floor.load()), seek_exact ? "exact" : "speed");
-                    seeks_started.fetch_add(1);
-                    last_seek_exact.store(seek_exact);
-                    const auto seconds = std::to_string(seek / 1000.0);
-                    const char* command[] = {"seek", seconds.c_str(), seek_exact ? "absolute+exact" : "absolute+keyframes", nullptr};
-                    checked(mpv_command(core, command), "MPV source seek");
-                    seeks_completed.fetch_add(1);
+                    if (retry_seek) {
+                        const auto retry = seek_retry;
+                        seek_retry = {};
+                        seek_retry_floor.store(0);
+                        std::lock_guard<std::mutex> lock(commands_mutex);
+                        // A successful render or a newer transport command may have arrived
+                        // while waiting for the renderer to quiesce.
+                        if (!closing.load() && retry.may_issue(desired_play, pending_seek_ms >= 0, epoch_floor.load(),
+                                last_epoch.load(), seek_render_failure_floor.load(), startup_us())) {
+                            seek = retry.position_ms;
+                            seek_exact = retry.exact;
+                            epoch_floor.store(retry.floor + 1);
+                            seek_render_retries.fetch_add(1);
+                        }
+                    } else {
+                        seek_retry = quest::SeekFrameRetry::arm(seek, seek_exact, epoch_floor.load(), layer(), hardware_decoding.load());
+                        seek_retry_floor.store(seek_retry.floor);
+                    }
+                    if (seek >= 0) {
+                        // Start a fresh observation window after the jump. The discontinuity
+                        // is separate from alternating audio/video reads within a window.
+                        network_seeks = quest::NetworkSeekPattern{};
+                        awaiting_seek_event = true; core_eof.store(false);
+                        __android_log_print(ANDROID_LOG_INFO, "QuestMpvSource", "Seek %s %lld ms; epoch=%llu floor=%llu mode=%s",
+                            retry_seek ? "retry after missing hardware frame" : "request",
+                            static_cast<long long>(seek), static_cast<unsigned long long>(last_epoch.load()),
+                            static_cast<unsigned long long>(epoch_floor.load()), seek_exact ? "exact" : "speed");
+                        seeks_started.fetch_add(1);
+                        last_seek_exact.store(seek_exact);
+                        const auto seconds = std::to_string(seek / 1000.0);
+                        const char* command[] = {"seek", seconds.c_str(), seek_exact ? "absolute+exact" : "absolute+keyframes", nullptr};
+                        checked(mpv_command(core, command), "MPV source seek");
+                        seeks_completed.fetch_add(1);
+                    }
                 }
-                if (set_play && play) checked(mpv_set_property_string(core, "pause", "no"), "MPV source play");
+                if (set_play && play) {
+                    seek_retry = {};
+                    seek_retry_floor.store(0);
+                    checked(mpv_set_property_string(core, "pause", "no"), "MPV source play");
+                }
                 if (set_play) next_snapshot = std::chrono::steady_clock::now();
 #ifndef NDEBUG
                 if (set_step) {
@@ -1112,6 +1143,8 @@ struct Source final {
                     // enough evidence; the terminal video-chain error is.
                     if (quest::layer_software_decoder(layer(), software_layer, log->prefix, log->text))
                         software_decoder = true;
+                    if (std::string_view(log->text).rfind("Thru3D Profile 5 RPU enabled", 0) == 0)
+                        dolby_rpu_decoders.fetch_add(1);
                     if (quest::layer_video_chain_failed(layer(), software_layer, log->log_level <= MPV_LOG_LEVEL_ERROR,
                                                        log->prefix, log->text)) {
                         software_fallback.store(true);
@@ -1198,6 +1231,7 @@ struct Source final {
                 else if (event->event_id == MPV_EVENT_AUDIO_RECONFIG) whisper.invalidate(whisper_now);
                 else if (event->event_id == MPV_EVENT_PLAYBACK_RESTART) {
                     if (layer() && !awaiting_seek_event) publish_layer(core, true);
+                    if (!awaiting_seek_event) seek_retry.restarted(startup_us());
                     next_snapshot = std::chrono::steady_clock::now();
                 }
                 else if (event->event_id == MPV_EVENT_END_FILE) {
@@ -1382,7 +1416,8 @@ struct Source final {
 #ifndef NDEBUG
                 stepping = debug_step_active.load();
 #endif
-                if (cap > 0 && !forced && !final_render && !stepping) {
+                const bool waiting_seek_frame = last_epoch.load() < epoch_floor.load();
+                if (cap > 0 && !forced && !final_render && !stepping && !waiting_seek_frame) {
                     mpv_render_frame_info info{};
                     checked(mpv_render_context_get_info(renderer, {MPV_RENDER_PARAM_NEXT_FRAME_INFO, &info}), "MPV cadence frame info");
                     const bool timed = (info.flags & MPV_RENDER_FRAME_INFO_PRESENT) && !(info.flags & MPV_RENDER_FRAME_INFO_REDRAW) &&
@@ -1444,7 +1479,9 @@ struct Source final {
                 }
                 needs_frame = false;
                 if (!target) {
-                    if (final_render) {
+                    if (final_render || waiting_seek_frame) {
+                        // MPV may produce only one frame while it is paused for a seek.
+                        needs_frame = true;
                         std::unique_lock<std::mutex> lock(wait_mutex);
                         wake.wait_for(lock, std::chrono::milliseconds(2)); continue;
                     }
@@ -1499,16 +1536,30 @@ struct Source final {
                     AHardwareBuffer_describe(target->buffer, &desc);
                     target->buffer_width = static_cast<int>(desc.width); target->buffer_height = static_cast<int>(desc.height);
                 }
-                if (render_result < 0 && (ticket.flags & QUEST_MPV_HAS_IMAGE) && ticket.source_epoch > 0 &&
-                    ticket.source_epoch < epoch_floor.load()) {
-                    // VO can request a retained old redraw after RESET. Its
-                    // codec buffer is already invalid; discard it, never mark
-                    // its pixels valid or publish it as a new source image.
-                    std::lock_guard<std::mutex> lock(frames_mutex);
-                    target->phase = Phase::free; drop_image(*target); stale_seek_frames_discarded.fetch_add(1);
-                    continue;
+                if (render_result < 0 && (ticket.flags & QUEST_MPV_HAS_IMAGE) && ticket.source_epoch > 0) {
+                    const auto floor = epoch_floor.load();
+                    const bool stale = ticket.source_epoch < floor;
+                    const bool retryable = render_result == MPV_ERROR_GENERIC && floor > last_epoch.load() &&
+                        floor == seek_retry_floor.load() && hardware_decoding.load();
+                    if (retryable) seek_render_failure_floor.store(floor);
+                    if (stale || retryable) {
+                        // A flushed or already consumed MediaCodec buffer has no pixels for this
+                        // ticket. Retire it without presenting and wait for a new decoder image.
+                        std::lock_guard<std::mutex> lock(frames_mutex);
+                        target->phase = Phase::free; drop_image(*target);
+                        if (stale) stale_seek_frames_discarded.fetch_add(1);
+                        continue;
+                    }
                 }
                 checked(render_result, "MPV immutable color render"); rendered.fetch_add(1);
+                if (dolby_profile5.load() && (ticket.flags & QUEST_MPV_HAS_IMAGE) &&
+                    !(ticket.flags & QUEST_MPV_DOVI_PROFILE5)) {
+                    // MPV's last "Thru3D Dolby frame" line names the link this frame lost.
+                    __android_log_print(ANDROID_LOG_ERROR, "QuestMpvSource",
+                        "Profile 5 frame %llu at %lld us lacks conversion metadata; hwdec=%s rpu_decoders=%d",
+                        static_cast<unsigned long long>(ticket.frame_id), static_cast<long long>(ticket.media_pts_us),
+                        property(core, "hwdec-current").c_str(), dolby_rpu_decoders.load());
+                }
                 require(!dolby_profile5.load() || !(ticket.flags & QUEST_MPV_HAS_IMAGE) ||
                         (ticket.flags & QUEST_MPV_DOVI_PROFILE5),
                         "Dolby Vision Profile 5 frame is missing conversion metadata");
@@ -1756,6 +1807,8 @@ struct Source final {
             ",\"invalid_last\":{\"flags\":" + std::to_string(invalid_flags.load()) + ",\"frame_id\":" +
             std::to_string(invalid_frame_id.load()) + ",\"pts_us\":" + std::to_string(invalid_pts_us.load()) + "}" +
             ",\"stale_seek_frames_discarded\":" + std::to_string(stale_seek_frames_discarded.load()) +
+            ",\"seek_render_failure_floor\":" + std::to_string(seek_render_failure_floor.load()) +
+            ",\"seek_render_retries\":" + std::to_string(seek_render_retries.load()) +
             ",\"audio_commands_applied\":" + std::to_string(audio_commands_applied.load()) +
             ",\"frame_cap_fps\":" + std::to_string(max_fps.load()) +
             ",\"max_output_width\":" + std::to_string(max_output_width.load()) +

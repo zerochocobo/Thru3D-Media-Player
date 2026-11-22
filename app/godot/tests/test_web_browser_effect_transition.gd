@@ -24,10 +24,12 @@ class Layer extends RefCounted:
 	var destroy_calls := 0
 	var asynchronous := false
 	var stop_ready := false
+	var quality := false
 	func present(_pose: Transform3D,_size: Vector2,_crop: Rect2) -> bool: shown += 1;return true
 	func hide() -> void: pass
 	func input_surface() -> JavaObject: return null
 	func configure_effect(_strength: float,_position: float,_identity: String,_fill: bool,_depth: bool) -> String: return ""
+	func configure_picture(_values: PackedFloat32Array) -> void: pass
 	func destroy(nonblocking: bool=false) -> bool: destroy_calls += 1;asynchronous=nonblocking;return stop_ready
 class Producer extends Surface:
 	var created := 0

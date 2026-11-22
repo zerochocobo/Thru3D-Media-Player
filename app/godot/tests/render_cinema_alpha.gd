@@ -132,11 +132,11 @@ func run() -> void:
 	main.xr_camera.look_at(Vector3(screen.position[0],screen.position[1],screen.position[2]),Vector3.UP)
 	# The auditorium screen is above the eye. Restoring a small portrait must keep
 	# its viewed centre, not bring that elevated world position straight toward us.
-	main.settings.set_value("portrait_screen","distance",2.0); main.settings.set_value("portrait_screen","scale",1.0)
+	main.settings.set_value("portrait_screen","cinema_distance",2.0); main.settings.set_value("portrait_screen","cinema_scale",1.0)
 	main.video.alpha_requested = true; main.video.alpha_enabled = true
 	bind_source(false,true)
 	await compare("2d-ai-saved-near")
-	main.settings.erase_section_key("portrait_screen","distance"); main.settings.erase_section_key("portrait_screen","scale")
+	main.settings.erase_section_key("portrait_screen","cinema_distance"); main.settings.erase_section_key("portrait_screen","cinema_scale")
 	for mode in ["2d-ai", "2d-flat-fallback", "vr180-ai", "fisheye-ai", "vr-native-alpha"]:
 		main.video.alpha_requested = false; main.video.alpha_enabled = false; main.video.packed_file = false; main.video.packed_alpha = false
 		main.video.geometry = 0; main.video.stereo_sbs = false; main.video._apply_geometry(); main._update_background(); main._sync_cinema_screen()

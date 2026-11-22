@@ -1197,10 +1197,16 @@ int fisheye_staged_size[2] = {0, 0};
 namespace {
 bool ensure_pass(GLuint& texture, GLuint& framebuffer, int& held_width, int& held_height, int width, int height);
 // eyes_across/eyes_down: the frame's eye pictures (2 for a side-by-side or top-bottom pair); no pass reads
-// across from one eye's picture into the other's.
+// across from one eye's picture into the other's. The rest is for the browser's page: region (x0, y0, x1,
+// y1 in each eye's UV, rows as the frame's) is the part enhanced, the rest passes through as it is;
+// keep_alpha carries the frame's alpha (a portrait cut out of the page); to_window draws to framebuffer
+// 0 (the thread's EGL surface) in place of a target texture, rows as they are.
 struct EnhanceSource { GLuint texture = 0; bool external = false; int width = 0, height = 0; float scale_x = 1.0f, scale_y = 1.0f;
-                       int eyes_across = 1, eyes_down = 1; };
-bool enhance_frame(GLuint target, int width, int height, bool linear_output, const EnhanceSource& from, float sharpen,
+                       int eyes_across = 1, eyes_down = 1;
+                       float region[4] = {0.0f, 0.0f, 1.0f, 1.0f}; bool keep_alpha = false, to_window = false; };
+struct Enhance;
+extern Enhance enhance; // Godot's context: photos, fisheye, software and eye-buffer frames
+bool enhance_frame(Enhance& e, GLuint target, int width, int height, bool linear_output, const EnhanceSource& from, float sharpen,
                    const float* grade, float denoise_step, float denoise_tolerance);
 }
 /** Debug only: the next remap reads its picture back, every [step]th pixel, as RGBA8 rows top-first. */
@@ -1370,7 +1376,7 @@ jboolean remap_fisheye(JNIEnv* env, jint slot, jint texture, jboolean external, 
     if (!staged) return JNI_TRUE;
     EnhanceSource from;
     from.texture = fisheye_staged; from.width = fisheye_staged_size[0]; from.height = fisheye_staged_size[1];
-    return enhance_frame(p.acquired, p.width, p.height, true, from, q[3], q[8] > 0.5f ? q + 9 : nullptr, q[20], q[21]) ? JNI_TRUE : JNI_FALSE;
+    return enhance_frame(enhance, p.acquired, p.width, p.height, true, from, q[3], q[8] > 0.5f ? q + 9 : nullptr, q[20], q[21]) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -1606,11 +1612,11 @@ struct Enhance {
     int shown_width = 0, shown_height = 0;
 };
 Enhance enhance;
-bool ensure_enhance_programs(bool external) {
+bool ensure_enhance_programs(Enhance& e, bool external) {
     const int k = external ? 1 : 0;
-    if (enhance.easu[k] && glIsProgram(enhance.easu[k]) && enhance.finish[k] && glIsProgram(enhance.finish[k])
-        && enhance.denoise[k] && glIsProgram(enhance.denoise[k])) return true;
-    enhance.easu[k] = enhance.finish[k] = enhance.denoise[k] = 0;
+    if (e.easu[k] && glIsProgram(e.easu[k]) && e.finish[k] && glIsProgram(e.finish[k])
+        && e.denoise[k] && glIsProgram(e.denoise[k])) return true;
+    e.easu[k] = e.finish[k] = e.denoise[k] = 0;
     // Rows as glCopyImageSubData lays them: the texture's row r lands on the image's row r.
     static const char* vertex = "#version 300 es\n"
         "out vec2 uv;\n"
@@ -1630,7 +1636,11 @@ bool ensure_enhance_programs(bool external) {
         // (half a texel of what it reads) from its border: a stereo pair's two pictures do not bleed.
         "uniform vec2 split;\n"
         "vec2 eye_low() { return floor(min(uv, vec2(0.99999)) * split) / split; }\n"
-        "vec2 eye_clamp(vec2 p, vec2 margin) { vec2 low = eye_low(); return clamp(p, low + margin, low + 1.0 / split - margin); }\n";
+        "vec2 eye_clamp(vec2 p, vec2 margin) { vec2 low = eye_low(); return clamp(p, low + margin, low + 1.0 / split - margin); }\n"
+        "uniform vec4 region;\n"
+        "bool inside() { vec2 e = (uv - eye_low()) * split; return all(greaterThanEqual(e, region.xy)) && all(lessThanEqual(e, region.zw)); }\n"
+        "uniform bool keep_alpha;\n"
+        "float alpha() { return keep_alpha ? texture(frame, uv * frame_scale).a : 1.0; }\n";
     const std::string easu = head +
         "uniform vec2 source;\n"
         WINDOW_GLSL +
@@ -1645,14 +1655,14 @@ bool ensure_enhance_programs(bool external) {
         RCAS_GLSL
         "vec3 at(vec2 p) { p = eye_clamp(p, margin); return enlarge ? texture(enlarged, p).rgb : encoded(texture(frame, p * frame_scale).rgb); }\n"
         "void main() {\n"
-        "  vec3 c = grade(rcas(at(uv), at(uv - vec2(0.0, reach.y)), at(uv - vec2(reach.x, 0.0)), at(uv + vec2(reach.x, 0.0)),\n"
-        "    at(uv + vec2(0.0, reach.y)), amount, boost));\n"
-        "  result = vec4(linear_output ? mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)) : c, 1.0); }\n";
+        "  vec3 c = inside() ? grade(rcas(at(uv), at(uv - vec2(0.0, reach.y)), at(uv - vec2(reach.x, 0.0)), at(uv + vec2(reach.x, 0.0)),\n"
+        "    at(uv + vec2(0.0, reach.y)), amount, boost)) : at(uv);\n"
+        "  result = vec4(linear_output ? mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)) : c, alpha()); }\n";
     const std::string denoise = head +
         "uniform vec2 step; uniform float tolerance; uniform vec2 margin;\n"
         "vec3 near(vec2 offset) { return encoded(texture(frame, eye_clamp(uv + offset * step, margin) * frame_scale).rgb); }\n"
         DENOISE_GLSL
-        "void main() { result = vec4(denoised(tolerance), 1.0); }\n";
+        "void main() { result = vec4(inside() ? denoised(tolerance) : near(vec2(0.0)), alpha()); }\n";
     const auto link = [&](const std::string& fragment) -> GLuint {
         const GLuint vs = compile(GL_VERTEX_SHADER, vertex), fs = compile(GL_FRAGMENT_SHADER, fragment.c_str());
         if (!vs || !fs) { if (vs) glDeleteShader(vs); if (fs) glDeleteShader(fs); return 0; }
@@ -1663,13 +1673,13 @@ bool ensure_enhance_programs(bool external) {
         if (!ok) { log(ANDROID_LOG_WARN, "picture enhance program does not link"); glDeleteProgram(id); return 0; }
         return id;
     };
-    enhance.easu[k] = link(easu); enhance.finish[k] = link(finish); enhance.denoise[k] = link(denoise);
-    if (!enhance.easu[k] || !enhance.finish[k] || !enhance.denoise[k]) return false;
+    e.easu[k] = link(easu); e.finish[k] = link(finish); e.denoise[k] = link(denoise);
+    if (!e.easu[k] || !e.finish[k] || !e.denoise[k]) return false;
     // The frame's own filtering is its owner's: a sampler object gives this draw bilinear, clamped reads.
-    if (!enhance.sampler || !glIsSampler(enhance.sampler)) {
-        glGenSamplers(1, &enhance.sampler);
-        glSamplerParameteri(enhance.sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glSamplerParameteri(enhance.sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glSamplerParameteri(enhance.sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glSamplerParameteri(enhance.sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (!e.sampler || !glIsSampler(e.sampler)) {
+        glGenSamplers(1, &e.sampler);
+        glSamplerParameteri(e.sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glSamplerParameteri(e.sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glSamplerParameteri(e.sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glSamplerParameteri(e.sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     }
     return true;
 }
@@ -1700,10 +1710,10 @@ bool ensure_pass(GLuint& texture, GLuint& framebuffer, int& held_width, int& hel
  * 1 the excess overshoots) and graded (gain, gamma and offset per channel, contrast, saturation; null for
  * none). linear_output: the target is an sRGB image (a picture layer's), which takes linear light;
  * otherwise it gets display-encoded values, as the eye buffers' shader reads a frame. The frame's rows
- * keep their order, as copyTexture's do. */
-bool enhance_frame(GLuint target, int width, int height, bool linear_output, const EnhanceSource& from, float sharpen,
+ * keep their order, as copyTexture's do. A target 0 with from.to_window is the current EGL surface. */
+bool enhance_frame(Enhance& e, GLuint target, int width, int height, bool linear_output, const EnhanceSource& from, float sharpen,
                    const float* grade, float denoise_step, float denoise_tolerance) {
-    if (!target || !from.texture || from.width <= 0 || from.height <= 0 || !glIsTexture(from.texture)) return false;
+    if ((!target && !from.to_window) || !from.texture || from.width <= 0 || from.height <= 0 || !glIsTexture(from.texture)) return false;
     while (glGetError() != GL_NO_ERROR) {}
     GLenum status = GL_FRAMEBUFFER_COMPLETE;
     {
@@ -1711,12 +1721,12 @@ bool enhance_frame(GLuint target, int width, int height, bool linear_output, con
         GLint previous_external = 0;
         glActiveTexture(GL_TEXTURE0);
         if (from.external) glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &previous_external);
-        if (!ensure_enhance_programs(from.external) || !ensure_enhance_programs(false)) return false;
+        if (!ensure_enhance_programs(e, from.external) || !ensure_enhance_programs(e, false)) return false;
         const bool enlarge = width > from.width || height > from.height;
         const float split_x = from.eyes_across == 2 ? 2.0f : 1.0f, split_y = from.eyes_down == 2 ? 2.0f : 1.0f;
-        if (enlarge && !ensure_pass(enhance.enlarged, enhance.framebuffer, enhance.width, enhance.height, width, height)) return false;
+        if (enlarge && !ensure_pass(e.enlarged, e.framebuffer, e.width, e.height, width, height)) return false;
         const bool denoise = denoise_tolerance > 0.0f;
-        if (denoise && !ensure_pass(enhance.denoised, enhance.denoised_framebuffer, enhance.denoised_width, enhance.denoised_height,
+        if (denoise && !ensure_pass(e.denoised, e.denoised_framebuffer, e.denoised_width, e.denoised_height,
                                     from.width, from.height)) return false;
         glDisable(GL_BLEND); glDisable(GL_SCISSOR_TEST); glDisable(GL_DEPTH_TEST);
         glDisable(GL_CULL_FACE); glDisable(GL_STENCIL_TEST); glDisable(GL_DITHER);
@@ -1725,7 +1735,7 @@ bool enhance_frame(GLuint target, int width, int height, bool linear_output, con
         // Intermediate textures hold the encoded values as they are.
         if (DrawState::srgb_control() && !linear_output) glDisable(DrawState::kFramebufferSrgb);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(from.external ? GL_TEXTURE_EXTERNAL_OES : GL_TEXTURE_2D, from.texture); glBindSampler(0, enhance.sampler);
+        glBindTexture(from.external ? GL_TEXTURE_EXTERNAL_OES : GL_TEXTURE_2D, from.texture); glBindSampler(0, e.sampler);
         // What the next pass reads as its frame: the source, then the denoised frame (a GL_TEXTURE_2D).
         int k = from.external ? 1 : 0;
         float scale_x = from.scale_x, scale_y = from.scale_y;
@@ -1735,8 +1745,8 @@ bool enhance_frame(GLuint target, int width, int height, bool linear_output, con
             linear_source = format == GL_SRGB8_ALPHA8 || format == GL_SRGB8 ? 1 : 0;
         }
         if (denoise) {
-            const GLuint program = enhance.denoise[k];
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, enhance.denoised_framebuffer);
+            const GLuint program = e.denoise[k];
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, e.denoised_framebuffer);
             glViewport(0, 0, from.width, from.height);
             glUseProgram(program);
             glUniform1i(glGetUniformLocation(program, "frame"), 0);
@@ -1746,16 +1756,18 @@ bool enhance_frame(GLuint target, int width, int height, bool linear_output, con
             glUniform1f(glGetUniformLocation(program, "tolerance"), denoise_tolerance);
             glUniform2f(glGetUniformLocation(program, "split"), split_x, split_y);
             glUniform2f(glGetUniformLocation(program, "margin"), 0.5f / from.width, 0.5f / from.height);
+            glUniform4fv(glGetUniformLocation(program, "region"), 1, from.region);
+            glUniform1i(glGetUniformLocation(program, "keep_alpha"), from.keep_alpha ? 1 : 0);
             glDrawArrays(GL_TRIANGLES, 0, 3);
             // The passes after it read the denoised frame, which holds encoded values as they want them.
             if (from.external) glBindTexture(GL_TEXTURE_EXTERNAL_OES, static_cast<GLuint>(previous_external));
-            glBindTexture(GL_TEXTURE_2D, enhance.denoised); glBindSampler(0, 0);
+            glBindTexture(GL_TEXTURE_2D, e.denoised); glBindSampler(0, 0);
             linear_source = 0; k = 0; scale_x = scale_y = 1.0f;
         }
         glViewport(0, 0, width, height);
         if (enlarge) {
-            const GLuint program = enhance.easu[k];
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, enhance.framebuffer);
+            const GLuint program = e.easu[k];
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, e.framebuffer);
             glUseProgram(program);
             glUniform1i(glGetUniformLocation(program, "frame"), 0);
             glUniform2f(glGetUniformLocation(program, "frame_scale"), scale_x, scale_y);
@@ -1767,15 +1779,17 @@ bool enhance_frame(GLuint target, int width, int height, bool linear_output, con
             glDrawArrays(GL_TRIANGLES, 0, 3);
         }
         GLuint framebuffer = 0;
-        glGenFramebuffers(1, &framebuffer);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
-        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target, 0);
+        if (target) {
+            glGenFramebuffers(1, &framebuffer);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target, 0);
+        } else glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (status == GL_FRAMEBUFFER_COMPLETE) {
-            const GLuint program = enhance.finish[k];
+            const GLuint program = e.finish[k];
             glUseProgram(program);
             if (DrawState::srgb_control() && linear_output) glEnable(DrawState::kFramebufferSrgb);
-            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, enlarge ? enhance.enlarged : 0); glBindSampler(1, 0);
+            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, enlarge ? e.enlarged : 0); glBindSampler(1, 0);
             glUniform1i(glGetUniformLocation(program, "frame"), 0);
             glUniform2f(glGetUniformLocation(program, "frame_scale"), scale_x, scale_y);
             glUniform1i(glGetUniformLocation(program, "enlarged"), 1);
@@ -1789,6 +1803,8 @@ bool enhance_frame(GLuint target, int width, int height, bool linear_output, con
             glUniform1f(glGetUniformLocation(program, "boost"), sharpen > 1.0f ? sharpen - 1.0f : 0.0f);
             glUniform2f(glGetUniformLocation(program, "split"), split_x, split_y);
             glUniform2f(glGetUniformLocation(program, "margin"), 0.5f / (enlarge ? width : from.width), 0.5f / (enlarge ? height : from.height));
+            glUniform4fv(glGetUniformLocation(program, "region"), 1, from.region);
+            glUniform1i(glGetUniformLocation(program, "keep_alpha"), from.keep_alpha ? 1 : 0);
             const bool graded = grade != nullptr;
             const float* values = grade;
             glUniform1i(glGetUniformLocation(program, "graded"), graded ? 1 : 0);
@@ -1804,7 +1820,7 @@ bool enhance_frame(GLuint target, int width, int height, bool linear_output, con
             glDrawArrays(GL_TRIANGLES, 0, 3);
         }
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glDeleteFramebuffers(1, &framebuffer);
+        if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
         glActiveTexture(GL_TEXTURE0);
         if (from.external) glBindTexture(GL_TEXTURE_EXTERNAL_OES, static_cast<GLuint>(previous_external));
     }
@@ -1830,7 +1846,7 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_enhanceTexture(JNIEnv* env,
     EnhanceSource from;
     from.texture = static_cast<GLuint>(texture); from.width = source_width; from.height = source_height;
     from.eyes_across = eyes_across; from.eyes_down = eyes_down;
-    return enhance_frame(target->acquired, target->width, target->height, true, from, sharpen, graded ? values : nullptr,
+    return enhance_frame(enhance, target->acquired, target->width, target->height, true, from, sharpen, graded ? values : nullptr,
                          denoise_step, denoise_tolerance) ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -1852,8 +1868,49 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_enhanceFrameTexture(JNIEnv*
     from.texture = static_cast<GLuint>(texture); from.external = external == JNI_TRUE;
     from.width = source_width; from.height = source_height; from.scale_x = scale_x; from.scale_y = scale_y;
     from.eyes_across = eyes_across; from.eyes_down = eyes_down;
-    return enhance_frame(enhance.shown, width, height, false, from, sharpen, nullptr, denoise_step, denoise_tolerance)
+    return enhance_frame(enhance, enhance.shown, width, height, false, from, sharpen, nullptr, denoise_step, denoise_tolerance)
         ? static_cast<jint>(enhance.shown) : 0;
+}
+
+/** Picture quality mode for browser pages, on a browser effect thread's own EGL context: one enhancer per
+ * context, made, used and deleted on that thread (Godot's [enhance] stays on its own). */
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_createEnhancer(JNIEnv*, jclass) {
+    return reinterpret_cast<jlong>(new Enhance());
+}
+
+/** Draws [texture] (a GL_TEXTURE_2D page of source_width x source_height, eyes_across pictures side by side)
+ * into the current EGL surface of the same size: denoised, sharpened and graded (11 values, or null) inside
+ * [region] (x0, y0, x1, y1 of each eye's UV), the rest as it is; rows as they are. keep_alpha: the page's
+ * alpha passes on. */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_enhanceToWindow(JNIEnv* env, jclass, jlong handle, jint texture,
+        jint source_width, jint source_height, jint eyes_across, jfloat sharpen, jfloatArray grade, jfloat denoise_step,
+        jfloat denoise_tolerance, jfloatArray region, jboolean keep_alpha) {
+    Enhance* e = reinterpret_cast<Enhance*>(handle);
+    if (!e || texture <= 0 || source_width <= 0 || source_height <= 0 || !region || env->GetArrayLength(region) != 4) return JNI_FALSE;
+    jfloat values[11];
+    const bool graded = grade && env->GetArrayLength(grade) >= 11;
+    if (graded) env->GetFloatArrayRegion(grade, 0, 11, values);
+    EnhanceSource from;
+    from.texture = static_cast<GLuint>(texture); from.width = source_width; from.height = source_height;
+    from.eyes_across = eyes_across == 2 ? 2 : 1;
+    env->GetFloatArrayRegion(region, 0, 4, from.region);
+    from.keep_alpha = keep_alpha == JNI_TRUE; from.to_window = true;
+    return enhance_frame(*e, 0, source_width, source_height, false, from, sharpen, graded ? values : nullptr,
+                         denoise_step, denoise_tolerance) ? JNI_TRUE : JNI_FALSE;
+}
+
+/** Deletes an enhancer and its GL objects; on the thread whose context made them. */
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_destroyEnhancer(JNIEnv*, jclass, jlong handle) {
+    Enhance* e = reinterpret_cast<Enhance*>(handle);
+    if (!e) return;
+    for (int k = 0; k < 2; k++) for (GLuint program : {e->easu[k], e->finish[k], e->denoise[k]}) if (program) glDeleteProgram(program);
+    if (e->sampler) glDeleteSamplers(1, &e->sampler);
+    for (GLuint framebuffer : {e->framebuffer, e->denoised_framebuffer, e->shown_framebuffer}) if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
+    for (GLuint texture : {e->enlarged, e->denoised, e->shown}) if (texture) glDeleteTextures(1, &texture);
+    delete e;
 }
 
 /** Alpha plan B: draws RVM's mask texture (R8, 2 x model width: left | right) into the whole acquired

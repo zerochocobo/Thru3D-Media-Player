@@ -84,6 +84,7 @@ internal object PhotoDepthRuntime {
             if (activity.get() != version) return@post
             sessions.values.forEach { it.close() }
             runCatching { RenderBridgeNative.photoReleasePairs() } // the stereo pairs kept for the picture layer
+            PhotoStereo.releaseColour()
         }
     }
 }

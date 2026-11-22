@@ -29,7 +29,7 @@ func _initialize() -> void:
 	var page_script := _script("extends Node\nvar hole: MeshInstance3D\nvar layer: RefCounted = RefCounted.new()\nvar pixels := Vector2i(1536, 864)\n")
 	var window_script := _script("extends Node\nvar surface: Node\nvar pose := Transform3D(Basis.IDENTITY, Vector3(0, 1.4, -1.2))\n" +
 		"var size := Vector2(0.6, 0.9)\nfunc page_layout() -> Dictionary: return {\"pose\": pose, \"size\": size}\n" +
-		"func focus_crop() -> Rect2: return Rect2(0.2, 0.1, 0.3, 0.8)\n")
+		"func focus_crop() -> Rect2: return Rect2(0.2, 0.1, 0.3, 0.8)\nvar depth: RefCounted\nvar selecting := false\n")
 	var page: Node = page_script.new()
 	page.hole = MeshInstance3D.new()
 	page.hole.visible = true
@@ -68,7 +68,21 @@ func _initialize() -> void:
 	relight.soft_edge = true
 	relight._place(video_frame, 0.0)
 	check(relight._edge.visible and is_equal_approx(float(relight._glow_material.get_shader_parameter("band")), Model.EDGE_BAND), "The soft edge option dissolves a video's border into the halo")
+	# A cut-out person (Alpha, or a page's person matte) has no rectangle to glow around.
+	relight.soft_edge = true
+	relight._place(video_frame.merged({"cutout": true}), 0.0)
+	check(not relight._glow.visible and not relight._edge.visible and not relight._floor.visible, "A cut-out person gets no halo, edge or floor shadow")
 	relight.soft_edge = false
+	relight._place(video_frame, 0.0)
+	check(relight._glow.visible, "The halo returns with the whole picture")
+	window.depth = _script("extends RefCounted\nvar matte := true\n").new()
+	relight.update_browser(1.0 / 30.0, window, true, 0.0)
+	check(not relight._glow.visible and not relight._floor.visible, "A page cut to its person gets no halo")
+	window.selecting = true
+	relight.update_browser(1.0 / 30.0, window, true, 0.0)
+	check(relight._glow.visible, "Choosing a region shows the whole page, halo included")
+	window.selecting = false
+	window.depth = null
 	relight.update_browser(1.0 / 30.0, window, true, 0.0)
 	# The two controls: a short reach needs a much smaller quad, and low brightness tints less.
 	check(Model.halo_margin(0.0) < Model.halo_margin(1.0) * 0.5, "A tight halo covers far less than a wide one")

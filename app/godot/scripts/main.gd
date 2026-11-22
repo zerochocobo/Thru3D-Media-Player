@@ -347,6 +347,7 @@ func _ready() -> void:
 	relight_wanted = bool(settings.get_value("video", "ambient_light", false))
 	UiTheme.use(UiTheme.load_choice(settings))
 	_migrate_library_distance()
+	if portrait_screen.migrate(settings): settings.save(settings_path)
 	wrist_watch = WristWatch.new()
 	wrist_watch.set_color(WristWatch.Palette.load_choice(settings))
 	wrist_watch.name = "WristWatch"
@@ -597,11 +598,15 @@ func _ready() -> void:
 			plugin.set_rvm_fp32(Quality.alpha_fp32(Quality.load_alpha_precision(settings)))
 		if PlatformMethods.supports(plugin, "set_depth_render_mode"):
 			plugin.set_depth_render_mode(_depth_render_mode())
+		if PlatformMethods.supports(plugin, "set_depth_edge_steady"):
+			plugin.set_depth_edge_steady(DepthEdgeSteady.load_enabled(settings))
 		if PlatformMethods.supports(plugin, "set_depth_text_protection"):
 			plugin.set_depth_text_protection(false)
 		video.set_alpha_edge(_alpha_edge_value("alpha_feather"), _alpha_edge_value("alpha_shrink"))
 	video.depth_text_protection = false
 	player_menu = PlayerMenu.new()
+	video.danmaku.restore(settings)
+	video.danmaku.menu = player_menu
 	player_menu.state_provider = _menu_state
 	player_menu.pointer_held = _trigger_held
 	player_menu.favorite_provider = _favorite_state
@@ -682,6 +687,8 @@ func _ready() -> void:
 	ChineseInput.head_provider = _head_pose
 	ChineseInput.on_open = _on_chinese_keyboard_opened
 	recent_menu.web_browser.configure_quality(low_end_gpu, str(settings.get_value("web", "clarity", "high" if QiyuController.runtime else "")))
+	recent_menu.web_browser.picture_quality = bool(settings.get_value("web", "picture_quality", false))
+	recent_menu.web_browser.picture_provider = func() -> Variant: return video.picture_defaults if video else null
 	if QiyuController.runtime:
 		DiagnosticLog.record("qiyu_display", {"menu_eye_buffer": menu_composition.eye_buffer_only,
 			"menu_layers": menu_composition.enabled, "menu_fallback": menu_composition.fallback_reason,
@@ -3968,6 +3975,10 @@ func _on_photo_adjustment(key: String, value: Variant) -> void:
 		if not photo.set_depth_mode(str(value)): return
 		settings.set_value("photo", "depth_mode", photo.depth_mode); settings.save(settings_path)
 		photo_menu.refresh(); return
+	if key == "photo_fill_mode":
+		if not photo.set_fill_mode(str(value)): return
+		settings.set_value("photo", "fill_mode", photo.fill_mode); settings.save(settings_path)
+		photo_menu.refresh(); return
 	if key == "photo_cache_each":
 		if typeof(value) not in [TYPE_INT, TYPE_FLOAT] or not is_finite(float(value)): return
 		photo.set_cache_each(int(value))
@@ -4765,6 +4776,7 @@ func _restore_subtitle_settings() -> void:
 ## through the near map, stretching the background edge (no fill). "stretch" is the default (user
 ## choice after headset tests, 2026-10-30).
 const DEPTH_RENDER_MODES := ["fill", "stretch"]
+const DepthEdgeSteady := preload("res://scripts/depth_edge_steady.gd")
 const DEPTH_RENDER_DEFAULT := "stretch"
 func _depth_render_mode() -> String:
 	var mode := str(settings.get_value("video", "depth_render", DEPTH_RENDER_DEFAULT))
@@ -4923,6 +4935,7 @@ func _library_settings() -> Dictionary:
 		SeekStep.KEY: SeekStep.seconds(settings),
 		"scene_body_height": scene_import.body_height if scene_import != null else 0.0,
 		"depth_render": _depth_render_mode(),
+		DepthEdgeSteady.KEY: DepthEdgeSteady.load_enabled(settings),
 		"depth_position_default": video.depth_position,
 		"video_auto_3d": video.default_auto_depth,
 		"depth_text_protection": false,
@@ -5084,6 +5097,12 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 				settings.set_value("video", "depth_render", str(value)); settings.save(settings_path)
 				if platform_plugin and PlatformMethods.supports(platform_plugin, "set_depth_render_mode"):
 					platform_plugin.set_depth_render_mode(str(value))
+				if recent_menu: recent_menu.refresh()
+		DepthEdgeSteady.KEY:
+			settings.set_value("video", DepthEdgeSteady.KEY, bool(value)); settings.save(settings_path)
+			if platform_plugin and PlatformMethods.supports(platform_plugin, "set_depth_edge_steady"):
+				platform_plugin.set_depth_edge_steady(bool(value))
+			if recent_menu: recent_menu.refresh()
 		"restart_app", "quit_app":
 			_finish_app(key == "restart_app")
 		"web_clarity":
@@ -5093,6 +5112,21 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 				browser.clarity = str(value)
 				settings.set_value("web", "clarity", browser.clarity); settings.save(settings_path)
 				for window in browser.windows.values(): window.refresh()
+		"web_picture_quality":
+			var browser: RefCounted = recent_menu.web_browser if recent_menu else null
+			if browser:
+				browser.picture_quality = bool(value)
+				settings.set_value("web", "picture_quality", browser.picture_quality); settings.save(settings_path)
+				for window in browser.windows.values():
+					window.picture_failed = false; window.refresh()
+		"web_picture_sharpness", "web_picture_denoise":
+			# The browser's menu edits the player's picture defaults: one look for videos and web video.
+			var field := str(key).trim_prefix("web_")
+			if video:
+				video.picture_defaults = video.picture_memory.edited(video.picture_defaults, field, value)
+				settings.set_value("video", field, video.picture_defaults[field]); settings.save(settings_path)
+				if recent_menu:
+					for window in recent_menu.web_browser.windows.values(): window.refresh()
 		"display_quality":
 			display_quality = clampi(int(value), Quality.AUTO, Quality.SCALES.size() - 1)
 			# Apply at next startup: live OpenXR resizing fails to free GLES3 targets on Quest.
@@ -5456,6 +5490,10 @@ func _on_menu_seek(position_ms: int) -> void:
 	video.seek_absolute(position_ms)
 
 func _on_player_setting(key: String, value: Variant) -> void:
+	if key.begins_with("danmaku_"):
+		if not photo_active and video and video.danmaku.setting(key, value, settings):
+			settings.save(settings_path)
+		return
 	if key == "screen_edit_locked": screen_edit_lock.set_locked(bool(value)); return
 	if key == "video_aspect_locked":
 		if not photo_active and video: video.set_video_aspect_lock(bool(value))
@@ -5553,7 +5591,7 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		"subtitle_delay", "secondary_subtitle_delay":
 			if value is Dictionary and not video.commit_subtitle_delay(float(value.value), str(value.source_uri), str(value.get("subtitle_key", "__current__"))):
 				if is_instance_valid(player_menu): player_menu.refresh()
-		"alpha_keep_background", "alpha_mask_blend", "seek_mode", "hdr_to_sdr", "depth_render", "video_auto_3d", "depth_text_protection", "subtitle_distance", "subtitle_follow_view", "stereo_focus_mode", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line": _on_setting_changed(key, value)
+		"alpha_keep_background", "alpha_mask_blend", "seek_mode", "hdr_to_sdr", "depth_render", "depth_edge_steady", "video_auto_3d", "depth_text_protection", "subtitle_distance", "subtitle_follow_view", "stereo_focus_mode", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line": _on_setting_changed(key, value)
 		"viewing_eye": video.set_viewing_eye(int(value))
 		"spatial_auto_disparity": video.set_spatial_auto_disparity(bool(value))
 		"spatial_match_fov":
@@ -5706,6 +5744,7 @@ func _menu_state() -> Dictionary:
 	audio_options.append({"value": 0, "label": "Off"})
 	var text_tracks: Array = video.subtitle_tracks()
 	var result := {"has_video": not video.local_uri.is_empty() and video.media.accepts(video.media.session_id),
+		"danmaku": video.danmaku.snapshot(), "danmaku_transparency": video.danmaku.transparency,
 		"has_previous_video": not _adjacent_video(-1).is_empty(), "has_next_video": not _adjacent_video(1).is_empty() or (video_queue.any(func(row): return row.uri == video.local_uri) and (video_queue_pages.has_more() or playback_mode == "repeat_all")),
 		"playing": video.requested_play, "playback_state": video.media.state, "loading_caption": _video_loading_caption(),
 		"alpha_requested": video.alpha_wanted(), "alpha_enabled": video.alpha_enabled,
@@ -5815,6 +5854,7 @@ func _menu_state() -> Dictionary:
 	result["hand_lock_available"] = hand_lock.context()
 	result["hand_locked"] = hand_lock.locked
 	result["depth_render"] = _depth_render_mode()
+	result[DepthEdgeSteady.KEY] = DepthEdgeSteady.load_enabled(settings)
 	result["video_auto_3d"] = video.default_auto_depth
 	result["hdr_to_sdr"] = video.hdr_to_sdr_mode()
 	result["reuse_last_mode"] = video.reuse_last_mode
@@ -7084,6 +7124,7 @@ func _on_custom_background_saved(path: String, title: String, orientation: int) 
 	settings.save(settings_path)
 
 func _recenter(restore_defaults: bool = true) -> void:
+	if video: video.danmaku.recenter()
 	immersive_sticks.clear_feedback()
 	if restore_defaults: _clear_controls_locks()
 	if _cinema_scene_active():
@@ -7257,6 +7298,10 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 			if str(value.get("source_uri", "")) != video.local_uri: return
 			value = value.get("value")
 		if not photo_active and video.cast_allows(key): video.set_depth_position(value)
+		return
+	if key == "danmaku_transparency":
+		# Saved with the other playback adjustments when the drag ends.
+		if not photo_active and video: video.danmaku.setting(key, value, settings)
 		return
 	if not photo_active and video and not video.cast_allows(key): return
 	if Video.PictureMemory.is_adjustment(key):

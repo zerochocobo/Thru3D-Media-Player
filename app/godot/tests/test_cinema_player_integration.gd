@@ -1002,14 +1002,14 @@ func _context_routes() -> void:
 	main.video.portrait.calibrate(main.video.panel.to_local(main._eye()))
 	check(not main.video.portrait.automatic and is_equal_approx(main.video.portrait.distance, distance_before), "Distant portrait is not clamped to automatic 1.2-6m range")
 	main._save_playback_adjustments()
-	check(not main.settings.has_section_key("portrait_screen", "distance"), "Unrelated settings save does not turn inherited distance into a manual override")
-	check(not main.settings.has_section_key("portrait_screen", "scale"), "Unrelated settings save does not pin inherited portrait size")
+	check(not main.settings.has_section_key("portrait_screen", "cinema_distance"), "Unrelated settings save does not turn inherited distance into a manual override")
+	check(not main.settings.has_section_key("portrait_screen", "cinema_scale"), "Unrelated settings save does not pin inherited portrait size")
 	main._on_playback_adjustment("portrait_scale", 600.0); main._save_playback_adjustments()
-	check(is_equal_approx(main.video.screen_scale,6.0) and is_equal_approx(main.settings.get_value("portrait_screen", "scale", 0.0),6.0), "Portrait size slider saves its own size")
-	check(is_equal_approx(main._surface_distance(main.video),distance_before) and not main.settings.has_section_key("portrait_screen", "distance"), "Resizing does not move or pin portrait distance")
+	check(is_equal_approx(main.video.screen_scale,6.0) and is_equal_approx(main.settings.get_value("portrait_screen", "cinema_scale", 0.0),6.0), "Portrait size slider saves its own size")
+	check(is_equal_approx(main._surface_distance(main.video),distance_before) and not main.settings.has_section_key("portrait_screen", "cinema_distance"), "Resizing does not move or pin portrait distance")
 	main._on_playback_adjustment("portrait_distance", 9.0); main._save_playback_adjustments()
 	check(is_equal_approx(main.video.screen_scale,6.0), "Distance adjustment retains portrait size")
-	check(is_equal_approx(main._surface_distance(main.video), 9.0) and is_equal_approx(main.settings.get_value("portrait_screen", "distance", 0.0),9.0), "Portrait distance slider moves and independently saves the plane")
+	check(is_equal_approx(main._surface_distance(main.video), 9.0) and is_equal_approx(main.settings.get_value("portrait_screen", "cinema_distance", 0.0),9.0), "Portrait distance slider moves and independently saves the plane")
 	main._on_player_setting("alpha_keep_background", true)
 	check(main._cinema_scene_active() and not main.display.applied_passthrough, "Keep background presents the hall behind the portrait")
 	var retained_pose: Transform3D = main.video.flat_pose
@@ -1025,9 +1025,9 @@ func _context_routes() -> void:
 	dragged.origin += dragged.basis.z.normalized() * 2.0
 	main.video.set_flat_world_pose(dragged)
 	main.video.set_screen_distance(main._surface_distance(main.video)); main._save_screen()
-	check(is_equal_approx(main.settings.get_value("portrait_screen", "distance", 0.0),7.0), "Grip movement commits portrait distance to the same independent preference")
+	check(is_equal_approx(main.settings.get_value("portrait_screen", "cinema_distance", 0.0),7.0), "Grip movement commits portrait distance to the same independent preference")
 	main.video.set_screen_scale(7.5); main._save_screen()
-	check(is_equal_approx(main.settings.get_value("portrait_screen", "scale", 0.0),7.5), "Manual resize saves the same independent size preference")
+	check(is_equal_approx(main.settings.get_value("portrait_screen", "cinema_scale", 0.0),7.5), "Manual resize saves the same independent size preference")
 	check(_screen_preferences() == preferences_before, "Portrait slider and drag do not write ordinary/cinema screen preferences")
 	main.video.alpha_requested = false; main._update_background()
 	check(main._cinema_scene_active(), "Leaving Alpha restores cinema")
@@ -1049,9 +1049,32 @@ func _context_routes() -> void:
 	check(is_equal_approx(main._surface_distance(main.video), 7.0), "Portrait recenter retains portrait distance")
 	check(is_equal_approx(main.video.screen_scale,7.5), "Portrait recenter retains portrait size")
 	var loaded := ConfigFile.new(); loaded.load(main.settings_path)
-	check(is_equal_approx(loaded.get_value("portrait_screen", "distance", 0.0),7.0), "Portrait distance survives settings reload")
-	check(is_equal_approx(loaded.get_value("portrait_screen", "scale", 0.0),7.5), "Portrait size survives settings reload")
+	check(is_equal_approx(loaded.get_value("portrait_screen", "cinema_distance", 0.0),7.0), "Portrait distance survives settings reload")
+	check(is_equal_approx(loaded.get_value("portrait_screen", "cinema_scale", 0.0),7.5), "Portrait size survives settings reload")
+	check(not main.settings.has_section_key("portrait_screen", "distance") and not main.settings.has_section_key("portrait_screen", "scale"),
+		"The auditorium's portrait placement does not become the ordinary one")
+	# Leaving the auditorium with the person shown: its metres would put the person outside a room.
+	main._on_player_setting("alpha_keep_background", true)
+	main.background.select("night"); main._update_background()
+	check(main.portrait_screen.active and not main._cinema_scene_active(), "The person stays shown on an ordinary background")
+	var ordinary_distance: float = main.portrait_screen.saved.screen_distance
+	check(is_equal_approx(main._surface_distance(main.video), ordinary_distance) and is_equal_approx(main.video.screen_scale, main.portrait_screen.saved.screen_scale),
+		"Leaving the auditorium brings the person in front at the ordinary screen's distance and size", {"distance": main._surface_distance(main.video), "ordinary": ordinary_distance})
+	main._on_playback_adjustment("portrait_distance", 2.5); main._save_playback_adjustments()
+	check(is_equal_approx(main.settings.get_value("portrait_screen", "distance", 0.0), 2.5) and is_equal_approx(main.settings.get_value("portrait_screen", "cinema_distance", 0.0), 7.0),
+		"Ordinary and auditorium portrait distances are remembered apart")
+	main._recenter()
+	check(is_equal_approx(main._surface_distance(main.video), 2.5), "Recentring the person uses the ordinary distance")
 	main.video.alpha_requested = false; main._update_background()
+	main.settings.erase_section_key("portrait_screen", "distance")
+	main.background.select("cinema"); main._update_background()
+	main._on_player_setting("alpha_keep_background", false)
+	var legacy := ConfigFile.new()
+	legacy.set_value("portrait_screen", "distance", 28.3); legacy.set_value("portrait_screen", "scale", 19.6)
+	check(main.portrait_screen.migrate(legacy) and not legacy.has_section_key("portrait_screen", "distance") and not legacy.has_section_key("portrait_screen", "scale"),
+		"A shared distance from before the split is dropped once")
+	legacy.set_value("portrait_screen", "distance", 2.0)
+	check(not main.portrait_screen.migrate(legacy) and is_equal_approx(legacy.get_value("portrait_screen", "distance", 0.0), 2.0), "Values saved after the split are kept")
 	# A remembered mono auto-anchor must neither synthesize depth nor block stereo placement saves.
 	var pending_revision: Dictionary = main.video._pending_revision.duplicate(true)
 	var waiting_first: bool = main.video._waiting_first
@@ -1068,8 +1091,8 @@ func _context_routes() -> void:
 		main._on_playback_adjustment("portrait_distance", 3.0 + layout)
 		main._on_playback_adjustment("portrait_scale", 200.0 + layout * 50.0)
 		main._save_playback_adjustments()
-		check(is_equal_approx(main.settings.get_value("portrait_screen", "distance", 0.0),3.0 + layout) \
-			and is_equal_approx(main.settings.get_value("portrait_screen", "scale", 0.0),2.0 + layout * .5),
+		check(is_equal_approx(main.settings.get_value("portrait_screen", "cinema_distance", 0.0),3.0 + layout) \
+			and is_equal_approx(main.settings.get_value("portrait_screen", "cinema_scale", 0.0),2.0 + layout * .5),
 			"Stereo controls save independently despite remembered mono automatic distance")
 		check(_screen_preferences() == preferences_before, "Stereo passthrough leaves cinema preferences intact")
 		var cutout_pose: Transform3D = main.video.global_transform * main.video.flat_pose

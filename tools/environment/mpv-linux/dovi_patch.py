@@ -17,6 +17,21 @@ def apply_mpv_dovi(edited, replace):
     edited["video/quest_dovi_profile.h"] = (HEADERS / "quest_dovi_profile.h").read_text()
     for name in ("quest_dovi_gpu.h", "quest_dovi_shader_cache.h"):
         edited["video/out/gpu/" + name] = (HEADERS / name).read_text()
+    p = "video/mp_image.h"
+    edited[p] = replace(edited[p], '    struct AVBufferRef *dovi;\n',
+                        '    struct AVBufferRef *dovi;\n'
+                        '    bool quest_dovi_profile5_hw;\n')
+    p = "video/mp_image.c"
+    s = edited[p]
+    s = replace(s, '#include "mp_image.h"\n',
+                '#include "mp_image.h"\n#include "quest_dovi_profile.h"\n')
+    s = replace(s, '    assign_bufref(&dst->dovi, src->dovi);\n',
+                '    assign_bufref(&dst->dovi, src->dovi);\n'
+                '    dst->quest_dovi_profile5_hw = src->quest_dovi_profile5_hw;\n')
+    s = replace(s, '(void *)dst->dovi->data, metadata);\n',
+                '(void *)dst->dovi->data, metadata);\n'
+                '            dst->quest_dovi_profile5_hw = quest_dovi_profile5_hw_frame(src);\n')
+    edited[p] = s
     p = "video/out/gpu/video.c"
     s = edited[p]
     s = replace(s, '#include "video/out/vo.h"\n',
@@ -44,9 +59,21 @@ def apply_mpv_dovi(edited, replace):
     p = "video/out/vo_libmpv.c"
     edited[p] = replace(edited[p], '#include "include/mpv/quest_frame.h"\n',
                         '#include "include/mpv/quest_frame.h"\n#include "video/quest_dovi_profile.h"\n')
+    edited[p] = replace(edited[p], '    uint64_t quest_render_sequence;\n',
+                        '    uint64_t quest_render_sequence;\n    int quest_dovi_signature;\n')
     edited[p] = replace(edited[p], '            quest->frame_id = frame->frame_id;\n',
-                        '            if (quest_dovi_profile5(image))\n'
+                        '            struct quest_dovi_state dovi = quest_dovi_state(image);\n'
+                        '            if (quest_dovi_state_profile5(dovi))\n'
                         '                quest->flags |= QUEST_MPV_DOVI_PROFILE5;\n'
+                        '            int dovi_signature = quest_dovi_signature(dovi);\n'
+                        '            if (dovi_signature != ctx->quest_dovi_signature) {\n'
+                        '                ctx->quest_dovi_signature = dovi_signature;\n'
+                        '                MP_INFO(ctx, "Thru3D Dolby frame: pts=%.3f format=%s profile5=%d "\n'
+                        '                        "mapped=%d hw=%d rpu=%d header=%d/%d/%d\\n", image->pts,\n'
+                        '                        mp_imgfmt_to_name(image->imgfmt), quest_dovi_state_profile5(dovi),\n'
+                        '                        dovi.mapped, dovi.hw, dovi.rpu, dovi.vdr_rpu_profile,\n'
+                        '                        dovi.full_range, dovi.disable_residual);\n'
+                        '            }\n'
                         '            quest->frame_id = frame->frame_id;\n')
     p = "video/out/gpu/shader_cache.h"
     edited[p] = replace(edited[p], 'struct mp_log;\n',

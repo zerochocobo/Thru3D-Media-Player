@@ -9,6 +9,7 @@ const OFF := 986024
 const CHROME := 986025
 const KEYBOARD := 986026
 const VIDEO_FOCUS := 986034
+const PICTURE := 986035
 const SLIDER_X := 0.225
 const ENTER_MS := 120
 const LEAVE_MS := 650
@@ -97,7 +98,7 @@ func sync(now: int = -1) -> void:
 		if last_near < 0 or now - last_near >= LEAVE_MS: _hide_controls()
 
 func _state() -> Array:
-	return [host.on_screen(),host.toolbar_shown,host.depth.enabled,host.depth.matte,host.depth.error,host.selecting,host.is_focused(),host.is_video_focused(),host.locating_video(),host.video_missing(),host.browser.keyboard_visible(host.window_id),boosted,strength_open,I18n.language] if host else []
+	return [host.on_screen(),host.toolbar_shown,host.picture_settings,host.browser.picture_quality,host.depth.enabled,host.depth.matte,host.depth.error,host.selecting,host.is_focused(),host.is_video_focused(),host.locating_video(),host.video_missing(),host.browser.keyboard_visible(host.window_id),boosted,strength_open,I18n.language] if host else []
 
 func set_strength_open(value: bool) -> void:
 	if strength_open == value: return
@@ -132,7 +133,7 @@ func observe_ray(hand: String, origin: Vector3, direction: Vector3, tracked: boo
 	_update_highlights()
 
 func reveal_bounds() -> Rect2:
-	var bounds := Rect2(-0.455,-0.065,0.91,0.13)
+	var bounds := Rect2(-0.455,-0.065,1.06,0.13)
 	if not global_footer: return bounds
 	# Derive the width from shared controls, including disabled scene actions.
 	for button in _buttons: bounds = bounds.merge(button.rect)
@@ -183,6 +184,8 @@ func _draw() -> void:
 	var keyboard_shown: bool = host.browser.keyboard_visible(host.window_id)
 	_button(KEYBOARD,"",Vector2(0.30 if host.on_screen() else 0.375,0),Vector2.ONE*0.12,true,"keyboard_hide" if keyboard_shown else "keyboard",keyboard_shown)
 	_tips[KEYBOARD] = I18n.t("Close keyboard" if keyboard_shown else "Show keyboard")
+	_button(PICTURE,"",Vector2(0.45 if host.on_screen() else 0.525,0),Vector2.ONE*0.12,true,"quality",host.picture_settings or host.browser.picture_quality)
+	_tips[PICTURE] = I18n.t("Picture quality mode")
 	if global_footer: place_session_controls(GLOBAL_CENTRE)
 	if not host.depth.enabled or not strength_open: return
 	var before := get_children()
@@ -258,7 +261,7 @@ func _refresh_strength() -> void:
 		boost_fill.material_override.set_shader_parameter("surface_size",boost_fill.mesh.size)
 
 func _activate(target: int) -> void:
-	if target in [CHROME,FOCUS,VIDEO_FOCUS,MATTE,KEYBOARD]: host._activate(target)
+	if target in [CHROME,FOCUS,VIDEO_FOCUS,MATTE,KEYBOARD,PICTURE]: host._activate(target)
 	elif target == DEPTH:
 		if host.depth.enabled: set_strength_open(not strength_open)
 		else: host._activate(DEPTH)

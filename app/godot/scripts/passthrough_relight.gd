@@ -138,7 +138,7 @@ func update(delta: float, video: Node, active: bool, floor_y: float) -> void:
 	if panel != null and is_instance_valid(panel):
 		frame = {"transform": panel.global_transform, "size": video._flat.size,
 			"flat": float(video.screen_curve) <= 0.0, "glow_z": VIDEO_GLOW_Z,
-			"edge_priority": VIDEO_EDGE_PRIORITY}
+			"edge_priority": VIDEO_EDGE_PRIORITY, "cutout": bool(video.alpha_wanted())}
 	_step(delta, showing, active, frame, floor_y)
 
 
@@ -154,8 +154,10 @@ func update_browser(delta: float, window: Node, active: bool, floor_y: float) ->
 		showing = enabled and active and page != null and page.hole != null and page.hole.visible and page.layer != null
 		var layout: Dictionary = window.page_layout()
 		# A page is read to its border, so it keeps a hard edge.
+		var depth: Variant = window.get("depth")
 		frame = {"transform": layout.pose, "size": layout.size, "flat": true, "glow_z": BROWSER_GLOW_Z,
-			"edge_priority": BROWSER_EDGE_PRIORITY, "edge": false}
+			"edge_priority": BROWSER_EDGE_PRIORITY, "edge": false,
+			"cutout": depth != null and bool(depth.matte) and not bool(window.get("selecting"))}
 		if showing and not _busy and debug_parts.sample and Time.get_ticks_msec() >= _next_ms:
 			_sample_browser(window)
 	_step(delta, showing, active, frame, floor_y)
@@ -257,7 +259,9 @@ func _refresh_lut(tint: Color) -> void:
 # ---- halo and floor shadow -----------------------------------------------------------
 
 func _place(frame: Dictionary, floor_y: float) -> void:
-	if _visibility <= 0.001 or frame.is_empty():
+	# A cut-out person has no screen to glow around: the halo's hole would show as a dark
+	# rectangle through the transparent picture, and the floor shadow would hang under nothing.
+	if _visibility <= 0.001 or frame.is_empty() or bool(frame.get("cutout", false)):
 		if _glow: _glow.visible = false
 		if _edge: _edge.visible = false
 		if _floor: _floor.visible = false

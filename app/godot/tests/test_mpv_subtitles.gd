@@ -253,6 +253,23 @@ func _initialize() -> void:
 		video.subtitles.select(0); video._queue_track_restore({}); video._subtitle_auto_pending = true
 		video._restore_tracks()
 		check(video.subtitles.requested_track == sole.id and video._track_choices.is_empty(), "A sole external caption plays even with a generic name or different language")
+	I18n.use("en")
+	video.local_uri = "smb://saved/Shows/Series S01Ep02.mp4"
+	video._layout_basename = "Series S01Ep02.mp4"
+	var episode_tracks := [{"id": 1, "title": "Embedded", "codec": "mov_text", "external": false}]
+	var episode_names := ["2_Korean.srt", "3_English.srt", "4_Chinese.srt", "5_Japanese.srt"]
+	for i in range(episode_names.size()):
+		episode_tracks.append({"id": i + 2, "title": episode_names[i], "codec": "subrip", "external": true})
+	video.media.playback.details.subtitle_tracks = episode_tracks
+	video.subtitles.select(0); video._queue_track_restore({}); video._subtitle_auto_pending = true
+	video._restore_tracks()
+	check(video.subtitle_tracks().map(func(track): return track.title) == ["Embedded"] + episode_names,
+		"Episode language tracks share the subtitle list with an embedded MP4 track")
+	check(video.subtitles.requested_track == 3, "Numbered episode subtitles use the existing interface-language fallback")
+	for track in episode_tracks:
+		check(video.set_subtitle_track(track.id) and host.calls.back() == [7, track.id],
+			"Use the same subtitle selection for an episode track: " + track.title)
+	I18n.use("zh")
 	# Exercise the actual Android state-receipt path, including cold history opens.
 	video.local_uri = "cloud://saved/Movies/movie.mp4"
 	video.subtitles.select(0); video._queue_track_restore({}); video._subtitle_auto_pending = true

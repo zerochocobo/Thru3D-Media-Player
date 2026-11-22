@@ -36,23 +36,27 @@ internal object PhotoStereo {
     }.getOrDefault(0).let { if (it in 1..8) MAX_EDGE to it * 1024 * 1024 else EYE_EDGE to EYE_PIXELS }
 
     fun validRotation(rotation: Int) = rotation in listOf(0, 90, 180, 270)
-    /** [fast]: a pair warped from the fast model's map, which a later quality map replaces. */
-    fun cachePrefix(strength: Float, rotation: Int, convergence: Float = 0.35f, fast: Boolean = false): String {
+    /** The picture setting: edge stretching (as video's stretch view) instead of the default hole fill. */
+    @Volatile var stretch = false
+    /** [fast]: a pair warped from the fast model's map, which a later quality map replaces.
+     * [stretch]: edge stretching instead of the hole fill. */
+    fun cachePrefix(strength: Float, rotation: Int, convergence: Float = 0.35f, fast: Boolean = false, stretch: Boolean = false, pages: Boolean = false): String {
         require(strength.isFinite() && strength in 0f..2f)
         require(validRotation(rotation))
         require(convergence.isFinite() && convergence in 0f..1f)
-        return "stereo-v5${if (fast) "f" else ""}-r$rotation-${(strength*100).roundToInt()}-c${(convergence*10000).roundToInt()}-"
+        return "stereo-v6${if (fast) "f" else ""}${if (stretch) "s" else ""}${if (pages) "p" else ""}-r$rotation-${(strength*100).roundToInt()}-c${(convergence*10000).roundToInt()}-"
     }
 
-    fun prepare(source: File, near: ByteBuffer, rect: FloatArray, strength: Float, generation: Int, rotation: Int = 0, convergence: Float = 0.35f, fast: Boolean = false): JSONObject {
-        val prefix = cachePrefix(strength, rotation, convergence, fast)
-        // Raw RGBA pair named with its size: a hit is checked by length, with nothing to decode.
-        source.parentFile?.listFiles()?.firstOrNull { it.name.startsWith(prefix) && it.extension == "rgba" }?.let { cached ->
-            val size = Regex("""-(\d+)x(\d+)$""").find(cached.nameWithoutExtension)?.groupValues
-            val w = size?.get(1)?.toIntOrNull() ?: 0; val h = size?.get(2)?.toIntOrNull() ?: 0
-            if (w > 0 && h > 0 && cached.length() == w.toLong()*h*4) return metadata(cached, w, h, strength, rotation, convergence, 0)
-        }
-        val clock = StepClock()
+    /** The last still's eye-sized colour: the quality refinement, strength and fill changes of the same
+     * photo warp it again without decoding the file again (0.3-0.7 s on Quest 3). */
+    private class Colour(val key: String, val rgba: ByteBuffer, val width: Int, val height: Int, val steps: String)
+    private var colour: Colour? = null
+    @Synchronized fun releaseColour() { colour = null }
+
+    @Synchronized private fun colourOf(source: File, clock: StepClock, keep: Boolean): Colour {
+        val key = "${source.path}|${source.length()}|${source.lastModified()}|${eyeCap()}"
+        colour?.takeIf { it.key == key }?.let { clock.lap("colour_kept"); return it }
+        colour = null // never hold two full colours at once
         val bounds = PhotoBitmap.bounds(source)
         val targetSize = size(bounds.outWidth, bounds.outHeight)
         var sample = 1
@@ -62,7 +66,7 @@ internal object PhotoStereo {
             ?: error("PHOTO_DECODE_FAILED")
         clock.lap("decode")
         var upright = original
-        var color = original
+        var scaled = original
         try {
             val orientation = PhotoBitmap.orientation(source)
             val matrix = Matrix().apply { when (orientation) {
@@ -73,38 +77,75 @@ internal object PhotoStereo {
             upright = Bitmap.createBitmap(original,0,0,original.width,original.height,matrix,true)
             clock.lap("orient")
             val (w,h) = size(upright.width,upright.height)
-            color = Bitmap.createScaledBitmap(upright,w,h,true)
+            scaled = Bitmap.createScaledBitmap(upright,w,h,true)
             clock.lap("scale")
             val rgba = ByteBuffer.allocateDirect(w*h*4).order(ByteOrder.LITTLE_ENDIAN)
-            color.copyPixelsToBuffer(rgba); rgba.rewind(); near.rewind()
-            val output = ByteBuffer.allocateDirect(w*h*8).order(ByteOrder.LITTLE_ENDIAN)
+            scaled.copyPixelsToBuffer(rgba)
             clock.lap("copy")
-            val pair = IntArray(1)
-            val micros = RenderBridgeNative.photoStereo(rgba,w,h,near,PhotoDepthInput.WIDTH,PhotoDepthInput.HEIGHT,rect,strength,convergence,rotation/90,output,pair)
-            require(micros > 0)
-            clock.lap("gpu")
-            // The GPU pair is already RGBA rows: hand it over raw. PNG encoding a 16.8 MP pair took
-            // 4.2-6.4 s on Quest 3 (1.4-1.8 s for 5 MP), most of a large photo's wait.
-            val target = File(source.parentFile, "$prefix${w*2}x$h.rgba")
-            val temporary = File(source.parentFile,"stereo-$generation.tmp")
-            try {
-                output.rewind()
-                java.io.FileOutputStream(temporary).channel.use { channel -> while (output.hasRemaining()) channel.write(output) }
-                require(temporary.renameTo(target))
-            } finally { temporary.delete() }
-            clock.lap("write")
-            // Textures already decoded by Godot own their pixels. Retain the latest few disk pairs.
-            source.parentFile?.listFiles()?.filter { it.name.startsWith("stereo-") && it.extension in setOf("png", "rgba") && it != target }
-                ?.sortedByDescending { it.lastModified() }?.drop(2)?.forEach { it.delete() }
-            clock.lap("prune")
-            return metadata(target,w*2,h,strength,rotation,convergence,micros)
-                .apply { if (pair[0] > 0) put("stereo_gpu_pair",pair[0]) } // the picture layer copies this, not the file
-                .put("stereo_steps","$clock source=${bounds.outWidth}x${bounds.outHeight} sample=$sample decoded=${original.width}x${original.height} eye=${w}x$h")
+            return Colour(key, rgba, w, h, "source=${bounds.outWidth}x${bounds.outHeight} sample=$sample decoded=${original.width}x${original.height}")
+                .also { if (keep) colour = it }
         } finally {
-            if (color !== upright && color !== original) color.recycle()
+            if (scaled !== upright && scaled !== original) scaled.recycle()
             if (upright !== original) upright.recycle()
             original.recycle()
         }
+    }
+
+    fun prepare(source: File, near: ByteBuffer, rect: FloatArray, strength: Float, generation: Int, rotation: Int = 0, convergence: Float = 0.35f,
+                fast: Boolean = false, stretch: Boolean = false, keepColour: Boolean = true, pages: Float = 0f): JSONObject {
+        val prefix = cachePrefix(strength, rotation, convergence, fast, stretch, pages > 0f && rotation == 0)
+        // Raw RGBA pair named with its size: a hit is checked by length, with nothing to decode.
+        source.parentFile?.listFiles()?.firstOrNull { it.name.startsWith(prefix) && it.extension == "rgba" }?.let { cached ->
+            val size = Regex("""-(\d+)x(\d+)$""").find(cached.nameWithoutExtension)?.groupValues
+            val w = size?.get(1)?.toIntOrNull() ?: 0; val h = size?.get(2)?.toIntOrNull() ?: 0
+            if (w > 0 && h > 0 && cached.length() == w.toLong()*h*4) return metadata(cached, w, h, strength, rotation, convergence, 0, stretch)
+        }
+        val clock = StepClock()
+        val picture = colourOf(source, clock, keepColour)
+        val w = picture.width; val h = picture.height
+        val rgba = picture.rgba.duplicate().order(ByteOrder.LITTLE_ENDIAN).apply { rewind() }; near.rewind()
+        val pair = IntArray(1)
+        val paged = pages > 0f && rotation == 0 && w >= 4
+        val output: ByteBuffer
+        var micros = 0L
+        if (paged) {
+            // Each page warped on its own region of the spread map, at the spread's parallax; the pages'
+            // pairs are joined on the CPU, so no GPU pair is kept for the picture layer.
+            val (rects, seam) = PhotoPages.rects(PhotoDepthInput.WIDTH, pages).let { (l, r) ->
+                listOf(l, r) to (l[2] * w).roundToInt().coerceIn(1, w - 1) }
+            val pairs = listOf(0 to seam, seam to w - seam).mapIndexed { page, (from, columns) ->
+                val part = ByteBuffer.allocateDirect(columns*h*8).order(ByteOrder.LITTLE_ENDIAN)
+                near.rewind()
+                micros += RenderBridgeNative.photoStereo(PhotoPages.crop(rgba,w,h,from,columns),columns,h,near,PhotoDepthInput.WIDTH,PhotoDepthInput.HEIGHT,
+                    rects[page],strength,convergence,0,stretch,w,part,IntArray(0)).also { require(it > 0) }
+                part
+            }
+            output = PhotoPages.stitch(pairs[0],seam,pairs[1],w-seam,h)
+            pair[0] = 0
+        } else {
+            output = ByteBuffer.allocateDirect(w*h*8).order(ByteOrder.LITTLE_ENDIAN)
+            micros = RenderBridgeNative.photoStereo(rgba,w,h,near,PhotoDepthInput.WIDTH,PhotoDepthInput.HEIGHT,rect,strength,convergence,rotation/90,stretch,0,output,pair)
+            require(micros > 0)
+        }
+        clock.lap("gpu")
+        // The GPU pair is already RGBA rows: hand it over raw. PNG encoding a 16.8 MP pair took
+        // 4.2-6.4 s on Quest 3 (1.4-1.8 s for 5 MP), most of a large photo's wait.
+        val target = File(source.parentFile, "$prefix${w*2}x$h.rgba")
+        val temporary = File(source.parentFile,"stereo-$generation.tmp")
+        try {
+            output.rewind()
+            java.io.FileOutputStream(temporary).channel.use { channel -> while (output.hasRemaining()) channel.write(output) }
+            require(temporary.renameTo(target))
+        } finally { temporary.delete() }
+        clock.lap("write")
+        // Textures already decoded by Godot own their pixels. Retain the latest few disk pairs.
+        source.parentFile?.listFiles()?.filter { it.name.startsWith("stereo-") && it.extension in setOf("png", "rgba") && it != target }
+            ?.sortedByDescending { it.lastModified() }?.drop(2)?.forEach { it.delete() }
+        clock.lap("prune")
+        return metadata(target,w*2,h,strength,rotation,convergence,micros,stretch)
+            .apply { if (pair[0] > 0) put("stereo_gpu_pair",pair[0]) } // the picture layer copies this, not the file
+            .put("stereo_pages", if (paged) 2 else 1)
+            .put("stereo_steps","$clock ${picture.steps} eye=${w}x$h")
     }
 
     /** Wall-clock laps in ms, for the depth log ("decode=312.4 scale=88.1 ..."). */
@@ -120,9 +161,9 @@ internal object PhotoStereo {
         override fun toString() = text.toString()
     }
 
-    private fun metadata(file: File, width: Int, height: Int, strength: Float, rotation: Int, convergence: Float, micros: Long) = JSONObject()
+    private fun metadata(file: File, width: Int, height: Int, strength: Float, rotation: Int, convergence: Float, micros: Long, stretch: Boolean) = JSONObject()
         .put("stereo_path",file.path).put("stereo_width",width).put("stereo_height",height)
         .put("stereo_strength",strength.toDouble()).put("stereo_render_us",micros)
         .put("stereo_rotation",rotation).put("stereo_convergence",convergence.toDouble())
-        .put("stereo_strategy","video_soft_shift_gpu")
+        .put("stereo_strategy","video_soft_shift_gpu").put("stereo_fill", if (stretch) "stretch" else "fill")
 }

@@ -22,6 +22,7 @@ class Host extends RefCounted:
 	var released: Array = []
 	var closed: Array = []
 	var revisions: Array = []
+	var seek_targets: Array = []
 	var plays: Array = []
 	var status := "pending"
 	var reject_capture := false
@@ -47,7 +48,8 @@ class Host extends RefCounted:
 	func detach_mpv_pair(_id: int, _token: int) -> void: pass
 	func claim_mpv_pair(_id: int, _token: int) -> String: return JSON.stringify(claim)
 	func acknowledge_mpv_pair(_id: int, _token: int) -> bool: return not reject_ack
-	func revise_mpv_video(id: int, _stereo: bool, _alpha: bool, _profile: String, _at: int, depth: bool, _tb: bool, _exact: bool) -> int:
+	func revise_mpv_video(id: int, _stereo: bool, _alpha: bool, _profile: String, at: int, depth: bool, _tb: bool, exact: bool) -> int:
+		if at >= 0: seek_targets.append([id, at, exact])
 		revisions.append([id, depth]); return id + 1
 
 class Player extends "res://scripts/mpv_video_display.gd":
@@ -120,11 +122,57 @@ func dispose(v: Player) -> void:
 	if gl: await RenderingServer.frame_post_draw
 	else: await process_frame
 
+func offer_sbs_frame(v: Player, id: int, pts_us: int) -> void:
+	var pair := {"session_id": id, "logical_session_id": 1, "generation": id, "source_epoch": id + 1,
+		"frame_id": id, "slot_token": id, "format_revision": 1, "effect_revision": 1, "pts_us": pts_us,
+		"width": 5760, "height": 2880, "stereo_mode": "side_by_side", "stereo_sbs": id > 1,
+		"color_target": "texture", "alpha_requested": false, "inference_ran": false}
+	v.platform.claim = pair
+	v._on_pair(id, JSON.stringify(pair))
+	v._present_pending()
+
+func sbs_seek() -> void:
+	for outcome in ["playing", "paused", "cancelled"]:
+		var v := player(false)
+		v._unbind()
+		v.media.begin(1)
+		v.requested_play = true
+		v.auto_depth = true
+		v._layout_pending = {}
+		v._waiting_first = true
+		offer_sbs_frame(v, 1, 0)
+		check(v.media.session_id == 2 and v.stereo_sbs and not v.depth_requested and v.opens.is_empty(),
+			"Startup SBS recognition revises processing in place without opening another decoder")
+		offer_sbs_frame(v, 2, 1500000)
+		check(v.platform.plays.back() == [2, true] and not v._waiting_first, "The first SBS frame restores playing")
+		v.seek_absolute(72199, "speed")
+		v._on_frozen_pair(2, JSON.stringify({"request_id": v._freeze_request, "state": "ready", "pair": {
+			"session_id": 2, "slot_token": 2, "pts_us": 1500000, "frozen_frame_id": 710}}))
+		check(v.platform.seek_targets == [[2, 72199, false]] and v.media.session_id == 3 and v._is_frozen(),
+			"The eye-buffer seek retains an independent frame and the original keyframe request")
+		offer_sbs_frame(v, 2, 1600000)
+		check(v._waiting_first and v.media.frame_counter == 0 and v.platform.plays.back() == [3, false],
+			"A late frame from the previous generation cannot satisfy the paused seek")
+		if outcome == "cancelled":
+			v.close_video()
+			var plays: int = v.platform.plays.size()
+			offer_sbs_frame(v, 3, 70186783)
+			check(v.media.session_id == 0 and v.platform.closed.has(3) and v.platform.plays.size() == plays,
+				"A late recovered frame cannot resume cancelled playback")
+		else:
+			if outcome == "paused": v.pause_playback()
+			offer_sbs_frame(v, 3, 70186783)
+			check(not v._waiting_first and not v._is_frozen() and v.control.observed_position_ms == 70186,
+				"Only the current generation's frame ends the seek and confirms its actual timestamp")
+			check(v.platform.plays.back() == [3, outcome == "playing"], "The recovered frame respects the latest play intent")
+		await dispose(v)
+
 func run() -> void:
 	gl = DisplayServer.get_name() != "headless"
 	check(Transition.snapshot_size(Vector2i(8192, 4096)) == Vector2i(2048, 1024), "8K snapshots have a bounded independent allocation")
 	check(Transition.snapshot_size(Vector2i(1080, 1920)) == Vector2i(1080, 1920), "Portrait buffers keep their aspect without upscaling")
 	check(Transition.snapshot_size(Vector2i(128, 64)) == Vector2i(128, 64), "Small frames retain all pixels")
+	await sbs_seek()
 	var v := player()
 	v.depth_requested = true; v.auto_depth = true
 	v._request_revision()

@@ -79,6 +79,11 @@ const DEPTH_MODES := [
 	["quality", "Best quality", "Finest depth and edges. Each new image takes longer."],
 	["fast", "Fastest", "3D almost instantly. Edges are softer."],
 ]
+const PHOTO_FILL_BASE := 446 # + index in FILL_MODES
+const FILL_MODES := [
+	["fill", "Fill gaps", "Fills the background behind moving edges"],
+	["stretch", "Stretch edges", "Stretches edges, like spatial photos"],
+]
 const PHOTO_INSPECT := 402
 const PHOTO_RESET := 403
 const PHOTO_MINUS := 404
@@ -453,8 +458,8 @@ func _slider_geometry() -> Dictionary:
 	return {"title_x": -0.66, "title_size": TEXT_BODY, "value_x": -0.06, "value_size": TEXT_BODY, "left": 0.03, "width": 0.6, "hit": 0.1,
 		"height": 0.08, "thickness": 0.009, "knob": 0.025, "reset_x": 0.715, "reset_size": 0.065}
 
-func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: float) -> void:
-	super._adjustment_row(target, key, title, span, y)
+func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: float, geometry: Dictionary = {}) -> void:
+	super._adjustment_row(target, key, title, span, y, geometry)
 	# The shared video row defaults to has_video; photo sliders use their own content.
 	_adjust_rows[target].button.enabled = int(_state.get("count", 0)) > 0 if key.begins_with("gallery_") else _state.get("has_image", false)
 	if key == "edge_feather_strength" and int(_state.get("layout", 0)) == Photo.Gallery.Layout.WALL and int(_state.get("gallery_focus", -1)) < 0:
@@ -606,7 +611,8 @@ func _draw_panel() -> void:
 	var extra := 0.14 if position_available else 0.0
 	const GRADE_ROW := 0.11
 	const DEPTH_MODE_ROW := 0.11
-	_set_backdrop(Vector2(1.16, 1.205 + extra + GRADE_ROW + DEPTH_MODE_ROW), Vector2(0, -0.3275 - (extra + GRADE_ROW + DEPTH_MODE_ROW) / 2))
+	const FILL_ROW := 0.11
+	_set_backdrop(Vector2(1.16, 1.205 + extra + GRADE_ROW + DEPTH_MODE_ROW + FILL_ROW), Vector2(0, -0.3275 - (extra + GRADE_ROW + DEPTH_MODE_ROW + FILL_ROW) / 2))
 	_button(10, "", Vector2(-0.48, 0.2), Vector2(0.085, 0.065), true, "up")
 	_label(I18n.t("Images"), Vector3(0, 0.2, 0.004), 21)
 	_button(PHOTO_STRENGTH, I18n.t("3D depth") + "  " + _depth_caption(), Vector2(-0.26, 0.035), Vector2(0.49, 0.105), _can_depth(), "depth")
@@ -637,6 +643,13 @@ func _draw_panel() -> void:
 		if str(_state.get("depth_mode", "progressive")) == mode[0]: _buttons.back().base_color = SELECTED
 		_tips[PHOTO_DEPTH_MODE_BASE + i] = I18n.t(mode[2])
 	extra += DEPTH_MODE_ROW
+	_label(I18n.t("2D to 3D effect"), Vector3(-0.29, -0.515 - extra, 0.004), TEXT_AUX)
+	for i in FILL_MODES.size():
+		var fill: Array = FILL_MODES[i]
+		_button(PHOTO_FILL_BASE + i, I18n.t(fill[1]), Vector2(0.08 + i * 0.28, -0.515 - extra), Vector2(0.25, 0.075))
+		if str(_state.get("fill_mode", "fill")) == fill[0]: _buttons.back().base_color = SELECTED
+		_tips[PHOTO_FILL_BASE + i] = I18n.t(fill[2])
+	extra += FILL_ROW
 	var vertical: bool = _state.get("ground_vertical", false)
 	_label(I18n.t("Vertical to ground"), Vector3(-0.29, -0.515 - extra, 0.004), TEXT_AUX)
 	for enabled in [true, false]:
@@ -828,6 +841,8 @@ func _activate(target: int) -> void:
 		setting_requested.emit("photo_cache_each", 1 if target == PHOTO_CACHE_ONE else 2); refresh(); return
 	if target >= PHOTO_DEPTH_MODE_BASE and target < PHOTO_DEPTH_MODE_BASE + DEPTH_MODES.size():
 		setting_requested.emit("photo_depth_mode", DEPTH_MODES[target - PHOTO_DEPTH_MODE_BASE][0]); refresh(); return
+	if target >= PHOTO_FILL_BASE and target < PHOTO_FILL_BASE + FILL_MODES.size():
+		setting_requested.emit("photo_fill_mode", FILL_MODES[target - PHOTO_FILL_BASE][0]); refresh(); return
 	if target==PHOTO_SPATIAL:
 		var operation:="photo_spatial_on" if _depth_open else "photo_spatial"
 		_mode_open=false; action_requested.emit(operation); refresh(); return

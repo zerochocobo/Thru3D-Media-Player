@@ -18,7 +18,7 @@
     "filters/f_decoder_wrapper.c": "9832eddc01205675ef4e346bef6e2a16902672788c0b79d7650a57aabeac9e13"
   },
   "patched_files_sha256": {
-    "video/out/vo_libmpv.c": "8f358f400d19e7181acfceae62d3255b8fc682671363232e189495c8a933aeee",
+    "video/out/vo_libmpv.c": "cbb962a20d737deffbc7f16e1b6e150fef0280acb5b97858ecf992109df517d1",
     "video/out/gpu/libmpv_gpu.c": "00b8a7d8e03faad8d565ddf618c9135cbadf7816396fe042b0ca901347d615d3",
     "video/out/gpu/video.c": "ab98d223e9d9643226761dec1363252af310fc35965600c4906117456dbc178a",
     "video/out/gpu/video.h": "dda1d2b0a982e1ea68ce06803c86f82ea70130128a856573d1faac9c5aca89f7",
@@ -29,17 +29,17 @@
     "video/out/gpu/shader_cache.c": "902285bd7bd38878909f1d46b96109983eacd507fd09a69cf69097573db930cb",
     "video/out/gpu/shader_cache.h": "8ba45da85af79e78045dc4b74dd73b8f22efdd5b74fa09c647047b4622c9e605",
     "video/out/opengl/common.c": "28dbe359ae8614d9b2534ccc13597b4ba8dfee198dd7f86b0e3c76719e718b40",
-    "video/mp_image.h": "916e9d0c8cbf152c23760bc9b799c5f6ddd13f79e0ea71a872f7e8012f83da8c",
-    "video/mp_image.c": "0f66526494888d9a26347a1ed03ef6186d9bb7d612804b048559cc364bd4531c",
+    "video/mp_image.h": "0274030f35a056d800f14ea1bea45f69b307d6cd8f74568e55f8fd661c81b575",
+    "video/mp_image.c": "90d6b36b6edddd1a79ebc9ed06eaf0fb3408adc7adbaca68fad0c0d4f261984d",
     "filters/f_decoder_wrapper.c": "69a2249100a5a981c1f6c63d9f6b264759f0ca62a443a274dee047e1e904864d",
-    "video/quest_dovi_profile.h": "24400c9f53c722666bd0e12cb7cd3306b12b945131d5e9ef469f54a317077c77",
+    "video/quest_dovi_profile.h": "8c834716f744e3bfda4ac54aa280b0ac70be733b9a86a7eae097a5e9be57268e",
     "video/out/gpu/quest_dovi_gpu.h": "2be189b99e03ae3ec77cf144d1da4eaf06fd16d125418d6e6dc5cd2aa8f2b286",
     "video/out/gpu/quest_dovi_shader_cache.h": "613f8dbcca4a6cbe51ab8e4192934079a119eb5fa575f511a3fca1e400d09adf",
     "video/decode/quest_spatial_video.h": "3049cca5282005255901eb47fba51d448d1dcccd0ed8ac37523e02c71705916d",
     "video/quest_spatial_metadata.h": "67e9d348aa304289110af726e8249f91aa67fceebb5a70a0bcc37e1c747e56ae",
     "include/mpv/quest_frame.h": "3c680fed7e92a8f5f52345825de42cac2e56a155f5c4fc47756839559a4b94fa"
   },
-  "patch_sha256": "c3f125020a5de1e357d9dda5d610d88001ef19d0cd3ad38f4fa04f42a3b094e6",
+  "patch_sha256": "0d587c103e90f2e244e44c8c52776294ce56209684bd96ad438416ef18850a55",
   "private_header_sha256": "3c680fed7e92a8f5f52345825de42cac2e56a155f5c4fc47756839559a4b94fa",
   "api_version": 2,
   "state": "source_patch_generated; build_and_device_validation_pending"

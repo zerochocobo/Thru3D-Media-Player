@@ -42,6 +42,7 @@ var page_size := RECT.size
 var selecting := false
 var depth := preload("res://scripts/web_browser_depth.gd").new()
 var depth_settings := false
+var picture_settings := false
 var depth_choices := preload("res://scripts/choice_fields.gd").new(self)
 var SELECTED: Color:
 	get: return UiTheme.color("selected")
@@ -140,7 +141,7 @@ func sync_page_beta_visibility() -> void:
 func set_toolbar_shown(shown: bool) -> void:
 	if on_screen(): shown = true
 	if toolbar_shown == shown: return
-	toolbar_shown = shown; depth_settings = false; depth_choices.reset()
+	toolbar_shown = shown; depth_settings = false; picture_settings = false; depth_choices.reset()
 	if not shown and depth.auto_3d_hidden and not depth.enabled:
 		depth.enabled = true; depth.error = ""; depth.state = "preparing"
 		if depth.strength <= 0.0: depth.strength = depth.Strength.VIDEO_DEFAULT
@@ -369,6 +370,23 @@ func focus_crop() -> Rect2:
 func is_focused() -> bool: return focus_region() != Focus.FULL
 func is_video_focused() -> bool: return is_focused() and browser.video_regions.get(focus_tab()) == focus_region()
 func locating_video() -> bool: return not _video_locate.is_empty()
+## Picture quality mode works on whatever the window shows whenever it is on: many sites (Douyin) have no
+## fullscreen to wait for. A window whose 2D quality thread failed shows its page as it is until the next attempt.
+var picture_failed := false
+func picture_enhanced() -> bool:
+	return browser.picture_quality and not picture_failed
+## WebBrowserPicture's values: the player's look over the focused region (the whole page when none), within
+## the page (2D) or within focus_crop(), the part a 3D pair shows. Empty when there is nothing to enhance.
+func picture_values(pair: bool) -> PackedFloat32Array:
+	if not picture_enhanced(): return PackedFloat32Array()
+	var values: PackedFloat32Array = browser.picture_look().duplicate()
+	if values.is_empty(): return values
+	var region := focus_region()
+	if pair:
+		var crop := focus_crop()
+		region = Rect2((region.position - crop.position) / crop.size, region.size / crop.size)
+	values.append_array([region.position.x, region.position.y, region.size.x, region.size.y])
+	return values
 func video_missing() -> bool: return Time.get_ticks_msec() < _video_missing_until
 ## Local rectangle of the visible page. A focused floating window takes the crop's
 ## shape at the page's area, hanging centred under the toolbar, so the frame wraps
@@ -536,6 +554,7 @@ func _process(_delta: float) -> void:
 	if visible:
 		_sync_presentation()
 		_update_feedback()
+		_sync_picture_hold()
 		if not _screen_attached and not global_transform.is_equal_approx(_last_pose):
 			_last_pose = global_transform; _save_at = Time.get_ticks_msec() + 700
 		if _save_at > 0 and drag.is_empty() and Time.get_ticks_msec() >= _save_at:
@@ -565,6 +584,7 @@ func _draw() -> void:
 	if browser and (not page_input_blocked() or on_screen()): browser.draw_window(self)
 	depth_choices.begin("browser_depth_" + str(window_id))
 	if depth_settings and not chrome_hidden(): _draw_depth_settings()
+	elif picture_settings and not chrome_hidden(): _draw_picture_settings()
 	if browser:
 		_create_feedback()
 		_pointer_panels.append(_feedback.get_node("background"))
@@ -610,6 +630,9 @@ func _activate(target: int) -> void:
 	if target == effect_controls.CHROME:
 		_fullscreen_restore = null
 		set_toolbar_shown(not toolbar_shown); return
+	if target == effect_controls.PICTURE:
+		picture_settings = not picture_settings; depth_settings = false; depth_choices.reset(); refresh(); effect_controls.refresh()
+		return
 	if target == effect_controls.VIDEO_FOCUS:
 		if not browser.start_page.active(window_id): browser.cancel(); toggle_video_focus()
 		return
@@ -625,15 +648,18 @@ func _activate(target: int) -> void:
 		if effect_controls: effect_controls.set_strength_open(depth.enabled)
 		refresh(); return
 	if target == browser.BASE + 17:
-		depth_settings = not depth_settings; depth_choices.reset(); refresh(); return
+		depth_settings = not depth_settings; picture_settings = false; depth_choices.reset(); refresh(); effect_controls.refresh(); return
 	browser.action(target)
 
 func _depth_preview(key: String, value: Variant) -> void:
 	if key == "strength": depth.strength = float(value) / 100.0
 	elif key == "position": depth.position = depth.Position.normalize(value)
+	elif key == "web_picture_sharpness": browser.picture_preview = {"picture_sharpness": float(value) / 100.0}
+	elif key == "web_picture_denoise": browser.picture_preview = {"picture_denoise": int(value)}
 
 func _depth_changed(key: String, value: Variant) -> void:
-	if key == "web_clarity":
+	if key in ["web_picture_sharpness", "web_picture_denoise"]: browser.picture_preview = {}
+	if key in ["web_clarity", "web_picture_quality", "web_picture_sharpness", "web_picture_denoise"]:
 		browser.menu.setting_changed.emit(key, value); refresh(); return
 	depth.change(key, float(value) / 100.0 if key == "strength" else value)
 	if key == "auto_3d_hidden":
@@ -682,6 +708,77 @@ func _draw_depth_settings() -> void:
 	if browser.clarity_pending():
 		var pending := _label(I18n.t("Restart to apply"), Vector3(0.30, -0.26, 0.04), 16)
 		pending.modulate = MUTED; pending.render_priority = 32
+	_finish_choice_popups()
+
+## Picture quality mode for the page (footer's right end): its switch on a row of its own, then the
+## player's own sharpness and denoise. No super resolution: Gecko's density needs a restart.
+func _draw_picture_settings() -> void:
+	var first_node := get_child_count()
+	var panel := _quad(Vector2(0.98, 0.50), Vector3(0.13, 0.125, 0.028), PANEL, 30)
+	add_child(panel); _decorations.append(panel); _pointer_panels.append(panel)
+	var title := _label(I18n.t("Picture quality"), Vector3(-0.30, 0.325, 0.04), 24)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; title.render_priority = 32
+	_button(effect_controls.PICTURE, "", Vector2(0.54, 0.325), Vector2(0.08, 0.08), true, "close")
+	_buttons.back().node.position.z = 0.04
+	_depth_overlay_priority(_buttons.back().node)
+	var look: Variant = browser.picture_provider.call() if browser.picture_provider.is_valid() else null
+	var picture: Dictionary = look if look is Dictionary else {}
+	var rows := [
+		["Picture quality mode", {"key": "web_picture_quality", "value": browser.picture_quality, "switch": true,
+			"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}],
+			"hint": "Sharpens, denoises and colours the page and its video with the player's picture settings; a focused region alone when one is focused."},
+			Vector2(0.50, 0.21), 0.09],
+		["Sharpness", {"key": "web_picture_sharpness", "value": roundf(float(picture.get("picture_sharpness", 0.5)) * 100.0),
+			"slider": true, "span": Vector3(0, 200, 5), "unit": "%", "decimals": 0}, Vector2(0.26, 0.08), 0.56],
+		# The player's four denoise levels, as stops along a rail.
+		["Denoise", {"key": "web_picture_denoise", "value": int(picture.get("picture_denoise", 0)), "slider": true,
+			"span": Vector3(0, browser.Video.DENOISE.size() - 1, 1), "unit": "", "ticks": [1, 2],
+			"value_labels": ["Off", "Low", "Medium", "High"]}, Vector2(0.26, -0.05), 0.56]]
+	for row in rows:
+		var label := _label(I18n.t(row[0]), Vector3(-0.30, row[2].y, 0.04), 20)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.render_priority = 32
+		var first := _buttons.size()
+		depth_choices.field(null, row[1], row[2], row[3], 0.055)
+		for button in _buttons.slice(first):
+			button.node.position.z += 0.038; _depth_overlay_priority(button.node)
+	_finish_choice_popups()
+	_picture_nodes.clear()
+	for index in range(first_node, get_child_count()):
+		var node := get_child(index) as Node3D
+		if node: _picture_nodes.append(node)
+	_sync_picture_hold()
+
+## Holding a picture control clears the menu off the page, as the player's menu does: the sharpness
+## slider while it is dragged (the page follows it), an option or the switch once held (it applies
+## then). Only the held row stays; letting go brings the menu back.
+const PICTURE_HOLD_MS := 250
+const PICTURE_HOLD_KEYS := ["web_picture_quality", "web_picture_sharpness", "web_picture_denoise"]
+var _picture_nodes: Array[Node3D] = []
+var _picture_hold := {}
+func _sync_picture_hold() -> void:
+	var capture: Dictionary = depth_choices.capture
+	var item: Dictionary = capture.get("item", {})
+	if not picture_settings or capture.is_empty() or str(item.get("key", "")) not in PICTURE_HOLD_KEYS:
+		_picture_hold.clear(); _show_picture_menu([]); return
+	if _picture_hold.get("hand") != capture.hand or _picture_hold.get("target") != capture.target:
+		_picture_hold = {"hand": capture.hand, "target": capture.target, "since": Time.get_ticks_msec()}
+	var slider: bool = item.kind == "slider"
+	if not _picture_hold.has("applied") and (Time.get_ticks_msec() - int(_picture_hold.since) < PICTURE_HOLD_MS or (capture.moved and not slider)):
+		_show_picture_menu([]); return
+	if not slider and not _picture_hold.has("applied"):
+		_picture_hold.applied = true
+		capture.moved = true # Applied by the hold: the release must not apply it again.
+		_depth_changed(str(item.key), item.value)
+	var keep: Array = []
+	for button in _buttons:
+		if depth_choices.targets.get(int(button.target), {}).get("key", "") == item.key: keep.append(button.node)
+	_show_picture_menu(keep)
+func _show_picture_menu(keep: Array) -> void:
+	for node in _picture_nodes:
+		if is_instance_valid(node): node.visible = keep.is_empty() or keep.has(node)
+
+## Open choice lists over the settings or picture popup's own fields.
+func _finish_choice_popups() -> void:
 	var popup_buttons := _buttons.size()
 	var popup_panels := _decorations.size()
 	var popup_labels := _labels.size()
@@ -796,7 +893,7 @@ func draw_resize_handles(hover_only: bool = false) -> void:
 func end_drag() -> void:
 	drag.clear(); title_move.cancel()
 func dismiss() -> void:
-	depth_choices.reset(); depth_settings = false
+	depth_choices.reset(); depth_settings = false; picture_settings = false
 	selecting = false; end_drag(); super()
 	if browser: browser.effects_changed.emit()
 static func ray_pose(origin: Vector3, direction: Vector3) -> Transform3D:

@@ -338,6 +338,60 @@ static int list_candidates(BdMvc *s)
     return 0;
 }
 
+/* Backups often keep the AACS/BDSVM folders after the streams were decrypted.
+   An encrypted aligned unit keeps only its first 16 bytes clear, so every
+   packet must carry a sync byte and a zero copy permission indicator. */
+static int unit_is_clear(UDFFILE *file, int64_t offset)
+{
+    uint8_t unit[6144];
+    if (udfread_file_seek(file, offset, UDF_SEEK_SET) != offset ||
+        udfread_file_read(file, unit, sizeof(unit)) != sizeof(unit))
+        return 0;
+    for (int i = 0; i < (int)sizeof(unit); i += 192)
+        if ((unit[i] & 0xc0) || unit[i + 4] != 0x47) return 0;
+    return 1;
+}
+
+static int streams_are_clear(BdMvc *s)
+{
+    UDFDIR *directory = udfread_opendir(s->udf, "BDMV/STREAM");
+    struct udfread_dirent entry;
+    char largest[2][16] = {{0}};
+    int64_t sizes[2] = {0};
+    unsigned examined = 0;
+    int checked = 0;
+    char path[128];
+    if (!directory) return 0;
+    while (udfread_readdir(directory, &entry) && ++examined <= 8192) {
+        UDFFILE *file;
+        int64_t size;
+        if (strlen(entry.d_name) != 10 || strcmp(entry.d_name + 5, ".m2ts")) continue;
+        snprintf(path, sizeof(path), "BDMV/STREAM/%s", entry.d_name);
+        if (!(file = udfread_file_open(s->udf, path))) continue;
+        size = udfread_file_size(file);
+        udfread_file_close(file);
+        for (int i = 0; i < 2; i++) {
+            if (size <= sizes[i]) continue;
+            if (!i) { sizes[1] = sizes[0]; memcpy(largest[1], largest[0], sizeof(largest[0])); }
+            sizes[i] = size; memcpy(largest[i], entry.d_name, 11);
+            break;
+        }
+    }
+    udfread_closedir(directory);
+    for (int i = 0; i < 2 && sizes[i] >= 6144; i++) {
+        UDFFILE *file;
+        int clear;
+        snprintf(path, sizeof(path), "BDMV/STREAM/%s", largest[i]);
+        if (!(file = udfread_file_open(s->udf, path))) return 0;
+        clear = unit_is_clear(file, 0) && unit_is_clear(file, sizes[i] / 2 / 6144 * 6144) &&
+                unit_is_clear(file, (sizes[i] / 6144 - 1) * 6144);
+        udfread_file_close(file);
+        if (!clear) return 0;
+        checked++;
+    }
+    return checked > 0;
+}
+
 static int select_mvc_clip(BdMvc *s, unsigned number)
 {
     BLURAY_CLIP_INFO *clip = &s->title->clips[number];
@@ -1067,17 +1121,20 @@ static int disc_header(AVFormatContext *context)
     if (!s->disc || !bd_open_stream(s->disc, s, disc_blocks))
         return AVERROR_INVALIDDATA;
     info = bd_get_disc_info(s->disc);
-    if (!info || !info->bluray_detected ||
-        (info->aacs_detected && !info->aacs_handled) ||
-        (info->bdplus_detected && !info->bdplus_handled)) {
-        av_log(context, AV_LOG_ERROR, "Blu-ray image is unavailable or encrypted\n");
+    if (!info || !info->bluray_detected) {
+        av_log(context, AV_LOG_ERROR, "Blu-ray image is unavailable\n");
         return AVERROR(EACCES);
     }
-    if (s->menu) return menu_header(context, info);
     s->input.input.read = udf_blocks; s->input.owner = s;
     s->udf = udfread_init();
     if (!s->udf || udfread_open_input(s->udf, &s->input.input) < 0)
         return AVERROR_INVALIDDATA;
+    if (((info->aacs_detected && !info->aacs_handled) ||
+         (info->bdplus_detected && !info->bdplus_handled)) && !streams_are_clear(s)) {
+        av_log(context, AV_LOG_ERROR, "Blu-ray image is encrypted\n");
+        return AVERROR(EACCES);
+    }
+    if (s->menu) return menu_header(context, info);
     if (s->playlist >= 0) {
         /* An explicit title chosen from avformat_thru3d_bd_titles(). libbluray
            expects its title scan before a playlist is opened directly. */

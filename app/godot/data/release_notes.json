@@ -2,6 +2,117 @@
   "schema": 1,
   "entries": [
     {
+      "version": "0.18.7",
+      "date": "2026-11-22",
+      "title": {
+        "zh": "网页画质、B站VR弹幕与照片3D改进",
+        "zh_Hant": "網頁畫質、B站VR彈幕與照片3D改善",
+        "en": "Browser quality, Bilibili VR danmaku and photo 3D improvements",
+        "ja": "ブラウザー画質・BilibiliのVR弾幕・写真3Dの改善"
+      },
+      "items": [
+        {
+          "id": "video-steady-edges",
+          "text": {
+            "zh": "实时2D转3D新增「边缘稳定」，默认开启，在「边缘拉伸」效果下让物体轮廓更贴合原画面，减少边缘闪动；轮廓附近的景深会略微柔和，可在全局或播放器设置切换。",
+            "zh_Hant": "即時2D轉3D新增「邊緣穩定」，預設開啟，在「邊緣拉伸」效果下讓物體輪廓更貼合原畫面，減少邊緣閃動；輪廓附近的景深會略微柔和，可在全域或播放器設定切換。",
+            "en": "Add Steady Edges for real-time 2D-to-3D, on by default. With Stretch Edges, object contours follow the original picture more closely to reduce shimmer, with slightly softer depth around edges. Toggle it in global or player settings.",
+            "ja": "リアルタイム2Dから3Dへの変換に「輪郭を安定」を追加し、既定でオンにしました。「エッジ伸長」では物体の輪郭が元映像に沿ってちらつきを抑え、輪郭付近の奥行きが少し柔らかくなります。全体設定またはプレーヤー設定で切り替えられます。"
+          }
+        },
+        {
+          "id": "browser-picture-quality",
+          "text": {
+            "zh": "网页底栏右侧新增「画质模式」，默认关闭，开启后即时生效，可调锐度和降噪，作用于聚焦区域或整页。",
+            "zh_Hant": "網頁底列右側新增「畫質模式」，預設關閉，開啟後立即生效，可調銳度和降噪，作用於聚焦區域或整頁。",
+            "en": "Add Picture quality mode at the right of the browser footer, off by default. Enable it immediately to adjust sharpness and denoising for the focused region or whole page.",
+            "ja": "ブラウザー下部右端に「画質モード」を追加しました。既定ではオフで、有効化すると即時に適用され、注目領域またはページ全体のシャープネスとノイズ除去を調整できます。"
+          }
+        },
+        {
+          "id": "bilibili-vr-danmaku",
+          "text": {
+            "zh": "B站点播「播放Beta」新增VR弹幕，支持360°环绕和竖排弹幕雨，保留原始颜色，可调密度、透明度和「允许遮挡画面」。平面视频可选「只在画面外显示」，弹幕位置随观看位置和场景切换调整，默认关闭。（灵感来自B站Up主@Ao_Lei）",
+            "zh_Hant": "B站隨選影片「播放Beta」新增VR彈幕，支援360°環繞和直排彈幕雨，保留原始顏色，可調密度、透明度和「允許遮擋畫面」。平面影片可選「只在畫面外顯示」，彈幕位置隨觀看位置和場景切換調整，預設關閉。（靈感來自B站Up主@Ao_Lei）",
+            "en": "Add VR danmaku to Bilibili on-demand Playback Beta, with 360-degree surround and vertical-text rain modes, original colors, density, transparency and Allow Covering the Picture. Flat videos also offer Show Only Outside the Picture. Placement follows the viewer and scene changes. Off by default. (Inspired by Bilibili creator @Ao_Lei.)",
+            "ja": "Bilibiliオンデマンド動画の再生BetaにVR弾幕を追加しました。360度の周囲表示と縦書きの雨、元の色、密度、透明度、画面への重なり許可に対応します。平面動画では画面外のみの表示も選べ、視点やシーン変更に合わせて位置を調整します。既定ではオフです。（Bilibiliの投稿者@Ao_Leiから着想を得ました。）"
+          }
+        },
+        {
+          "id": "photo-3d-fill-and-spreads",
+          "text": {
+            "zh": "修复照片3D补洞的条纹和锯齿（0.16.7调整带来的BUG），新增拉伸边缘选项；杂志双页分别处理景深，减少页缝串扰。精细化和调节强度时复用已解码彩色图，减少重复解码。",
+            "zh_Hant": "修復照片3D補洞的條紋和鋸齒（0.16.7調整帶來的BUG），新增拉伸邊緣選項；雜誌雙頁分別處理景深，減少頁縫串擾。精細化和調整強度時重用已解碼彩色圖，減少重複解碼。",
+            "en": "Fix streaks and jagged edges in photo 3D gap filling (a bug introduced by changes in 0.16.7) and add an edge-stretching option. Process magazine spread depth separately for each page, reducing cross-page artifacts. Reuse decoded color images during refinement and strength changes.",
+            "ja": "写真3Dの穴埋めで生じる縞やギザギザ（0.16.7の変更で発生した不具合）を修正し、端を引き伸ばす選択肢を追加しました。雑誌の見開きはページごとに深度を処理し、境目での干渉を減らします。精細化や強度変更ではデコード済みのカラー画像を再利用します。"
+          }
+        },
+        {
+          "id": "cloud-object-location",
+          "text": {
+            "zh": "云盘照片、视频和播放会话优先按对象定位，减少依赖完整目录遍历；目录位置过期时提供明确提示。",
+            "zh_Hant": "雲端硬碟照片、影片和播放工作階段優先依物件定位，減少依賴完整目錄遍歷；目錄位置過期時提供明確提示。",
+            "en": "Locate cloud photos, videos and playback sessions by object, reducing reliance on full directory listings. Show a clear message when a saved folder location expires.",
+            "ja": "クラウドの写真、動画、再生セッションをオブジェクト単位で特定し、フォルダー全体の列挙への依存を減らします。保存したフォルダー位置が期限切れの場合は明確に案内します。"
+          }
+        },
+        {
+          "id": "portrait-halo-and-depth",
+          "text": {
+            "zh": "修复人像透视周围的暗色矩形及部分场景中的遮挡、半透明问题；改善人像被场景固定、无法拖动缩放、回中后仍在远处的问题。影院、沙滩和普通背景分别记忆人像距离与大小，换场景时更容易找回人物。",
+            "zh_Hant": "修復人像透視周圍的暗色矩形及部分場景中的遮擋、半透明問題；改善人像被場景固定、無法拖動縮放、回正後仍在遠處的問題。影院、沙灘和一般背景分別記憶人像距離與大小，切換場景時更容易找回人物。",
+            "en": "Fix the dark rectangle around cut-out people and occlusion or translucency in affected scenes. Improve cases where scene pinning blocks portrait dragging, resizing or recentering. Cinema, beach and ordinary backgrounds remember separate portrait distances and sizes, making people easier to locate after scene changes.",
+            "ja": "人物パススルーの周囲に出る暗い矩形や、一部シーンでの前後関係・半透明表示を修正しました。シーン固定により人物を移動・拡大縮小できない問題や、リセンター後も遠くに残る問題を改善しました。シネマ、ビーチ、通常背景で距離と大きさを別々に記憶し、シーン変更後も人物を見つけやすくします。"
+          }
+        },
+        {
+          "id": "eye-buffer-seek-first-frame",
+          "text": {
+            "zh": "改善部分视频跳转后画面不恢复的问题，自动重试首帧，让暂停和继续播放更可靠。",
+            "zh_Hant": "改善部分影片跳轉後畫面無法恢復的問題，自動重試首幀，讓暫停和繼續播放更可靠。",
+            "en": "Improve picture recovery after seeking in affected videos by automatically retrying the first frame, making paused and resumed playback more reliable.",
+            "ja": "一部の動画でシーク後に映像が戻らない問題を改善しました。最初のフレームを自動的に再試行し、一時停止と再生再開の信頼性を高めます。"
+          }
+        },
+        {
+          "id": "episode-subtitle-folders",
+          "text": {
+            "zh": "自动查找本地和SMB剧集对应的Subs子目录字幕。",
+            "zh_Hant": "自動尋找本機和SMB劇集對應的Subs子目錄字幕。",
+            "en": "Discover episode subtitles in Subs subfolders on local storage and SMB.",
+            "ja": "ローカルストレージとSMBのエピソードに対応するSubsサブフォルダー内の字幕を自動検出します。"
+          }
+        },
+        {
+          "id": "decrypted-bluray-aacs-folder",
+          "text": {
+            "zh": "改善已解密蓝光镜像的兼容性，允许播放仍保留AACS目录的已解密内容。",
+            "zh_Hant": "改善已解密藍光映像檔的相容性，允許播放仍保留AACS目錄的已解密內容。",
+            "en": "Improve compatibility with decrypted Blu-ray images that still retain an AACS folder.",
+            "ja": "AACSフォルダーが残っている復号済みBlu-rayイメージとの互換性を改善しました。"
+          }
+        },
+        {
+          "id": "thunder-photo-playback",
+          "text": {
+            "zh": "修复部分迅雷云盘图片无法打开的问题，改善图片读取兼容性。",
+            "zh_Hant": "修復部分迅雷雲端硬碟圖片無法開啟的問題，改善圖片讀取相容性。",
+            "en": "Fix some Thunder Cloud Drive photos failing to open and improve photo-loading compatibility.",
+            "ja": "Thunder Cloud Driveの一部の写真が開けない問題を修正し、画像読み込みの互換性を改善しました。"
+          }
+        },
+        {
+          "id": "browser-load-error-page",
+          "text": {
+            "zh": "网页加载失败时显示具体原因和「重试」按钮；地址栏可显示网络、证书、代理及HTTP错误，减少只有空白页面却不知原因的情况。",
+            "zh_Hant": "網頁載入失敗時顯示具體原因和「重試」按鈕；網址列可顯示網路、憑證、代理及HTTP錯誤，減少只看到空白頁面卻不知原因的情況。",
+            "en": "Show a clear reason and Retry button when a webpage fails to load. The address bar can identify network, certificate, proxy and HTTP errors, helping explain otherwise blank pages.",
+            "ja": "ウェブページを読み込めない場合に原因と「再試行」ボタンを表示します。アドレスバーでネットワーク、証明書、プロキシ、HTTPエラーを案内し、空白ページの理由をわかりやすくします。"
+          }
+        }
+      ]
+    },
+    {
       "version": "0.18.6",
       "date": "2026-11-21",
       "title": {

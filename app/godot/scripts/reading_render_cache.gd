@@ -102,6 +102,7 @@ func decoded(result: Dictionary, job: Dictionary) -> bool:
 			entry.stage = "register"
 			photo._release_photo(int(entry.id))
 			open_page(at, entry, "file://" + str(entry.spread_path))
+			photo.Magazine.register_pages(photo.platform, int(entry.id), result)
 		else:
 			entry.stage = "done"
 			# A cached desktop spread must not be composed for a second time on promotion.

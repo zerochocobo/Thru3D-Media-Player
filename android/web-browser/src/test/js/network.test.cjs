@@ -327,3 +327,20 @@ test('Douyin response diagnostics retain only bounded structural paths in the ow
   p.port.onMessage.fire({type:'context',page,douyin:false});f.flush();
   assert.deepEqual(p.messages.at(-1).douyin_api_paths,[]);
 });
+
+test('Top document HTTP status reaches only that tab\'s top frame for the same address', () => {
+  const f = fixture();
+  const main = (url, statusCode, extra = {}) => f.browser.webRequest.onHeadersReceived.fire({ tabId: 1, frameId: 0, type: 'main_frame', url, statusCode, responseHeaders: [], ...extra });
+  main('https://page.test/redirect', 302);
+  main('https://page.test/missing', 404);
+  main('https://other.test/', 200, { tabId: 2 });
+  f.browser.webRequest.onHeadersReceived.fire({ tabId: 1, frameId: 3, type: 'sub_frame', url: 'https://ads.test/x', statusCode: 500, responseHeaders: [] });
+  const top = f.connect(1, 0, 'https://page.test/missing#top', false);
+  assert.deepEqual(top.messages[0], { type: 'document_status', page: 'https://page.test/missing#top', status: 404 });
+  const frame = f.connect(1, 3, 'https://ads.test/x', false);
+  assert.equal(frame.messages.some(m => m.type === 'document_status'), false);
+  const elsewhere = f.connect(1, 0, 'https://page.test/other', false);
+  assert.equal(elsewhere.messages.some(m => m.type === 'document_status'), false);
+  const second = f.connect(2, 0, 'https://other.test/', false);
+  assert.equal(second.messages[0].status, 200);
+});

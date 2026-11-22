@@ -31,6 +31,13 @@ var _effect_sent := ""
 var _effect_poll := 0
 var _effect_error := ""
 var effect_state := "preparing"
+## Picture quality mode on a 2D page: Gecko draws into WebBrowserQualityBridge, which draws into this layer.
+## A 3D pair takes the mode on its own thread (effects) without this.
+var quality := false
+var picture: JavaClass
+var _picture_sent := PackedFloat32Array()
+var _picture_poll := 0
+var picture_error := ""
 
 static func initialize() -> void:
 	if provider or OS.get_name() != "Android": return
@@ -43,7 +50,7 @@ static func initialize() -> void:
 	provider = Provider.new()
 	api.register_composition_layer_provider(provider)
 
-func create(window: int, size: Vector2i, convert: bool = false, crop: Rect2 = Rect2(0, 0, 1, 1), edge_limit: int = 1536, matte: bool = false) -> bool:
+func create(window: int, size: Vector2i, convert: bool = false, crop: Rect2 = Rect2(0, 0, 1, 1), edge_limit: int = 1536, matte: bool = false, enhance: bool = false) -> bool:
 	if not api or not provider or not api.is_running(): return false
 	id = window; pixels = size; source_pixels = size; session = api.get_session()
 	stereo = convert; source_crop = crop
@@ -61,6 +68,12 @@ func create(window: int, size: Vector2i, convert: bool = false, crop: Rect2 = Re
 		var started: bool = effects.start(id, surface, size.x, size.y, pixels.x / 2, pixels.y,
 			PackedFloat32Array([crop.position.x, crop.position.y, crop.size.x, crop.size.y]), matte)
 		if JavaClassWrapper.get_exception() or not started: destroy(); return false
+	elif enhance:
+		picture = JavaClassWrapper.wrap("org.vrpassthroughplayer.plugin.WebBrowserQualityBridge")
+		if not picture or JavaClassWrapper.get_exception(): picture = null; destroy(); return false
+		var running: bool = picture.start(id, surface, pixels.x, pixels.y)
+		if JavaClassWrapper.get_exception() or not running: destroy(); return false
+		quality = true
 	var xr := XRServer.find_interface("OpenXR") as OpenXRInterface
 	var flip: bool = preload("res://scripts/video_layer.gd")._surface_vertical_flip(str(xr.get_system_info().get("XRRuntimeName", "")), RenderingServer.get_current_rendering_driver_name(), OS.has_feature("pico"))
 	if preload("res://scripts/video_layer.gd")._enabled("OpenXRFbCompositionLayerImageLayoutExtension"):
@@ -86,6 +99,13 @@ func destroy(asynchronous: bool = false) -> bool:
 				effects.requestStop(id); JavaClassWrapper.get_exception(); return false
 		var stopped: bool = true if asynchronous else effects.stop(id)
 		if JavaClassWrapper.get_exception() or not stopped: return false
+	if quality and picture:
+		if asynchronous:
+			if int(picture.stopState(id)) != 1:
+				picture.requestStop(id); JavaClassWrapper.get_exception(); return false
+		var ended: bool = true if asynchronous else picture.stop(id)
+		if JavaClassWrapper.get_exception() or not ended: return false
+		quality = false
 	hide()
 	if surface and api and api.get_session() == session:
 		bridge.destroy(id)
@@ -94,10 +114,28 @@ func destroy(asynchronous: bool = false) -> bool:
 	return true
 
 func input_surface() -> JavaObject:
-	if not stereo: return surface
-	var input: JavaObject = effects.surface(id)
+	if not stereo and not quality: return surface
+	var input: JavaObject = effects.surface(id) if stereo else picture.surface(id)
 	JavaClassWrapper.get_exception()
 	return input
+
+## Picture quality mode's look and region (WebBrowserPicture.look's 19 values; empty for none), sent when changed.
+func configure_picture(values: PackedFloat32Array) -> void:
+	if values == _picture_sent: return
+	if stereo and effects: effects.quality(id, values)
+	elif quality and picture: picture.configure(id, values)
+	else: return
+	JavaClassWrapper.get_exception()
+	_picture_sent = values
+
+## The 2D quality thread's failure (its page then shows nothing), polled at most every 250 ms.
+func picture_failure() -> String:
+	if not quality or not picture or Time.get_ticks_msec() < _picture_poll: return picture_error
+	_picture_poll = Time.get_ticks_msec() + 250
+	var info: Variant = JSON.parse_string(str(picture.status(id)))
+	JavaClassWrapper.get_exception()
+	picture_error = str(info.get("error", "")) if info is Dictionary else ""
+	return picture_error
 
 func configure_effect(strength: float, position: float, identity: String, fill: bool = false, depth: bool = true) -> String:
 	if not stereo or not effects: return ""

@@ -69,6 +69,8 @@ internal data class PlaybackFailure(
                 cloud != null && cloud.httpStatus in 400..599 -> http(cloud.httpStatus).reason
                 cloud?.reason == "cloud_file_missing" -> "source_missing"
                 cloud?.reason == "cloud_file_changed" -> "file_changed"
+                // History opens of a folder the provider can only address by its listed ID.
+                cloud?.reason in setOf("cloud_location_expired", "cloud_page_expired") -> "location_expired"
                 server?.code == "Server does not support seeking" -> "range_unsupported"
                 server?.code == "Invalid byte range" -> "invalid_range"
                 server?.code == "Invalid media response" -> "not_media"

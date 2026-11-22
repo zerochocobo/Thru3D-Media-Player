@@ -42,6 +42,15 @@ void fragment() {
     vec2 p = portrait_model_uv(raw);
     vec2 sample_uv = portrait_sample_uv(p);
     float mask = texture(alpha_texture, vec2(sample_uv.x * 0.5, sample_uv.y)).r;
+    float alpha = portrait_outside(p) ? 0.0 : clamp((mask-alpha_edge.x) / max(0.001,alpha_edge.y-alpha_edge.x),0.0,1.0);
+    // Soften a person clipped by the source frame, independently of the moving inference ROI.
+    vec2 source_edge = min(raw, vec2(1.0)-raw);
+    vec2 fade = smoothstep(vec2(0.0), max(vec2(3.0)/source_size, vec2(0.003)), source_edge);
+    alpha *= fade.x * fade.y;
+#ifdef PORTRAIT_CORE
+    // The solid body in the opaque pass, so the scene's blended surfaces depth-test against it.
+    if (alpha < 0.99) discard;
+#endif
     vec2 half_pixel = vec2(0.5) / source_size;
     vec2 color_uv = clamp(raw, half_pixel, vec2(1.0) - half_pixel);
     vec3 rgb = portrait_color(color_uv);
@@ -54,9 +63,7 @@ void fragment() {
             portrait_color(clamp(color_uv-vec2(0.0,step_uv.y),half_pixel,vec2(1.0)-half_pixel)));
     }
     ALBEDO = color_grade(rgb, FRAGCOORD.xy);
-    ALPHA = portrait_outside(p) ? 0.0 : clamp((mask-alpha_edge.x) / max(0.001,alpha_edge.y-alpha_edge.x),0.0,1.0);
-    // Soften a person clipped by the source frame, independently of the moving inference ROI.
-    vec2 source_edge = min(raw, vec2(1.0)-raw);
-    vec2 fade = smoothstep(vec2(0.0), max(vec2(3.0)/source_size, vec2(0.003)), source_edge);
-    ALPHA *= fade.x * fade.y;
+#ifndef PORTRAIT_CORE
+    ALPHA = alpha;
+#endif
 }

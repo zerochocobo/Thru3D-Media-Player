@@ -37,6 +37,8 @@ import java.io.File
 
 /** Bounded tabs and peer display slots. All Gecko and Surface calls run on Android UI. */
 class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
+    /** UI catalog lookup (English key to the player's language) for pages the browser draws itself. */
+    var translate: (String) -> String = { it }
     companion object {
         private const val EXTENSION_ID = "web-video@thru3d.local"
         private const val NATIVE_APP = "thru3d_video"
@@ -150,6 +152,15 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         var betaSelection = ""
         var fullScreen = false
         val pageBetaVisibility = WebBrowserBetaVisibility()
+        val render = WebBrowserRenderWatch()
+        /** WebBrowserLoadError reason of the last failed load; the failed address while its error page loads. */
+        var errorReason = ""
+        var errorPage = ""
+        var errorPageAt = 0L
+        var httpStatus = 0
+        var httpStatusUrl = ""
+        /** Per frame: videos, playing, highest readyState, error code, decoded frames. */
+        val mediaTrace = mutableMapOf<WebExtension.Port, LongArray>()
     }
     private val ui = Handler(Looper.getMainLooper())
     private val closed = AtomicBoolean(false)
@@ -548,7 +559,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     tabs.filter { it.awake }.forEach { item -> item.pendingUrl?.let { url -> item.pendingUrl = null; item.session.loadUri(url) } }
                     publish()
                 }
-            }, { _ ->
+            }, { failure ->
+                WebBrowserTrail.mark("web.extension", "failed ${failure?.javaClass?.simpleName.orEmpty()}", force = true)
                 extensionState = "failed"
                 tabs.filter { it.awake }.forEach { item -> item.pendingUrl?.let { url -> item.pendingUrl = null; item.session.loadUri(url) } }
                 publish()
@@ -573,6 +585,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         // cursor and keyboard lifecycle to Android's InputMethodManager. A partial custom
         // delegate would suppress those notifications and break CJK input.
         installKeyboardDelegate(tab)
+        // Every composite of this session: the page's last frame time for the white-page verdict.
+        runCatching { session.compositorController.addDrawCallback { if (ownsSession(tab, session)) tab.render.draw(SystemClock.uptimeMillis()) } }
         session.mediaSessionDelegate = object : MediaSession.Delegate {
             override fun onActivated(session: GeckoSession, mediaSession: MediaSession) {
                 if (!ownsSession(tab, session)) return
@@ -621,7 +635,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     if (!tab.editing) tab.protectedInput = false
 
             }
-                if (url != null) tab.url = url
+                // data: is never navigable here: only our error page, standing in for the failed address.
+                if (url != null && !url.startsWith("data:")) tab.url = url
                 if (tab.url != "about:blank") tab.startPage = false
                 sendNetworkPolicy(tab)
                 // Re-evaluate the old automatic Netflix denial without clearing login data.
@@ -695,7 +710,19 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             override fun onLoadError(session: GeckoSession, uri: String?, error: WebRequestError): GeckoResult<String>? {
                 if (!ownsSession(tab, session)) return null
 
-                tab.error = "page_load_failed"; tab.loading = false; publish(); return null // Never bypass certificate failures.
+                tab.error = "page_load_failed"; tab.loading = false
+                tab.errorReason = WebBrowserLoadError.reason(error.code)
+                val detail = "category=${WebBrowserTrail.errorCategory(error.category)} code=0x${Integer.toHexString(error.code)}"
+                WebBrowserTrail.mark("web.load", "error tab=${tab.id} host=${WebBrowserTrail.host(uri.orEmpty())} reason=${tab.errorReason} $detail", force = true)
+                // A halted load (null) leaves the page blank; show the reason there instead. The error page
+                // never bypasses a certificate failure: its only action reloads the same address.
+                val page = runCatching {
+                    WebBrowserLoadError.page(translate(WebBrowserLoadError.label(tab.errorReason)),
+                        runCatching { java.net.URI(uri.orEmpty()).host }.getOrNull().orEmpty(), detail, translate("Retry"))
+                }.getOrNull()
+                if (page == null) tab.render.loadFailed(SystemClock.uptimeMillis())
+                else { tab.errorPage = uri.orEmpty(); tab.errorPageAt = SystemClock.uptimeMillis() }
+                publish(); return page?.let { GeckoResult.fromValue(it) }
 
             }
         }
@@ -713,6 +740,10 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 if (input?.tab === tab) hideInput()
                 tab.keyboardManual = false
                 if (!tab.awake) return
+                // The error page loads as a document of the failed address: keep its reason.
+                val errorPage = tab.errorPage.isNotEmpty() && tab.errorPage == url && SystemClock.uptimeMillis() - tab.errorPageAt < 5_000
+                val failedReason = tab.errorReason
+                tab.errorPage = ""
                 beginNavigation(tab, url)
                 tab.url = url
                 tab.protectedInput = false
@@ -726,8 +757,11 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 tab.weiboRequest = 0; tab.weiboSelection = ""; tab.weiboClicks.clear()
                 tab.betaRequest = 0; tab.betaSelection = ""; tab.bilibiliClicks.clear()
                 tab.tencentClicks.clear();tab.mangoClicks.clear();tab.youkuClicks.clear();tab.niconicoClicks.clear();tab.twitchClicks.clear();tab.tiktokClicks.clear();tab.instagramClicks.clear();tab.instagramReturns.clear();tab.tedClicks.clear();tab.redbullClicks.clear();tab.naverClicks.clear();tab.naverReturns.clear();tab.redditClicks.clear();tab.streamableClicks.clear();tab.archiveClicks.clear();tab.odyseeClicks.clear();tab.dailymotionClicks.clear();tab.iqiyiClicks.clear();tab.douyinClicks.clear()
-                tab.media.clear(); tab.sources.clear(); tab.fullScreen = false; tab.editor = null; tab.editing = false; tab.keyboardVisible = false
-                tab.error = ""; tab.progress = 0; publish()
+                tab.media.clear(); tab.mediaTrace.clear(); tab.sources.clear(); tab.fullScreen = false; tab.editor = null; tab.editing = false; tab.keyboardVisible = false
+                tab.error = ""; tab.progress = 0; tab.httpStatus = 0
+                if (errorPage) { tab.error = "page_load_failed"; tab.errorReason = failedReason; tab.loading = false }
+                tab.render.pageStart(); WebBrowserTrail.mark("web.load", "start tab=${tab.id} nav=${tab.navigation} host=${WebBrowserTrail.host(url)}")
+                publish()
 
             }
             override fun onPageStop(session: GeckoSession, success: Boolean) {
@@ -735,8 +769,11 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 if (!tab.awake) return
                 tab.loading = false
                 tab.progress = 100
+                if (success) tab.errorPage = "" // the error page finished; a later start of that address is a retry
                 if (!success) tab.error = "page_load_failed"
-                               if (success) { store()?.visit(tab.url, tab.title, System.currentTimeMillis()); publishLibrary()
+                tab.render.pageStop(SystemClock.uptimeMillis(), success)
+                WebBrowserTrail.mark("web.load", "stop tab=${tab.id} nav=${tab.navigation} ok=${if (success) 1 else 0}")
+                               if (success && tab.error.isEmpty()) { store()?.visit(tab.url, tab.title, System.currentTimeMillis()); publishLibrary()
             }
                 publish()
 
@@ -762,11 +799,25 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             }
             override fun onCrash(session: GeckoSession) {
                 if (!ownsSession(tab, session)) return
+                WebBrowserTrail.mark("web.process", "crash tab=${tab.id} host=${WebBrowserTrail.host(tab.url)}", force = true)
                 stoppedTab(tab, "browser_crashed")
             }
             override fun onKill(session: GeckoSession) {
                 if (!ownsSession(tab, session)) return
+                WebBrowserTrail.mark("web.process", "killed tab=${tab.id} host=${WebBrowserTrail.host(tab.url)}", force = true)
                 stoppedTab(tab, "browser_stopped")
+            }
+            override fun onFirstComposite(session: GeckoSession) {
+                if (!ownsSession(tab, session)) return
+                tab.render.firstComposite(); WebBrowserTrail.mark("web.paint", "first_composite tab=${tab.id} nav=${tab.navigation}")
+            }
+            override fun onFirstContentfulPaint(session: GeckoSession) {
+                if (!ownsSession(tab, session)) return
+                tab.render.contentfulPaint(); WebBrowserTrail.mark("web.paint", "contentful tab=${tab.id} nav=${tab.navigation}")
+            }
+            override fun onPaintStatusReset(session: GeckoSession) {
+                if (!ownsSession(tab, session)) return
+                tab.render.paintReset(); WebBrowserTrail.mark("web.paint", "reset tab=${tab.id} nav=${tab.navigation}")
             }
         }
         session.permissionDelegate = object : GeckoSession.PermissionDelegate {
@@ -796,6 +847,14 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                         if (closed.get() || !tab.awake || tab.ports[port] != tab.navigation) return
                         val data = message as? JSONObject ?: return
                         if (data.toString().length > 256 * 1024) return
+                        if (data.optString("type") == "document_status") {
+                            // The top document's HTTP status (extension webRequest), for this navigation only.
+                            val status = data.optInt("status")
+                            if (status !in 100..599 || data.optString("page").substringBefore('#') != tab.url.substringBefore('#')) return
+                            tab.httpStatus = status; tab.httpStatusUrl = tab.url.substringBefore('#')
+                            if (status >= 400) WebBrowserTrail.mark("web.load", "http tab=${tab.id} nav=${tab.navigation} status=$status host=${WebBrowserTrail.host(tab.url)}")
+                            publish(); return
+                        }
                         if (data.optString("type") == "restore_video_result") {
                             if (port === tab.fullscreenPort && tab.fullscreen.matches(data.optLong("request"))) {
                                 tab.restoreThroughScript = false
@@ -813,6 +872,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                         if (data.optString("type") != "media") return
                         val items = data.optJSONArray("videos") ?: return
                         tab.lastMediaReport = SystemClock.uptimeMillis()
+                        traceMedia(tab, port, items)
                         if (tab.pauseToken > 0 && data.optLong("pause_token") == tab.pauseToken && data.optBoolean("pause_held"))
                             tab.pauseReports[port] = tab.pauseToken to data.optBoolean("pause_has_media")
                         else tab.pauseReports.remove(port)
@@ -1119,7 +1179,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                         }
                     }
                     override fun onDisconnect(port: WebExtension.Port) {
-                        tab.ports.remove(port); tab.media.remove(port); tab.sources.remove(port); tab.pauseReports.remove(port); tab.weiboClicks.remove(port)
+                        tab.ports.remove(port); tab.media.remove(port); tab.mediaTrace.remove(port); tab.sources.remove(port); tab.pauseReports.remove(port); tab.weiboClicks.remove(port)
                         tab.bilibiliClicks.remove(port)
                         tab.tencentClicks.remove(port);tab.mangoClicks.remove(port);tab.youkuClicks.remove(port);tab.niconicoClicks.remove(port);tab.twitchClicks.remove(port);tab.tiktokClicks.remove(port);tab.instagramClicks.remove(port);tab.instagramReturns.entries.removeAll{it.value.first===port};tab.tedClicks.remove(port);tab.redbullClicks.remove(port);tab.naverClicks.remove(port);tab.naverReturns.entries.removeAll{it.value.first===port};tab.redditClicks.remove(port);tab.streamableClicks.remove(port);tab.archiveClicks.remove(port);tab.odyseeClicks.remove(port);tab.dailymotionClicks.remove(port);tab.iqiyiClicks.remove(port);tab.douyinClicks.remove(port)
                         updateFullscreen(tab); publish()
@@ -1188,6 +1248,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
 
     private fun beginNavigation(tab: Tab, url: String) {
         if (url != "about:blank") tab.startPage = false
+        tab.errorReason = ""
         tab.loading = url != "about:blank"
         tab.progress = 0
         tab.error = ""
@@ -1217,6 +1278,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             val slot = window(windowId)
             if (id < slot.generation || id <= slot.detachedThrough || !value.isValid) return@dispatch
             releaseDisplay(slot)
+            WebBrowserTrail.mark("web.surface", "attach w=$windowId gen=$id size=${w}x$h")
             slot.surface = value; slot.width = w; slot.height = h; slot.generation = id; slot.needsSurface = false
             // Late Surface callbacks after the last close must not resurrect a blank tab.
             tabs.firstOrNull { it.id == slot.tab }?.let(::bindDisplay)
@@ -1231,7 +1293,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         val release = {
             try {
                 val slot = window(windowId)
-                if (id == slot.generation) { releaseDisplay(slot); slot.surface = null }
+                if (id == slot.generation) { releaseDisplay(slot); slot.surface = null; WebBrowserTrail.mark("web.surface", "resize_release w=$windowId gen=$id") }
                 slot.detachedThrough = maxOf(slot.detachedThrough, id)
                 publish()
             } finally { finished.countDown() }
@@ -1243,6 +1305,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     }
     private fun detachNow(id: Long, slot: Window) {
         if (id == slot.generation) {
+            WebBrowserTrail.mark("web.surface", "detach w=${slot.id} gen=$id")
             slot.owner?.let(::suspendTab)
             releaseDisplay(slot); slot.surface = null
             if (focusedWindow == slot.id) hideInput()
@@ -1269,9 +1332,12 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         slot.display = next; slot.owner = tab
         next.surfaceChanged(GeckoDisplay.SurfaceInfo.Builder(target).size(slot.width, slot.height)
             .newSurfaceProvider {
-                if (slot.owner === tab) { releaseDisplay(slot); slot.needsSurface = true; publish() }
+                if (slot.owner === tab) { WebBrowserTrail.mark("web.surface", "lost w=${slot.id} gen=${slot.generation}"); releaseDisplay(slot); slot.needsSurface = true; publish() }
             }.build())
         tab.session.setActive(true)
+        tab.render.bind(SystemClock.uptimeMillis())
+        WebBrowserTrail.mark("web.display", "bind w=${slot.id} tab=${tab.id} gen=${slot.generation} size=${slot.width}x${slot.height}")
+        scheduleRenderCheck()
         tab.session.setFocused(slot.id == focusedWindow)
         if (slot.id == focusedWindow) attachInput(tab)
         tab.ports.keys.forEach { runCatching { it.postMessage(JSONObject().put("action", "resume")) } }
@@ -1280,7 +1346,91 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     private fun releaseDisplay(slot: Window) {
         val old = slot.display; val owner = slot.owner
         slot.display = null; slot.owner = null
-        if (old != null && owner != null) { old.surfaceDestroyed(); owner.session.releaseDisplay(old) }
+        if (old != null && owner != null) {
+            owner.render.unbind()
+            WebBrowserTrail.mark("web.display", "release w=${slot.id} tab=${owner.id} draws=${owner.render.draws}")
+            old.surfaceDestroyed(); owner.session.releaseDisplay(old)
+        }
+    }
+
+    private fun traceMedia(tab: Tab, port: WebExtension.Port, items: JSONArray) {
+        val summary = LongArray(7)
+        for (index in 0 until minOf(16, items.length())) {
+            val item = items.optJSONObject(index) ?: continue
+            val playback = WebBrowserCaptureDiagnostics.playback(item)
+            summary[0]++
+            if (item.optBoolean("playing")) summary[1]++
+            summary[2] = maxOf(summary[2], playback.optLong("ready_state"))
+            summary[3] = maxOf(summary[3], playback.optLong("error_code"))
+            summary[4] += playback.optLong("decoded_frames")
+            summary[5] += playback.optLong("presented_frames")
+            summary[6] += playback.optLong("dropped_frames")
+        }
+        tab.mediaTrace[port] = summary
+        val all = tab.mediaTrace.values
+        val playing = all.sumOf { it[1] }
+        tab.render.media(SystemClock.uptimeMillis(), playing > 0, all.sumOf { it[4] }, all.sumOf { it[5] }, all.sumOf { it[6] })
+        WebBrowserTrail.change("media:${tab.id}", "web.media", "tab=${tab.id} videos=${all.sumOf { it[0] }} playing=$playing " +
+            "ready=${all.maxOf { it[2] }} error=${all.maxOf { it[3] }}")
+    }
+
+    private var renderCheckScheduled = false
+    private var lastProbe = 0L
+    private fun scheduleRenderCheck() {
+        if (renderCheckScheduled || closed.get()) return
+        renderCheckScheduled = true
+        ui.postDelayed({ renderCheckScheduled = false; if (!closed.get()) renderCheck() }, 1000)
+    }
+    /** Once a second while a page is shown: white verdicts, recoveries and each window's live state. */
+    private fun renderCheck() {
+        val now = SystemClock.uptimeMillis()
+        val shown = windows.mapNotNull { slot -> slot.owner?.let { slot to it } }
+        WebBrowserTrail.publish(shown.map { (slot, tab) -> renderState(slot, tab, now) })
+        for ((slot, tab) in shown) {
+            WebBrowserTrail.change("frames:${slot.id}", "web.frames", "w=${slot.id} tab=${tab.id} gen=${slot.generation} " +
+                if (tab.render.draws > 0) "seen" else "none")
+            // Smoothness per site: composites, hitches while video decodes and the video's shown/dropped frames.
+            tab.render.perf(now)?.let { perf ->
+                val host = WebBrowserTrail.host(tab.url)
+                WebBrowserTrail.change("perf:${slot.id}", "web.perf", "w=${slot.id} tab=${tab.id} host=$host size=${slot.width}x${slot.height} " +
+                    "videos=${tab.mediaTrace.values.sumOf { it[0] }} $perf", "$host:${slot.width}x${slot.height}:${perf.signature()}")
+            }
+            val verdict = tab.render.verdict(now)
+            for (reason in verdict.recovered) WebBrowserTrail.mark("web.white_recovered", "w=${slot.id} tab=${tab.id} reason=$reason", force = true)
+            if (verdict.fresh.isEmpty()) continue
+            WebBrowserTrail.mark("web.white_suspect", "reason=${verdict.fresh.joinToString(",")} " + renderState(slot, tab, now), force = true)
+            probePixels(slot, tab)
+        }
+        if (shown.isNotEmpty()) scheduleRenderCheck()
+    }
+    private fun renderState(slot: Window, tab: Tab, now: Long): String {
+        val r = tab.render
+        val media = tab.mediaTrace.values
+        return "w=${slot.id} tab=${tab.id} host=${WebBrowserTrail.host(tab.url)} active=${if (active) 1 else 0} " +
+            "loading=${if (tab.loading) 1 else 0} progress=${tab.progress} stop=${if (r.pageStopAt > 0) (if (r.pageOk) "ok" else "failed") else "none"} " +
+            "error=${tab.error.ifEmpty { "none" }} composite=${if (r.composite) 1 else 0} contentful=${if (r.contentfulPaint) 1 else 0} " +
+            "surface=${slot.width}x${slot.height} gen=${slot.generation} valid=${if (slot.surface?.isValid == true) 1 else 0} " +
+            "bound_ms=${if (r.bound) now - r.boundAt else -1} draws=${r.draws} last_draw_ms=${if (r.lastDraw > 0) now - r.lastDraw else -1} " +
+            "videos=${media.sumOf { it[0] }} playing=${media.sumOf { it[1] }} decoding=${if (r.decodingAt(now)) 1 else 0} " +
+            "extension=$extensionState" + (if (r.lastPerf.isEmpty()) "" else " last_perf: ${r.lastPerf}")
+    }
+    /** What Gecko itself composited, as colour ratios: white here means the page, not the XR layer. */
+    private fun probePixels(slot: Window, tab: Tab) {
+        val display = slot.display ?: return
+        val now = SystemClock.uptimeMillis()
+        if (lastProbe > 0 && now - lastProbe < 20_000) return
+        lastProbe = now
+        runCatching { display.capturePixels() }.getOrNull()?.accept({ bitmap ->
+            if (bitmap == null) { WebBrowserTrail.mark("web.white_probe", "w=${slot.id} tab=${tab.id} empty", force = true); return@accept }
+            val columns = 48; val rows = 30
+            val samples = IntArray(columns * rows) { index ->
+                bitmap.getPixel((index % columns * 2 + 1) * bitmap.width / (columns * 2), (index / columns * 2 + 1) * bitmap.height / (rows * 2))
+            }
+            WebBrowserTrail.mark("web.white_probe", "w=${slot.id} tab=${tab.id} size=${bitmap.width}x${bitmap.height} " +
+                WebBrowserPixelProbe.describe(samples), force = true)
+            bitmap.recycle()
+        }, { failure -> WebBrowserTrail.mark("web.white_probe", "w=${slot.id} tab=${tab.id} failed=${failure?.javaClass?.simpleName}", force = true) })
+            ?: WebBrowserTrail.mark("web.white_probe", "w=${slot.id} tab=${tab.id} failed=capture", force = true)
     }
 
     private fun suspendTab(tab: Tab) {
@@ -1366,7 +1516,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         when (command) {
             "back" -> if (tab.fullScreen) tab.session.exitFullScreen() else if (tab.back) tab.session.goBack()
             "forward" -> if (tab.forward) tab.session.goForward()
-            "reload" -> tab.session.reload()
+            "reload" -> { tab.errorPage = ""; tab.session.reload() }
             "stop" -> { tab.session.stop(); tab.loading = false }
             "pause" -> { active = false; tabs.forEach(::suspendTab); hideInput(); windows.forEach(::releaseDisplay) }
             "resume" -> {
@@ -1390,7 +1540,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         tab.loading = false
         tab.navigation++
         tab.ports.keys.toList().forEach { runCatching { it.disconnect() } }
-        tab.ports.clear(); tab.media.clear(); tab.sources.clear(); tab.pauseToken = 0; tab.pauseReports.clear()
+        tab.ports.clear(); tab.media.clear(); tab.mediaTrace.clear(); tab.sources.clear(); tab.pauseToken = 0; tab.pauseReports.clear()
         tab.fullscreen.reset(); tab.fullscreenPort = null; tab.capturedFullscreenRequest = 0
         tab.fullScreen = false; tab.playback = null; tab.playing = false
         tab.restorePosition = null; tab.restoreThroughScript = false; tab.restoreOrigin = ""
@@ -2160,7 +2310,10 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             .put("pause_confirmed", tab != null && pauseConfirmed(tab))
             .put("retained_for_playback", tab != null && playbackHold.protects(tab.id, tab.navigation))
             .put("playing", tab != null && (tab.playing || tab.media.values.any { list -> (0 until list.length()).any { i -> list.getJSONObject(i).optBoolean("playing") } }))
-            .put("error", tab?.error.orEmpty()).put("editing", tab?.editing == true).put("videos", videos).put("fullscreen", tab?.fullScreen == true)
+            .put("error", tab?.error.orEmpty())
+            .put("error_reason", tab?.takeIf { it.error == "page_load_failed" }?.errorReason.orEmpty())
+            .put("http_status", tab?.takeIf { it.httpStatusUrl == it.url.substringBefore('#') }?.httpStatus ?: 0)
+            .put("editing", tab?.editing == true).put("videos", videos).put("fullscreen", tab?.fullScreen == true)
             .put("keyboard_visible", active && tab != null && current() === tab && tab.keyboardVisible)
             .put("custom_keyboard", customKeyboard && tab != null && keyboardSession.target?.tab == tab.id && tab.keyboardVisible)
             .put("keyboard_epoch", if (customKeyboard && tab != null && keyboardSession.target?.tab == tab.id) keyboardSession.target?.epoch ?: 0 else 0)

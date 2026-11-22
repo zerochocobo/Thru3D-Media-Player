@@ -4,10 +4,11 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.io.File
 
-/** Text subtitles beside a video. Keep discovery separate from media filtering:
+/** Text subtitles associated with a video. Keep discovery separate from media filtering:
  * SRT/ASS files should become CC tracks, not playable library entries. */
 internal object SidecarSubtitles {
     data class Track(val location: String, val title: String, val language: String = "")
+    private const val automaticTrackLimit = 8 // MPV startup accepts eight external tracks.
     // .sub is ambiguous: MPV's detected codec decides whether it is text or bitmap.
     private val extensions = setOf("srt", "ass", "ssa", "vtt", "smi", "sami", "sub")
 
@@ -52,16 +53,65 @@ internal object SidecarSubtitles {
                 it.substringAfterLast('.', "").lowercase() in extensions
         }.sortedWith(compareBy({ !it.substringBeforeLast('.').equals(stem, ignoreCase = true) },
             { when (it.substringAfterLast('.').lowercase()) { "srt" -> 0; "ass" -> 1; else -> 2 } },
-            { it.lowercase() })).take(8)
+            { it.lowercase() })).take(automaticTrackLimit)
     }
 
     fun forLocal(video: File): List<Track> {
         val directory = video.parentFile ?: return emptyList()
-        val names = directory.list()?.toList() ?: return emptyList()
-        return select(video.name, names).mapNotNull { name ->
-            val file = File(directory, name)
-            if (file.isFile && file.canRead() && file.length() > 0) Track(file.absolutePath, name) else null
+        return forDirectoryVideo(video.name,
+            list = { path -> (if (path.isEmpty()) directory else File(directory, path)).list()?.toList().orEmpty() },
+            isDirectory = { parent, entry ->
+                val folder = child(directory, parent, entry)
+                folder.isDirectory && staysInDirectory(folder)
+            },
+            open = { parent, name ->
+                val file = child(directory, parent, name)
+                if (file.isFile && file.canRead() && file.length() > 0 && (parent.isEmpty() || staysInDirectory(file)))
+                    Track(file.absolutePath, name) else null
+            })
+    }
+
+    private fun child(root: File, parent: String, name: String): File =
+        File(if (parent.isEmpty()) root else File(root, parent), name)
+
+    private fun staysInDirectory(file: File): Boolean {
+        val parent = file.parentFile ?: return false
+        return file.canonicalFile == File(parent.canonicalFile, file.name)
+    }
+
+    /** Keep same-directory matches first. The exact episode directory determines the
+     * ownership of language-only filenames such as 3_English.srt. */
+    fun forDirectoryVideo(video: String, list: (String) -> List<String>,
+                          isDirectory: (String, String) -> Boolean, open: (String, String) -> Track?): List<Track> {
+        val root = list("")
+        val tracks = select(video, root).mapNotNull { name -> runCatching { open("", name) }.getOrNull() }.toMutableList()
+        val stem = video.substringBeforeLast('.')
+        if (tracks.size == automaticTrackLimit || stem.isBlank() || stem == "." || stem == ".." ||
+            stem.any { it == '/' || it == '\\' || it.code < 32 }) return tracks
+
+        // Optional lookups may fail without discarding the same-directory tracks.
+        val (folder, names) = runCatching {
+            val subs = matchingDirectory(root, "Subs") { isDirectory("", it) } ?: return tracks
+            val episode = matchingDirectory(list(subs), stem) { isDirectory(subs, it) } ?: return tracks
+            val path = "$subs/$episode"
+            path to files(list(path))
+        }.getOrNull() ?: return tracks
+        val titles = tracks.mapTo(HashSet()) { it.title.lowercase() }
+        for (name in names) {
+            val key = name.lowercase()
+            if (key in titles) continue
+            val track = runCatching { open(folder, name) }.getOrNull() ?: continue
+            tracks.add(track)
+            titles.add(key)
+            if (tracks.size == automaticTrackLimit) break
         }
+        return tracks
+    }
+
+    private fun matchingDirectory(entries: List<String>, name: String, isDirectory: (String) -> Boolean): String? {
+        val matches = entries.filter { it.removeSuffix("/").equals(name, ignoreCase = true) && isDirectory(it) }
+            .map { it.removeSuffix("/") }.distinct()
+        return matches.firstOrNull { it == name } ?: matches.singleOrNull()
     }
 
     fun forCloud(path: String, pageFiles: List<CloudFile>, publish: (CloudFile) -> String): List<Track> {

@@ -26,6 +26,15 @@ func _initialize() -> void:
 			var actual := placeholders.search_all(I18n.t(key)).map(func(hit): return hit.get_string())
 			check(expected == actual, language + " placeholders: " + key)
 		check(I18n.t("user_movie_日本語.mp4") == "user_movie_日本語.mp4", "User media names unchanged")
+	# Settings group titles reach I18n.t() through a parameter, so check the literals at the call sites.
+	var group_titles := RegEx.new()
+	group_titles.compile("_(?:group_header|video_settings_group)\\([^\\n]*\"([^\"]+)\"[^\"\\n]*\\)")
+	var titles := 0
+	for script in ["res://scripts/player_menu.gd", "res://scripts/library_menu.gd"]:
+		for hit in group_titles.search_all(FileAccess.get_file_as_string(script)):
+			titles += 1
+			check(source.has(hit.get_string(1)), "Settings group title untranslated: " + hit.get_string(1))
+	check(titles >= 5, "Settings group titles found")
 	I18n.use("zh_Hant")
 	check(I18n.t("Local files") == "本機檔案", "Traditional Chinese terminology")
 	I18n.use("ja")

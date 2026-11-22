@@ -71,6 +71,7 @@ func prepare(result: Dictionary, job: Dictionary) -> bool:
 		var registered_job := job.duplicate(); registered_job.erase("magazine_first")
 		transfer = {"result":result, "job":registered_job, "path":job.magazine_path}
 		photo._request = photo.platform.open_photo("file://" + str(job.magazine_path)) if FileAccess.file_exists(job.magazine_path) else 0
+		register_pages(photo.platform, photo._request, result)
 		photo._release_photo(int(job.id))
 		transfer["id"] = photo._request
 		if photo._request <= 0: ready(photo._request, {"state":"error"})
@@ -121,6 +122,12 @@ func cleanup_job(job: Dictionary) -> void:
 	for entry in photo._prefetched.values():
 		if path == str(entry.get("spread_path", "")): return
 	if not path.is_empty() and path != str(transfer.get("path", "")): remove_file(path)
+
+## 3D treats a registered spread's two pages apart: own depth, own warp, nothing across the seam.
+static func register_pages(platform: Object, id: int, result: Dictionary) -> void:
+	var rects: Array = result.get("comic_rects", [])
+	if id > 0 and rects.size() == 2 and preload("res://scripts/platform_methods.gd").supports(platform, "set_photo_pages"):
+		platform.set_photo_pages(id, float(rects[0].size.x))
 
 static func remove_file(path: String) -> void:
 	if not path.is_empty() and FileAccess.file_exists(path): DirAccess.remove_absolute(path)

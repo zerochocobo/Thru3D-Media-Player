@@ -358,6 +358,7 @@ var recent_files := RecentFiles.new()
 ## Settings: when off, nothing new is recorded and videos start from the beginning.
 var history_enabled := true
 var _web_handoff := false
+var danmaku := preload("res://scripts/bilibili_danmaku.gd").new()
 var _history_started := false
 var _file_permission_persisted := false
 var _history_save_ms := 0
@@ -524,7 +525,11 @@ var _fisheye_overloaded_uri := ""
 var _fisheye_slow_seconds := 0
 var _fisheye_checked_ms := 0
 
+func _init() -> void:
+	add_child(danmaku)
+
 func _ready() -> void:
+	danmaku.status_changed.connect(changed.emit)
 	mode_memory.load_saved()
 	picture_memory.load_saved()
 	track_memory.load_saved()
@@ -923,6 +928,8 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		video_aspect_preset = "original"
 		video_aspect_factor = 1.0
 	_web_handoff = bool(metadata.get("web_handoff", false))
+	if _web_handoff and not str(metadata.get("bilibili_cid", "")).is_empty():
+		danmaku.open(platform, str(metadata.bilibili_cid))
 	if not mode_transition.reopening: _decoder_retry_uri = ""
 	_stream_projection = StreamProjection.read(platform, uri)
 	_stream_mesh = StreamProjection.mesh(_stream_projection)
@@ -1149,6 +1156,7 @@ func _unbind() -> void:
 		caption.visible = false
 
 func close_video() -> void:
+	danmaku.close()
 	_cast_speed_pending = false
 	_cast_auto_depth_pending = false
 	_remember_last_mode()
@@ -3293,7 +3301,11 @@ func _check_playback_timeout(now_ms: int) -> void:
 	DiagnosticLog.record("mpv_wait_timeout", {"code": code, "session_id": id, "state": media.state, "frames": media.frame_counter,
 		"waiting_first": _waiting_first, "requested_play": requested_play, "alpha": alpha_requested, "depth": depth_requested,
 		"pending_revision": not _pending_revision.is_empty(), "bound": not _binding.ticket.is_empty(), "layer": _binding.layer,
-		"transition": mode_transition.stage})
+		"transition": mode_transition.stage, "seek_in_flight": control.in_flight > 0,
+		"bound_session": int(_binding.ticket.get("session_id", 0)), "bound_frozen": _is_frozen(),
+		"source_epoch": media.playback.get("last_source_epoch", 0), "epoch_floor": media.playback.get("epoch_floor", 0),
+		"seek_render_failure_floor": media.playback.get("seek_render_failure_floor", 0),
+		"seek_render_retries": media.playback.get("seek_render_retries", 0)})
 	_on_error(id, JSON.stringify({"code": code, "stage": "reading" if code == "MPV_BUFFER_TIMEOUT" else "output"}))
 	if platform: platform.close_mpv_video(id)
 
@@ -3411,7 +3423,8 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 	var whisper_save := _whisper_remember or _whisper_restore_remember
 	var auto_subtitle := _subtitle_auto_pending # An internal reopen keeps an unfinished automatic choice.
 	pip.reopening = true
-	var reopened := open_local(uri, title, position_ms, false, alpha_wanted(), "", {"web_handoff": _web_handoff})
+	var reopened := open_local(uri, title, position_ms, false, alpha_wanted(), "",
+		{"web_handoff": _web_handoff, "bilibili_cid": danmaku.cid})
 	pip.reopening = false
 	if not reopened: pip.clear()
 	if reopened:
@@ -3851,7 +3864,7 @@ func _sync_surface_facing() -> void:
 		caption.no_depth_test=not _surface_front_only
 		caption.double_sided=not _surface_front_only
 	if _depth_subtitles: _depth_subtitles.sync_surface_facing(_surface_front_only)
-	for target in [material,portrait.material,_hole_material,_alignment_border,_subtitle_material]:
+	for target in [material,portrait.material,portrait.core,_hole_material,_alignment_border,_subtitle_material]:
 		SurfaceFacing.apply(target,_surface_front_only)
 	if _scene_overlay: SurfaceFacing.apply(_scene_overlay.material,_surface_front_only)
 
@@ -4042,6 +4055,7 @@ func _process(_delta: float) -> void:
 	if video_layer: video_layer.sync_qiyu_passthrough()
 	server_playback.poll(self)
 	if vr_passthrough.active():
+		danmaku.suspend()
 		if vr_passthrough.source_session != media.session_id: _present_pending()
 		# A first-use shader compile must not skip the entire short roll on its next frame.
 		vr_passthrough.poll(minf(_delta, 1.0 / 30.0))
@@ -4078,6 +4092,7 @@ func _process(_delta: float) -> void:
 	_tick_subtitle_follow(_delta)
 	_poll_subtitles()
 	_update_layer()
+	danmaku.tick(self, _delta)
 	mode_transition.finish_frame()
 	_maybe_capture_thumbnail()
 	bookmark_loop.tick()
@@ -5389,7 +5404,8 @@ func _reopen_at(position_ms: int, layer: bool, trigger: String = "", preserve_fr
 		platform.set_mpv_interleave_compat(true)
 	pip.reopening = true
 	mode_transition.reopening = true
-	var capture_reopened := open_local(local_uri, display_name, position, false, alpha_wanted(), "", {"web_handoff": _web_handoff})
+	var capture_reopened := open_local(local_uri, display_name, position, false, alpha_wanted(), "",
+		{"web_handoff": _web_handoff, "bilibili_cid": danmaku.cid})
 	mode_transition.reopening = false
 	mode_transition.preparing()
 	pip.reopening = false

@@ -95,6 +95,9 @@
     const old = frames.get(id);
     if (old) { clearTimeout(old.timer); old.port.disconnect(); }
     frames.set(id, state);
+    const known = s.frameId === 0 ? documentStatus.get(s.tab.id) : null;
+    if (known && known.url === s.url.split('#')[0])
+      try { port.postMessage({ type: "document_status", page: s.url, status: known.status }); } catch (_) {}
     if(state.tencent)tencentResponses?.attach(state);
     if(state.mango)mangoResponses?.attach(state);
     if(state.youku)youkuResponses?.attach(state);
@@ -293,6 +296,15 @@
     const target=Thru3DDailymotion.transport(d.url);if(!target)return d;
     return {...d,url:target,request_url:d.url,redirectUrl:d.redirectUrl?Thru3DDailymotion.transport(d.redirectUrl)||d.redirectUrl:d.redirectUrl};
   };
+  // The top document's HTTP status per tab, handed to its content script so the browser can name
+  // an error (404, 500 ...) a site leaves blank. Status code and address only, never headers.
+  const documentStatus = new Map();
+  browser.webRequest.onHeadersReceived.addListener(d => {
+    if (d.type !== "main_frame" || d.frameId !== 0 || !Number.isInteger(d.tabId) || !Number.isInteger(d.statusCode)) return;
+    documentStatus.delete(d.tabId);
+    documentStatus.set(d.tabId, { url: String(d.url).split('#')[0], status: d.statusCode });
+    while (documentStatus.size > 16) documentStatus.delete(documentStatus.keys().next().value);
+  }, filter);
   browser.webRequest.onBeforeRequest.addListener(d => {
     if (d.type !== "main_frame" && d.type !== "sub_frame") return;
     tencentResponses?.navigate(d);

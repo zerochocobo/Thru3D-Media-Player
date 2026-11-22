@@ -57,6 +57,7 @@ class App extends Node3D:
 	var xr_camera := Node3D.new()
 	var low_end_gpu := false
 	var scene_import: Node
+	var portrait_screen := {"active": false}
 	var updates := 0
 	var shown := false
 	var recentred := 0
@@ -335,6 +336,16 @@ func _run() -> void:
 	video.set_flat_world_pose(Transform3D.IDENTITY)
 	await process_frame
 	_check((video.global_transform * video.flat_pose).origin.is_equal_approx(screen.origin), "Something else moving the screen is undone")
+	# A cut-out person (Alpha) is not the movie screen: the viewer moves it freely, and the screen
+	# goes back to its pin when the person ends.
+	app.portrait_screen.active = true
+	var person := Transform3D(Basis.IDENTITY, Vector3(0.0, 1.5, -1.2))
+	video.set_flat_world_pose(person)
+	await process_frame
+	_check(not controller.screen_pinned() and (video.global_transform * video.flat_pose).is_equal_approx(person), "A cut-out person stays where the viewer put it in a pinned scene")
+	app.portrait_screen.active = false
+	await process_frame
+	_check(controller.screen_pinned() and (video.global_transform * video.flat_pose).origin.is_equal_approx(screen.origin), "The screen returns to its pin after the person")
 	var kept := Library.new()
 	kept.directory = home
 	kept.load_catalog()

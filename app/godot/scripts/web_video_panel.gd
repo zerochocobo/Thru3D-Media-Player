@@ -77,6 +77,8 @@ func choose(row: Dictionary) -> bool:
 				menu.collections.selected_entry = {"uri": uri, "title": title, "kind": "video"}
 				if row.has("start_ms"):
 					menu.collections.selected_entry.merge({"web_handoff": true, "start_ms": row.start_ms})
+					if result.get("resolution_route") == "browser_bilibili" and result.has("bilibili_cid"):
+						menu.collections.selected_entry.bilibili_cid = str(result.bilibili_cid)
 				if row.get("web_fullscreen", false): menu.collections.selected_entry.web_fullscreen = true
 				var keep_browser: bool = row.get("keep_browser", false) and menu.web_browser.active()
 				if keep_browser: menu.collections.selected_entry.keep_browser = true

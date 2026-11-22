@@ -87,6 +87,8 @@ object WebBrowserDepthBridge {
     @JvmStatic fun configure(id: Int, strength: Float, position: Float, identity: String, fill: Boolean, depth: Boolean) {
         windows[id]?.configure(strength, position, identity, fill, depth)
     }
+    /** Picture quality mode over the pair (WebBrowserPicture.look's values; empty for none). */
+    @JvmStatic fun quality(id: Int, values: FloatArray) { windows[id]?.quality(values) }
     @JvmStatic fun status(id: Int): String = windows[id]?.status() ?: "{}"
     /** Gecko must acknowledge surfaceDestroyed before this call; stops output before XR destruction. */
     @JvmStatic fun stop(id: Int): Boolean {
@@ -168,6 +170,8 @@ object WebBrowserDepthBridge {
         private var modelFrame = 0L
         private var program = 0
         private var vao = 0
+        @Volatile private var look: WebBrowserPicture.Look? = null
+        private val picture = WebBrowserPicture() // GL thread
         private var lastInference = 0L
         private var submittedRevision = -1L
         @Volatile private var submittedFrame = -1L
@@ -187,7 +191,13 @@ object WebBrowserDepthBridge {
             if (identity != key) { identity = key; revision++; matteLease.move(revision); synchronized(mapLock) { latest = null } }
             gl.post { dirty = true }
         }
+        fun quality(values: FloatArray) {
+            val next = WebBrowserPicture.look(values)
+            if (next == null && look == null) return
+            look = next; gl.post { dirty = true }
+        }
         fun status(): String = JSONObject().put("frames", frames).put("maps", maps).put("error", error)
+            .put("quality", if (look == null) "off" else if (picture.failed) "failed" else "on")
             .put("depth_backend", depthBackend).put("matte_backend", matteBackend)
             .put("depth_infer_ms_avg", depthInferMs).put("matte_process_ms_avg", matteProcessMs)
             .put("matte_latency_ms_avg", matteLatencyMs)
@@ -382,7 +392,8 @@ object WebBrowserDepthBridge {
                 }
             }
             synchronized(mapLock) { reading = null }
-            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            val current = look
+            val staged = current != null && picture.begin(width * 2, height)
             GLES30.glViewport(0, 0, width * 2, height)
             GLES30.glUseProgram(program); GLES30.glBindVertexArray(vao)
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texture)
@@ -398,6 +409,8 @@ object WebBrowserDepthBridge {
             GLES30.glUniform1i(GLES30.glGetUniformLocation(program,"matte_enabled"),if (matte) 1 else 0)
             GLES30.glUniform4fv(GLES30.glGetUniformLocation(program,"matte_content"),1,matteContent,0)
             GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
+            // A failed enhance leaves nothing drawn: the next tick draws the pair directly.
+            if (staged && !picture.finish(current!!, 2, matte)) return false
             check(EGL14.eglSwapBuffers(display, target))
             // Retry the held frame once the non-blocking Alpha upload fence signals.
             return near == null || strength <= 0f || !depthEnabled || depthReady
@@ -413,6 +426,7 @@ object WebBrowserDepthBridge {
                     if (matteTexture != 0) GLES30.glDeleteTextures(1,intArrayOf(matteTexture),0)
                     if (program != 0) GLES30.glDeleteProgram(program)
                     if (vao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(vao), 0)
+                    picture.release()
                     if (display != EGL14.EGL_NO_DISPLAY) {
                         EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
                         if (target != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, target)

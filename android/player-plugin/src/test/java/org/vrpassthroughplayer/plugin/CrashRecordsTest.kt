@@ -55,6 +55,21 @@ class CrashRecordsTest {
         assertFalse(lines.any { "private_value" in it })
     }
 
+    @Test fun webStepsReachTheBrowserSectionMasked() {
+        WebBrowserTrail.clear()
+        assertTrue(DiagnosticLogs.webBrowserSection().contains("(none recorded)"))
+        // Godot's layer states arrive as crash-trail steps, even before the ring file is mapped.
+        CrashTrail.mark("web.layer", "w=1 path=xr on=1 sub=0 quad=0.00x0.00")
+        CrashTrail.mark("photo.decode", "idx=1")
+        WebBrowserTrail.mark("web.load", "error url=https://www.bilibili.com/video/BV1?token=private_value")
+        val section = DiagnosticLogs.webBrowserSection()
+        WebBrowserTrail.clear()
+        assertTrue(section.startsWith("== Web browser (this session, oldest first) =="))
+        assertTrue(section.contains("web.layer w=1 path=xr on=1 sub=0 quad=0.00x0.00"))
+        assertFalse(section.contains("photo.decode"))
+        assertFalse(section.contains("private_value"))
+    }
+
     @Test fun crashDecision() {
         assertTrue(CrashRecords.decide(java = true, exitSaysCrash = false, foreground = false))
         assertTrue(CrashRecords.decide(java = false, exitSaysCrash = null, foreground = true)) // Android 10: unclean while in front

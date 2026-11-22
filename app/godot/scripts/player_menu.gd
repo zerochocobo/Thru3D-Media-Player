@@ -209,6 +209,14 @@ const PORTRAIT_SIZE := 459
 const DEPTH_POSITION := 460
 const PICTURE_SHARPNESS := 461
 const PICTURE_OPEN := 11280
+const DANMAKU_OPEN := 998300
+const DANMAKU_TOGGLE := 998301
+const DANMAKU_MODE := 998302
+const DANMAKU_DENSITY := 998304
+const DANMAKU_COVER := 998307
+const DANMAKU_TRANSPARENCY := 998308
+const DANMAKU_OUTSIDE := 998309
+var _danmaku_open := false
 const PICTURE_CLOSE := 11281
 const PICTURE_QUALITY_TAB := 11282
 const PICTURE_ADVANCED := 11284
@@ -222,7 +230,8 @@ var _picture_panel_bounds := Rect2()
 var _picture_drawn: Array = []
 ## The 2D to 3D settings fold under one header above Alpha's, closed each time like it.
 const DEPTH_GROUP := 462
-const DEPTH_GROUP_SETTINGS := ["video_auto_3d", "depth_render"]
+const DEPTH_GROUP_SETTINGS := ["video_auto_3d", "depth_render", "depth_edge_steady"]
+const DepthEdgeSteady := preload("res://scripts/depth_edge_steady.gd")
 const PICTURE_QUALITY_HINT := "Sharper picture, with gamma and saturation adjustable. Uses more battery and the headset runs warmer. Turn off 2D to 3D first. The picture pauses briefly when switching."
 const PICTURE_QUALITY_BLOCKERS := {"alpha": "Unavailable while AI portrait passthrough is on", "3d": "Unavailable while 2D to 3D is on",
 	"alpha_background": "Unavailable for AI portrait passthrough while Keep background during passthrough is on", "alpha_flat": "Unavailable for AI portrait passthrough on flat video", "alpha_memory": "Unavailable for AI portrait passthrough while Memory is set to Saver",
@@ -251,12 +260,12 @@ const TABS := ["Playback", "Settings", "Info"]
 const OPERATIONS := [
 	["recent", "previous_video", "play", "next_video", "alpha", "projection", "stereo", "stop", "recenter", "mute", "subtitles",
 		"audio", "depth"],
-	["color_grade", "loop", "seek_mode", "hdr_to_sdr", "stereo_view", "video_auto_3d", "depth_render",
+	["color_grade", "loop", "seek_mode", "hdr_to_sdr", "stereo_view", "video_auto_3d", "depth_render", "depth_edge_steady",
 		"alpha_keep_background", "show_status_info", "show_fps"],
 	["capabilities"]]
-const HEADINGS := ["Default picture", "Playback mode", "Video time positioning", HdrToSdr.TITLE, "Stereo viewing", VideoAuto3D.TITLE, "2D to 3D effect",
+const HEADINGS := ["Default picture", "Playback mode", "Video time positioning", HdrToSdr.TITLE, "Stereo viewing", VideoAuto3D.TITLE, "2D to 3D effect", DepthEdgeSteady.TITLE,
 	"Keep background during passthrough", "Show status information", "Show FPS"]
-const SETTING_ICONS := ["adjust", "loop", "history", "quality", "eyes", "depth", "depth", "keep_background", "status_info", "frame_rate"]
+const SETTING_ICONS := ["adjust", "loop", "history", "quality", "eyes", "depth", "depth", "depth", "keep_background", "status_info", "frame_rate"]
 ## Plain on/off tiles: display choices of the player itself, on offer whatever is playing or cast.
 const SWITCH_SETTINGS := ["alpha_keep_background", "show_status_info", "show_fps"]
 const PLAYBACK_MODE_ICONS := {"single": "play", "repeat_one": "repeat_one", "sequence": "sequence", "repeat_all": "repeat_all", "shuffle": "shuffle"}
@@ -495,6 +504,7 @@ func _place_upper_surface(surface: Node3D, rect: Rect2) -> void:
 	var key := str(surface.get_meta("cinema_popup_key", "library"))
 	var centre := panel_centre()
 	if "_draw_picture_panel" in key: centre.x += PICTURE_PANEL_X
+	if "_draw_danmaku" in key: centre.x = rect.get_center().x
 	if cinema_world_anchor:
 		if not _cinema_popup_centres.has(key):
 			var head: Variant = layout_head_provider.call() if layout_head_provider.is_valid() else null
@@ -628,6 +638,7 @@ func navigate_back() -> bool:
 	return true
 
 func dismiss() -> void:
+	_danmaku_open = false
 	if clone_panel.opened: clone_panel.close()
 	_failure_open = false
 	_error_details_open = false
@@ -651,6 +662,7 @@ func dismiss() -> void:
 	super.dismiss()
 
 func _reset_navigation() -> void:
+	_danmaku_open = false
 	_pip_open = false
 	_audio_open = false; _audio_offset = 0
 	disc_titles.reset()
@@ -794,6 +806,8 @@ func _process(_delta: float) -> void:
 		refresh_values()
 
 func _draw() -> void:
+	if not _state.get("danmaku", {}).get("available", false) or section != 0:
+		_danmaku_open = false
 	if _volume_source != str(_state.get("source_uri", "")):
 		_volume_hand = ""; _volume_breakthrough = false
 	_volume_source = str(_state.get("source_uri", ""))
@@ -1155,7 +1169,10 @@ func _draw_bar() -> void:
 	disc_titles.draw_button(Vector2(0.56 if _state.get("capture", {}).get("available", false) else 0.42, 0.215))
 	_draw_capture_action()
 	if _state.get("has_video", false) and _cast_allowed("color_grade"):
-		_round(PICTURE_OPEN, "adjust", Vector2(_picture_button_x(), 0.215), 0.08, true, _adjustment == "picture", I18n.t("Picture quality & color"))
+		var picture := Vector2(_picture_button_x(), 0.215)
+		_round(PICTURE_OPEN, "adjust", picture, 0.08, true, _adjustment == "picture", I18n.t("Picture quality & color"))
+		# Only sources that carry danmaku (Bilibili Playback Beta today) show the control.
+		if _state.get("danmaku", {}).get("available", false): _draw_danmaku_button(picture + Vector2(0.14, 0.0))
 	var show_bookmarks := _cast_allowed("bookmarks")
 	if _state.get("audio_play_during_video", false):
 		if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): action_requested.emit("music_toggle"))
@@ -1178,6 +1195,71 @@ func _draw_bar() -> void:
 		_draw_popup(_draw_audio)
 	if disc_titles.opened:
 		_draw_popup(disc_titles.draw)
+	if _danmaku_open:
+		_draw_popup(_draw_danmaku)
+
+func _draw_danmaku_button(centre: Vector2) -> void:
+	var enabled := bool(_state.danmaku.get("enabled", false))
+	_round(DANMAKU_OPEN, "", centre, 0.08, true, enabled, I18n.t("Danmaku") + " · " + I18n.t("On" if enabled else "Off"))
+	var label: Label3D = _buttons.back().node.get_child(0)
+	label.text = "弹"
+	label.font = ui_bold_font()
+	set_label_size(label, 24)
+
+func _draw_danmaku() -> void:
+	var state: Dictionary = _state.danmaku
+	var enabled := bool(state.enabled)
+	# Outside the picture only applies while the comments may not cover it.
+	var outside: bool = not state.cover_screen and state.get("outside_available", false)
+	var width := 0.61
+	var height := 0.434 + (0.069 if outside else 0.0)
+	var x := _picture_button_x() + 0.18 - width * 0.5
+	var top := POPUP_BOTTOM + height
+	var panel := _quad(Vector2(width, height), Vector3(x, POPUP_BOTTOM + height * 0.5, 0.001), Color(PANEL, 0.96), 10)
+	panel.material_override.set_shader_parameter("corner_radius", 0.025)
+	add_child(panel); _decorations.append(panel); _block_rays(panel, Vector2(width, height))
+	var heading := _label(I18n.t("Danmaku"), Vector3(x - 0.264, top - 0.044, 0.004), TEXT_TITLE)
+	heading.font = ui_bold_font()
+	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_button(DANMAKU_TOGGLE, I18n.t("On" if enabled else "Off"), Vector2(x + 0.202, top - 0.044),
+		Vector2(0.13, 0.051), true, "", enabled)
+	for index in range(2):
+		var title: String = ["360° surround", "Vertical rain"][index]
+		_button(DANMAKU_MODE + index, I18n.t(title), Vector2(x + (index - 0.5) * 0.279, top - 0.115),
+			Vector2(0.264, 0.053), true, "", state.mode == index)
+	_danmaku_row_title("Danmaku density", x, top - 0.184)
+	for index in range(3):
+		var title: String = ["Low", "Medium", "High"][index]
+		_button(DANMAKU_DENSITY + index, I18n.t(title), Vector2(x + 0.006 + index * 0.105, top - 0.184),
+			Vector2(0.094, 0.05), true, "", state.density == index)
+	_danmaku_row_title("Allow covering the picture", x, top - 0.253)
+	_button(DANMAKU_COVER, I18n.t("On" if state.cover_screen else "Off"), Vector2(x + 0.202, top - 0.253),
+		Vector2(0.13, 0.05), true, "", state.cover_screen)
+	var y := top - 0.322
+	if outside:
+		_danmaku_row_title("Only outside the picture", x, y)
+		var only := bool(state.get("outside_only", false))
+		_button(DANMAKU_OUTSIDE, I18n.t("On" if only else "Off"), Vector2(x + 0.202, y), Vector2(0.13, 0.05), true, "", only)
+		y -= 0.069
+	_adjustment_row(DANMAKU_TRANSPARENCY, "danmaku_transparency", "Transparency", Vector3(0, 90, 5), y, {
+		"title_x": x - 0.264, "title_size": TEXT_BODY, "value_x": x - 0.05, "value_size": TEXT_AUX,
+		"left": x - 0.03, "width": 0.21, "hit": 0.04, "height": 0.055, "thickness": 0.007, "knob": 0.021,
+		"reset_x": x + 0.24, "reset_size": 0.046})
+	_refresh_adjustments()
+	if enabled and not str(state.status).is_empty():
+		var status := _label(I18n.t(str(state.status)), Vector3(x - 0.264, y - 0.064, 0.004), TEXT_AUX)
+		status.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		status.modulate = MUTED
+
+func _danmaku_row_title(title: String, x: float, y: float) -> void:
+	var label := _label(I18n.t(title), Vector3(x - 0.264, y, 0.004), TEXT_BODY)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+
+func danmaku_exclusions() -> Array[Dictionary]:
+	var areas: Array[Dictionary] = [{"pose": global_transform, "rect": _bar_bounds()}]
+	for surface in _popup_surfaces:
+		areas.append({"pose": surface.global_transform, "rect": surface.get_meta("menu_surface_bounds", Rect2())})
+	return areas
 
 func _draw_audio() -> void:
 	var tracks: Array = _state.get("audio_options", [])
@@ -2194,7 +2276,7 @@ func release_pointer(hand: String, _origin: Vector3, _direction: Vector3, _track
 		_volume_hand = ""
 
 func _bar_key() -> String:
-	return str([_state.get("hand_lock_available", false), _state.get("subtitle_encoding_row", {}), _state.get("audio_play_during_video", false), _state.get("audio_current", ""), _state.get("audio_title", ""), _state.get("audio_paused", true), _state.get("audio_active", false),
+	return str([_state.get("danmaku", {}), _state.get("hand_lock_available", false), _state.get("subtitle_encoding_row", {}), _state.get("audio_play_during_video", false), _state.get("audio_current", ""), _state.get("audio_title", ""), _state.get("audio_paused", true), _state.get("audio_active", false),
 		_state.get("narration_voice_kind", "preset"), _state.get("narration_custom_voice", ""), _state.get("narration_personal_voices", []), _state.get("narration_voice_warning", ""), _state.get("narration_preview_status", ""), _state.get("narration_clone_state", {}).get("revision", 0)]) + _base_bar_key()
 
 func _base_bar_key() -> String:
@@ -2626,7 +2708,7 @@ func _choice_tile(target: int) -> bool:
 func _settings_key() -> String:
 	return str([_state.get("cast", {})]) + str([_state.get("source_uri", ""), _state.get("has_video", false),
 		_state.get("portrait_requested", false), _state.get("flat_passthrough_requested", false), _state.get("portrait_auto", true), _state.get("portrait_enhanced", false),
-		_state.get("playback_mode", "single"), _state.get("seek_mode", "speed"), _state.get("hdr_to_sdr", HdrToSdr.ON), _state.get("depth_render", "stretch"), _state.get("depth_text_protection", true), _state.get("stereo", false), _state.get("geometry", 0),
+		_state.get("playback_mode", "single"), _state.get("seek_mode", "speed"), _state.get("hdr_to_sdr", HdrToSdr.ON), _state.get("depth_render", "stretch"), _state.get("depth_edge_steady", DepthEdgeSteady.DEFAULT), _state.get("depth_text_protection", true), _state.get("stereo", false), _state.get("geometry", 0),
 		_state.get("show_status_info", true), _state.get("show_fps", false), _state.get("alpha_keep_background", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false), _state.get("stereo_focus_mode", 0), _state.get("subtitle_follow_view", false),
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
 		_state.get("immersive_adjustment_gauges", true), _state.get("video_auto_3d", false),
@@ -2666,6 +2748,10 @@ func _setting_choices(operation: String) -> Dictionary:
 			return {"key": "depth_text_protection", "value": _state.get("depth_text_protection", true), "choices": [
 				{"value": false, "label": "Off", "hint": "Protects burned-in subtitles from distortion during 2D-to-3D conversion."},
 				{"value": true, "label": "On", "hint": "Protects burned-in subtitles from distortion during 2D-to-3D conversion."}]}
+		"depth_edge_steady":
+			# Fill gaps warps from the model's own map: nothing for this to change there.
+			if _state.get("depth_render", "stretch") != "stretch": return {}
+			return DepthEdgeSteady.choice(bool(_state.get("depth_edge_steady", DepthEdgeSteady.DEFAULT)))
 		"depth_render":
 			return {"key": "depth_render", "value": _state.get("depth_render", "stretch"), "choices": [
 				{"value": "fill", "label": "Fill gaps", "hint": "Fills the background behind moving edges"},
@@ -2750,6 +2836,24 @@ func _activate(target: int) -> void:
 		refresh(); return
 	var cast_action := CastPanel.action(target)
 	if not cast_action.is_empty(): cast_requested.emit(cast_action); return
+	if target >= DANMAKU_OPEN and target <= DANMAKU_OUTSIDE:
+		var state: Dictionary = _state.get("danmaku", {})
+		if not state.get("available", false) or target == DANMAKU_TRANSPARENCY: return
+		if target == DANMAKU_OPEN:
+			var opened := _danmaku_open
+			_reset_navigation()
+			_danmaku_open = not opened
+		elif _danmaku_open:
+			if target == DANMAKU_TOGGLE: setting_requested.emit("danmaku_enabled", not state.enabled)
+			elif target < DANMAKU_DENSITY: setting_requested.emit("danmaku_mode", target - DANMAKU_MODE)
+			elif target < DANMAKU_COVER: setting_requested.emit("danmaku_density", target - DANMAKU_DENSITY)
+			elif target == DANMAKU_COVER: setting_requested.emit("danmaku_cover_screen", not state.cover_screen)
+			else: setting_requested.emit("danmaku_outside_only", not state.get("outside_only", false))
+		refresh()
+		return
+	if _danmaku_open and target == SLIDER_RESET_BASE + DANMAKU_TRANSPARENCY:
+		_activate_slider_reset(target); return
+	_danmaku_open = false
 	if target == PICTURE_OPEN:
 		if not _state.get("has_video", false) or not _cast_allowed("color_grade"): return
 		var was_open := _adjustment == "picture"
@@ -3048,7 +3152,7 @@ func _capture_key() -> String:
 	return str([value.get("available", false), value.get("ready", false), value.get("recording", false), value.get("paused", false), value.get("picture_busy", false), value.get("clip_busy", false), value.get("pip", false), _capture_open])
 
 func _capture_popup_allowed() -> bool:
-	return not _pip_open and section == 0 and _adjustment.is_empty() and not _mode_open and not _subtitle_open and not _audio_open and not disc_titles.opened and not _volume_open and not _depth_open and not bookmarks.opened and not _failure_open
+	return not _pip_open and not _danmaku_open and section == 0 and _adjustment.is_empty() and not _mode_open and not _subtitle_open and not _audio_open and not disc_titles.opened and not _volume_open and not _depth_open and not bookmarks.opened and not _failure_open
 
 func _process_capture_hover() -> void:
 	if not visible: return
@@ -3155,6 +3259,7 @@ func _enabled(operation: String) -> bool:
 		"depth": return has_video and not _state.get("spatial_video", false) and int(_state.get("geometry", 0)) == 0 and not _state.get("stereo", false)
 		"depth_strength": return _can_depth()
 		"depth_render": return has_video
+		"depth_edge_steady": return has_video and _state.get("depth_render", "stretch") == "stretch"
 		"depth_text_protection": return false
 		"subtitles": return has_video
 		"capabilities": return _state.get("capabilities_available", false)
@@ -3182,6 +3287,7 @@ func _caption_text(operation: String) -> String:
 		"seek_mode": return "Precise" if _state.get("seek_mode", "speed") == "exact" else "Speed"
 		"depth_text_protection": return "On" if _state.get("depth_text_protection", true) else "Off"
 		"video_auto_3d": return "On" if _state.get("video_auto_3d", false) else "Off"
+		"depth_edge_steady": return "On" if _state.get("depth_edge_steady", DepthEdgeSteady.DEFAULT) else "Off"
 		"hdr_to_sdr": return "Off" if _state.get("hdr_to_sdr", HdrToSdr.ON) == HdrToSdr.OFF else "On"
 		"depth_render": return "Fill gaps" if _state.get("depth_render", "stretch") == "fill" else "Stretch edges"
 		"stop": return "Close video"
@@ -3282,7 +3388,8 @@ var _adjust_cleared_generation := -1
 ## enough, and the menu clears down to its row until the release. A tap stays a plain choice.
 const HOLD_CHOICE_KEYS := ["picture_upscale", "picture_denoise",
 	# Subtitle options that change how the captions look or sit on the picture.
-	"subtitle_follow_view", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line", "subtitle_below_screen"]
+	"subtitle_follow_view", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line", "subtitle_below_screen",
+	"depth_edge_steady"]
 ## Subtitle sliders that move or restyle the captions on the picture clear the menu the same way.
 const HOLD_SUBTITLE_KEYS := ["subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_position", "subtitle_distance",
 	"subtitle_flat_position", "subtitle_size", "subtitle_transparency"]
@@ -3658,8 +3765,8 @@ func _draw_stereo_view() -> void:
 const SLIDER_LEFT := 0.02
 const SLIDER_WIDTH := 0.40
 
-func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: float) -> void:
-	var g := _slider_geometry()
+func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: float, geometry: Dictionary = {}) -> void:
+	var g := geometry if not geometry.is_empty() else _slider_geometry()
 	var heading_text := _fit_title(I18n.t(title), "", 0.18, g.title_size) if editing_picture() else I18n.t(title)
 	var heading := _label(heading_text, Vector3(g.title_x, y, 0.004), g.title_size)
 	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -3704,6 +3811,7 @@ func _leaves_layer(key: String) -> bool:
 func _adjustment_default(key: String) -> Variant:
 	if key == DepthPosition.KEY: return 0.0
 	if key == "bar_transparency": return 14.0
+	if key == "danmaku_transparency": return 0.0
 	if key == "picture_sharpness": return 50.0
 	if Grade.DEFAULTS.has(key): return Grade.DEFAULTS[key]
 	return {"screen_distance": Surface.SCREEN_DISTANCE, "screen_scale": 100.0, "cinema_picture_size": 100.0, "video_aspect_factor": 1.0,
@@ -3782,6 +3890,7 @@ func _refresh_adjustments() -> void:
 		var position: bool = row.key == "subtitle_position"
 		var defaults := {"screen_curve": 0.0, "screen_scale": 100.0, "cinema_picture_size": 100.0, "screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0, "stereo_horizontal": 0.0, "stereo_vertical": 0.0}
 		defaults["bar_transparency"] = 14.0
+		defaults["danmaku_transparency"] = 0.0
 		defaults["picture_sharpness"] = 50.0
 		defaults["stereo_focus"] = FOCUS_DEFAULT
 		defaults[DepthPosition.KEY] = 0.0
@@ -3814,7 +3923,7 @@ func _refresh_adjustments() -> void:
 		elif row.key == DepthPosition.KEY: row.label.text = "%+.0f" % value if value != 0 else "0"
 		elif row.key == "video_aspect_factor": row.label.text = "%.3f×" % value
 		elif row.key == "alpha_fps": row.label.text = "%d FPS" % roundi(value)
-		elif row.key in ["alpha_feather", "alpha_shrink", "bar_transparency"]: row.label.text = "%d%%" % roundi(value)
+		elif row.key in ["alpha_feather", "alpha_shrink", "bar_transparency", "danmaku_transparency"]: row.label.text = "%d%%" % roundi(value)
 		elif row.key in ["stereo_horizontal", "stereo_vertical"]: row.label.text = "%+.2f%%" % value if value != 0 else "0.00%"
 		elif row.key == "stereo_focus": row.label.text = "%.2f m" % value
 		elif row.key in Surface.ImmersiveAdjustments.KEYS: row.label.text = "%+.1f%%" % value if value != 0 else "0.0%"

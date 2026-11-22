@@ -55,3 +55,7 @@ The picture-controls popup combines quality mode, sharpness, Super Resolution, d
 ## Photo 3D and previews in 0.18.6
 
 Photo 3D offers Fast then fine (default), Best quality and Fastest; an existing fine result is reused first. Runtime stereo generation and EXIF orientation handling are faster. Local, SMB and DLNA preview prefetching reuses artwork/caches, pauses under frame-time pressure and retries after recovery. Video 3D can wait for its own depth map for up to 80 ms, stop waiting on slower devices and adjust audio delay to the measured wait. Picture enhancement adds GPU load; source/build checks do not establish headset frame rate, depth refresh rate or visual acceptance.
+
+## 0.18.7 viewing changes
+
+Steady Edges is enabled by default for Stretch Edges in real-time video 3D; it fits depth contours to the picture with slightly softer local depth. Photo gap filling and edge stretching support separate processing of magazine pages. Portrait positions and sizes can be retained separately for cinema, beach and ordinary backgrounds. These source changes do not establish device frame rate or visual acceptance. The withdrawn hard-subtitle protection feature remains hidden and disabled.

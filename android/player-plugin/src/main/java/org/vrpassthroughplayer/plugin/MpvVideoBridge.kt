@@ -1717,7 +1717,10 @@ internal class MpvVideoBridge(
         val token = pair.getLong("slot_token")
         if (pair.optBoolean("layer_alpha")) session.cadence.finished(token) // room for the next frame
         check(session.leases.containsKey(token)) { "Alpha color lease unavailable" }
-        if (session.depth) check(RenderBridgeNative.limitNear(session.renderer, 0L, session.depthShift))
+        if (session.depth) {
+            check(RenderBridgeNative.limitNear(session.renderer, 0L, session.depthShift))
+            check(RenderBridgeNative.steadyEdges(session.renderer, depthSteady && depthStretch))
+        }
         if (pair.optString("alpha_transport") == "zero_copy") check(RenderBridgeNative.commitZeroCopyAlpha(session.renderer, token))
         else check(RenderBridgeNative.uploadAlpha(session.renderer, token, left, right))
         var portraitPending = false
@@ -1858,6 +1861,11 @@ internal class MpvVideoBridge(
             if(session.host.handle>0&&!session.host.layer)MpvSourceNative.requestFrame(session.host.handle)
         } }) }
     }
+    /** Steady edges on or off; a held (paused) 2D->3D frame is redrawn with the choice. */
+    fun setDepthSteady(enabled: Boolean) {
+        depthSteady = enabled
+        sessions.forEach { (id, session) -> if (session.depth) setDepthView(id, session.depthShift.toDouble(), session.depthConvergence.toDouble()) }
+    }
     fun setDepthView(id: Int, shift: Double, convergence: Double): Boolean {
         val session = sessions[id] ?: return false
         if (!session.depth || shift !in 0.0..0.2 || convergence !in 0.0..1.0) return false
@@ -1871,6 +1879,7 @@ internal class MpvVideoBridge(
                 val pair = session.pairs[token]
                 if (pair != null && session.display.owns(token)) runCatching {
                     // Both views read the limited near texture: re-limit it before any rewarp.
+                    RenderBridgeNative.steadyEdges(session.renderer, depthSteady && depthStretch)
                     RenderBridgeNative.limitNear(session.renderer, token, session.depthShift)
                     if (pair.optInt("warp_texture_id") > 0)
                         stereoPair(session, token)
@@ -2189,6 +2198,8 @@ internal class MpvVideoBridge(
          * native hole-filling warp. */
         @Volatile private var depthTextProtection = false
         @Volatile var depthStretch = true
+        /** 2D->3D steady edges (edge stretching only): the near map is refitted to the picture's contours. */
+        @Volatile var depthSteady = true
         /** Alpha plan B: masks shown so far in this Alpha layer session and the mask swapchain size, "count w h". */
         @Volatile var layerMask = "0 0 0"
         const val MASK_SLOT = 2 // the picture swapchain slot Godot shows as the mask layer

@@ -95,3 +95,7 @@ Bookmarks saved from an active page can show a locally stored thumbnail. The cap
 ## Codec and rendering fallback in 0.18.1
 
 Android devices without a hardware AV1 decoder disable AV1 in browser playback and WebRTC codec selection. OpenXR runtimes without Android-surface swapchains can use the eye-buffer browser path.
+
+## 0.18.7 browser picture controls and danmaku
+
+Picture Quality Mode is off by default and applies sharpening/denoising immediately to the focused region or whole page. Controls share global picture defaults; browser super resolution is currently hidden. Bilibili on-demand Playback Beta offers optional VR danmaku with surround/rain modes, transparency and screen-occlusion controls (inspired by @Ao_Lei). It is off by default and is not enabled for arbitrary sites. Failed page loads show a reason and Retry. Device performance and visual acceptance require separate validation.

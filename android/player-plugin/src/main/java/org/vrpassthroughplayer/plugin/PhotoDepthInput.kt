@@ -32,8 +32,15 @@ internal object PhotoDepthInput {
         return Content(0, 0, WIDTH, HEIGHT)
     }
 
-    fun prepare(source: File, width: Int = WIDTH, height: Int = HEIGHT, selectLeftEye: Boolean = false): Input {
-        require(width in 1..WIDTH && height in 1..HEIGHT)
+    fun prepare(source: File, width: Int = WIDTH, height: Int = HEIGHT, selectLeftEye: Boolean = false): Input =
+        prepareRegions(source, width, height, selectLeftEye).single()
+
+    /** One decode, one input per horizontal [regions] share of the upright photo (a spread's pages),
+     * each stretched over the whole model input. */
+    fun prepareRegions(source: File, width: Int = WIDTH, height: Int = HEIGHT, selectLeftEye: Boolean = false,
+                       regions: List<ClosedFloatingPointRange<Float>> = listOf(0f..1f)): List<Input> {
+        require(width in 1..WIDTH && height in 1..HEIGHT && regions.isNotEmpty() && regions.all { it.start >= 0f && it.endInclusive <= 1f && it.start < it.endInclusive })
+        require(!selectLeftEye || regions.size == 1)
         if (selectLeftEye) {
             val info = HeifPhotoInfo.read(source) ?: error("PHOTO_DECODE_FAILED")
             val copy = File(source.parentFile,"scene-depth-left.heic")
@@ -44,7 +51,7 @@ internal object PhotoDepthInput {
                     HeifPhotoDecoder.configure8Bit(decoder)
                     decoder.setTargetSize(width,height)
                 }
-                try { return encodeInput(bitmap,width,height) } finally { bitmap.recycle() }
+                try { return listOf(encodeInput(bitmap,width,height)) } finally { bitmap.recycle() }
             } finally { copy.delete() }
         }
         val clock = PhotoStereo.StepClock()
@@ -67,17 +74,20 @@ internal object PhotoDepthInput {
             upright = Bitmap.createBitmap(original, 0, 0, original.width, original.height, matrix, true)
             clock.lap("orient")
             val content = Content(0, 0, width, height)
-            val input = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            try {
-                Canvas(input).apply {
-                    drawColor(Color.BLACK)
-                    drawBitmap(upright, null, Rect(content.x, content.y, content.x + content.width, content.y + content.height), Paint(Paint.FILTER_BITMAP_FLAG))
-                }
-                clock.lap("resize")
-                val encoded = encodeInput(input,width,height)
-                clock.lap("float")
-                return encoded.copy(steps = "$clock decoded=${original.width}x${original.height} sample=$sample")
-            } finally { input.recycle() }
+            val inputs = regions.map { region ->
+                val input = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                try {
+                    val from = (region.start * upright.width).toInt().coerceIn(0, upright.width - 1)
+                    val to = (region.endInclusive * upright.width).toInt().coerceIn(from + 1, upright.width)
+                    Canvas(input).apply {
+                        drawColor(Color.BLACK)
+                        drawBitmap(upright, Rect(from, 0, to, upright.height), Rect(content.x, content.y, content.x + content.width, content.y + content.height), Paint(Paint.FILTER_BITMAP_FLAG))
+                    }
+                    clock.lap("resize")
+                    encodeInput(input,width,height).also { clock.lap("float") }
+                } finally { input.recycle() }
+            }
+            return inputs.map { it.copy(steps = "$clock decoded=${original.width}x${original.height} sample=$sample") }
         } finally { if (upright !== original) upright.recycle(); original.recycle() }
     }
 

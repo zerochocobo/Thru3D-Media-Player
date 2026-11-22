@@ -8,10 +8,11 @@ internal object RenderBridgeNative {
     init { System.loadLibrary("quest_render_bridge") }
     /** Worker-only still-image path. RGBA row 0 is top, near is mono RF; output is packed SBS RGBA.
      * Reuses video's forward warp, z-buffer, hole fill, rim and sliver cleanup. Returns elapsed us.
-     * pair[0]: the pair's GPU token for [photoPairBegin] (0 when it exists only in [output]). */
+     * stretch: video's edge stretching instead of the hole fill. basis: the width the parallax follows (0: width).
+     * pair[0]: the pair's GPU token for [photoPairBegin] (0 when it exists only in [output]); an empty pair keeps none. */
     @JvmStatic external fun photoStereo(rgba: ByteBuffer, width: Int, height: Int, near: ByteBuffer,
-        modelWidth: Int, modelHeight: Int, content: FloatArray, strength: Float, convergence: Float, turns: Int, output: ByteBuffer,
-        pair: IntArray): Long
+        modelWidth: Int, modelHeight: Int, content: FloatArray, strength: Float, convergence: Float, turns: Int, stretch: Boolean,
+        basis: Int, output: ByteBuffer, pair: IntArray): Long
     /** Any thread: [bitmap] (RGBA8) turned upright for EXIF [orientation] 5-8 into a T3DI v2 file at [path]. */
     @JvmStatic external fun writeUprightRaw(bitmap: Bitmap, orientation: Int, path: String): Boolean
     /** Godot's GL thread: photo pairs share this context's objects from the next still on. */
@@ -82,6 +83,8 @@ internal object RenderBridgeNative {
     /** 2D->3D: limit near-map falls for this shift on later uploads (0: none) and re-limit the held
      * map of [token] (0: none), so neither the shader's gather warp nor the hole fill repeats a contour. */
     @JvmStatic external fun limitNear(handle: Long, token: Long, shift: Float): Boolean
+    /** 2D->3D steady edges for later near uploads and re-limits: the map follows the picture's own contours. */
+    @JvmStatic external fun steadyEdges(handle: Long, enabled: Boolean): Boolean
     @JvmStatic external fun alphaReady(handle: Long, token: Long): Boolean
     /** Mono R8 shape decoded by *1.5; optional 64x64 signed residual uses 128 as zero.
      * Resolves private mip levels before Godot's single-level import. */

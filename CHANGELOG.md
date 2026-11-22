@@ -4,6 +4,20 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.18.7 — 2026-11-22
+
+- Add Steady Edges for real-time 2D-to-3D, on by default. With Stretch Edges, object contours follow the original picture more closely to reduce shimmer, with slightly softer depth around edges. Toggle it in global or player settings.
+- Add Picture quality mode at the right of the browser footer, off by default. Enable it immediately to adjust sharpness and denoising for the focused region or whole page.
+- Add VR danmaku to Bilibili on-demand Playback Beta, with 360-degree surround and vertical-text rain modes, original colors, density, transparency and Allow Covering the Picture. Flat videos also offer Show Only Outside the Picture. Placement follows the viewer and scene changes. Off by default. (Inspired by Bilibili creator @Ao_Lei.)
+- Fix streaks and jagged edges in photo 3D gap filling (a bug introduced by changes in 0.16.7) and add an edge-stretching option. Process magazine spread depth separately for each page, reducing cross-page artifacts. Reuse decoded color images during refinement and strength changes.
+- Locate cloud photos, videos and playback sessions by object, reducing reliance on full directory listings. Show a clear message when a saved folder location expires.
+- Fix the dark rectangle around cut-out people and occlusion or translucency in affected scenes. Improve cases where scene pinning blocks portrait dragging, resizing or recentering. Cinema, beach and ordinary backgrounds remember separate portrait distances and sizes, making people easier to locate after scene changes.
+- Improve picture recovery after seeking in affected videos by automatically retrying the first frame, making paused and resumed playback more reliable.
+- Discover episode subtitles in Subs subfolders on local storage and SMB.
+- Improve compatibility with decrypted Blu-ray images that still retain an AACS folder.
+- Fix some Thunder Cloud Drive photos failing to open and improve photo-loading compatibility.
+- Show a clear reason and Retry button when a webpage fails to load. The address bar can identify network, certificate, proxy and HTTP errors, helping explain otherwise blank pages.
+
 ## 0.18.6 — 2026-11-21
 
 - Speed up photo 3D stereo-image generation and display to reduce the first photo's conversion wait. Faster decoding and orientation of portrait photos with EXIF rotation also reduce the wait for 3D.

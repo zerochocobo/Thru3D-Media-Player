@@ -286,21 +286,15 @@ func TestPlayerThunderUsesPlayUsageWithoutReplacingOriginalFile(t *testing.T) {
 	if err := d.Init(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"film.mp4", "film #1.MKV", "film.mk3d", "film.vob", "audio.flac", "audio.dtshd", "disc.iso", "book.pdf", "book.cbz", "files.zip"} {
-		expected := ""
-		if strings.HasSuffix(name, ".mp4") || strings.HasSuffix(name, ".MKV") || strings.HasSuffix(name, ".mk3d") || strings.HasSuffix(name, ".vob") || strings.HasPrefix(name, "audio.") {
-			expected = "PLAY"
-		}
+	// Photos, PDFs and archives are viewed too; their download URL is throttled.
+	for _, name := range []string{"film.mp4", "film #1.MKV", "audio.flac", "photo.JPG", "photo.heic", "disc.iso", "book.pdf", "book.cbz", "files.zip", "notes"} {
+		usage = ""
 		file := &model.Object{ID: "video", Name: name, Size: 20000}
 		link, err := d.Link(context.Background(), file, model.LinkArgs{})
-		if err != nil || usage != expected {
+		if err != nil || usage != "PLAY" {
 			t.Fatalf("wrong link usage for %s: %q, %v", name, usage, err)
 		}
-		suffix := "/download-original"
-		if expected == "PLAY" {
-			suffix = "/play-original"
-		}
-		if !strings.HasSuffix(link.URL, suffix) || file.GetSize() != 20000 || link.RangeReader != nil || link.Header.Get("User-Agent") != d.DownloadUserAgent {
+		if !strings.HasSuffix(link.URL, "/play-original") || file.GetSize() != 20000 || link.RangeReader != nil || link.Header.Get("User-Agent") != d.DownloadUserAgent {
 			t.Fatal("original file identity or transport was replaced")
 		}
 	}

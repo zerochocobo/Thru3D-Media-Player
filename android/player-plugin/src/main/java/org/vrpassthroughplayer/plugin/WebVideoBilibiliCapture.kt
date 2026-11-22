@@ -167,7 +167,7 @@ internal object WebVideoBilibiliCapture {
                 .put("http_headers", headers).put("browser_headers", JSONObject().put(uri.toString(), headers))
                 .put("browser_cookies", request.optJSONArray("cookies") ?: JSONArray())
         }
-        JSONObject().put("title", media.optString("title").take(1024)).put("duration", duration)
+        JSONObject().put("title", media.optString("title").take(1024)).put("duration", duration).put("bilibili_cid", cid)
             .put("formats", JSONArray().put(track("video", true)).put(track("audio", false)))
     }.getOrNull()
 }

@@ -5,7 +5,7 @@
   "source_lock_sha256": "7036a7bf793e00607d7b65f3c4c98428a3004d3584423116d91fe0b4c22273cd",
   "builder_revision": "fdf74f6830c47dbaa8a22ac79726e8303f1db5af",
   "mpv_revision": "0b7ed670f7c353dd3dd4f8ae0fc788a181a15aa6",
-  "patch_sha256": "c3f125020a5de1e357d9dda5d610d88001ef19d0cd3ad38f4fa04f42a3b094e6",
+  "patch_sha256": "0d587c103e90f2e244e44c8c52776294ce56209684bd96ad438416ef18850a55",
   "private_header_sha256": "3c680fed7e92a8f5f52345825de42cac2e56a155f5c4fc47756839559a4b94fa",
   "api_version": 2,
   "ndk": "30.0.16248370",
@@ -58,9 +58,9 @@
   "libraries": [
     {
       "name": "libmpv.so",
-      "sha256": "b398e82e0de946f679ad1d34d592d51508cdf2596f415298cc477eb7d898134a",
-      "bytes": 8269264,
-      "built_sha256": "5406de200129c2762b0a08f2ed3c875a0a62653f920980983c8da4ea36dfc8e5",
+      "sha256": "3fa8657caf3952c522ef3c9b955adceaa3b42e2e364aa351b3074594ff08b79d",
+      "bytes": 8270176,
+      "built_sha256": "c5b1d077caae965ae2c4f9a3277e2eff9047e3385489753549ce9db8398bbc0b",
       "needed": [
         "libm.so",
         "libz.so",
@@ -123,9 +123,9 @@
     },
     {
       "name": "libavformat.so",
-      "sha256": "8fe8e8b843afd222ad671a04e91aafa876ce0dae5e15184f75909c7243604522",
-      "bytes": 4551872,
-      "built_sha256": "6bbf917b5044f74ce3a6192a567915f6dcdc6bd847ebe6b784d84effa2d341c5",
+      "sha256": "437cb2d49b157d8a90f000cef2687fc08b0a26f813aa66f87dd5ff71acdcb989",
+      "bytes": 4553680,
+      "built_sha256": "f81e0ef0fedc196e8a406a17ff349aefc1ef26efa2bc5c8439365f0c11ec6a64",
       "needed": [
         "libavcodec.so",
         "libavutil.so",
@@ -171,7 +171,7 @@
     }
   ],
   "host_packages_sha256": "0d42dd4ec021254111a439214a2681bf37ca44ba2af04a9d97af479f2bd1dd33",
-  "build_receipt_sha256": "dcaf16946cbc4adc8168f9ae50e308083105faa9e8d20dbc80906488c31489b4",
+  "build_receipt_sha256": "d2614a395cef10ca8d88f1040bb4ddac1a79895e6603e21140caca7e18a0cc55",
   "meson": "1.11.0",
   "ninja": "1.11.1",
   "mvc_inputs_sha256": {
@@ -188,7 +188,7 @@
     "native/mpv/mvc/bluray_clpi_reader.c": "3b177cbdaeaadfa3221039cbbc04928cddd74603d3fe99b82c5efd76cf9ebc51",
     "native/mpv/mvc/dvd_nav.h": "25b541d04108c145d89b18c4f1cb790005a8c909ee26e7fe8459803813f83d79",
     "native/mpv/mvc/edge264mvc_all.c": "d23091d4f6559c828a5a8e70bb609487d484ea30176c6e60773f492661750382",
-    "native/mpv/mvc/ffmpeg_bd_mvc.c": "ba260d9fe515f6e8a1ac0b8f47c0f4517b215535d64b1d2d8ebdf7765b431949",
+    "native/mpv/mvc/ffmpeg_bd_mvc.c": "9c1a2caa6431719dcbe87a7c4a7630eb6a22af6a5808e7d674ab8ae3e6472e6a",
     "native/mpv/mvc/ffmpeg_dvd_nav.c": "4bebd3f6cb04561d95a7d7e491bf9824fc2ab71ba07480d16b9df0a90def1aea",
     "native/mpv/mvc/ffmpeg_h264_mvc.c": "75082a609c9f7b3cbcc2f3606d1eb08ba76ff5fb1d3c85966c9504540fbab9c5",
     "native/mpv/mvc/matroska_mvc.h": "02f44f65329e29e02faa25665137e4c5885a3613afaa2b393c22702f088617ae",
@@ -213,7 +213,7 @@
     "native/mpv/mvc/bluray_clpi_reader.c": "3b177cbdaeaadfa3221039cbbc04928cddd74603d3fe99b82c5efd76cf9ebc51",
     "native/mpv/mvc/dvd_nav.h": "25b541d04108c145d89b18c4f1cb790005a8c909ee26e7fe8459803813f83d79",
     "native/mpv/mvc/edge264mvc_all.c": "d23091d4f6559c828a5a8e70bb609487d484ea30176c6e60773f492661750382",
-    "native/mpv/mvc/ffmpeg_bd_mvc.c": "ba260d9fe515f6e8a1ac0b8f47c0f4517b215535d64b1d2d8ebdf7765b431949",
+    "native/mpv/mvc/ffmpeg_bd_mvc.c": "9c1a2caa6431719dcbe87a7c4a7630eb6a22af6a5808e7d674ab8ae3e6472e6a",
     "native/mpv/mvc/ffmpeg_dvd_nav.c": "4bebd3f6cb04561d95a7d7e491bf9824fc2ab71ba07480d16b9df0a90def1aea",
     "native/mpv/mvc/ffmpeg_h264_mvc.c": "75082a609c9f7b3cbcc2f3606d1eb08ba76ff5fb1d3c85966c9504540fbab9c5",
     "native/mpv/mvc/matroska_mvc.h": "02f44f65329e29e02faa25665137e4c5885a3613afaa2b393c22702f088617ae",

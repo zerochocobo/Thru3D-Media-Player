@@ -30,6 +30,9 @@ var material: ShaderMaterial
 var _texture: ExternalTexture
 var _token := 0
 var _frame := ""
+## No 2D picture quality here: the page has no thread of its own between Gecko and the eye buffer.
+var quality := false
+var _picture_sent := PackedFloat32Array()
 
 ## Whether this runtime cannot give the browser a compositor layer. Asked once per instance.
 static func needed() -> bool:
@@ -42,7 +45,7 @@ static func needed() -> bool:
 			or (OS.is_debug_build() and FileAccess.file_exists("user://browser_page_texture"))
 	return _needed
 
-func create(window: int, size: Vector2i, convert: bool = false, crop: Rect2 = Rect2(0, 0, 1, 1), edge_limit: int = 1536, matte: bool = false) -> bool:
+func create(window: int, size: Vector2i, convert: bool = false, crop: Rect2 = Rect2(0, 0, 1, 1), edge_limit: int = 1536, matte: bool = false, _quality: bool = false) -> bool:
 	if not Layer.api or not Layer.api.is_running(): return false
 	if not bridge:
 		bridge = JavaClassWrapper.wrap("org.vrpassthroughplayer.plugin.WebBrowserTextureBridge")
@@ -107,6 +110,13 @@ func input_surface() -> JavaObject:
 	var input: JavaObject = effects.surface(id) if effects else null
 	JavaClassWrapper.get_exception()
 	return input
+
+## Picture quality mode over a 3D pair (web_browser_layer.gd); nothing for a 2D page.
+func configure_picture(values: PackedFloat32Array) -> void:
+	if not stereo or not effects or values == _picture_sent: return
+	effects.quality(id, values)
+	JavaClassWrapper.get_exception()
+	_picture_sent = values
 
 func configure_effect(strength: float, position: float, identity: String, fill: bool = false, depth: bool = true) -> String:
 	if not stereo or not effects: return ""

@@ -953,6 +953,9 @@
     naverNetworkConnections++;traceNaverNetwork('connected');
     const connection = networkPort;
     networkPort.onMessage.addListener(message => {
+      if (connection === networkPort && message?.type === "document_status" && message.page === location.href && window === window.top) {
+        documentStatus = Number.isInteger(message.status) ? message.status : 0; sendDocumentStatus(); return;
+      }
       if (connection !== networkPort || message?.type !== "network" || message.page !== location.href) return;
       const priorNaverCount=naverData.length;
       naverData=Array.isArray(message.naver)?message.naver.slice(0,64):[];naverCapture=message.naver_capture||{};
@@ -1480,10 +1483,15 @@
   };
   for (const delay of [0, 2000, 5000, 10000]) setTimeout(() => scanShadows(document), delay);
   addEventListener("pointerdown", () => setTimeout(() => scanShadows(document), 1000), true);
+  let documentStatus = 0;
+  const sendDocumentStatus = () => {
+    if (!closed && documentStatus) try { port.postMessage({ type: "document_status", page: location.href, status: documentStatus }); } catch (_) {}
+  };
   const connected = () => {
     closed = false;
     port = browser.runtime.connectNative("thru3d_video");
     const connection = port;
+    sendDocumentStatus(); // a bfcache reconnect keeps the document's status
     port.onMessage.addListener((message) => {
     if (message?.action === "page_beta_visibility") {
       // Presentation only: never change network policy, media epochs or ready state.

@@ -326,7 +326,10 @@ internal class PhotoBridge(
                     .put("error", if (uri.startsWith("comic://") && error is Exception) ArchiveBridge.safeError(error)
                         else if (error is OutOfMemoryError || error.message == "PHOTO_OUT_OF_MEMORY") "PHOTO_OUT_OF_MEMORY"
                         else if (error.message == "PHOTO_MEMORY_UNAVAILABLE") "PHOTO_MEMORY_UNAVAILABLE"
-                        else if (error.message == "PHOTO_TOO_LARGE") "PHOTO_TOO_LARGE" else "PHOTO_DECODE_FAILED").toString())
+                        else if (error.message == "PHOTO_TOO_LARGE") "PHOTO_TOO_LARGE"
+                        else if (generateSequence(error) { it.cause }.take(8).any { it is CloudFailure &&
+                            it.reason in setOf("cloud_location_expired", "cloud_page_expired") }) "PHOTO_LOCATION_EXPIRED"
+                        else "PHOTO_DECODE_FAILED").toString())
             } finally {
                 connection?.disconnect(); connection = null
                 if (uri.startsWith("smb://") || uri.startsWith("cloud://") || uri.startsWith("usb://") || uri.startsWith("pdfpage://") || uri.startsWith("comic://")) releaseStream(resolved)
@@ -347,7 +350,7 @@ internal class PhotoBridge(
         depthJobs.remove(id)?.cancelled = true
         portraitJobs.entries.filter { it.value.id == id }.forEach { it.value.cancelled = true; portraitJobs.remove(it.key) }
         keptDepth.remove(id)
-        files.remove(id)?.release()
+        files.remove(id)?.let { it.release(); PhotoPages.clear(id) }
     }
     fun cancelDepth() = synchronized(PhotoCache.lock) {
         depthJobs.values.forEach { it.cancelled = true }
@@ -465,7 +468,8 @@ internal class PhotoBridge(
                 val cached = if (target.length() == w.toLong()*h*4 && metadata.isFile)
                     runCatching { JSONObject(metadata.readText()).takeIf { PhotoDepthModel.ofCache(it.optString("photo_cache")) in accepted } }.getOrNull() else null
                 val leftEye = job.source.nativeStereo && job.sceneToken > 0
-                fun variant(model: PhotoDepthModel) = model.cache + if (leftEye) "-left" else ""
+                val pages = if (leftEye || job.sceneToken > 0) 0f else PhotoPages.split(id)
+                fun variant(model: PhotoDepthModel) = model.cache + (if (leftEye) "-left" else "") + if (pages > 0f) "-pages${PhotoPages.seam(w, pages)}" else ""
                 // An animation's frame snapshot is not the file a later opening would hash.
                 val store = if (cached == null && snapshot == null && id in job.owner.keptDepth) PhotoDepthStore(app.cacheDir) else null
                 val keys = store?.keys(source, PhotoDepthModel.entries.map(::variant))
@@ -494,7 +498,10 @@ internal class PhotoBridge(
                     used = job.model
                     stage(id,"input")
                     val inputStarted = System.nanoTime()
-                    val input = PhotoDepthInput.prepare(source, used.width, used.height, selectLeftEye = leftEye)
+                    val cut = if (pages > 0f) PhotoPages.seam(w, pages).toFloat() / w else 0f
+                    val inputs = PhotoDepthInput.prepareRegions(source, used.width, used.height, selectLeftEye = leftEye,
+                        regions = if (pages > 0f) listOf(0f..cut, cut..1f) else listOf(0f..1f))
+                    val input = inputs.first()
                     val inputMs = (System.nanoTime() - inputStarted) / 1_000_000.0
                     val content = input.content
                     checkDepth()
@@ -507,11 +514,24 @@ internal class PhotoBridge(
                         checkHeadroom(false)
                         val runtime = JSONObject(DepthNative.describe(handle)).put("session_reused", reused)
                         stage(id,"inference")
-                        JSONObject(DepthNative.processPhoto(handle,input.rgb,output,content.x,content.y,content.width,content.height))
+                        if (inputs.size == 1) JSONObject(DepthNative.processPhoto(handle,input.rgb,output,content.x,content.y,content.width,content.height))
                             .put("runtime",runtime).put("model_reused",reused).put("depth_cached",false)
+                        else {
+                            // A spread: each page inferred and normalized alone, then joined in its own columns.
+                            var page = JSONObject()
+                            val maps = inputs.map { part ->
+                                checkDepth()
+                                page = JSONObject(DepthNative.processPhoto(handle,part.rgb,output,content.x,content.y,content.width,content.height))
+                                require(page.optString("state") == "ready")
+                                output.rewind()
+                                PhotoDepthInput.resample(output, used.width, used.height, w, h)
+                            }
+                            near.put(PhotoPages.compose(maps[0], maps[1], w, h, pages)); near.rewind()
+                            page.put("runtime",runtime).put("model_reused",reused).put("depth_cached",false).put("depth_pages",2)
+                        }
                     }
                     // The fast map covers the same whole-photo stretch; resample it to the shared map size.
-                    if (output !== near) { near.put(PhotoDepthInput.resample(output, used.width, used.height, w, h)); near.rewind() }
+                    if (inputs.size == 1 && output !== near) { near.put(PhotoDepthInput.resample(output, used.width, used.height, w, h)); near.rewind() }
                     result.put("input_ms",inputMs).put("input_steps",input.steps).put("depth_total_ms",(System.nanoTime()-modelStarted)/1_000_000.0)
                     require(result.optString("state") == "ready")
                     checkDepth()
@@ -536,7 +556,7 @@ internal class PhotoBridge(
                     val stereoStarted = System.nanoTime()
                     val rect = result.getJSONArray("rect")
                     val pair = PhotoStereo.prepare(source,near,FloatArray(4) { rect.getDouble(it).toFloat() },job.strength,id,job.rotation,job.convergence,
-                        used == PhotoDepthModel.FAST)
+                        used == PhotoDepthModel.FAST, PhotoStereo.stretch, pages = pages)
                     pair.keys().forEach { key -> result.put(key,pair.get(key)) }
                     result.put("stereo_total_ms",(System.nanoTime()-stereoStarted)/1_000_000.0)
                 }

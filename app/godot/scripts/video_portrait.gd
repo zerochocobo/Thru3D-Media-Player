@@ -6,7 +6,15 @@ const MIN_DISTANCE := 1.2
 const MAX_DISTANCE := 6.0
 const CUT_STEP := 0.3 # inverse metres; prototype comfort limit, pending headset validation.
 const SLEW := 0.12
+const Facing := preload("res://scripts/surface_facing.gd")
+const TEXTURES := ["color_texture", "alpha_texture", "portrait_texture"]
+static var _core_shaders := {}
 var material := ShaderMaterial.new()
+## The solid body drawn again in the opaque pass (material's next pass), writing depth there.
+## depth_prepass_alpha alone writes depth only in the engine's depth prepass, which the
+## Compatibility renderer skips on Adreno, Mali and PowerVR: the headsets' scene leaves and
+## glass, drawn after the portrait, then covered the person or showed through them.
+var core := ShaderMaterial.new()
 var mesh: ArrayMesh
 var active := false
 var automatic := false # Keep the source screen's distance unless the user opts into size anchoring.
@@ -154,10 +162,35 @@ func update(binding: RefCounted, panel: MeshInstance3D, size: Vector2, eye: Vect
 		for uv in [Vector2.ZERO, Vector2.ONE, Vector2(0,1), Vector2(1,0)]:
 			bounds = bounds.expand(point(uv, reference, size, d))
 	panel.custom_aabb = bounds.grow(0.05)
+	sync_core(binding)
 	panel.material_override = material
 	active = true
 	fallback = ""
 	return true
+
+## The opaque-pass variant of a portrait shader: same geometry and colour, Alpha below 0.99 discarded.
+static func core_shader(source: Shader) -> Shader:
+	source = Facing.source(source)
+	if not source: return null
+	if not _core_shaders.has(source):
+		var code := source.code.replace("depth_prepass_alpha, blend_mix", "depth_draw_opaque") \
+			.replace("#include \"res://shaders/video_portrait.gdshaderinc\"", "#define PORTRAIT_CORE\n#include \"res://shaders/video_portrait.gdshaderinc\"")
+		var shader: Shader = null
+		if code.contains("depth_draw_opaque") and code.contains("PORTRAIT_CORE"):
+			shader = Shader.new(); shader.code = code; shader.resource_name = source.resource_name + "_core"
+		_core_shaders[source] = shader
+	return _core_shaders[source]
+
+## Mirrors every uniform the portrait material has now, so both passes place the same body.
+func sync_core(binding: RefCounted) -> void:
+	var shader := core_shader(material.shader)
+	if not shader: material.next_pass = null; return
+	var parameters := {}
+	for uniform in material.shader.get_shader_uniform_list():
+		var name := str(uniform.name)
+		if not name in TEXTURES: parameters[name] = material.get_shader_parameter(name)
+	binding.share_with(core, parameters, true, shader)
+	material.next_pass = core
 
 func snapshot() -> Dictionary:
 	return {"requested": true, "active": active, "automatic": automatic, "strength": strength,

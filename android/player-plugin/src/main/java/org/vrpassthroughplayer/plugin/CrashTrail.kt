@@ -65,6 +65,8 @@ internal object CrashTrail {
 
     /** One step: "photo.decode", "w=4000 h=3000 sample=2". Cheap enough for every image, not every frame. */
     fun mark(stage: String, detail: String = "") {
+        // Godot's page-layer states join the browser's own white-page trail (WebBrowserTrail).
+        if (stage.startsWith("web.")) WebBrowserTrail.mark(stage, detail)
         val webBeta = stage.startsWith("web_beta.")
         val map = buffer
         if (map == null && !webBeta) return

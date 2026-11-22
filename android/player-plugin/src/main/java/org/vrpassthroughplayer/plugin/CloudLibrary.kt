@@ -121,10 +121,10 @@ internal object CloudLibrary {
         if (retired > 0) runCatching { OpenListBackend.remove(retired) }
         CloudAccountChanges.emit()
     }
-    private fun source(account: JSONObject, client: CloudClient, file: CloudFile, archiveReading: Boolean = false): CloudStreamSource {
+    private fun source(account: JSONObject, client: CloudClient, file: CloudFile, objectLookup: Boolean = false): CloudStreamSource {
         val resolve = {
             if (identity(credentials(account.getString("id"))) != identity(account)) throw CloudFailure("cloud_login_required")
-            if (archiveReading && client is OpenListBackend.Client) client.resolveArchive(file) else client.resolve(file)
+            if (objectLookup && client is OpenListBackend.Client) client.resolveArchive(file) else client.resolve(file)
         }
         return if (OpenListBackend.supported(account.getString("provider")))
             CloudStreamSource(file.size, resolve, linkConnection = OpenListBackend::connection)
@@ -348,6 +348,20 @@ internal object CloudLibrary {
         } catch (error: Exception) { source.close(); throw error }
     }
 
+    /** One object located by the browsed page, its provider ID or one bounded lookup. Listing the
+     * parent to find it took 12–25 s per file in a 1,000-photo Baidu folder; it stays only as the
+     * fallback when a path-only open (history, no browsed page) has no provider lookup. */
+    private fun locate(client: CloudClient, remote: String, selected: CloudFile?, listFallback: Boolean = true): CloudFile {
+        if (client is OpenListBackend.Client) {
+            try { return client.findArchiveForPlayback(remote, selected) }
+            catch (error: CloudFailure) { if (!listFallback || error.reason != "cloud_location_expired") throw error }
+        }
+        return client.findForPlayback(remote, selected)
+    }
+
+    /** Photos, preloads and previews each keep their own lease beside video and one another. */
+    fun photoDownload(uri: String, server: LocalStreamServer): String = audioDownload(uri, server)
+
     /** Independent download lease: browsing photos or starting another video must not revoke it. */
     fun audioDownload(uri: String, server: LocalStreamServer, rangeWindow: Long = Long.MAX_VALUE, archiveReading: Boolean = false,
         archiveCache: SmallRarCache? = null): String = safe {
@@ -355,10 +369,9 @@ internal object CloudLibrary {
         val account = credentials(id)
         val companions = playbackPages.forVideo(id, identity(account), remote)
         val client = drive(account, folderId = companions.folderId)
-        val selected = companions.files.singleOrNull { it.id == remote && !it.folder }
-        val file = if (archiveReading && client is OpenListBackend.Client) client.findArchiveForPlayback(remote,selected)
-            else client.findForPlayback(remote, selected)
-        val source = source(account, client, file, archiveReading)
+        // Archives keep their bounded lookup: a big comic folder must not fall back to a full listing.
+        val file = locate(client, remote, companions.files.singleOrNull { it.id == remote && !it.folder }, listFallback = !archiveReading)
+        val source = source(account, client, file, objectLookup = true)
         if(rangeWindow<Long.MAX_VALUE)source.boundedRanges(rangeWindow)
         if(archiveReading)source.forArchiveReading()
         var published: StreamSource = source
@@ -381,8 +394,8 @@ internal object CloudLibrary {
         val account = credentials(id)
         val companions = playbackPages.forVideo(id, identity(account), remote)
         val client = drive(account, folderId = companions.folderId)
-        val file = client.findForPlayback(remote, companions.files.singleOrNull { it.id == remote && !it.folder })
-        val source = source(account, client, file)
+        val file = locate(client, remote, companions.files.singleOrNull { it.id == remote && !it.folder })
+        val source = source(account, client, file, objectLookup = true)
         source.prepare()
         synchronized(this) {
             if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")

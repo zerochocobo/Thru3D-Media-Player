@@ -96,9 +96,20 @@ var _scroll_hover_until := 0
 var windows := {}
 var low_end := false
 # Page raster per CSS pixel, in thirds: 1440x900, 1920x1200 or 2400x1500 at the default size.
+# Picture quality mode leaves it alone: a denser raster needs a restart and costs scrolling frames.
 const CLARITY_UNITS := {"low": 3, "medium": 4, "high": 5}
+const Video := preload("res://scripts/mpv_video_display.gd")
+const ColorGrade := preload("res://scripts/color_grade.gd")
 var clarity := "high"
 var pixel_units := 5
+## Picture quality mode for what a window shows (its focused region, else the page), with the player's own
+## sharpness, denoise and colour (picture_provider: its picture defaults).
+var picture_quality := false
+var picture_provider: Callable
+## A sharpness being dragged in the browser's picture menu, shown before it is saved.
+var picture_preview := {}
+var _picture_source: Variant = null
+var _picture_look := PackedFloat32Array()
 var window_created: Callable
 var paired_layout := false
 var focused_window := 1
@@ -172,6 +183,28 @@ func configure_quality(value: bool, choice: String = "") -> void:
 		if not JavaClassWrapper.get_exception() and applied in CLARITY_UNITS.values(): pixel_units = applied
 ## A changed choice waits for the next app start; Gecko keeps its first density.
 func clarity_pending() -> bool: return CLARITY_UNITS[clarity] != pixel_units
+
+## The player's look as WebBrowserPicture's first 15 values (no region); empty when it does nothing.
+func picture_look() -> PackedFloat32Array:
+	var defaults: Variant = picture_provider.call() if picture_provider.is_valid() else null
+	if defaults is Dictionary and not picture_preview.is_empty(): defaults = defaults.merged(picture_preview, true)
+	if defaults != _picture_source:
+		_picture_source = defaults.duplicate(true) if defaults is Dictionary else null
+		_picture_look = look_for(defaults) if defaults is Dictionary else PackedFloat32Array()
+	return _picture_look
+
+static func look_for(picture: Dictionary) -> PackedFloat32Array:
+	var grade := ColorGrade.new()
+	grade.restore(picture.get("color_grade", {}))
+	var p := grade.values()
+	var gain := grade.gain()
+	var graded := grade.preset != "Original"
+	var denoise: Vector2 = Video.DENOISE[clampi(int(picture.get("picture_denoise", 0)), 0, Video.DENOISE.size() - 1)]
+	var sharpen := Video.sharpen_strength(float(picture.get("picture_sharpness", Video.SHARPNESS_DEFAULT)))
+	if sharpen <= 0.0 and not graded and denoise.y <= 0.0: return PackedFloat32Array()
+	return PackedFloat32Array([sharpen, 1.0 if graded else 0.0, gain.x, gain.y, gain.z,
+		p.red_gamma * p.gamma, p.green_gamma * p.gamma, p.blue_gamma * p.gamma,
+		p.red_offset, p.green_offset, p.blue_offset, p.contrast, p.saturation, denoise.x, denoise.y])
 func supported() -> bool: return Distribution.web_browser_enabled() and Methods.supports(menu.platform, "web_browser_navigate")
 func active() -> bool: return opened and not scene_suspended and menu.visible and menu.section == menu.Section.WEB
 func cinema_video_active() -> bool:
@@ -345,7 +378,7 @@ func tick() -> void:
 	# Only fields the chrome draws. Window states also carry each video's advancing time;
 	# comparing those rebuilt every browser window four times a second during playback.
 	var chrome: Array = data.get("windows", []).map(func(item): return [item.get("id"), item.get("tab_id"), item.get("url"),
-		item.get("title"), item.get("back"), item.get("forward"), item.get("error"), item.get("editing"), item.get("loading"), item.get("start_page"), item.get("network_capture_available"), item.get("network_capture_enabled"), beta_site_available(item), beta_media_ready(item)])
+		item.get("title"), item.get("back"), item.get("forward"), item.get("error"), item.get("error_reason"), item.get("http_status"), item.get("editing"), item.get("loading"), item.get("start_page"), item.get("network_capture_available"), item.get("network_capture_enabled"), beta_site_available(item), beta_media_ready(item)])
 	var signature := str([draft, data.get("back"), data.get("forward"), data.get("error"), handoff_error, menu.diagnostic_quick,
 		chrome, not (cinema_provider.call() if cinema_provider.is_valid() else {}).is_empty(), data.get("tab_list", []), data.get("operation_error", ""), data.get("loading"), data.get("start_page"), data.get("videos", []).size(), data.get("direct_selection", ""), data.get("native_supported", false), handoff, handoff_beta, data.get("editing", false), data.get("network_capture_available"), data.get("network_capture_enabled"), beta_site_available(data), beta_media_ready(data), menu.web_video.result.get("state", "")])
 	if signature != _signature and hand.is_empty():
@@ -647,6 +680,24 @@ func owns_handoff(host: Node, context: Dictionary) -> bool:
 	var current := window_state(host.window_id)
 	return not context.is_empty() and int(context.get("window", 0)) == host.window_id and int(context.get("tab", 0)) == int(current.get("tab_id", 0)) and int(context.get("navigation", 0)) == int(current.get("navigation", 0)) and str(context.get("origin", "")) == str(current.get("url", ""))
 
+## Same reasons as WebBrowserLoadError.kt; an HTTP error names its class and code.
+const LOAD_ERRORS := {"dns": "Server not found", "offline": "No network connection", "timeout": "Connection timed out",
+	"refused": "Connection refused", "interrupted": "Connection interrupted", "certificate": "Untrusted certificate",
+	"secure": "Secure connection failed", "proxy": "Proxy unavailable", "redirect": "Too many redirects",
+	"content": "Page content error", "address": "Unsupported address", "blocked": "Page blocked"}
+
+## The page's load failure or the top document's HTTP error for the address bar, "" when it loaded.
+static func load_status(state: Dictionary) -> String:
+	var error := str(state.get("error", ""))
+	if error == "page_load_failed": return I18n.t(LOAD_ERRORS.get(str(state.get("error_reason", "")), "Unable to load page"))
+	if error in ["browser_crashed", "browser_stopped"]: return I18n.t("Page stopped")
+	if not error.is_empty(): return I18n.t("Unable to load page")
+	var code := int(state.get("http_status", 0))
+	if code < 400 or code > 599: return ""
+	var label: String = "Server error" if code >= 500 else {404: "Page not found", 410: "Page not found", 401: "Sign-in required",
+		407: "Sign-in required", 403: "Access denied", 429: "Too many requests"}.get(code, "Request error")
+	return "%s · HTTP %d" % [I18n.t(label), code]
+
 func prepare_native_playback() -> void:
 	# Explicit player takeover owns the cinema screen. Keep browser pages available
 	# as floating windows; no second extraction or playback request is issued.
@@ -800,7 +851,7 @@ func draw_window(host: Node) -> void:
 	var status := handoff_status() if handoff and owns_handoff(host, handoff_context) else ""
 	var failure_log := false
 	if host.selecting: status = I18n.t("Drag to select")
-	if not str(current.get("error", "")).is_empty(): status = I18n.t("Unable to load page")
+	if not str(current.get("error", "")).is_empty(): status = load_status(current)
 	elif owns_handoff(host, handoff_error):
 		status = str(handoff_error.message)
 		failure_log = handoff_error.has("report")
@@ -808,6 +859,7 @@ func draw_window(host: Node) -> void:
 		var messages := {"tab_limit": "Maximum 4 tabs", "tabs_busy": "Close a tab to free memory", "window_limit": "Window limit reached",
 			"invalid_address": "Invalid address", "bookmark_limit": "Bookmark limit reached", "storage_failed": "Unable to save changes"}
 		status = I18n.t(messages.get(issue, "Unable to open page"))
+	elif status.is_empty(): status = load_status(current)
 	var caption: String = status if not status.is_empty() else address if not address.is_empty() else I18n.t("Enter URL")
 	# A shown Beta failure keeps a send-log button at the bar's end; the address narrows by one tool.
 	var address_width := 0.416 if failure_log else 0.544
