@@ -1,4 +1,4 @@
-/* Current Streamable detail clip, its rendered VideoObject and exact file request. */
+/* Current Streamable clip, its rendered player and exact file request. */
 const Thru3DStreamable=(()=>{
   'use strict';
   const {revision,visible}=Thru3DTikTok;
@@ -6,7 +6,8 @@ const Thru3DStreamable=(()=>{
   const documentPage=value=>{const u=address(value);return !!u&&!u.port&&['streamable.com','www.streamable.com'].includes(u.hostname);};
   const page=value=>{
     const u=address(value);if(!u||!documentPage(value))return null;
-    const id=/^\/([A-Za-z0-9]{3,32})\/?$/.exec(u.pathname)?.[1];return id?{id,page:value}:null;
+    const match=/^\/(e\/)?([A-Za-z0-9]{3,32})\/?$/.exec(u.pathname);
+    return match?{id:match[2],page:value,embedded:!!match[1]}:null;
   };
   const seconds=value=>{
     if(typeof value!=='string'||value.length>64)return 0;
@@ -21,6 +22,14 @@ const Thru3DStreamable=(()=>{
       const canonical=[...document.querySelectorAll('link[rel="canonical"],meta[property="og:url"]')].slice(0,4)
         .map(n=>page(n.href||n.content));
       if(!canonical.length||canonical.some(p=>p?.id!==current.id))return null;
+      if(current.embedded){
+        // The embed player declares a video directly instead of a VideoObject.
+        const declared=video.getAttribute('src');
+        if(video!==document.querySelector('#media-container .player > video#video-player-tag.video-player-tag')||
+          !declared||new URL(declared,current.page).href!==source.href||
+          !Number.isFinite(video.duration)||video.duration<=0||video.duration>86400)return null;
+        return {...current,source:source.href,expected_duration:video.duration};
+      }
       const found=[];let budget=256*1024;
       for(const script of [...document.querySelectorAll('script[type="application/ld+json"]')].slice(0,8)){
         const text=script.textContent;if(typeof text!=='string'||text.length>64*1024||text.length>budget)continue;budget-=text.length;

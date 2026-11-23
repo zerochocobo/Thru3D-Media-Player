@@ -41,6 +41,8 @@ var preparation_api: Object
 var _trail_at := 0
 var _trail_sent := ""
 var _quad := Vector2.ZERO
+## Why the layer's effect thread is being stopped ("idle" or "recovery"); empty when it is not.
+var _stopping := ""
 
 func _release_for_transition() -> bool:
 	if not attached: return true
@@ -161,6 +163,12 @@ func _process(_delta: float) -> void:
 		_release_idle_surface()
 		return
 	if ending: return
+	# A half-stopped layer has no input surface left for Gecko: finish its cleanup, then make a new one.
+	if not _stopping.is_empty():
+		if layer and not layer.destroy(true): hole.visible = false; return
+		if _stopping == "recovery": surface_retries += 1
+		layer = null; attached = false; state = {}; _state_raw = ""; _stopping = ""
+		menu.remove_meta("menu_browser_layer")
 	var conversion: bool = (menu.depth.enabled or menu.depth.matte) and not menu.selecting
 	var matte: bool = menu.depth.matte and not menu.selecting
 	var preparation_pending := false
@@ -238,11 +246,15 @@ func _process(_delta: float) -> void:
 		hole.visible = false; layer.hide()
 		if surface_retries >= 3: status = "surface_recreate_failed"; return
 		if Time.get_ticks_msec() < retry_at: return
-		var stopped: bool = bridge.detachWindowBeforeSessionStop(window_id, generation)
-		if JavaClassWrapper.get_exception() or not stopped: status = "surface_stop_timeout"; retry_at = Time.get_ticks_msec() + 2000; return
-		# Gecko has acknowledged release; only now destroy the OpenXR producer.
-		if not layer.destroy(): status = "surface_stop_timeout"; return
-		layer = null; attached = false; state = {}; _state_raw = ""; surface_retries += 1
+		if attached:
+			var stopped: bool = bridge.detachWindowBeforeSessionStop(window_id, generation)
+			if JavaClassWrapper.get_exception() or not stopped: status = "surface_stop_timeout"; retry_at = Time.get_ticks_msec() + 2000; return
+			attached = false
+		# Gecko has acknowledged release; only now destroy the OpenXR producer. The effect threads stop
+		# off this thread: a blocking stop that timed out was retried every frame and froze the view.
+		_stopping = "recovery"
+		if not layer.destroy(true): status = "surface_stop_timeout"; return
+		_stopping = ""; layer = null; state = {}; _state_raw = ""; surface_retries += 1
 		_create_layer(); retry_at = Time.get_ticks_msec() + 250
 		# The next attach binds the selected page. A global resume could recreate
 		# a blank tab if the user closed the last window during surface recovery.
@@ -290,8 +302,10 @@ func _release_idle_surface() -> void:
 		if JavaClassWrapper.get_exception() or not stopped:
 			status = "surface_stop_timeout"; retry_at = Time.get_ticks_msec() + 2000; return
 	attached = false; state = {}; _state_raw = ""; surface_retries = 0
-	if not layer.destroy(): status = "surface_stop_timeout"; return
-	layer = null
+	# Polled each frame without blocking: picture quality's or 3D's thread stops on its own executor.
+	_stopping = "idle"
+	if not layer.destroy(true): status = "surface_stop_timeout"; return
+	_stopping = ""; layer = null
 	var menu: Node = target.get_ref() if target else null
 	if menu: menu.remove_meta("menu_browser_layer")
 

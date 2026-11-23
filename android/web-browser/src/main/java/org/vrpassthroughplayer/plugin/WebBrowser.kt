@@ -159,9 +159,10 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         var errorPageAt = 0L
         var httpStatus = 0
         var httpStatusUrl = ""
-        /** Per frame: videos, playing, highest readyState, error code, decoded frames. */
-        val mediaTrace = mutableMapOf<WebExtension.Port, LongArray>()
+        val mediaTrace = mutableMapOf<WebExtension.Port, MediaTrace>()
     }
+    private class MediaTrace(val videos: Int, val playing: Int, val ready: Long, val error: Long,
+        val activeFrames: Map<Long, WebBrowserVideoFrames>)
     private val ui = Handler(Looper.getMainLooper())
     private val closed = AtomicBoolean(false)
     private val exiting = AtomicBoolean(false)
@@ -191,6 +192,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         var tab = 0
         var display: GeckoDisplay? = null
         var owner: Tab? = null
+        var drawCallback: Runnable? = null
         var surface: Surface? = null
         var width = 1280
         var height = 800
@@ -294,7 +296,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         ui.post {
             val tab = current()
             val candidates = ArrayList<JSONObject>()
-            if (!closed.get() && active && tab?.url == url) tab.sources.values.forEach { list ->
+            if (!closed.get() && active && tab != null && (tab.url == url || selection.isNotEmpty() &&
+                WebBrowserTwitch.sameHandoffPage(tab.url, url))) tab.sources.values.forEach { list ->
                 for (i in 0 until list.length()) candidates.add(list.getJSONObject(i))
             }
             val chosen = if (selection.isEmpty()) WebBrowserMediaPolicy.extractionCandidate(candidates)
@@ -515,10 +518,14 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         val message = pageBetaVisibility(tab)
         tab.ports.keys.forEach { port -> runCatching { port.postMessage(message) } }
     }
-    private fun sendNetworkPolicy(tab: Tab) {
-        val message = JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
+    private fun networkPolicy(tab: Tab) = JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
             .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url)).put("youku",WebBrowserYouku.enabled(tab.url)).put("iqiyi",WebBrowserIqiyi.enabled(tab.url)).put("niconico",WebBrowserNiconico.observing(tab.url)).put("twitch",WebBrowserTwitch.enabled(tab.url)).put("tiktok",WebBrowserTikTok.observing(tab.url)).put("instagram",WebBrowserInstagram.observing(tab.url)).put("ted",WebBrowserTed.observing(tab.url)).put("redbull",WebBrowserRedBull.observing(tab.url)).put("naver",WebBrowserNaver.observing(tab.url)).put("reddit",WebBrowserReddit.observing(tab.url)).put("streamable",WebBrowserStreamable.observing(tab.url)).put("archive",WebBrowserArchive.observing(tab.url)).put("odysee",WebBrowserOdysee.observing(tab.url)).put("dailymotion",WebBrowserDailymotion.observing(tab.url)).put("dailymotion_owner",tab.url.takeIf{WebBrowserDailymotion.observing(it)}.orEmpty())
             .put("bilibili", bilibiliEnabled(tab)).put("douyin", douyinEnabled(tab)).put("weibo", WebBrowserWeibo.document(tab.url)).put("diagnostics", mediaDiagnosticsEnabled())
+            .put("douyin_playback_log", DouyinPlaybackLog.document(tab.url))
+            .put("redbull_prefer_avc", WebBrowserRedBull.preferAvc(tab.url))
+
+    private fun sendNetworkPolicy(tab: Tab) {
+        val message = networkPolicy(tab)
         tab.ports.keys.forEach { runCatching { it.postMessage(message) } }
     }
     private fun mediaDiagnosticsEnabled() = ((activity()?.applicationInfo?.flags ?: 0) and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
@@ -585,8 +592,6 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         // cursor and keyboard lifecycle to Android's InputMethodManager. A partial custom
         // delegate would suppress those notifications and break CJK input.
         installKeyboardDelegate(tab)
-        // Every composite of this session: the page's last frame time for the white-page verdict.
-        runCatching { session.compositorController.addDrawCallback { if (ownsSession(tab, session)) tab.render.draw(SystemClock.uptimeMillis()) } }
         session.mediaSessionDelegate = object : MediaSession.Delegate {
             override fun onActivated(session: GeckoSession, mediaSession: MediaSession) {
                 if (!ownsSession(tab, session)) return
@@ -619,7 +624,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             override fun onLocationChange(session: GeckoSession, url: String?,
                 perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>, hasUserGesture: Boolean) {
                 if (!ownsSession(tab, session)) return
-                if (tab.url != url) {
+                if (tab.url != url && (url == null || !WebBrowserTwitch.sameHandoffPage(tab.url, url))) {
                     tab.pauseToken = 0; tab.pauseReports.clear()
                     tab.sources.clear()
                     // SPA navigation has no onPageStart. Do not leave the previous video's
@@ -873,6 +878,17 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                         val items = data.optJSONArray("videos") ?: return
                         tab.lastMediaReport = SystemClock.uptimeMillis()
                         traceMedia(tab, port, items)
+                        if (DouyinPlaybackLog.enabled && port.sender.isTopLevel && current() === tab &&
+                            DouyinPlaybackLog.document(tab.url) && displayed(tab) && WebBrowserTrail.hosts) {
+                            val slot = window(tab.window)
+                            val display = slot.display
+                            val nav = tab.navigation
+                            val generation = slot.generation
+                            if (display != null) douyinLog.observe(items, display, slot.width, slot.height, tab.id, nav) {
+                                !closed.get() && active && WebBrowserTrail.hosts && current() === tab && tab.navigation == nav &&
+                                    slot.display === display && slot.generation == generation && tab.ports[port] == nav
+                            }
+                        }
                         if (tab.pauseToken > 0 && data.optLong("pause_token") == tab.pauseToken && data.optBoolean("pause_held"))
                             tab.pauseReports[port] = tab.pauseToken to data.optBoolean("pause_has_media")
                         else tab.pauseReports.remove(port)
@@ -881,7 +897,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                 pending.suspended.add(port) else pending.suspended.remove(port)
                             if (pending.suspended.containsAll(pending.ports)) {
                                 pendingRetention = null
-                                pending.ticket.complete(tab.awake && WebBrowserPlaybackHold.Owner(tab.id, tab.navigation, tab.url, tab.pauseToken) == pending.owner &&
+                                pending.ticket.complete(tab.awake && holdOwner(tab) == pending.owner &&
                                     tab.ports.filterValues { it == tab.navigation }.keys.containsAll(pending.ports))
                             }
                         }
@@ -910,7 +926,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val archiveEnabled = WebBrowserArchive.observing(tab.url)
                             val odyseeEnabled = WebBrowserOdysee.observing(tab.url)
                             val dailymotionEnabled = WebBrowserDailymotion.enabled(tab.url)
-                            val network = if (networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled || youkuEnabled || iqiyiEnabled || niconicoEnabled || twitchEnabled || tiktokEnabled || instagramEnabled || tedEnabled || redbullEnabled || naverEnabled || redditEnabled || streamableEnabled || archiveEnabled || odyseeEnabled || dailymotionEnabled) WebBrowserNetworkMedia.candidates(item,includeSegments=tencentEnabled || iqiyiEnabled || niconicoEnabled || tedEnabled || redbullEnabled || naverEnabled || redditEnabled || streamableEnabled || archiveEnabled || odyseeEnabled || dailymotionEnabled) else JSONArray()
+                            val network = if (networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled || youkuEnabled || iqiyiEnabled || niconicoEnabled || twitchEnabled || tiktokEnabled || instagramEnabled || tedEnabled || redbullEnabled || naverEnabled || redditEnabled || streamableEnabled || archiveEnabled || odyseeEnabled || dailymotionEnabled) WebBrowserNetworkMedia.candidates(item,includeSegments=tencentEnabled || mangoEnabled || iqiyiEnabled || niconicoEnabled || tedEnabled || redbullEnabled || naverEnabled || redditEnabled || streamableEnabled || archiveEnabled || odyseeEnabled || dailymotionEnabled) else JSONArray()
                             val bilibili = item.optJSONObject("bilibili")?.takeIf { bilibiliEnabled &&
                                 !item.optBoolean("protected") && it.toString().length <= 96 * 1024 && it.optString("page") == tab.url }
                             val biliLive = if (bilibiliEnabled && port.sender.isTopLevel && item.optString("frame") == port.sender.url)
@@ -1187,9 +1203,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 })
                 port.postMessage(JSONObject().put("action", if (displayed(tab)) "resume" else "suspend"))
                 port.postMessage(pageBetaVisibility(tab))
-                port.postMessage(JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
-                    .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url)).put("youku",WebBrowserYouku.enabled(tab.url)).put("iqiyi",WebBrowserIqiyi.enabled(tab.url)).put("niconico",WebBrowserNiconico.observing(tab.url)).put("twitch",WebBrowserTwitch.enabled(tab.url)).put("tiktok",WebBrowserTikTok.observing(tab.url)).put("instagram",WebBrowserInstagram.observing(tab.url)).put("ted",WebBrowserTed.observing(tab.url)).put("redbull",WebBrowserRedBull.observing(tab.url)).put("naver",WebBrowserNaver.observing(tab.url)).put("reddit",WebBrowserReddit.observing(tab.url)).put("streamable",WebBrowserStreamable.observing(tab.url)).put("archive",WebBrowserArchive.observing(tab.url)).put("odysee",WebBrowserOdysee.observing(tab.url)).put("dailymotion",WebBrowserDailymotion.observing(tab.url)).put("dailymotion_owner",tab.url.takeIf{WebBrowserDailymotion.observing(it)}.orEmpty())
-                    .put("bilibili", bilibiliEnabled(tab)).put("douyin", douyinEnabled(tab)).put("weibo", WebBrowserWeibo.document(tab.url)).put("diagnostics", mediaDiagnosticsEnabled()))
+                port.postMessage(networkPolicy(tab))
                 if (tab.pauseToken > 0) port.postMessage(JSONObject().put("action", "pause_media").put("token", tab.pauseToken))
             }
         }, NATIVE_APP)
@@ -1222,7 +1236,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         val parked = tab.parkedReturn
         val parkedMatch = !capture && parked != null && parked.optLong("navigation") == request.optLong("navigation", -1) &&
             parked.optLong("request") == request.optLong("request", -1) && parked.optString("origin") == request.optString("origin")
-        if (tab.url != request.optString("origin") || (!parkedMatch && (!tab.awake ||
+        if (!WebBrowserTwitch.sameHandoffPage(tab.url, request.optString("origin")) || (!parkedMatch && (!tab.awake ||
             tab.navigation != request.optLong("navigation", -1) || !tab.fullscreen.matches(request.optLong("request"))))) return
         val port = if (parkedMatch) null else tab.fullscreenPort?.takeIf { tab.ports[it] == tab.navigation }
         if (capture) {
@@ -1328,14 +1342,22 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         if (!tab.awake || !target.isValid || !active || slot.tab != tab.id) return
         if (slot.owner === tab) return
         releaseDisplay(slot)
-        val next = tab.session.acquireDisplay()
+        val session = tab.session
+        val next = session.acquireDisplay()
         slot.display = next; slot.owner = tab
+        tab.render.bind(SystemClock.uptimeMillis())
         next.surfaceChanged(GeckoDisplay.SurfaceInfo.Builder(target).size(slot.width, slot.height)
             .newSurfaceProvider {
                 if (slot.owner === tab) { WebBrowserTrail.mark("web.surface", "lost w=${slot.id} gen=${slot.generation}"); releaseDisplay(slot); slot.needsSurface = true; publish() }
             }.build())
+        if (slot.display !== next) return
+        // Gecko clears draw callbacks when its compositor detaches. Register for each display binding.
+        val draw = Runnable {
+            if (slot.display === next && ownsSession(tab, session)) tab.render.draw(SystemClock.uptimeMillis())
+        }
+        runCatching { session.compositorController.addDrawCallback(draw) }.onSuccess { slot.drawCallback = draw }
+            .onFailure { WebBrowserTrail.mark("web.frames", "w=${slot.id} tab=${tab.id} callback_error=${it.javaClass.simpleName}") }
         tab.session.setActive(true)
-        tab.render.bind(SystemClock.uptimeMillis())
         WebBrowserTrail.mark("web.display", "bind w=${slot.id} tab=${tab.id} gen=${slot.generation} size=${slot.width}x${slot.height}")
         scheduleRenderCheck()
         tab.session.setFocused(slot.id == focusedWindow)
@@ -1344,9 +1366,10 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         sendPageBetaVisibility(tab)
     }
     private fun releaseDisplay(slot: Window) {
-        val old = slot.display; val owner = slot.owner
-        slot.display = null; slot.owner = null
+        val old = slot.display; val owner = slot.owner; val draw = slot.drawCallback
+        slot.display = null; slot.owner = null; slot.drawCallback = null
         if (old != null && owner != null) {
+            if (draw != null) runCatching { owner.session.compositorController.removeDrawCallback(draw) }
             owner.render.unbind()
             WebBrowserTrail.mark("web.display", "release w=${slot.id} tab=${owner.id} draws=${owner.render.draws}")
             old.surfaceDestroyed(); owner.session.releaseDisplay(old)
@@ -1354,26 +1377,41 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     }
 
     private fun traceMedia(tab: Tab, port: WebExtension.Port, items: JSONArray) {
-        val summary = LongArray(7)
+        val now = SystemClock.uptimeMillis()
+        val previous = tab.mediaTrace[port]?.activeFrames.orEmpty()
+        val activeFrames = mutableMapOf<Long, WebBrowserVideoFrames>()
+        var interval = WebBrowserVideoFrames.Interval()
+        var videos = 0
+        var playing = 0
+        var ready = 0L
+        var error = 0L
         for (index in 0 until minOf(16, items.length())) {
             val item = items.optJSONObject(index) ?: continue
             val playback = WebBrowserCaptureDiagnostics.playback(item)
-            summary[0]++
-            if (item.optBoolean("playing")) summary[1]++
-            summary[2] = maxOf(summary[2], playback.optLong("ready_state"))
-            summary[3] = maxOf(summary[3], playback.optLong("error_code"))
-            summary[4] += playback.optLong("decoded_frames")
-            summary[5] += playback.optLong("presented_frames")
-            summary[6] += playback.optLong("dropped_frames")
+            videos++
+            ready = maxOf(ready, playback.optLong("ready_state"))
+            error = maxOf(error, playback.optLong("error_code"))
+            if (!item.optBoolean("playing")) continue
+            playing++
+            val id = item.optLong("id")
+            val epoch = item.optLong("network_epoch")
+            val decoded = playback.optLong("decoded_frames", -1)
+            val presented = playback.optLong("presented_frames", -1)
+            val dropped = playback.optLong("dropped_frames", -1)
+            if (id <= 0 || epoch <= 0 || decoded < 0 || presented < 0 || dropped < 0 || id in activeFrames) continue
+            val frames = WebBrowserVideoFrames(id, epoch, now, decoded, presented, dropped)
+            activeFrames[id] = frames
+            interval += frames.since(previous[id], tab.render.boundAt)
         }
-        tab.mediaTrace[port] = summary
+        tab.mediaTrace[port] = MediaTrace(videos, playing, ready, error, activeFrames)
         val all = tab.mediaTrace.values
-        val playing = all.sumOf { it[1] }
-        tab.render.media(SystemClock.uptimeMillis(), playing > 0, all.sumOf { it[4] }, all.sumOf { it[5] }, all.sumOf { it[6] })
-        WebBrowserTrail.change("media:${tab.id}", "web.media", "tab=${tab.id} videos=${all.sumOf { it[0] }} playing=$playing " +
-            "ready=${all.maxOf { it[2] }} error=${all.maxOf { it[3] }}")
+        val totalPlaying = all.sumOf { it.playing }
+        tab.render.media(now, totalPlaying > 0, interval)
+        WebBrowserTrail.change("media:${tab.id}", "web.media", "tab=${tab.id} videos=${all.sumOf { it.videos }} playing=$totalPlaying " +
+            "ready=${all.maxOf { it.ready }} error=${all.maxOf { it.error }}")
     }
 
+    private val douyinLog by lazy { DouyinPlaybackLog() }
     private var renderCheckScheduled = false
     private var lastProbe = 0L
     private fun scheduleRenderCheck() {
@@ -1387,13 +1425,17 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         val shown = windows.mapNotNull { slot -> slot.owner?.let { slot to it } }
         WebBrowserTrail.publish(shown.map { (slot, tab) -> renderState(slot, tab, now) })
         for ((slot, tab) in shown) {
-            WebBrowserTrail.change("frames:${slot.id}", "web.frames", "w=${slot.id} tab=${tab.id} gen=${slot.generation} " +
-                if (tab.render.draws > 0) "seen" else "none")
+            val frameState = when {
+                tab.render.draws > 0 -> "seen"
+                tab.render.composite -> "first_composite_only"
+                else -> "none"
+            }
+            WebBrowserTrail.change("frames:${slot.id}", "web.frames", "w=${slot.id} tab=${tab.id} gen=${slot.generation} $frameState")
             // Smoothness per site: composites, hitches while video decodes and the video's shown/dropped frames.
             tab.render.perf(now)?.let { perf ->
                 val host = WebBrowserTrail.host(tab.url)
                 WebBrowserTrail.change("perf:${slot.id}", "web.perf", "w=${slot.id} tab=${tab.id} host=$host size=${slot.width}x${slot.height} " +
-                    "videos=${tab.mediaTrace.values.sumOf { it[0] }} $perf", "$host:${slot.width}x${slot.height}:${perf.signature()}")
+                    "videos=${tab.mediaTrace.values.sumOf { it.videos }} $perf", "$host:${slot.width}x${slot.height}:${perf.signature()}")
             }
             val verdict = tab.render.verdict(now)
             for (reason in verdict.recovered) WebBrowserTrail.mark("web.white_recovered", "w=${slot.id} tab=${tab.id} reason=$reason", force = true)
@@ -1411,7 +1453,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             "error=${tab.error.ifEmpty { "none" }} composite=${if (r.composite) 1 else 0} contentful=${if (r.contentfulPaint) 1 else 0} " +
             "surface=${slot.width}x${slot.height} gen=${slot.generation} valid=${if (slot.surface?.isValid == true) 1 else 0} " +
             "bound_ms=${if (r.bound) now - r.boundAt else -1} draws=${r.draws} last_draw_ms=${if (r.lastDraw > 0) now - r.lastDraw else -1} " +
-            "videos=${media.sumOf { it[0] }} playing=${media.sumOf { it[1] }} decoding=${if (r.decodingAt(now)) 1 else 0} " +
+            "videos=${media.sumOf { it.videos }} playing=${media.sumOf { it.playing }} decoding=${if (r.decodingAt(now)) 1 else 0} " +
             "extension=$extensionState" + (if (r.lastPerf.isEmpty()) "" else " last_perf: ${r.lastPerf}")
     }
     /** What Gecko itself composited, as colour ratios: white here means the page, not the XR layer. */
@@ -1449,7 +1491,9 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     fun awaitMediaRelease(): Boolean = mediaRelease.await(5000)
 
     private fun holdOwner(request: JSONObject) = WebBrowserPlaybackHold.Owner(request.optInt("tab"),
-        request.optLong("navigation", -1), request.optString("origin"), request.optLong("pause_token"))
+        request.optLong("navigation", -1), WebBrowserTwitch.handoffPage(request.optString("origin")), request.optLong("pause_token"))
+    private fun holdOwner(tab: Tab) = WebBrowserPlaybackHold.Owner(tab.id, tab.navigation,
+        WebBrowserTwitch.handoffPage(tab.url), tab.pauseToken)
     private fun pauseConfirmed(tab: Tab): Boolean = tab.pauseToken > 0 &&
         tab.ports.filterValues { it == tab.navigation }.keys.let { ports ->
             ports.isNotEmpty() && ports.all { tab.pauseReports[it]?.first == tab.pauseToken } &&
@@ -1464,7 +1508,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == request.optInt("window") }
                 ?: return
             if (!tab.awake || window(tab.window).tab != tab.id || memoryTight()) return
-            val current = WebBrowserPlaybackHold.Owner(tab.id, tab.navigation, tab.url, tab.pauseToken)
+            val current = holdOwner(tab)
             if (!playbackHold.retain(holdOwner(request), current, pauseConfirmed(tab))) return
             syncPlaybackPriority()
             if (request.optBoolean("hide")) {
@@ -1483,7 +1527,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
 
     private fun resumeRetainedPage(request: JSONObject) {
         val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == request.optInt("window") }
-        if (tab == null || !tab.awake || tab.navigation != request.optLong("navigation", -1) || tab.url != request.optString("origin")) {
+        if (tab == null || !tab.awake || tab.navigation != request.optLong("navigation", -1) ||
+            !WebBrowserTwitch.sameHandoffPage(tab.url, request.optString("origin"))) {
             // A killed/navigated document cannot be reconstructed as a successful return.
             // Show surviving live windows; only an explicit user action may reload.
             active = true
@@ -1747,7 +1792,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 if (playbackHold.release(holdOwner(request))) {
                     syncPlaybackPriority()
                     tabs.firstOrNull { it.id == request.optInt("tab") && it.navigation == request.optLong("navigation", -1) &&
-                        it.url == request.optString("origin") && it.pauseToken == request.optLong("pause_token") }?.let { tab ->
+                        WebBrowserTwitch.sameHandoffPage(it.url, request.optString("origin")) && it.pauseToken == request.optLong("pause_token") }?.let { tab ->
                         tab.ports.keys.forEach { runCatching { it.postMessage(JSONObject().put("action", "release_pause_media")
                             .put("token", tab.pauseToken).put("play", false)) } }
                         tab.pauseToken = 0; tab.pauseReports.clear(); tab.pauseWasPlaying = false; tab.pauseHasDom = false
@@ -1756,10 +1801,12 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             }
             "restore_weibo", "restore_mango", "restore_youku", "restore_iqiyi", "restore_douyin", "restore_niconico", "restore_twitch", "restore_tiktok", "restore_instagram", "restore_ted", "restore_redbull", "restore_naver", "restore_reddit", "restore_streamable", "restore_archive", "restore_odysee", "restore_dailymotion" -> {
                 val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id } ?: return@dispatch
+                val action = request.optString("action")
+                val origin = request.optString("origin")
                 if (!tab.awake || window(id).tab != tab.id || tab.navigation != request.optLong("navigation", -1) ||
-                    tab.url != request.optString("origin")) return@dispatch
+                    (if (action == "restore_twitch") !WebBrowserTwitch.sameHandoffPage(tab.url, origin) else tab.url != origin)) return@dispatch
                 val selection = request.optString("selection")
-                val kind=when(request.optString("action")) { "restore_mango" -> "mango"; "restore_youku" -> "youku"; "restore_niconico" -> "niconico"; "restore_twitch" -> "twitch"; "restore_tiktok" -> "tiktok"; "restore_instagram" -> "instagram"; "restore_ted" -> "ted"; "restore_redbull" -> "redbull"; "restore_naver" -> "naver"; "restore_reddit" -> "reddit"; "restore_streamable" -> "streamable"; "restore_archive" -> "archive"; "restore_odysee" -> "odysee"; "restore_dailymotion" -> "dailymotion"; "restore_iqiyi" -> "iqiyi"; "restore_douyin" -> "douyin"; else -> "weibo" }
+                val kind=when(action) { "restore_mango" -> "mango"; "restore_youku" -> "youku"; "restore_niconico" -> "niconico"; "restore_twitch" -> "twitch"; "restore_tiktok" -> "tiktok"; "restore_instagram" -> "instagram"; "restore_ted" -> "ted"; "restore_redbull" -> "redbull"; "restore_naver" -> "naver"; "restore_reddit" -> "reddit"; "restore_streamable" -> "streamable"; "restore_archive" -> "archive"; "restore_odysee" -> "odysee"; "restore_dailymotion" -> "dailymotion"; "restore_iqiyi" -> "iqiyi"; "restore_douyin" -> "douyin"; else -> "weibo" }
                 if(kind=="naver"){
                     val witness=tab.naverReturns.remove(selection) ?: return@dispatch
                     if(witness.first !in tab.ports)return@dispatch
@@ -1821,7 +1868,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             "pause_tab", "resume_tab" -> {
                 val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id } ?: return@dispatch
                 if (!tab.awake || window(id).tab != tab.id || tab.navigation != request.optLong("navigation", -1) ||
-                    tab.url != request.optString("origin")) return@dispatch
+                    !WebBrowserTwitch.sameHandoffPage(tab.url, request.optString("origin"))) return@dispatch
                 if (request.optString("action") == "pause_tab") {
                     val token = request.optLong("pause_token")
                     if (token <= 0 || token <= tab.pauseToken) return@dispatch
@@ -2302,6 +2349,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             .put("captured_fullscreen_request", tab?.capturedFullscreenRequest ?: 0)
             .put("video_locate", tab?.videoLocate?.takeIf { it.optLong("navigation") == tab.navigation } ?: JSONObject())
             .put("url", tab?.url ?: "about:blank").put("title", tab?.title.orEmpty())
+            .put("handoff_url", WebBrowserTwitch.handoffPage(tab?.url ?: "about:blank"))
             .put("bookmark_url", tab?.url?.let(WebBrowserAddress::recordable).orEmpty())
             .put("progress", tab?.progress ?: 0).put("back", tab?.back == true || tab?.fullScreen == true).put("forward", tab?.forward == true)
             .put("loading", tab?.loading == true)

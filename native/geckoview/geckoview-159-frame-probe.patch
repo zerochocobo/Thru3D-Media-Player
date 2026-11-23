@@ -1,0 +1,782 @@
+--- a/mobile/android/geckoview/src/main/java/org/mozilla/gecko/gfx/GeckoSurfaceTexture.java
++++ b/mobile/android/geckoview/src/main/java/org/mozilla/gecko/gfx/GeckoSurfaceTexture.java
+@@ -25,6 +25,7 @@
+ 
+   private long mAttachedContext;
+   private int mTexName;
++  private long mFrameProbeGeneration;
+ 
+   private GeckoSurfaceTexture.Callbacks mListener;
+   private AtomicInteger mUseCount;
+@@ -105,6 +106,7 @@
+   public synchronized void updateTexImage() {
+     try {
+       super.updateTexImage();
++      ++mFrameProbeGeneration;
+       if (mListener != null) {
+         mListener.onUpdateTexImage();
+       }
+@@ -239,6 +241,16 @@
+     }
+   }
+ 
++  @WrapForJNI
++  public synchronized long getFrameProbeGeneration() {
++    return mFrameProbeGeneration;
++  }
++
++  @WrapForJNI
++  public synchronized long getFrameProbeTimestamp() {
++    return getTimestamp();
++  }
++
+   public interface Callbacks {
+     void onUpdateTexImage();
+ 
+--- a/gfx/webrender_bindings/RenderAndroidSurfaceTextureHost.h
++++ b/gfx/webrender_bindings/RenderAndroidSurfaceTextureHost.h
+@@ -16,6 +16,8 @@
+ }
+ 
+ namespace wr {
++
++struct AndroidVideoFrameProbe;
+ 
+ class RenderAndroidSurfaceTextureHost final : public RenderTextureHostSWGL {
+  public:
+@@ -55,6 +57,15 @@
+ 
+   void UpdateTexImageIfNecessary();
+ 
++  // Only the render thread can arm this pointer, and only during one draw.
++  int64_t mProbePtsUs = -1;
++  // WebRender samples this texture with its own BT.709 conversion
++  // (TextureExternalBT709); the Surface read below uses the driver's.
++  bool mProbeBt709 = false;
++  static AndroidVideoFrameProbe* sFrameProbe;
++  already_AddRefed<gfx::DataSourceSurface> ReadFrameProbe(
++      const gfx::IntSize& aSize);
++
+   mozilla::java::GeckoSurfaceTexture::GlobalRef mSurfTex;
+   const gfx::IntSize mSize;
+   const gfx::SurfaceFormat mFormat;
+@@ -88,6 +99,18 @@
+   bool mIsRemoteTexture;
+ };
+ 
++struct AndroidVideoFrameProbe {
++  static constexpr int32_t kSide = 17;
++
++  RefPtr<RenderAndroidSurfaceTextureHost> mHost;
++  int64_t mGeneration = 0;
++  int64_t mTimestamp = 0;
++  bool mAmbiguous = false;
++
++  void Record(RenderAndroidSurfaceTextureHost* aHost);
++  bool Matches() const;
++};
++
+ }  // namespace wr
+ }  // namespace mozilla
+ 
+--- a/gfx/webrender_bindings/RenderAndroidSurfaceTextureHost.cpp
++++ b/gfx/webrender_bindings/RenderAndroidSurfaceTextureHost.cpp
+@@ -7,6 +7,8 @@
+ #include "AndroidSurfaceTexture.h"
+ #include "GLContext.h"
+ #include "GLReadTexImageHelper.h"
++#include "ScopedGLHelpers.h"
++#include "mozilla/ScopeExit.h"
+ #include "mozilla/gfx/Logging.h"
+ #include "mozilla/webrender/RenderThread.h"
+ 
+@@ -82,8 +84,63 @@
+   uv0 = transform.TransformPoint(uv0);
+   uv1 = transform.TransformPoint(uv1);
+ 
++  if (sFrameProbe && !mSurfTex->IsSingleBuffer()) {
++    sFrameProbe->Record(this);
++  }
++
+   return NativeTextureToWrExternalImage(mSurfTex->GetTexName(), uv0.x, uv0.y,
+                                         uv1.x, uv1.y);
++}
++
++AndroidVideoFrameProbe* RenderAndroidSurfaceTextureHost::sFrameProbe =
++    nullptr;
++
++void AndroidVideoFrameProbe::Record(RenderAndroidSurfaceTextureHost* aHost) {
++  const auto generation = aHost->mSurfTex->GetFrameProbeGeneration();
++  const auto timestamp = aHost->mSurfTex->GetFrameProbeTimestamp();
++  if (mHost && (mHost.get() != aHost || mGeneration != generation ||
++                mTimestamp != timestamp)) {
++    mAmbiguous = true;
++  }
++  mHost = aHost;
++  mGeneration = generation;
++  mTimestamp = timestamp;
++}
++
++bool AndroidVideoFrameProbe::Matches() const {
++  return mHost && !mAmbiguous && mGeneration > 0 && mTimestamp >= 0 &&
++         mHost->mProbePtsUs >= 0 && mTimestamp / 1000 == mHost->mProbePtsUs &&
++         mHost->mSurfTex &&
++         mHost->mSurfTex->GetFrameProbeGeneration() == mGeneration &&
++         mHost->mSurfTex->GetFrameProbeTimestamp() == mTimestamp;
++}
++
++already_AddRefed<gfx::DataSourceSurface>
++RenderAndroidSurfaceTextureHost::ReadFrameProbe(const gfx::IntSize& aSize) {
++  gl::ScopedBindFramebuffer savedFramebuffers(mGL);
++  gl::ScopedGLState depth(mGL, LOCAL_GL_DEPTH_TEST, false);
++  gl::ScopedGLState stencil(mGL, LOCAL_GL_STENCIL_TEST, false);
++  gl::ScopedGLState cull(mGL, LOCAL_GL_CULL_FACE, false);
++  GLint vao = 0, arrayBuffer = 0;
++  realGLboolean mask[4];
++  mGL->fGetBooleanv(LOCAL_GL_COLOR_WRITEMASK, mask);
++  mGL->fColorMask(true, true, true, true);
++  mGL->fGetIntegerv(LOCAL_GL_ARRAY_BUFFER_BINDING, &arrayBuffer);
++  const bool hasVao = mGL->IsSupported(gl::GLFeature::vertex_array_object);
++  if (hasVao) {
++    mGL->fGetIntegerv(LOCAL_GL_VERTEX_ARRAY_BINDING, &vao);
++    mGL->fBindVertexArray(0);
++  }
++  auto restore = MakeScopeExit([&] {
++    if (hasVao) mGL->fBindVertexArray(vao);
++    mGL->fBindBuffer(LOCAL_GL_ARRAY_BUFFER, arrayBuffer);
++    mGL->fColorMask(mask[0], mask[1], mask[2], mask[3]);
++  });
++  const auto config =
++      layers::ShaderConfigFromTargetAndFormat(LOCAL_GL_TEXTURE_EXTERNAL, mFormat);
++  return mGL->ReadTexImageHelper()->ReadTexImage(
++      mSurfTex->GetTexName(), LOCAL_GL_TEXTURE_EXTERNAL, aSize,
++      GetTextureTransform(), config.mFeatures);
+ }
+ 
+ void RenderAndroidSurfaceTextureHost::Unlock() {}
+--- a/gfx/webrender_bindings/RendererOGL.h
++++ b/gfx/webrender_bindings/RendererOGL.h
+@@ -37,6 +37,7 @@
+ 
+ class RenderCompositor;
+ class RenderTextureHost;
++struct AndroidVideoFrameProbe;
+ 
+ /// Owns the WebRender renderer and GL context.
+ ///
+@@ -160,7 +161,7 @@
+   // that has just been rendered and resolves the request. Must be called after
+   // the frame has been rendered but before RenderCompositor::EndFrame() (which
+   // swaps buffers).
+-  void MaybeCaptureScreenPixels();
++  void MaybeCaptureScreenPixels(const AndroidVideoFrameProbe* aFrameProbe);
+ #endif
+ 
+   RefPtr<RenderThread> mThread;
+--- a/gfx/webrender_bindings/RendererOGL.cpp
++++ b/gfx/webrender_bindings/RendererOGL.cpp
+@@ -21,7 +21,12 @@
+ #include "mozilla/widget/CompositorWidget.h"
+ 
+ #ifdef MOZ_WIDGET_ANDROID
++#  include <android/log.h>
++#  include <cinttypes>
++#  include <time.h>
+ #  include "GLContextEGL.h"
++#  include "GLReadTexImageHelper.h"
++#  include "RenderAndroidSurfaceTextureHost.h"
+ #  include "ScopedGLHelpers.h"
+ #  include "mozilla/layers/AndroidHardwareBuffer.h"
+ #endif
+@@ -227,6 +232,18 @@
+     return RenderedFrameId();
+   }
+ 
++#ifdef MOZ_WIDGET_ANDROID
++  AndroidVideoFrameProbe frameProbe;
++  const bool probeRequested =
++      mPendingScreenPixelsRequest &&
++      mPendingScreenPixelsRequest->mHardwareBuffer->mSize ==
++          gfx::IntSize(AndroidVideoFrameProbe::kSide,
++                       AndroidVideoFrameProbe::kSide);
++  const bool probeActive =
++      probeRequested && present && gl() && !mCompositor->UseLayerCompositor();
++  fullRender |= probeActive;
++#endif
++
+   wr_renderer_update(mRenderer);
+ 
+   if (fullRender) {
+@@ -238,9 +255,16 @@
+ 
+   nsTArray<DeviceIntRect> dirtyRects;
+   bool didRasterize = false;
++#ifdef MOZ_WIDGET_ANDROID
++  RenderAndroidSurfaceTextureHost::sFrameProbe =
++      probeActive ? &frameProbe : nullptr;
++#endif
+   bool rendered =
+       wr_renderer_render(mRenderer, size.width, size.height, bufferAge,
+                          aOutStats, &dirtyRects, &didRasterize);
++#ifdef MOZ_WIDGET_ANDROID
++  RenderAndroidSurfaceTextureHost::sFrameProbe = nullptr;
++#endif
+   FlushPipelineInfo();
+ 
+   // Track whether any tiles were rasterized for reftest support.
+@@ -284,7 +308,7 @@
+     }
+ 
+ #ifdef MOZ_WIDGET_ANDROID
+-    MaybeCaptureScreenPixels();
++    MaybeCaptureScreenPixels(probeRequested ? &frameProbe : nullptr);
+ #endif
+ 
+     if (size.Width() != 0 && size.Height() != 0) {
+@@ -518,15 +542,44 @@
+   return mPendingScreenPixelsRequest->mPromise;
+ }
+ 
+-void RendererOGL::MaybeCaptureScreenPixels() {
++// Both RGB grids fit in one logcat entry. Row zero is the GL bottom row.
++static nsCString FrameProbeRgb(gfx::DataSourceSurface* aSurface) {
++  gfx::DataSourceSurface::ScopedMap map(aSurface, gfx::DataSourceSurface::READ);
++  nsCString result;
++  if (!map.IsMapped()) {
++    return result;
++  }
++  constexpr char hex[] = "0123456789abcdef";
++  const auto size = aSurface->GetSize();
++  for (int y = 0; y < size.height; ++y) {
++    const auto* pixel = map.GetData() + y * map.GetStride();
++    for (int x = 0; x < size.width; ++x, pixel += 4) {
++      for (int c = 0; c < 3; ++c) {
++        result.Append(hex[pixel[c] >> 4]);
++        result.Append(hex[pixel[c] & 15]);
++      }
++    }
++  }
++  return result;
++}
++
++void RendererOGL::MaybeCaptureScreenPixels(
++    const AndroidVideoFrameProbe* aFrameProbe) {
+   if (!mPendingScreenPixelsRequest || !EnsureAsyncScreenshot()) {
+     return;
+   }
+ 
+   auto request = mPendingScreenPixelsRequest.extract();
+-
++  RefPtr<gfx::DataSourceSurface> input;
++  if (aFrameProbe && aFrameProbe->Matches()) {
++    input = aFrameProbe->mHost->ReadFrameProbe(request.mHardwareBuffer->mSize);
++  }
+   if (mCompositor->MaybeCaptureScreenPixels(request.mSourceRect,
+                                             request.mHardwareBuffer)) {
++    if (aFrameProbe) {
++      __android_log_print(ANDROID_LOG_INFO, "Thru3DGeckoFrame",
++                          "unpaired: external compositor screenshot");
++    }
+     request.mPromise->Resolve(Ok{}, __func__);
+     return;
+   }
+@@ -556,6 +609,41 @@
+                          destRect.YMost(), LOCAL_GL_COLOR_BUFFER_BIT,
+                          LOCAL_GL_LINEAR);
+ 
++  if (aFrameProbe) {
++    nsCString decoder;
++    nsCString rendered;
++    if (input && aFrameProbe->Matches() &&
++        gl()->fCheckFramebufferStatus(LOCAL_GL_DRAW_FRAMEBUFFER) ==
++            LOCAL_GL_FRAMEBUFFER_COMPLETE) {
++      gl()->BindReadFB(fb.FB());
++      RefPtr<gfx::DataSourceSurface> output = gfx::Factory::CreateDataSourceSurface(
++          request.mHardwareBuffer->mSize, gfx::SurfaceFormat::R8G8B8A8);
++      if (output) {
++        gl::ReadPixelsIntoDataSurface(gl(), output);
++        if (gl()->fGetError() == LOCAL_GL_NO_ERROR) {
++          decoder = FrameProbeRgb(input);
++          rendered = FrameProbeRgb(output);
++        }
++      }
++    }
++    timespec now{};
++    const bool timed = clock_gettime(CLOCK_BOOTTIME, &now) == 0;
++    if (timed && !decoder.IsEmpty() && !rendered.IsEmpty()) {
++      __android_log_print(
++          ANDROID_LOG_INFO, "Thru3DGeckoFrame",
++          "paired side=%d surface=%" PRId64 " generation=%" PRId64
++          " timestamp_ns=%" PRId64 " pts_us=%" PRId64 " boot_ns=%" PRId64
++          " surface_rgb=%s webrender_rgb=%s bt709=%d",
++          AndroidVideoFrameProbe::kSide, aFrameProbe->mHost->mSurfTex->GetHandle(),
++          aFrameProbe->mGeneration, aFrameProbe->mTimestamp, aFrameProbe->mHost->mProbePtsUs,
++          int64_t(now.tv_sec) * 1000000000 + now.tv_nsec, decoder.get(),
++          rendered.get(), aFrameProbe->mHost->mProbeBt709 ? 1 : 0);
++    } else {
++      __android_log_print(ANDROID_LOG_INFO, "Thru3DGeckoFrame",
++                          "unpaired: missing, changed or ambiguous video texture");
++    }
++  }
++
+   if (EGLSync sync =
+           egl->fCreateSyncKHR(LOCAL_EGL_SYNC_NATIVE_FENCE_ANDROID, nullptr)) {
+     auto fence = UniqueFileHandle(egl->fDupNativeFenceFDANDROID(sync));
+--- a/dom/media/platforms/android/RemoteDataDecoder.cpp
++++ b/dom/media/platforms/android/RemoteDataDecoder.cpp
+@@ -476,6 +476,9 @@
+           mSurfaceHandle, inputInfo->mImageSize, false /* NOT continuous */,
+           gl::OriginPos::BottomLeft, mConfig.HasAlpha(), forceBT709ColorSpace,
+           /* aTransformOverride */ Nothing());
++      if (mIsHardwareAccelerated && mDrmStubId.IsEmpty() && !mConfig.mCrypto.IsEncrypted()) {
++        img->AsSurfaceTextureImage()->mProbePtsUs = presentationTimeUs;
++      }
+       img->AsSurfaceTextureImage()->RegisterSetCurrentCallback(
+           std::move(releaseSample));
+ 
+--- a/gfx/layers/GLImages.h
++++ b/gfx/layers/GLImages.h
+@@ -56,6 +56,7 @@
+                       Maybe<gfx::Matrix4x4> aTransformOverride);
+ 
+   gfx::IntSize GetSize() const override { return mSize; }
++  int64_t mProbePtsUs = -1;
+   AndroidSurfaceTextureHandle GetHandle() const { return mHandle; }
+   bool GetContinuous() const { return mContinuous; }
+   gl::OriginPos GetOriginPos() const { return mOriginPos; }
+--- a/gfx/layers/GLImages.cpp
++++ b/gfx/layers/GLImages.cpp
+@@ -68,7 +68,7 @@
+   SurfaceDescriptor sd = SurfaceTextureDescriptor(
+       mHandle, mSize,
+       mHasAlpha ? gfx::SurfaceFormat::R8G8B8A8 : gfx::SurfaceFormat::R8G8B8X8,
+-      mForceBT709ColorSpace, false /* NOT continuous */, mTransformOverride);
++      mForceBT709ColorSpace, false /* NOT continuous */, mTransformOverride, mProbePtsUs);
+   return Some(sd);
+ }
+ #endif
+--- a/gfx/layers/ipc/LayersSurfaces.ipdlh
++++ b/gfx/layers/ipc/LayersSurfaces.ipdlh
+@@ -112,6 +112,7 @@
+   bool continuous;
+   bool forceBT709ColorSpace;
+   Matrix4x4? transformOverride;
++  int64_t probePtsUs;
+ };
+ 
+ [Comparable] struct SurfaceDescriptorAndroidHardwareBuffer {
+--- a/gfx/gl/SharedSurfaceEGL.cpp
++++ b/gfx/gl/SharedSurfaceEGL.cpp
+@@ -255,7 +255,7 @@
+   return Some(layers::SurfaceTextureDescriptor(
+       mSurface->GetHandle(), mDesc.size, gfx::SurfaceFormat::R8G8B8A8,
+       false /* Do NOT override colorspace */, false /* NOT continuous */,
+-      Nothing() /* Do not override transform */));
++      Nothing() /* Do not override transform */, -1));
+ }
+ 
+ SurfaceFactory_SurfaceTexture::SurfaceFactory_SurfaceTexture(GLContext& gl)
+--- a/gfx/layers/client/ImageClient.cpp
++++ b/gfx/layers/client/ImageClient.cpp
+@@ -120,7 +120,7 @@
+         typedImage->GetHandle(), size, typedImage->GetContinuous(),
+         typedImage->GetOriginPos(), typedImage->GetHasAlpha(),
+         typedImage->GetForceBT709ColorSpace(),
+-        typedImage->GetTransformOverride(),
++        typedImage->GetTransformOverride(), typedImage->mProbePtsUs,
+         aKnowsCompositor->GetTextureForwarder().get(), TextureFlags::DEFAULT);
+   } else if (aImage->GetFormat() == ImageFormat::ANDROID_IMAGE_READER) {
+     AndroidImageReaderImage* typedImage = aImage->AsAndroidImageReaderImage();
+--- a/gfx/layers/opengl/TextureClientOGL.h
++++ b/gfx/layers/opengl/TextureClientOGL.h
+@@ -39,7 +39,7 @@
+   static already_AddRefed<TextureClient> CreateTextureClient(
+       AndroidSurfaceTextureHandle aHandle, gfx::IntSize aSize, bool aContinuous,
+       gl::OriginPos aOriginPos, bool aHasAlpha, bool aForceBT709ColorSpace,
+-      Maybe<gfx::Matrix4x4> aTransformOverride, LayersIPCChannel* aAllocator,
++      Maybe<gfx::Matrix4x4> aTransformOverride, int64_t aProbePtsUs, LayersIPCChannel* aAllocator,
+       TextureFlags aFlags);
+ 
+   virtual ~AndroidSurfaceTextureData();
+@@ -60,10 +60,11 @@
+   AndroidSurfaceTextureData(AndroidSurfaceTextureHandle aHandle,
+                             gfx::IntSize aSize, bool aContinuous,
+                             bool aHasAlpha, bool aForceBT709ColorSpace,
+-                            Maybe<gfx::Matrix4x4> aTransformOverride);
++                            Maybe<gfx::Matrix4x4> aTransformOverride, int64_t aProbePtsUs);
+ 
+   const AndroidSurfaceTextureHandle mHandle;
+   const gfx::IntSize mSize;
++  const int64_t mProbePtsUs;
+   const bool mContinuous;
+   const bool mHasAlpha;
+   const bool mForceBT709ColorSpace;
+--- a/gfx/layers/opengl/TextureClientOGL.cpp
++++ b/gfx/layers/opengl/TextureClientOGL.cpp
+@@ -39,7 +39,7 @@
+ already_AddRefed<TextureClient> AndroidSurfaceTextureData::CreateTextureClient(
+     AndroidSurfaceTextureHandle aHandle, gfx::IntSize aSize, bool aContinuous,
+     gl::OriginPos aOriginPos, bool aHasAlpha, bool aForceBT709ColorSpace,
+-    Maybe<gfx::Matrix4x4> aTransformOverride, LayersIPCChannel* aAllocator,
++    Maybe<gfx::Matrix4x4> aTransformOverride, int64_t aProbePtsUs, LayersIPCChannel* aAllocator,
+     TextureFlags aFlags) {
+   if (aOriginPos == gl::OriginPos::BottomLeft) {
+     aFlags |= TextureFlags::ORIGIN_BOTTOM_LEFT;
+@@ -47,16 +47,17 @@
+ 
+   return TextureClient::CreateWithData(
+       new AndroidSurfaceTextureData(aHandle, aSize, aContinuous, aHasAlpha,
+-                                    aForceBT709ColorSpace, aTransformOverride),
++                                    aForceBT709ColorSpace, aTransformOverride, aProbePtsUs),
+       aFlags, aAllocator);
+ }
+ 
+ AndroidSurfaceTextureData::AndroidSurfaceTextureData(
+     AndroidSurfaceTextureHandle aHandle, gfx::IntSize aSize, bool aContinuous,
+     bool aHasAlpha, bool aForceBT709ColorSpace,
+-    Maybe<gfx::Matrix4x4> aTransformOverride)
++    Maybe<gfx::Matrix4x4> aTransformOverride, int64_t aProbePtsUs)
+     : mHandle(aHandle),
+       mSize(aSize),
++      mProbePtsUs(aProbePtsUs),
+       mContinuous(aContinuous),
+       mHasAlpha(aHasAlpha),
+       mForceBT709ColorSpace(aForceBT709ColorSpace),
+@@ -78,7 +79,7 @@
+   aOutDescriptor = SurfaceTextureDescriptor(
+       mHandle, mSize,
+       mHasAlpha ? gfx::SurfaceFormat::R8G8B8A8 : gfx::SurfaceFormat::R8G8B8X8,
+-      mContinuous, mForceBT709ColorSpace, mTransformOverride);
++      mContinuous, mForceBT709ColorSpace, mTransformOverride, mProbePtsUs);
+   return true;
+ }
+ 
+@@ -162,7 +163,7 @@
+   aOutDescriptor = SurfaceTextureDescriptor(
+       mSurface->GetHandle(), mSize, mFormat, false /* not continuous */,
+       false /* do not override colorspace */,
+-      Some(gfx::Matrix4x4()) /* always use identity transform */);
++      Some(gfx::Matrix4x4()) /* always use identity transform */, -1);
+   return true;
+ }
+ 
+--- a/gfx/layers/opengl/TextureHostOGL.h
++++ b/gfx/layers/opengl/TextureHostOGL.h
+@@ -347,7 +347,7 @@
+                      mozilla::java::GeckoSurfaceTexture::Ref& aSurfTex,
+                      gfx::IntSize aSize, gfx::SurfaceFormat aFormat,
+                      bool aContinuousUpdate, bool aForceBT709ColorSpace,
+-                     Maybe<gfx::Matrix4x4> aTransformOverride);
++                     Maybe<gfx::Matrix4x4> aTransformOverride, int64_t aProbePtsUs);
+ 
+   virtual ~SurfaceTextureHost();
+ 
+@@ -397,6 +397,7 @@
+   mozilla::java::GeckoSurfaceTexture::GlobalRef mSurfTex;
+   const gfx::IntSize mSize;
+   const gfx::SurfaceFormat mFormat;
++  const int64_t mProbePtsUs;
+   bool mContinuousUpdate;
+   const bool mForceBT709ColorSpace;
+   const Maybe<gfx::Matrix4x4> mTransformOverride;
+--- a/gfx/layers/opengl/TextureHostOGL.cpp
++++ b/gfx/layers/opengl/TextureHostOGL.cpp
+@@ -70,7 +70,7 @@
+ 
+       result = new SurfaceTextureHost(
+           aFlags, surfaceTexture, desc.size(), desc.format(), desc.continuous(),
+-          desc.forceBT709ColorSpace(), desc.transformOverride());
++          desc.forceBT709ColorSpace(), desc.transformOverride(), desc.probePtsUs());
+       break;
+     }
+     case SurfaceDescriptor::TSurfaceDescriptorAndroidHardwareBuffer: {
+@@ -400,11 +400,12 @@
+ SurfaceTextureHost::SurfaceTextureHost(
+     TextureFlags aFlags, mozilla::java::GeckoSurfaceTexture::Ref& aSurfTex,
+     gfx::IntSize aSize, gfx::SurfaceFormat aFormat, bool aContinuousUpdate,
+-    bool aForceBT709ColorSpace, Maybe<Matrix4x4> aTransformOverride)
++    bool aForceBT709ColorSpace, Maybe<Matrix4x4> aTransformOverride, int64_t aProbePtsUs)
+     : TextureHost(TextureHostType::AndroidSurfaceTexture, aFlags),
+       mSurfTex(aSurfTex),
+       mSize(aSize),
+       mFormat(aFormat),
++      mProbePtsUs(aProbePtsUs),
+       mContinuousUpdate(aContinuousUpdate),
+       mForceBT709ColorSpace(aForceBT709ColorSpace),
+       mTransformOverride(aTransformOverride) {
+@@ -448,6 +449,8 @@
+   RefPtr texture = MakeRefPtr<wr::RenderAndroidSurfaceTextureHost>(
+       mSurfTex, mSize, mFormat, mContinuousUpdate, mTransformOverride,
+       isRemoteTexture);
++  texture->mProbePtsUs = mProbePtsUs;
++  texture->mProbeBt709 = mForceBT709ColorSpace;
+   wr::RenderThread::Get()->RegisterExternalImage(aExternalImageId,
+                                                  texture.forget());
+ }
+--- a/mobile/android/geckoview/src/main/java/org/mozilla/gecko/media/Codec.java
++++ b/mobile/android/geckoview/src/main/java/org/mozilla/gecko/media/Codec.java
+@@ -32,6 +32,70 @@
+     FATAL
+   }
+ 
++  // Only in the diagnostic AAR. At most 256 short events per codec-service process: a feed
++  // configures a decoder per clip, about four lines each.
++  private static int sProbeLines;
++  private long mProbeSurface = -1;
++  private final java.util.Set<String> mProbeHardware = new java.util.HashSet<>();
++  private String mProbeName = "unknown";
++  private String mProbeType = "unknown";
++  private final java.util.Map<String, Integer> mProbeCounts = new java.util.LinkedHashMap<>();
++
++  private void probeEvent(final String stage, final Exception failure, final String platformCode) {
++    synchronized (Codec.class) {
++      if (mProbeSurface < 0 || sProbeLines >= 256) return;
++      final String code = failure instanceof MediaCodec.CodecException
++          ? Integer.toString(((MediaCodec.CodecException) failure).getErrorCode()) : platformCode;
++      final String kind = failure == null ? "none" : failure.getClass().getSimpleName();
++      final String key = "surface=" + mProbeSurface + " mime=" + mProbeType + " codec=" + mProbeName
++          + " stage=" + stage + " type=" + kind + " code=" + code;
++      final int previous = mProbeCounts.containsKey(key) ? mProbeCounts.get(key) : 0;
++      if (previous == 0 && mProbeCounts.size() >= 12) return;
++      mProbeCounts.put(key, previous + 1);
++      if (previous == 0) {
++        ++sProbeLines;
++        Log.i("Thru3DCodecFault", key + " count=1 boot_ms=" + android.os.SystemClock.elapsedRealtime());
++      }
++    }
++  }
++
++  private void finishProbeEvents() {
++    synchronized (Codec.class) {
++      for (final java.util.Map.Entry<String, Integer> entry : mProbeCounts.entrySet()) {
++        if (entry.getValue() > 1 && sProbeLines < 256) {
++          ++sProbeLines;
++          Log.i("Thru3DCodecFault", entry.getKey() + " count=" + entry.getValue() + " boot_ms=" + android.os.SystemClock.elapsedRealtime());
++        }
++      }
++      mProbeCounts.clear();
++    }
++  }
++
++  private void probeFormat(final String stage, final MediaFormat format) {
++    synchronized (Codec.class) {
++      if (mProbeSurface < 0 || sProbeLines >= 256 || mProbeFormats >= 3) return;
++      final StringBuilder fields = new StringBuilder();
++      for (final String key : new String[] {"width", "height", "profile", "level", "bitrate",
++          "color-format", "color-standard", "color-range", "color-transfer"}) {
++        try {
++          if (format.containsKey(key)) fields.append(' ').append(key).append('=').append(format.getInteger(key));
++        } catch (final ClassCastException ignored) {
++          // A vendor's differently typed optional field is omitted.
++        }
++      }
++      final String value = stage + fields.toString();
++      if (value.equals(mLastProbeFormat)) return;
++      mLastProbeFormat = value;
++      ++mProbeFormats;
++      ++sProbeLines;
++      Log.i("Thru3DCodecFormat", "surface=" + mProbeSurface + " codec=" + mProbeName + " stage="
++          + value + " boot_ms=" + android.os.SystemClock.elapsedRealtime());
++    }
++  }
++
++  private int mProbeFormats;
++  private String mLastProbeFormat = "";
++
+   private final class Callbacks implements AsyncCodec.Callbacks {
+     @Override
+     public void onInputBufferAvailable(final AsyncCodec codec, final int index) {
+@@ -46,11 +110,13 @@
+ 
+     @Override
+     public void onError(final AsyncCodec codec, final int error) {
++      probeEvent("async_callback", null, Integer.toString(error));
+       reportError(Error.FATAL, new Exception("codec error:" + error));
+     }
+ 
+     @Override
+     public void onOutputFormatChanged(final AsyncCodec codec, final MediaFormat format) {
++      probeFormat("output", format);
+       mOutputProcessor.onFormatChanged(format);
+     }
+   }
+@@ -138,6 +204,7 @@
+       try {
+         return mCodec.getInputBuffer(index) != null;
+       } catch (final IllegalStateException e) {
++        probeEvent("get_input", e, "na");
+         if (DEBUG) {
+           Log.d(LOGTAG, "invalid input buffer#" + index, e);
+         }
+@@ -180,6 +247,7 @@
+         } catch (final RemoteException e) {
+           e.printStackTrace();
+         } catch (final Exception e) {
++          probeEvent("queue_input", e, "na");
+           reportError(Error.FATAL, e);
+           return;
+         }
+@@ -268,6 +336,7 @@
+         output.session = mSession;
+         mCallbacks.onOutput(output);
+       } catch (final Exception e) {
++        probeEvent("deliver_output", e, "na");
+         e.printStackTrace();
+         mCodec.releaseOutputBuffer(index, false);
+       }
+@@ -282,6 +351,7 @@
+       try {
+         return (mCodec.getOutputBuffer(index) != null) || mRenderToSurface;
+       } catch (final IllegalStateException e) {
++        probeEvent("get_output", e, "na");
+         if (DEBUG) {
+           Log.e(LOGTAG, "invalid buffer#" + index, e);
+         }
+@@ -398,7 +468,16 @@
+   public synchronized boolean configure(
+       final FormatParam format, final GeckoSurface surface, final int flags, final String drmStubId)
+       throws RemoteException {
++    finishProbeEvents();
++    mProbeSurface = surface != null && (drmStubId == null || drmStubId.isEmpty())
++        && (flags & MediaCodec.CONFIGURE_FLAG_ENCODE) == 0 ? surface.getHandle() : -1;
++    mProbeName = "unknown";
++    mProbeType = "unknown";
++    mProbeHardware.clear();
++    mProbeFormats = 0;
++    mLastProbeFormat = "";
+     if (mCallbacks == null) {
++      probeEvent("callbacks_missing", null, "na");
+       Log.e(LOGTAG, "FAIL: callbacks must be set before calling configure()");
+       return false;
+     }
+@@ -417,13 +496,17 @@
+     final MediaFormat fmt = format.asFormat();
+     final String mime = fmt.getString(MediaFormat.KEY_MIME);
+     if (mime == null || mime.isEmpty()) {
++      probeEvent("invalid_mime", null, "na");
+       Log.e(LOGTAG, "invalid MIME type: " + mime);
+       return false;
+     }
+ 
++    if (mime.matches("video/[A-Za-z0-9.+_-]{1,64}")) mProbeType = mime;
+     final List<String> found =
+         findMatchingCodecNames(fmt, flags == MediaCodec.CONFIGURE_FLAG_ENCODE);
++    if (found.isEmpty()) probeEvent("no_matching_decoder", null, "na");
+     for (final String name : found) {
++      mProbeName = name.matches("[A-Za-z0-9_.-]{1,100}") ? name : "unknown";
+       final AsyncCodec codec =
+           configureCodec(
+               name, fmt, surface != null ? surface.getSurface() : null, flags, drmStubId);
+@@ -433,6 +516,8 @@
+       }
+       mIsHardwareAccelerated = !name.startsWith(SW_CODEC_PREFIX);
+       mCodec = codec;
++      probeEvent(mProbeHardware.contains(name) ? "configured_hw" : "configured_other", null, "na");
++      probeFormat("input", fmt);
+       // Bug 1789846: Check if the Codec provides stride or height values to use.
+       if (flags == MediaCodec.CONFIGURE_FLAG_ENCODE && fmt.containsKey(MediaFormat.KEY_WIDTH)) {
+         final MediaFormat inputFormat = mCodec.getInputFormat();
+@@ -503,6 +588,9 @@
+           }
+         }
+ 
++        if (mProbeSurface >= 0 && android.os.Build.VERSION.SDK_INT >= 29 && info.isHardwareAccelerated()) {
++          mProbeHardware.add(name);
++        }
+         found.add(name);
+         if (DEBUG) {
+           Log.d(
+@@ -538,6 +626,7 @@
+       codec.configure(format, surface, crypto, flags);
+       return codec;
+     } catch (final Exception e) {
++      probeEvent("create_configure", e, "na");
+       Log.e(LOGTAG, "codec creation error", e);
+       return null;
+     }
+@@ -582,6 +671,7 @@
+     try {
+       mCodec.start();
+     } catch (final Exception e) {
++      probeEvent("start", e, "na");
+       reportError(Error.FATAL, e);
+     }
+   }
+@@ -641,6 +731,7 @@
+     try {
+       return mInputProcessor.onAllocate(size);
+     } catch (final Exception e) {
++      probeEvent("allocate_input", e, "na");
+       // Translate allocation error to remote exception.
+       throw new RemoteException(e.getMessage());
+     }
+@@ -685,6 +776,7 @@
+     try {
+       mOutputProcessor.onRelease(sample, render);
+     } catch (final Exception e) {
++      probeEvent("release_output", e, "na");
+       reportError(Error.FATAL, e);
+     }
+   }
+@@ -706,6 +798,7 @@
+     mCodec = null;
+     mSamplePool.reset();
+     mSamplePool = null;
++    finishProbeEvents();
+     mCallbacks.asBinder().unlinkToDeath(this, 0);
+     mCallbacks = null;
+     if (mSurface != null) {
+--- a/gfx/gl/GLReadTexImageHelper.cpp
++++ b/gfx/gl/GLReadTexImageHelper.cpp
+@@ -425,7 +425,7 @@
+ 
+ #define CLEANUP_IF_GLERROR_OCCURRED(x) \
+   if (DidGLErrorOccur(x)) {            \
+-    return false;                      \
++    break;                             \
+   }
+ 
+ already_AddRefed<DataSourceSurface> GLReadTexImageHelper::ReadTexImage(
+@@ -459,7 +459,8 @@
+   mGL->MakeCurrent();
+ 
+   GLint oldrb, oldfb, oldprog, oldTexUnit, oldTex;
+-  GLuint rb, fb;
++  GLuint rb = 0, fb = 0;
++  bool success = false;
+ 
+   do {
+     mGL->fGetIntegerv(LOCAL_GL_RENDERBUFFER_BINDING, &oldrb);
+@@ -506,12 +507,12 @@
+                                   LOCAL_GL_RENDERBUFFER, rb);
+     CLEANUP_IF_GLERROR_OCCURRED("when binding and creating framebuffer");
+ 
+-    MOZ_ASSERT(mGL->fCheckFramebufferStatus(LOCAL_GL_FRAMEBUFFER) ==
+-               LOCAL_GL_FRAMEBUFFER_COMPLETE);
++    if (mGL->fCheckFramebufferStatus(LOCAL_GL_FRAMEBUFFER) !=
++        LOCAL_GL_FRAMEBUFFER_COMPLETE) break;
+ 
+     /* Setup vertex and fragment shader */
+     GLuint program = TextureImageProgramFor(aTextureTarget, aConfig);
+-    MOZ_ASSERT(program);
++    if (!program) break;
+ 
+     mGL->fUseProgram(program);
+     CLEANUP_IF_GLERROR_OCCURRED("when using program");
+@@ -556,6 +557,7 @@
+     /* Read-back draw results */
+     ReadPixelsIntoDataSurface(mGL, aDest);
+     CLEANUP_IF_GLERROR_OCCURRED("when reading pixels into surface");
++    success = true;
+   } while (false);
+ 
+   /* Restore GL state */
+@@ -571,7 +573,7 @@
+ 
+   if (oldTexUnit != LOCAL_GL_TEXTURE0) mGL->fActiveTexture(oldTexUnit);
+ 
+-  return true;
++  return success;
+ }
+ 
+ #undef CLEANUP_IF_GLERROR_OCCURRED

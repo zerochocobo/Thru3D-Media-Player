@@ -41,3 +41,7 @@ Eligible seekable DLNA cast audio can enable live recognition/translation manual
 外挂字幕选择器支持默认带入片名的文件名过滤，并按网盘／目录能力搜索。投屏听译每次新会话默认关闭，字幕仅本会话；模式变化不应丢失当前会话，不写成逐片历史或持久全片任务。
 
 0.16.7 allows configuring listening/narration preferences while off without starting inference or translation. Existing resource/source/interaction gates still control activation. Audio processed ahead and current/future cue counts are separate feedback; audio lead does not establish subtitle coverage. Waiting and sustained empty-result messages describe available cues, not inferred silence or repaired recognition accuracy.
+
+## 0.18.8 recognition and narration
+
+Japanese look-ahead and whole-film tasks use Silero speech segments with the existing Moonshine recognition runtime. Live captions tolerate short playback-position delays and reduce duplicates. Subtitle narration reuses voice prompts and stops retries after a cue's speech deadline. The source also retains a SenseVoice host prototype; it is not the shipped Japanese recognition engine. Recordings, transcripts, diagnostic exports and model weights remain excluded.

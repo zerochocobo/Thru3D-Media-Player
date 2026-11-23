@@ -95,7 +95,16 @@ func _run() -> void:
 	var origin: Vector3 = shortcut.node.global_position + menu.global_basis.z * 0.2
 	menu.press_pointer("right_hand", origin, -menu.global_basis.z, true)
 	menu.release_pointer("right_hand", origin, -menu.global_basis.z, true)
-	check(menu.editing_picture() and not menu.editing_picture_defaults(), "Picture shortcut opens the current video's editor")
+	check(menu.editing_picture(), "Picture shortcut opens the current video's editor")
+	# The settings tile opens the very same editor: there is no separate global default.
+	menu._adjustment = ""; menu.section = 1; menu.refresh()
+	menu._activate(Menu.SETTINGS_TILE + Menu.OPERATIONS[1].find("color_grade"))
+	check(menu.editing_picture() and "Default picture" not in menu.text_snapshot(), "The settings tile opens the current video's editor")
+	state.has_video = false; menu._adjustment = ""; menu.refresh()
+	check(not menu._enabled("color_grade"), "Without a video the settings tile has nothing to edit")
+	state.has_video = true; menu.section = 0; menu._adjustment = ""; menu.refresh()
+	menu.press_pointer("right_hand", origin, -menu.global_basis.z, true)
+	menu.release_pointer("right_hand", origin, -menu.global_basis.z, true)
 	check(menu._adjust_rows.has(Menu.PICTURE_SHARPNESS), "The quality tab shows the sharpness slider")
 	check(not menu._adjust_rows[Menu.PICTURE_SHARPNESS].button.enabled, "Sharpness is locked while the mode is off")
 	check("Picture quality mode" in menu.text_snapshot(), "The picture panel names the mode")

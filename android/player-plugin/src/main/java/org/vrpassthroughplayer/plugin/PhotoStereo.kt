@@ -38,13 +38,17 @@ internal object PhotoStereo {
     fun validRotation(rotation: Int) = rotation in listOf(0, 90, 180, 270)
     /** The picture setting: edge stretching (as video's stretch view) instead of the default hole fill. */
     @Volatile var stretch = false
+    /** The picture setting: steady edges (the near map refitted to the still's own contours), on by default;
+     * edge stretching only, as in video. */
+    @Volatile var steady = true
     /** [fast]: a pair warped from the fast model's map, which a later quality map replaces.
-     * [stretch]: edge stretching instead of the hole fill. */
-    fun cachePrefix(strength: Float, rotation: Int, convergence: Float = 0.35f, fast: Boolean = false, stretch: Boolean = false, pages: Boolean = false): String {
+     * [stretch]: edge stretching instead of the hole fill. [steady]: off adds "h" (v9: holes stretched by position). */
+    fun cachePrefix(strength: Float, rotation: Int, convergence: Float = 0.35f, fast: Boolean = false, stretch: Boolean = false, pages: Boolean = false,
+                    steady: Boolean = true): String {
         require(strength.isFinite() && strength in 0f..2f)
         require(validRotation(rotation))
         require(convergence.isFinite() && convergence in 0f..1f)
-        return "stereo-v6${if (fast) "f" else ""}${if (stretch) "s" else ""}${if (pages) "p" else ""}-r$rotation-${(strength*100).roundToInt()}-c${(convergence*10000).roundToInt()}-"
+        return "stereo-v9${if (fast) "f" else ""}${if (stretch) "s" else ""}${if (pages) "p" else ""}${if (steady) "" else "h"}-r$rotation-${(strength*100).roundToInt()}-c${(convergence*10000).roundToInt()}-"
     }
 
     /** The last still's eye-sized colour: the quality refinement, strength and fill changes of the same
@@ -92,13 +96,15 @@ internal object PhotoStereo {
     }
 
     fun prepare(source: File, near: ByteBuffer, rect: FloatArray, strength: Float, generation: Int, rotation: Int = 0, convergence: Float = 0.35f,
-                fast: Boolean = false, stretch: Boolean = false, keepColour: Boolean = true, pages: Float = 0f): JSONObject {
-        val prefix = cachePrefix(strength, rotation, convergence, fast, stretch, pages > 0f && rotation == 0)
+                fast: Boolean = false, stretch: Boolean = false, keepColour: Boolean = true, pages: Float = 0f, steady: Boolean = true): JSONObject {
+        // Steady edges serve edge stretching only: a fill pair never carries them, whatever the switch says.
+        val edges = steady && stretch
+        val prefix = cachePrefix(strength, rotation, convergence, fast, stretch, pages > 0f && rotation == 0, edges)
         // Raw RGBA pair named with its size: a hit is checked by length, with nothing to decode.
         source.parentFile?.listFiles()?.firstOrNull { it.name.startsWith(prefix) && it.extension == "rgba" }?.let { cached ->
             val size = Regex("""-(\d+)x(\d+)$""").find(cached.nameWithoutExtension)?.groupValues
             val w = size?.get(1)?.toIntOrNull() ?: 0; val h = size?.get(2)?.toIntOrNull() ?: 0
-            if (w > 0 && h > 0 && cached.length() == w.toLong()*h*4) return metadata(cached, w, h, strength, rotation, convergence, 0, stretch)
+            if (w > 0 && h > 0 && cached.length() == w.toLong()*h*4) return metadata(cached, w, h, strength, rotation, convergence, 0, stretch, edges)
         }
         val clock = StepClock()
         val picture = colourOf(source, clock, keepColour)
@@ -117,14 +123,14 @@ internal object PhotoStereo {
                 val part = ByteBuffer.allocateDirect(columns*h*8).order(ByteOrder.LITTLE_ENDIAN)
                 near.rewind()
                 micros += RenderBridgeNative.photoStereo(PhotoPages.crop(rgba,w,h,from,columns),columns,h,near,PhotoDepthInput.WIDTH,PhotoDepthInput.HEIGHT,
-                    rects[page],strength,convergence,0,stretch,w,part,IntArray(0)).also { require(it > 0) }
+                    rects[page],strength,convergence,0,stretch,w,edges,part,IntArray(0)).also { require(it > 0) }
                 part
             }
             output = PhotoPages.stitch(pairs[0],seam,pairs[1],w-seam,h)
             pair[0] = 0
         } else {
             output = ByteBuffer.allocateDirect(w*h*8).order(ByteOrder.LITTLE_ENDIAN)
-            micros = RenderBridgeNative.photoStereo(rgba,w,h,near,PhotoDepthInput.WIDTH,PhotoDepthInput.HEIGHT,rect,strength,convergence,rotation/90,stretch,0,output,pair)
+            micros = RenderBridgeNative.photoStereo(rgba,w,h,near,PhotoDepthInput.WIDTH,PhotoDepthInput.HEIGHT,rect,strength,convergence,rotation/90,stretch,0,edges,output,pair)
             require(micros > 0)
         }
         clock.lap("gpu")
@@ -142,7 +148,7 @@ internal object PhotoStereo {
         source.parentFile?.listFiles()?.filter { it.name.startsWith("stereo-") && it.extension in setOf("png", "rgba") && it != target }
             ?.sortedByDescending { it.lastModified() }?.drop(2)?.forEach { it.delete() }
         clock.lap("prune")
-        return metadata(target,w*2,h,strength,rotation,convergence,micros,stretch)
+        return metadata(target,w*2,h,strength,rotation,convergence,micros,stretch,edges)
             .apply { if (pair[0] > 0) put("stereo_gpu_pair",pair[0]) } // the picture layer copies this, not the file
             .put("stereo_pages", if (paged) 2 else 1)
             .put("stereo_steps","$clock ${picture.steps} eye=${w}x$h")
@@ -161,9 +167,11 @@ internal object PhotoStereo {
         override fun toString() = text.toString()
     }
 
-    private fun metadata(file: File, width: Int, height: Int, strength: Float, rotation: Int, convergence: Float, micros: Long, stretch: Boolean) = JSONObject()
+    private fun metadata(file: File, width: Int, height: Int, strength: Float, rotation: Int, convergence: Float, micros: Long, stretch: Boolean,
+                         steady: Boolean) = JSONObject()
         .put("stereo_path",file.path).put("stereo_width",width).put("stereo_height",height)
         .put("stereo_strength",strength.toDouble()).put("stereo_render_us",micros)
         .put("stereo_rotation",rotation).put("stereo_convergence",convergence.toDouble())
         .put("stereo_strategy","video_soft_shift_gpu").put("stereo_fill", if (stretch) "stretch" else "fill")
+        .put("stereo_steady", steady)
 }

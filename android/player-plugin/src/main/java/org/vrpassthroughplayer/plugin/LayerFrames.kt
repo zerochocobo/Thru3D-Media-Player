@@ -41,5 +41,6 @@ internal interface LayerFrames {
      * (the time between masks) lets a frame without its own mask mix the masks around it. */
     fun maskLatency(ms: Double, blendMs: Double = 0.0) {}
     fun stats(): JSONObject
-    fun close()
+    /** GL thread, after native decoder close. True once the last worker write and teardown finished. */
+    fun pollClosed(): Boolean
 }

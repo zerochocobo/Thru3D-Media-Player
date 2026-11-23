@@ -42,6 +42,10 @@ internal class ListeningController(private val context: ()->Context?,private val
     @Volatile private var modelBytes=0L
     @Volatile private var modelLoads=0L
     private var filteredUpdates=0L
+    // Why recognition restarted, and how often the playback clock arrived late.
+    private val restarts=linkedMapOf<String,Long>()
+    private var lateClocks=0L
+    private var maxClockAge=0.0
     private var audioSpanCount=0
     private var audioGapMax=0L
     private var audioGapAverage=0L
@@ -92,6 +96,11 @@ internal class ListeningController(private val context: ()->Context?,private val
     }
     fun transportChanged()=synchronized(lock){if(!closed&&config.enabled){invalidate();identity="";failure=false;state="preparing";publish();playbackChanged()}}
     private fun invalidate(){epoch++;cues.clear();buffered=false;eof=false;preparing=false;engine.takeIf {it>0}?.let {ListeningNative.cancel(it)}}
+    private fun restart(reason: String){
+        restarts[reason]=(restarts[reason] ?: 0)+1
+        // Android Log stubs throw on the JVM test host.
+        if(reason!="start")runCatching{Log.i("ListeningController","restart=$reason ahead=${"%.1f".format(java.util.Locale.ROOT,through-position)} late_clocks=$lateClocks")}
+    }
     private fun fail(reason: String){invalidate();failure=true;state=reason;publish();playbackChanged()}
     private fun publish(){report=JSONObject().put("epoch",epoch).put("state",state).put("buffered",buffered)
         .put("read_ms",readMs).put("inference_ms",inferenceMs).put("audio_spans",audioSpanCount)
@@ -99,14 +108,15 @@ internal class ListeningController(private val context: ()->Context?,private val
         .put("model_loads",modelLoads).put("model_instance",engine)
         .put("buffer_progress",ListeningPolicy.percent(maxOf(0.0,through-position),ListeningPolicy.horizon(0.0,speed,config.lead)))
         .put("required_ahead",ListeningPolicy.horizon(0.0,speed,config.lead))
-        .put("filtered_updates",filteredUpdates).put("io_bytes",activeInput?.bytesRead ?: 0L).put("io_reads",activeInput?.readCalls ?: 0L)
+        .put("filtered_updates",filteredUpdates).put("restarts",JSONObject(restarts as Map<*,*>))
+        .put("late_clocks",lateClocks).put("max_clock_age",maxClockAge).put("io_bytes",activeInput?.bytesRead ?: 0L).put("io_reads",activeInput?.readCalls ?: 0L)
         .put("io_ms",(activeInput?.readNanos ?: 0L)/1e6)
         .put("source_io",JSONObject(activeInput?.snapshot?.invoke() ?: emptyMap<String,Long>()))
         .put("io_offset",activeInput?.offset ?: 0L).put("audio_gap_max",audioGapMax).put("audio_gap_average",audioGapAverage)
         .put("through",through).put("position",position).put("playing",playing).put("speed",speed).put("observed_ns",System.nanoTime())
         .put("cached_until",cueCache?.coveredEnd(position) ?: 0.0)
         .put("cache_key",cueCache?.key.orEmpty()).put("cache_instance",cueCache?.instance ?: 0L)
-        .put("cache_complete",cueCache?.complete(duration) ?: false).put("cache_persistent",cueCache?.persistent ?: false)
+        .put("cache_complete",cueCache?.complete(duration) ?: false).put("cache_outdated",cueCache?.outdated ?: false).put("cache_persistent",cueCache?.persistent ?: false)
         .put("cache_progress",ListeningPolicy.percent(cueCache?.coveredSeconds(duration) ?: 0.0,duration))
         .put("translation_complete",cueCache?.let{it.complete(duration)&&it.translated(config.target)==it.count()&&it.translationsSaved()} ?: false)
         .put("ahead",maxOf(0.0,through-position)).put("cues",cueCache?.rows(cues.values.toList(),config.target) ?: JSONArray(cues.values.map {it.json()})).toString()}
@@ -126,8 +136,12 @@ internal class ListeningController(private val context: ()->Context?,private val
         val clockValue=NarrationPolicy.playbackClock(details.put("user_audio_delay_seconds",current.audioDelay))
         val age=(System.nanoTime()-clockValue.observedNs)/1e9
         val seek=outer.optLong("seeks_started")
-        if(seek!=outer.optLong("seeks_completed")||age !in 0.0..0.5){
-            if(cues.isNotEmpty()){invalidate();identity="";state="preparing";publish();playbackChanged()}
+        val seeking=seek!=outer.optLong("seeks_completed")
+        if(seeking||age !in 0.0..0.5){
+            // A late snapshot (busy MPV control loop) is not a seek. Hold this tick
+            // and keep the reader and recognized cues; only a seek discards them.
+            if(!seeking){lateClocks++;maxClockAge=maxOf(maxClockAge,age)}
+            else if(cues.isNotEmpty()){restart("seek");invalidate();identity="";state="preparing";publish();playbackChanged()}
             return@synchronized
         }
         speed=(details.optString("playback_speed").toDoubleOrNull() ?: 1.0).coerceIn(.25,3.0)
@@ -155,6 +169,7 @@ internal class ListeningController(private val context: ()->Context?,private val
         // Only once this epoch's reader is open: model loading may legitimately
         // take longer than the gap, and restarting it would never finish.
         if(identity!=key||position<anchor-.5||readerEpoch==epoch&&ListeningPolicy.behind(through+preroll,position)){
+            restart(when {identity.isEmpty()->"start";identity!=key->"transport";position<anchor-.5->"backward";else->"behind"})
             // Already recognized media time shows at once after a seek back.
             invalidate();identity=key;anchor=maxOf(0.0,position-.25);through=maxOf(anchor,cueCache?.coveredEnd(anchor) ?: anchor)
             deadline=System.nanoTime()+45_000_000_000;preparing=true;state="preparing";playbackChanged()
@@ -199,7 +214,8 @@ internal class ListeningController(private val context: ()->Context?,private val
                     NarrationModels.ensure(directory,files,{app.assets.open(manifest.getString("directory")+"/"+it)},
                         {synchronized(lock){!closed&&epoch==token}}, {verifiedBytes+=it})
                     stage="model_load";phase=stage
-                    engine=synchronized(ListeningWorkGate.lock){ListeningNative.create(directory.path,requested.language)};check(engine>0);modelLoads++;modelLanguage=requested.language
+                    val vad=if(ListeningPolicy.segmented(requested.language))NarrationAssets.prepareVad(app){synchronized(lock){!closed&&epoch==token}}.path else ""
+                    engine=synchronized(ListeningWorkGate.lock){ListeningNative.createAhead(directory.path,requested.language,vad)};check(engine>0);modelLoads++;modelLanguage=requested.language
                 }
                 if(!synchronized(lock){!closed&&token==epoch})return@execute
                 stage="audio_open";phase=stage
@@ -242,8 +258,9 @@ internal class ListeningController(private val context: ()->Context?,private val
                     readerThrough=end;through=maxOf(through,end);eof=result.optBoolean("eof")
                     readMs=result.optDouble("read_ms",0.0);inferenceMs=result.optDouble("inference_ms",0.0)
                     val rows=result.getJSONArray("cues")
-                    for(i in 0 until minOf(rows.length(),128))ListeningPolicy.Cue.parse(rows.getJSONObject(i))?.let {cue->
-                        if(!ListeningPolicy.accept(cue,requested.language))filteredUpdates++
+                    for(i in 0 until minOf(rows.length(),128))ListeningPolicy.Cue.parse(rows.getJSONObject(i))?.let {raw->
+                        val cue=ListeningPolicy.clean(raw,requested.language)
+                        if(cue==null)filteredUpdates++
                         else {
                             if(cue.end<=through+.01&&cue.end>coverFrom)cueCache?.add(cue)
                             if(cue.end>position&&cue.end<=through+.01&&cue.start>=anchor)cues[cue.key]=cue
@@ -279,10 +296,10 @@ internal class ListeningController(private val context: ()->Context?,private val
         }
         if(requested.media.isEmpty()||seconds<=0||modelIdentity.isEmpty()){synchronized(lock){cueCache=null};return}
         val key=ListeningCueCache.key(requested.media,seconds,requested.language,modelIdentity,track,playlist)
-        if(current?.key==key&&current.persistent==requested.persist)return
+        if(current?.requested==key&&current.persistent==requested.persist)return
         flushCueCache(true)
         val directory=if(requested.persist)context()?.let {ListeningCueCache.directory(it.filesDir)} else null
-        val loaded=ListeningCueCache.obtain(directory,key,requested.network)
+        val loaded=ListeningCueCache.obtainFor(directory,requested.media,seconds,requested.language,modelIdentity,track,playlist,requested.network)
         synchronized(lock){if(!closed){cueCache=loaded;cacheMedia=requested.media;cacheLanguage=requested.language;cacheTrack=track;cachePlaylist=playlist}}
     }
     private fun flushCueCache(force: Boolean){
@@ -298,6 +315,12 @@ internal class ListeningController(private val context: ()->Context?,private val
             if(!runCatching {MpvSourceNative.setListeningCache(handle,seconds)}.getOrDefault(false))return
         }
         cacheHandle=handle;cacheSeconds=seconds
+    }
+    /** User asked to drop this film's recognized text (e.g. built by an older recognizer). */
+    fun discardCache(){
+        val dropped=synchronized(lock){if(closed)return;cueCache.also{cueCache=null;invalidate();identity="";state="preparing";publish()}}
+        // Delete now: a load racing this call sees the revoked instance and reloads.
+        dropped?.delete();playbackChanged()
     }
     override fun close(){synchronized(lock){if(closed)return;closed=true;invalidate();updateReadAhead(null);state="off";publish()};clock.shutdownNow();worker.execute {unload()};worker.shutdown();playbackChanged()}
 }

@@ -1,5 +1,5 @@
 {
-  "id": "moss-nano-int8-recovery-20261018",
+  "id": "moss-nano-int8-kv-20261123",
   "directory": "narration/moss-nano-int8-recovery-20261018",
   "files": {
     "MOSS-Audio-Tokenizer-Nano-ONNX/codec_browser_onnx_meta.json": {
@@ -19,16 +19,16 @@
       "sha256": "097d80e993dc29f0bae427590b4f77084a161cb578b50d82c29f455d5faa9eee"
     },
     "MOSS-TTS-Nano-100M-ONNX/moss_tts_decode_step.onnx": {
-      "bytes": 902517,
-      "sha256": "b0fb8d53f25376b5be97f2719991f66fa6a1cbd22f9c77f01950b0b4141a7dc3"
+      "bytes": 899028,
+      "sha256": "a57df9e580c94c01ebcf8b35c7ac873bcd2f88e5a134027c13be0fbd12d9c64e"
     },
     "MOSS-TTS-Nano-100M-ONNX/moss_tts_local_fixed_sampled_frame.onnx": {
-      "bytes": 988366,
-      "sha256": "fc488aa78cff55672a137f858a6059a61bb22d0ef0694d558ae00c9c977b8ab5"
+      "bytes": 988488,
+      "sha256": "764fbaca37adc6e5508d33f0ca9db65aafc03df0e367f01cbc97b2575cefbf2a"
     },
     "MOSS-TTS-Nano-100M-ONNX/moss_tts_prefill.onnx": {
-      "bytes": 890846,
-      "sha256": "cb709ff4ef417924e02689b977c24e5ebecd15dac1f0f635e02c9afe0d9a8d07"
+      "bytes": 893508,
+      "sha256": "79b238b87442d2f219f863a5b8b7010e2f1b9a254a4b36d038ec6ba7f4025de4"
     },
     "MOSS-TTS-Nano-100M-ONNX/shared_weights.data": {
       "bytes": 171104256,
@@ -43,8 +43,12 @@
       "sha256": "3edf25232dcd0af3d061c837e9a968a39e2f8592e06777d740503c4f2244f95c"
     },
     "MOSS-TTS-Nano-100M-ONNX/moss_tts_local_fallback.onnx": {
-      "bytes": 941477,
-      "sha256": "71ba74cedffd580425483ee3bac6bc3f858b820f959f323fdd8ed92d43706b16"
+      "bytes": 941599,
+      "sha256": "d016862ca36489429b126c8a126c996ee517d7660d40cdd0b81d9d816c683d0b"
+    },
+    "MOSS-TTS-Nano-100M-ONNX/moss_tts_extend.onnx": {
+      "bytes": 743245,
+      "sha256": "069213055be23b13cf7eea645bcb6f19ce8350b5e348e9df1906da58676f9ea4"
     }
   },
   "voices": {
@@ -68,5 +72,5 @@
     ]
   },
   "preset_distribution": "Normal Debug and Release bundle the pinned model and built-in prompt codes. Individual reference-recording provenance audit remains unresolved; see NOTICE.md.",
-  "variant": "Fast local INT8 by default; lazily loaded original-local float projections for one bounded per-cue precision recovery. Prefill, decode, codec and tensor payloads are shared."
+  "variant": "Fast local INT8 by default; lazily loaded original-local float projections for one bounded per-cue precision recovery. Prefill, decode, codec and tensor payloads are shared. Prefill and decode keep the KV cache in attention layout (past_key [batch,heads,head_dim,seq], past_value [batch,heads,seq,head_dim]) without the float-to-float casts and cache transposes; tensor payloads and generated frames are identical (tools/models/optimize_narration_kv.py). The install directory keeps its original name so upgrading devices replace only the two changed graphs. moss_tts_extend.onnx is the decode graph taught to take several rows with a causal mask and per-row rotary positions; the engine prefills each voice prompt prefix once and runs only a sentence's own rows through it (falls back to the full prefill when the graph is missing or fails). Both local-frame graphs also output continue_probability (the probability their random draw is compared with); the engine ends a sentence at the first frame with 1 - continue_probability >= 0.2 (see narration_jni.cpp)."
 }

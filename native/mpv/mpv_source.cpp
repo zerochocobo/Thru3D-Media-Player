@@ -1,6 +1,7 @@
 #include <jni.h>
 #include "video_output_policy.h"
 #include "network_read_policy.h"
+#include "log_module_trail.h"
 #include <cstdio>
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
@@ -251,6 +252,7 @@ struct Source final {
     std::atomic<bool> dolby_profile5{false};
     // MediaCodec decoders that opened with Profile 5 RPU parsing (one per decoder init).
     std::atomic<int> dolby_rpu_decoders{0};
+    quest::LogModuleTrail log_modules;
     // Once HDR is observed, keep MPV's full color pass for this source session.
     // This also covers HDR10, HLG and the HDR-compatible base of Dolby Profile 8.
     std::atomic<bool> hdr_source{false};
@@ -1126,6 +1128,7 @@ struct Source final {
                 require(event != nullptr, "MPV source event unavailable");
                 if (event->event_id == MPV_EVENT_LOG_MESSAGE) {
                     const auto* log = static_cast<const mpv_event_log_message*>(event->data);
+                    log_modules.observe(log->prefix, startup_us());
                     if (!playback_privacy.load()) __android_log_print(ANDROID_LOG_INFO, "QuestMpvSource", "[%s] %s", log->prefix, log->text);
                     if (loaded && audio && !network_interleave_compat && !interleave_suspect.load() &&
                         (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0) &&
@@ -1774,7 +1777,8 @@ struct Source final {
         return "{\"stage\":" + quote(stage) + ",\"render_stage\":" + quote(layer() ? "none" : render_stage.load()) +
             ",\"closing_ms\":" + std::to_string(requested < 0 ? -1 : (startup_us() - requested) / 1000) +
             ",\"layer\":" + (layer() ? "true" : "false") + ",\"hardware\":" + (hardware ? "true" : "false") +
-            ",\"decoder\":" + quote(hardware_decoding.load() ? "hardware" : "software") + "}";
+            ",\"decoder\":" + quote(hardware_decoding.load() ? "hardware" : "software") +
+            log_modules.json_fields(startup_us()) + "}";
     }
     std::string status() {
         std::string snapshot, state_copy, error_copy, reason_copy, stage_copy, render_error_copy, final_copy = "null";

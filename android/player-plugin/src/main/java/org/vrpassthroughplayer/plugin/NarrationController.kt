@@ -58,7 +58,12 @@ internal class NarrationController(private val context: () -> Context?, private 
     private var missingCues = 0
     private var lastTrimMs = 0.0
     private var precisionRecoveries = 0
+    private var reseededRetries = 0
     private var lastPrecisionRecovery = false
+    // Native engine diagnostics: sentences ended by the likely-end probability and voice-prefix cache use.
+    private var probabilityStops = 0
+    private var prefixHits = 0
+    private var lastPrefillMs = 0.0
     private var precisionModelLoaded = false
     private var lastPrecisionLoadMs = 0.0
     private var precisionDurationRetries = 0
@@ -384,6 +389,8 @@ internal class NarrationController(private val context: () -> Context?, private 
             spoken+=cue.key;lateSkipped++;missingCues++;outcome(cue,"late_before_generation");return
         }
         val speech=Speech(cue,epoch,previewActive);cache[cue.key]=speech;val model=engineLease ?: return;val token=epoch
+        // The same deadline that selected this cue: a retry that starts after it can no longer be heard.
+        val deadline=(if(config.timing=="interrupt")NarrationPolicy.speechDeadline(cue,windows) else cue.end+slack)+offset
         val speechLanguage=language;val voice=config.voice(speechLanguage)
         synthesizing=true;generating=speech
         val nativeToken=++synthesisToken
@@ -394,8 +401,10 @@ internal class NarrationController(private val context: () -> Context?, private 
             // take the normal generation-error path rather than strand the queue.
             val text=runCatching {SubtitleNarrationText.prepare(cue.text,speechLanguage)}.getOrNull()
             var result: JSONObject?=null
-            for(attempt in 0..1) {
+            val ladder=NarrationPolicy.attempts(PersonalVoiceStore.isVoice(voice))
+            for(attempt in ladder.indices) {
               if(text==null)break
+              val step=ladder[attempt]
               lateinit var rhythm: NarrationRhythm
               val level=NarrationLevel {chunk->synchronized(lock){
                   check(!closed&&token==epoch&&cache[cue.key]===speech){"voice_cancelled"}
@@ -407,8 +416,8 @@ internal class NarrationController(private val context: () -> Context?, private 
               rhythm=NarrationRhythm(text,speechLanguage){level.append(it)}
               synchronized(lock){speech.localTempo=rhythm.tempoCeiling}
               try {
-                val frames=NarrationPolicy.generationFrameBudget(text,speechLanguage,cue.end-cue.start,if(attempt==0)48 else 64)
-                result=JSONObject(runtime.synthesize(model,text,voice,nativeToken,frames,attempt>0,
+                val frames=NarrationPolicy.generationFrameBudget(text,speechLanguage,cue.end-cue.start,step.minimumFrames)
+                result=JSONObject(runtime.synthesize(model,text,voice,nativeToken,frames,step.precision,
                     active={ synchronized(lock){!closed && token==epoch && synthesisToken==nativeToken && !cloneSuspended} },
                     codes={NarrationAssets.voices(context() ?: error("Unavailable")).load(voice)},sink=object: NarrationNative.Sink {
                     override fun onChunk(epoch: Long, pcm: FloatArray): Boolean {
@@ -419,7 +428,7 @@ internal class NarrationController(private val context: () -> Context?, private 
                         rhythm.append(pcm)
                         return synchronized(lock){!closed&&this@NarrationController.epoch==token&&synthesisToken==epoch}
                     }
-                }))
+                },randomSkip=step.randomSkip))
                 if(result?.optBoolean("eos")==true&&!result!!.optBoolean("cancelled")){rhythm.finish();level.finish()}
                 synchronized(lock){if(token==epoch&&cache[cue.key]===speech){
                     speech.localTempo=rhythm.tempoCeiling;rhythmPauseRemovedMs=rhythm.stats.removedPauseSamples/96.0
@@ -430,11 +439,15 @@ internal class NarrationController(private val context: () -> Context?, private 
               finally {rhythm.close();level.close()}
               val success=result?.let {it.optBoolean("eos")&&!it.optBoolean("cancelled")&&it.optDouble("audio_seconds",0.0)>0} ?: false
               val fits=speech.preview||config.timing!="continuous"||NarrationPolicy.canFinish(speech.samples/96000.0,cue.end-cue.start,0.0,1.0,config.deadlineSlack)
-              if((success&&fits)||attempt==1||synchronized(lock){output===speech&&outputStarted&&!speech.preview})break
+              // Each failed attempt burns its whole frame budget on one serial queue: stop retrying once the
+              // cue is past its deadline so the following cues are not starved.
+              if((success&&fits)||attempt==ladder.lastIndex||synchronized(lock){output===speech&&outputStarted&&!speech.preview||!speech.preview&&reportPosition>=deadline})break
               synchronized(lock) {
                   if(closed||token!=epoch||cache[cue.key]!==speech){synthesizing=false;if(generating===speech)generating=null;return@execute}
                   if(output===speech) {stopOutput();if(previewActive)previewPosition=0.0}
-                  speech.chunks.clear();speech.samples=0;speech.rawSamples=0;speech.localTempo=1.0;speech.cursor=0;prepared.remove(cue.key);synthesisRetries++;precisionRecoveries++;if(success&&!fits)precisionDurationRetries++
+                  speech.chunks.clear();speech.samples=0;speech.rawSamples=0;speech.localTempo=1.0;speech.cursor=0;prepared.remove(cue.key);synthesisRetries++
+                  if(ladder[attempt+1].precision)precisionRecoveries++ else reseededRetries++
+                  if(success&&!fits)precisionDurationRetries++
               }
             }
             val complete=result?.let {it.optBoolean("eos")&&!it.optBoolean("cancelled")} ?: false
@@ -455,6 +468,9 @@ internal class NarrationController(private val context: () -> Context?, private 
                 lastGenerationFrames=result?.let {kotlin.math.round(it.optDouble("audio_seconds",0.0)/.08).toInt()} ?: 0
                 lastEos=result?.optBoolean("eos") ?: false
                 lastPrecisionRecovery=result?.optBoolean("precision_recovery") ?: false
+                if(result?.optBoolean("probability_stop")==true)probabilityStops++
+                if(result?.optBoolean("prefix_hit")==true)prefixHits++
+                lastPrefillMs=(result?.optDouble("prefill_seconds",0.0) ?: 0.0)*1000
                 precisionModelLoaded=result?.optBoolean("precision_model_loaded") ?: precisionModelLoaded
                 lastPrecisionLoadMs=(result?.optDouble("precision_load_seconds",0.0) ?: 0.0)*1000
                 if(speech.failed) {
@@ -798,7 +814,7 @@ internal class NarrationController(private val context: () -> Context?, private 
             .put("interrupted",interrupted).put("last_miss_reason",lastMissReason).put("missing_cues",missingCues).put("last_trim_ms",lastTrimMs)
             .put("timing",config.timing).put("output_delay_seconds",if(outputStarted&&!previewActive)lastLatenessMs/1000 else 0.0)
             .put("buffered_seconds",cache.values.filter {it.done&&!it.failed}.sumOf {it.samples}/96000.0).put("buffer_goal_seconds",16.0)
-            .put("precision_recoveries",precisionRecoveries).put("precision_duration_retries",precisionDurationRetries).put("last_precision_recovery",lastPrecisionRecovery).put("precision_model_loaded",precisionModelLoaded).put("last_precision_load_ms",lastPrecisionLoadMs)
+            .put("precision_recoveries",precisionRecoveries).put("reseeded_retries",reseededRetries).put("probability_stops",probabilityStops).put("prefix_hits",prefixHits).put("last_prefill_ms",lastPrefillMs).put("precision_duration_retries",precisionDurationRetries).put("last_precision_recovery",lastPrecisionRecovery).put("precision_model_loaded",precisionModelLoaded).put("last_precision_load_ms",lastPrecisionLoadMs)
             .put("preview",previewRequested).put("preview_request",config.preview)
             .put("preview_progress",if(previewRequested&&output?.preview==true&&rendered?.done==true&&rendered!!.samples>0)
                 ((track?.playbackHeadPosition?.toLong()?.and(0xffffffffL) ?: 0L)*200/rendered!!.samples).coerceIn(0,99) else -1)

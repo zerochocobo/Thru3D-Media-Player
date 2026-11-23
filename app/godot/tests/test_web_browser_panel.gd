@@ -285,7 +285,8 @@ func _run() -> void:
 	menu.web_browser.restore_playback(false,109000)
 	check(platform.browser_commands.back().action=="restore_niconico" and platform.browser_commands.back().position_ms==109000,
 		"Niconico restores its original document through the bound adapter")
-	platform.browser={"url":"https://clips.twitch.tv/PublicClip","tab_id":17,"navigation":1,"focused_window":1,"active":true,
+	var twitch_page := "https://www.twitch.tv/creator/clip/PublicClip"
+	platform.browser={"url":twitch_page,"handoff_url":twitch_page,"tab_id":17,"navigation":1,"focused_window":1,"active":true,
 		"twitch_beta_available":true,"pause_confirmed":true,"beta_request":8,"beta_selection":"twitch:main:revision1",
 		"videos":[{"twitch_ready":true,"selection":"twitch:main:revision1","time":5.0},
 			{"width":640,"height":360,"playing":true,"time":3.0}]}
@@ -293,15 +294,17 @@ func _run() -> void:
 		"Twitch exposes only the declared main and does not select an unrelated advert")
 	var closed_twitch: Dictionary=platform.browser.duplicate(true);closed_twitch.twitch_beta_available=false
 	check(not menu.web_browser.beta_site_available(closed_twitch),"Unqualified Twitch source cannot expose the action")
-	menu.web_browser.next_poll=0;menu.web_browser.tick();menu.web_browser.next_poll=0;menu.web_browser.tick()
-	check(platform.selected_requests.back()==[platform.browser.url,"twitch:main:revision1"] and menu.web_browser.handoff_start_ms==5000,
-		"Twitch hands off only its explicit current selection and playhead")
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	platform.browser.url=twitch_page+"?range=7d"
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(platform.selected_requests.back()==[twitch_page,"twitch:main:revision1"] and menu.web_browser.handoff_start_ms==5000,
+		"Twitch keeps the current selection and playhead across a list range change")
 	platform.browser.videos[0].selection="twitch:next:revision2"
 	menu.web_browser.next_poll=0;menu.web_browser.tick()
 	check(not menu.web_browser.handoff,"Changed Twitch metadata cancels the stale selection")
-	menu.web_browser.playback_return={"tab":17,"window":1,"navigation":1,"origin":platform.browser.url,"selection":"twitch:main:revision1","twitch":true}
+	menu.web_browser.playback_return={"tab":17,"window":1,"navigation":1,"origin":twitch_page,"selection":"twitch:main:revision1","twitch":true}
 	menu.web_browser.restore_playback(false,19000)
-	check(platform.browser_commands.back().action=="restore_twitch" and platform.browser_commands.back().position_ms==19000,
+	check(platform.browser_commands.back().action=="restore_twitch" and platform.browser_commands.back().origin==twitch_page and platform.browser_commands.back().position_ms==19000,
 		"Twitch restores its original document through the bound adapter")
 	menu.refresh()
 	check(menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 6), "Twitch keeps its original manual player action alongside Beta")

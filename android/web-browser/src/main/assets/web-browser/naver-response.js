@@ -40,7 +40,7 @@ const Thru3DNaverResponses=(stateFor,publish)=>{
         while(rejected.size>8)rejected.delete(rejected.keys().next().value);
         s.naverCapture.rejected_cards=[...rejected.values()];
         const values=s.naverData||=new Map();for(const [key,value]of values)if(now-value.at>TTL)values.delete(key);
-        for(const item of entries){const key=item.id+'\n'+item.source+'\n'+item.width+'x'+item.height+'\n'+(item.timeline?.representation||'');values.delete(key);values.set(key,{...item,at:now});}
+        for(const item of entries){const key=item.page+'\n'+item.source+'\n'+item.width+'x'+item.height+'\n'+(item.timeline?.representation||'');values.delete(key);values.set(key,{...item,at:now});}
         while(values.size>64||JSON.stringify([...values.values()]).length>96*1024)values.delete(values.keys().next().value);
         note(s,entries.length?'normalized':'unsupported');publish(s);
       }catch(_){note(s,'invalid');publish(s);}finally{e.chunks=[];}

@@ -3,7 +3,7 @@ package org.vrpassthroughplayer.plugin
 import java.net.URI
 import org.json.JSONObject
 
-/** Direct feed players only. The DOM owner and the exact observed request must agree. */
+/** The rendered player and the exact observed file request must agree. */
 object WebBrowserWeibo {
     fun document(value: String): Boolean = runCatching {
         val u = URI(value)
@@ -24,8 +24,13 @@ object WebBrowserWeibo {
         require(document(currentPage) && item.optString("frame") == currentPage && !item.optBoolean("protected") && !item.optBoolean("blob"))
         val data = item.getJSONObject("weibo")
         require(data.toString().length <= 24 * 1024)
-        val page = page(data.getString("page")) ?: return null
-        require(page.first == data.getString("id") && page.second == data.getString("page"))
+        val target = page(data.getString("page")) ?: return null
+        require(target.first == data.getString("id") && target.second == data.getString("page"))
+        when (data.optString("binding")) {
+            "" -> Unit
+            "standalone" -> require(':' in target.first && page(currentPage.substringBefore('?').substringBefore('#')) == target)
+            else -> return null
+        }
         val source = item.getString("source")
         val uri = WebBrowserNetworkMedia.address(source) ?: return null
         require(uri.scheme == "https" && source == data.getString("source"))

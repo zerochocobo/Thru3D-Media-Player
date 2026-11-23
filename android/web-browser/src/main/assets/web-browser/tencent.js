@@ -87,14 +87,16 @@ const Thru3DTencent = (() => {
       const u=new URL(s,base);if(!address(u.href))throw new Error('Invalid HLS reference');return u.href;
     });}catch(_){return [];}
   };
-  const binding = (video,records,requests,document) => {
+  const binding = (video,records,requests,document,minSegments=1) => {
     const p=page(document);if(!p||!video.closest?.('#main-player .txp_videos_container')||!video.isConnected||video.mediaKeys)return null;
     const matches=records.filter(d=>(!p.id||d.id===p.id)&&d.clear&&d.full&&d.width===video.videoWidth&&d.height===video.videoHeight&&
       Number.isFinite(video.duration)&&Math.abs(video.duration-d.duration)<=
         (d.playlist?Math.max(.5,d.duration*.0001):Math.max(2,d.duration*.01))).map(d=>{
         if(video.currentSrc?.startsWith('blob:')) {
           const manifest=d.urls.find(base=>{
-            const refs=references(d,base);return refs.length>0&&requests.some(r=>r.kind==='segment'&&(refs.includes(r.url)||refs.includes(r.original_url)));
+            const refs=new Set(references(d,base));
+            const matched=new Set(requests.filter(r=>r.kind==='segment').map(r=>refs.has(r.url)?r.url:refs.has(r.original_url)?r.original_url:null).filter(Boolean));
+            return matched.size>=minSegments;
           });
           if(manifest)return {...d,manifest_url:manifest};
           if(!d.playlist&&requests.some(r=>requestMatches(r,d)))return d;
@@ -103,7 +105,22 @@ const Thru3DTencent = (() => {
         return requests.some(r=>(r.url===video.currentSrc||r.original_url===video.currentSrc)&&requestMatches(r,d))?d:null;
       }).filter(Boolean);
     if(matches.length!==1)return null;
-    const d=matches[0];return {...d,page:canonical(p,d.id)};
+    const {request_flow,...d}=matches[0];return {...d,page:canonical(p,d.id)};
+  };
+  const currentBinding=(video,state,observed,requests,document)=>{
+    if(!state.id)return binding(video,observed,requests,document);
+    const page=state.data;
+    if(!page)return null;
+    const primary=binding(video,[page],requests,document);
+    if(primary||!page.clear||!page.full||!page.playlist||!state.flowid||!video.currentSrc?.startsWith('blob:')||
+      page.width!==video.videoWidth||page.height!==video.videoHeight||!Number.isFinite(video.duration)||
+      Math.abs(page.duration-video.duration)<=Math.max(.5,page.duration*.0001))return primary;
+    // The processed page response can describe another insertion timeline for
+    // the same programme. Use only the player's actual request from this flow.
+    const alternatives=observed.filter(data=>data.id===page.id&&data.request_flow===state.flowid&&
+      data.content_duration===page.content_duration&&data.playlist);
+    const match=binding(video,alternatives,requests,document,2);
+    return match?{...match,revision:revision(match.revision+'\n'+state.flowid)}:null;
   };
   const diagnostics = (entries,policyAt) => {
     const result={api_resources:0,api_before_policy:0,api_script:0,api_xhr:0,api_fetch:0};
@@ -166,9 +183,10 @@ const Thru3DTencent = (() => {
       const hint=hints.find(h=>h.id===id&&h.flowid===nonce);
       if(p.id&&p.id!==id||!hint)return result;
       result.id=id;
+      result.flowid=nonce;
       const raw={ret:0,data:{flowid:nonce,playInfo:{vid:id},videoInfo:{vid:id,duration:hint.duration||0},proxyhttp:{vinfo:body}}};
       result.shape=describe(raw);result.capture=shape(raw);result.data=normalize(raw,id);result.status=result.data?4:3;return result;
     }catch(_){result.status=5;return result;}
   };
-  return {page,canonical,normalize,binding,requestMatches,references,diagnostics,shape,describe,json,envelope,pageState};
+  return {page,canonical,normalize,binding,currentBinding,requestMatches,references,diagnostics,shape,describe,json,envelope,pageState};
 })();

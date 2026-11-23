@@ -36,6 +36,27 @@ test('backgrounds, repost ambiguity and multiple players cannot borrow another c
   f.box.closest=()=>null;
   assert.equal(api.binding(f.video,f.requests),null);
 });
+test('the isolated Weibo TV detail binds only the rendered main player and its exact declared file',()=>{
+  const {video,requests}=fixture();
+  const detail='https://weibo.com/tv/show/1034:4967272104787984';
+  const detailRoot='#playInfo #playVideo',detailPlayer=detailRoot+' .wbp-video';
+  const view={};view.top=view;
+  let players=[video];
+  const root={querySelectorAll:s=>s==='video'?players:[]};
+  let roots=[root];
+  const doc={location:{href:detail+'?refer=video'},defaultView:view,querySelectorAll:s=>s===detailRoot?roots:[]};
+  const box={ownerDocument:doc,matches:s=>s===detailPlayer,closest:s=>s===detailRoot?root:null,contains:v=>v===video};
+  Object.assign(video,{src:url,hasAttribute:k=>k==='src',matches:s=>s==='video.wbpv-tech',closest:s=>s===detailPlayer?box:null});
+  const current=api.binding(video,requests);
+  assert.equal(current.page,detail);assert.equal(current.binding,'standalone');assert.equal(current.source,url);
+  assert.equal(api.binding(video,[]),null);
+  video.src=url+'-old';assert.equal(api.binding(video,requests),null);video.src=url;
+  video.mediaKeys={};assert.equal(api.binding(video,requests),null);video.mediaKeys=null;
+  players=[video,{}];assert.equal(api.binding(video,requests),null);players=[video];
+  roots=[root,{}];assert.equal(api.binding(video,requests),null);roots=[root];
+  view.top={};assert.equal(api.binding(video,requests),null);view.top=view;
+  doc.location.href='https://weibo.com/tv';assert.equal(api.binding(video,requests),null);
+});
 test('lazy, Blob and zero-duration players never become ready from nearby network files',()=>{
   for(const mutation of [v=>v.readyState=0,v=>v.videoWidth=0,v=>v.duration=NaN,v=>v.duration=0,v=>v.currentSrc='blob:page',v=>v.currentSrc='https://user:secret@cdn.test/file']){
     const f=fixture();mutation(f.video);assert.equal(api.binding(f.video,f.requests),null);

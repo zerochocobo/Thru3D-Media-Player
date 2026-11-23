@@ -5,6 +5,7 @@ const PhotoMenu := preload("res://scripts/photo_menu.gd")
 const Video := preload("res://scripts/mpv_video_display.gd")
 const Photo := preload("res://scripts/photo_display.gd")
 const Host := preload("res://tests/test_player_menu.gd").Host
+const LibraryPathProbe := preload("res://scripts/library_path_device_probe.gd")
 var checks := 0
 var failures: Array[String] = []
 
@@ -221,6 +222,35 @@ func check_group_grips(main: Node3D, controls: Node3D, library: Node3D, kind: St
 
 func _initialize() -> void: call_deferred("run")
 
+func check_path_hover(main: Node3D, library: Node3D) -> void:
+	var original_stack: Array = library._local_stack.duplicate(true)
+	var original_scroll: float = library.scroll
+	library._local_stack.append({"id": "/disk/child", "title": "Child folder"})
+	var target := Library.PathMenu.TOGGLE
+	for hand in ["left_hand", "right_hand"]:
+		library.path_menu.reset()
+		library.refresh()
+		main.rays = {hand: ray(library, target)}
+		main._update_menu_pointer("left_hand")
+		main._update_menu_pointer("right_hand")
+		var start := Time.get_ticks_msec()
+		library.path_menu.tick(start)
+		main._update_menu_pointer("left_hand")
+		main._update_menu_pointer("right_hand")
+		library.path_menu.tick(start + Library.PathMenu.OPEN_MS)
+		check(library.path_menu.open, "The other hand's update keeps the directory tree dwell in the compact library: " + hand)
+		if hand == "left_hand": library.path_menu.close()
+	var probe := LibraryPathProbe.new()
+	probe._library = library
+	check(probe._tap(main.player_menu, Library.PathMenu.ROW) and library._local_stack == original_stack and not library.path_menu.open,
+		"An ancestor row reached through the playback host receives one trigger")
+	probe.free()
+	await process_frame
+	main.rays.clear()
+	library._local_stack.assign(original_stack)
+	library.scroll = original_scroll
+	library.refresh()
+
 func run() -> void:
 	check_playback_location()
 	var main := Harness.new(); root.add_child(main)
@@ -263,6 +293,7 @@ func run() -> void:
 	check(library._buttons.all(func(item): return item.target not in [Library.FOLLOW, Library.TEMP_PASSTHROUGH]), "Compact browser does not duplicate the transport footer")
 	check(current_button_visible(library, video.local_uri), "Opening playback files puts the playing item in view")
 	check(not player.allows_playback_sticks(), "Expanded files isolate playback sticks")
+	await check_path_hover(main, library)
 	var playing_before: bool = video.requested_play
 	var calls_before: int = video.platform.calls.size()
 	var location_before: String = str(library._local_stack.back().id)

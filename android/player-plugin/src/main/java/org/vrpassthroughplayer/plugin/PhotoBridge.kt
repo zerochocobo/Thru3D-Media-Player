@@ -556,7 +556,7 @@ internal class PhotoBridge(
                     val stereoStarted = System.nanoTime()
                     val rect = result.getJSONArray("rect")
                     val pair = PhotoStereo.prepare(source,near,FloatArray(4) { rect.getDouble(it).toFloat() },job.strength,id,job.rotation,job.convergence,
-                        used == PhotoDepthModel.FAST, PhotoStereo.stretch, pages = pages)
+                        used == PhotoDepthModel.FAST, PhotoStereo.stretch, pages = pages, steady = PhotoStereo.steady)
                     pair.keys().forEach { key -> result.put(key,pair.get(key)) }
                     result.put("stereo_total_ms",(System.nanoTime()-stereoStarted)/1_000_000.0)
                 }

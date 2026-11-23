@@ -148,6 +148,16 @@ func _run() -> void:
 	menu.state_provider = offer_state; menu.show_playback_error()
 	check(not menu._buttons.any(func(button): return button.target == Menu.USB_TAKEOVER), "Without the offer the failure dialog shows no takeover")
 	menu.dismiss()
+	menu.state_provider = func(): return offer_state.call().merged({"usb_takeover_offer": true, "error": "x", "has_video": true}, true)
+	menu.refresh()
+	var bar_open: Array = menu._buttons.filter(func(button): return button.target == Menu.ERROR_OPEN)
+	var bar_takeover: Array = menu._buttons.filter(func(button): return button.target == Menu.USB_TAKEOVER)
+	check(bar_open.size() == 1 and bar_takeover.size() == 1 and bar_takeover[0].node.position.x > bar_open[0].node.position.x, "The takeover sits beside the failure entry in the control bar")
+	requested.clear()
+	menu._activate(Menu.USB_TAKEOVER)
+	check(requested == ["usb_takeover"], "The control bar takeover works without opening the failure dialog")
+	menu.state_provider = offer_state; menu.dismiss()
+	menu.dismiss()
 	# The failure's log in one tap: the button follows its upload; the owner sends each failure once.
 	var upload := {}
 	menu.state_provider = func(): return offer_state.call().merged({"diagnostic_upload": upload}, true)
@@ -233,6 +243,43 @@ func _run() -> void:
 	check(Errors.message(oversized) == "本机没有可解码视频 AV1 7680×7680 59.94fps 的硬件解码器。", "Missing hardware decoder is named")
 	check("解码器：无硬件解码器 · video/av01 · Quest 2" in Errors.details(oversized), "Details say no hardware decoder")
 	check(Errors.message({"reason": "resolution_unsupported"}) == Errors.REASONS.resolution_unsupported,"Without parameters the fixed reason remains")
+	# The media-library 404 context must survive the clean() that guards logged and saved reports.
+	var server_404 := {"reason": "not_found", "stage": "resolving", "http_status": 404, "media_server": {"provider": "emby",
+		"request": "server_original_range", "redirect": "same_host", "has_base_path": true, "explicit_version": false,
+		"note": "https://nas.example/emby?api_key=secret", "nested": {"path": "/private"}}}
+	var kept: Dictionary = Errors.clean(server_404).get("media_server", {})
+	check(kept.get("provider") == "emby" and kept.get("request") == "server_original_range" and kept.get("redirect") == "same_host"
+		and kept.get("has_base_path") == true and kept.get("explicit_version") == false, "Media server request context is kept: " + str(kept))
+	check(not "secret" in str(kept) and not kept.has("nested"), "Media server context passes the redaction boundary")
+	check(Errors.message(Errors.clean(server_404)) == Errors.message({"reason": "not_found", "stage": "resolving", "http_status": 404}),
+		"Request context does not change the user message")
+	# A stalled source reaches the exported log with labels, marks, the native wait and module names only.
+	var stalled := {"kind": "close_stuck", "scheme": "smb", "stage": "core_terminate", "closing_ms": 51000, "first_frame": false,
+		"detail": "smb://nas/share?token=secret", "nested": [1, 2],
+		"startup": {"worker_started_ms": 1, "native_created_ms": 812, "note": {"deep": true}},
+		"native": {"stage": "core_terminate", "decoder": "hardware", "last_log_ms": 50500,
+			"recent_modules": ["vd", "ao/aaudio", 5, "ffmpeg/demuxer-with-a-very-long-module-name"]}}
+	var cleaned := Errors.clean_source_diagnostic(stalled, 4)
+	check(cleaned.session_id == 4 and cleaned.kind == "close_stuck" and cleaned.closing_ms == 51000 and cleaned.first_frame == false,
+		"Stalled-source labels and numbers are kept: " + str(cleaned))
+	check(cleaned.startup == {"worker_started_ms": 1, "native_created_ms": 812}, "Startup marks are kept one level down: " + str(cleaned.startup))
+	check(cleaned.native.recent_modules == ["vd", "ao/aaudio", "ffmpeg/demuxer-with-a-ve"] and cleaned.native.last_log_ms == 50500,
+		"MPV modules are short names only: " + str(cleaned.native))
+	check(not cleaned.has("nested") and not "secret" in str(cleaned), "Stalled-source records pass the redaction boundary")
+	var Log := preload("res://scripts/diagnostic_log.gd")
+	var Privacy := preload("res://scripts/media_privacy.gd")
+	var saved_log := [Log.path, Log.rotated_path, Privacy.mode, Privacy.vault]
+	var log_dir := OS.get_user_data_dir().path_join("tests/playback_errors_source_diagnostic")
+	DirAccess.make_dir_recursive_absolute(log_dir)
+	Log.path = log_dir.path_join("events.jsonl"); Log.rotated_path = log_dir.path_join("events.1.jsonl")
+	if FileAccess.file_exists(Log.path): DirAccess.remove_absolute(Log.path)
+	Privacy.mode = Privacy.ALL; Privacy.vault = null
+	video.media.begin(9) # Another session is current: a replaced source still reports.
+	video._on_source_diagnostic(4, JSON.stringify(stalled))
+	var logged: Variant = JSON.parse_string(FileAccess.get_file_as_string(Log.path).strip_edges().get_slice("\n", 0))
+	check(logged is Dictionary and logged.event == "mpv_source_diagnostic" and logged.details.session_id == 4
+		and logged.details.native.stage == "core_terminate" and not "secret" in str(logged), "Stalled source is written to the exported log: " + str(logged))
+	Log.path = saved_log[0]; Log.rotated_path = saved_log[1]; Privacy.mode = saved_log[2]; Privacy.vault = saved_log[3]
 	main.free(); menu.free(); video.free()
 	if failures.is_empty(): print("Playback error checks passed: ", checks); quit(0)
 	else:

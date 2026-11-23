@@ -62,7 +62,8 @@ internal class NarrationPreviewSession(private val runtime: SharedNarrationEngin
         if(counted)counts[0]++
         // A runaway clause is cut near its natural length instead of 20 seconds.
         val frames=NarrationPolicy.generationFrameBudget(text,language,0.0,48)
-        for((index,attempt) in ATTEMPTS.withIndex()){
+        for((index,step) in NarrationPolicy.attempts(PersonalVoiceStore.isVoice(voice)).withIndex()){
+            val attempt=step.precision to step.randomSkip
             counts[1]++;val chunks=ArrayList<FloatArray>();var size=0
             val result=JSONObject(runtime.synthesize(lease,text,voice,0,frames,attempt.first,active,{codes},object:NarrationNative.Sink {
                 override fun onChunk(epoch: Long,pcm: FloatArray): Boolean {
@@ -83,9 +84,7 @@ internal class NarrationPreviewSession(private val runtime: SharedNarrationEngin
     override fun close(){lease?.close();lease=null}
     companion object {
         const val LOOKAHEAD_BLOCKS=32
-        // The precision graph recovers most INT8 non-endings; a different
-        // random stream covers the rest without changing the voice or text.
-        private val ATTEMPTS=listOf(false to 0,true to 0,false to 17,true to 17)
+        // Retry ladders live in NarrationPolicy (measured per voice kind).
         private const val TERMINATORS="。！？!?…؟"
         private fun units(text: String,language: String)=
             if(language in setOf("zh","ja"))text.count {it.isLetterOrDigit()} else Regex("[\\p{L}\\p{N}]+").findAll(text).count()

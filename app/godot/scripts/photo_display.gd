@@ -148,6 +148,8 @@ var depth_mode := "progressive"
 ## How a pair covers what near content uncovers: "fill" (default hole fill) or "stretch" (video's edge stretching).
 const FILL_MODES := ["fill", "stretch"]
 var fill_mode := "fill"
+## Steady edges for stills (photo/edge_steady), on by default like the video setting.
+var edge_steady := true
 var _refine_request := 0
 var _refine_due := {"id":0, "at":0}
 var _blend_previous: Texture2D
@@ -250,6 +252,7 @@ func restore_view_settings(settings: ConfigFile) -> void:
 	cache_each = clampi(int(settings.get_value("photo", "cache_each", 1)), 1, 2)
 	set_depth_mode(str(settings.get_value("photo", "depth_mode", "progressive")))
 	set_fill_mode(str(settings.get_value("photo", "fill_mode", "fill")))
+	set_edge_steady(bool(settings.get_value("photo", "edge_steady", true)))
 	magazine.right_to_left = bool(settings.get_value("photo_screen", "magazine_rtl", false))
 	reading_layout = int(settings.get_value("photo_screen", "reading_layout", -1))
 	if reading_layout not in [Gallery.Layout.SINGLE, Gallery.Layout.MAGAZINE]: reading_layout = -1
@@ -1529,6 +1532,7 @@ func set_depth_mode(value: String) -> bool:
 func _sync_depth_mode() -> void:
 	if Methods.supports(platform, "set_photo_depth_mode"): platform.set_photo_depth_mode(depth_mode)
 	if Methods.supports(platform, "set_photo_fill_mode"): platform.set_photo_fill_mode(fill_mode)
+	if Methods.supports(platform, "set_photo_edge_steady"): platform.set_photo_edge_steady(edge_steady)
 
 ## Rebuilds the shown pair in the new mode; cached pairs of the other mode no longer match.
 func set_fill_mode(value: String) -> bool:
@@ -1542,8 +1546,21 @@ func set_fill_mode(value: String) -> bool:
 	changed.emit()
 	return true
 
+## Rebuilds the shown pair with or without steady edges, as a fill mode change does (stretch pairs only).
+func set_edge_steady(value: bool) -> void:
+	if value == edge_steady: return
+	edge_steady = value
+	_sync_depth_mode()
+	if fill_mode != "stretch":
+		changed.emit(); return
+	render_cache.cancel()
+	for entry in _prefetched.values(): entry.erase("depth_failed")
+	if depth_requested and not animation.depth_mode and Methods.supports(platform, "prepare_photo_3d"): _depth_rebuild_seconds = 0.15
+	changed.emit()
+
 func _fill_matches(data: Dictionary) -> bool:
-	return str(data.get("fill", "fill")) == fill_mode
+	# Steady edges reach stretch pairs only (PhotoStereo.prepare).
+	return str(data.get("fill", "fill")) == fill_mode and bool(data.get("steady", false)) == (edge_steady and fill_mode == "stretch")
 
 ## The shown 3D came from the fast model: after the dwell (none in quality mode) ask once for the
 ## quality map. Turning pages before then never starts the slower inference.
@@ -2586,7 +2603,8 @@ static func _read_depth(payload: String) -> Dictionary:
 		var rotation := int(result.get("stereo_rotation", 0))
 		if rotation not in [0, 90, 180, 270]: return {}
 		data.merge({"stereo_image":stereo, "strength":strength, "strategy":str(result.stereo_strategy), "rotation":rotation, "convergence":float(plane),
-			"fill":"stretch" if str(result.get("stereo_fill", "fill")) == "stretch" else "fill", "gpu_pair":maxi(0, int(result.get("stereo_gpu_pair", 0)))})
+			"fill":"stretch" if str(result.get("stereo_fill", "fill")) == "stretch" else "fill",
+			"steady":bool(result.get("stereo_steady", false)), "gpu_pair":maxi(0, int(result.get("stereo_gpu_pair", 0)))})
 	return data
 
 func set_depth_position(value: Variant) -> bool:
@@ -2675,7 +2693,7 @@ func snapshot() -> Dictionary:
 	progress.elapsed_ms = Time.get_ticks_msec() - _loading_started_ms
 	# A ready autoplay picture held for one frame under the old one is not loading or preparing 3D.
 	var preparing := _presentation_pending and not (slideshow.waiting and _presentation_effects_ready())
-	return {"autoplay_enabled":autoplay.enabled,"autoplay_interval":autoplay.interval,"autoplay_effect":autoplay.effect,"ground_vertical":ground_vertical,"cache_each":cache_each,"depth_mode":depth_mode,"fill_mode":fill_mode,"depth_model":str(_display_depth_data.get("model", "")),"animated":animation.available(),"animation_paused":animation.paused,"animation_ended":animation.ended,"animation_failed":animation.failed,"raw_preview":_metadata.get("raw_preview",false),
+	return {"autoplay_enabled":autoplay.enabled,"autoplay_interval":autoplay.interval,"autoplay_effect":autoplay.effect,"ground_vertical":ground_vertical,"cache_each":cache_each,"depth_mode":depth_mode,"fill_mode":fill_mode,"edge_steady":edge_steady,"depth_model":str(_display_depth_data.get("model", "")),"animated":animation.available(),"animation_paused":animation.paused,"animation_ended":animation.ended,"animation_failed":animation.failed,"raw_preview":_metadata.get("raw_preview",false),
 		"spatial_preferred":spatial_preferred,"spatial_requested":spatial_requested,"spatial_ready":_spatial.prepared if is_instance_valid(_spatial) else false,"spatial_available":can_spatial(),"spatial_error":spatial_error,
 		"spatial_report":_spatial.report if is_instance_valid(_spatial) else {},"has_image": _texture != null, "loading": loading or preparing, "loading_caption": Loading.caption(progress) if loading else "", "placeholder": placeholder_visible(), "preparing_depth": preparing or not _pending_display.is_empty(), "title": title, "index": position, "count": queue.size(),
 		"magazine_single": magazine.single(position), "magazine_pages": magazine.count(position) if magazine.active() else 1, "magazine_rtl": magazine.right_to_left,
@@ -3132,7 +3150,7 @@ func _layer_source() -> Dictionary:
 			"stereo": 1, "blend": VideoLayer.SOURCE_ALPHA}
 	if depth_enabled and _display_depth_data.has("stereo_image"):
 		var pair: Image = _display_depth_data.stereo_image
-		return {"key": "stereo:%d:%.3f:%dx%d:r%d:c%.4f:%s" % [_display_request, float(_display_depth_data.get("strength", 0)), pair.get_width(), pair.get_height(), int(_display_depth_data.get("rotation", 0)), float(_display_depth_data.get("convergence", 0.35)), str(_display_depth_data.get("fill", "fill"))],
+		return {"key": "stereo:%d:%.3f:%dx%d:r%d:c%.4f:%s:%s" % [_display_request, float(_display_depth_data.get("strength", 0)), pair.get_width(), pair.get_height(), int(_display_depth_data.get("rotation", 0)), float(_display_depth_data.get("convergence", 0.35)), str(_display_depth_data.get("fill", "fill")), str(_display_depth_data.get("steady", true))],
 			"image": _display_depth_data.stereo_image, "stereo": 1, "gpu_pair": int(_display_depth_data.get("gpu_pair", 0))}
 	if depth_enabled:
 		return {} # the shader's own depth parallax

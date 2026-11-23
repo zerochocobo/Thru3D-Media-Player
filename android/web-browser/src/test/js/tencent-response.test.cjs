@@ -5,7 +5,7 @@ function setup(options={}){
   const events={},streams=new Map(),publications=[],state={tencent:true,page,key:'1:0',document:'doc-one',privateContext:false,cookieStore:'firefox-default'};let current=options.early?null:state;
   const webRequest={filterResponseData(k){const s={written:[],write(b){this.written.push(Buffer.from(b));},close(){this.closed=true;},disconnect(){this.disconnected=true;}};streams.set(k,s);return s;}};
   for(const k of ['onBeforeRequest','onHeadersReceived','onBeforeRedirect','onErrorOccurred'])webRequest[k]={addListener(fn,filter){events[k]=fn;assert(filter.urls.every(u=>/\/(?:getvinfo|getinfo|proxyhttp|vinfo_proxy)\*/.test(u)));assert(filter.types.includes('script'));}};
-  const context=vm.createContext({URL,TextDecoder,Uint8Array,setTimeout:()=>1,clearTimeout:()=>{},browser:{webRequest}});
+  const context=vm.createContext({URL,URLSearchParams,TextDecoder,Uint8Array,ArrayBuffer,setTimeout:()=>1,clearTimeout:()=>{},browser:{webRequest}});
   for(const n of ['tencent.js','tencent-response.js'])vm.runInContext(fs.readFileSync(path.resolve(__dirname,'../../main/assets/web-browser/'+n),'utf8'),context);
   context.stateFor=()=>current;context.publish=s=>publications.push(s.tencentStatus);context.hasFrame=()=>!!current;
   vm.runInContext('globalThis.observer=Thru3DTencentResponses(stateFor,publish,hasFrame)',context);
@@ -18,6 +18,24 @@ test('successful current response forwards original bytes and normalizes without
   const h=setup(),{d,s}=h.start();h.headers(d);const text='callback('+JSON.stringify(raw())+');';
   s.ondata({data:Buffer.from(text)});s.onstop();assert.equal(Buffer.concat(s.written).toString(),text);
   assert.equal(h.state.tencentData.size,1);assert.equal([...h.state.tencentData.values()][0].id,id);
+});
+
+test('same scoped POST adds only the public video ID match and player flow to its media record',()=>{
+  function capture(vinfoparam,outer={}){
+    const h=setup(),url='https://new-associated-api.example/proxyhttp';
+    const request=new TextEncoder().encode(JSON.stringify({vinfoparam,...outer}));
+    const {d,s}=h.start('playback','POST',{url,requestBody:{raw:[{bytes:request.buffer}]}});h.headers(d);
+    const response=Buffer.from(JSON.stringify(raw()));s.ondata({data:response});s.onstop();
+    assert.deepEqual(Buffer.concat(s.written),response);
+    return [...h.state.tencentData.values()][0];
+  }
+  const wire=`vid=${id}&flowid=matching-flow&unrelated=private-value`;
+  const bound=capture(wire);
+  assert.equal(bound.request_flow,'matching-flow');assert(!JSON.stringify(bound).includes('private-value'));
+  assert.equal(capture(JSON.stringify({vid:id,flowid:'matching-flow'})).request_flow,'matching-flow');
+  for(const rejected of [capture(wire,{vid:id}),capture(wire+'&flowid=other-flow'),capture(wire.replace(id,'x1111111111'))]){
+    assert.equal(rejected.request_flow,undefined);
+  }
 });
 
 test('the page vinfo_proxy POST is observed with bounded structural diagnostics and legacy wrapper validation',()=>{

@@ -63,7 +63,7 @@ func run() -> void:
 	state.grade_values = values; state.color_grade = {"preset": "Custom"}
 	for language in ["en", "zh", "zh_Hant", "ja"]:
 		I18n.use(language); make_menu()
-		menu._open_picture_controls(false); menu._picture_advanced = true
+		menu._open_picture_controls(); menu._picture_advanced = true
 		for page in 3:
 			menu._grade_page = page; menu.refresh(); await snapshot("color-%s-%d" % [language, page])
 		menu._adjustment = "stereo_view"; menu.refresh(); await snapshot("stereo-" + language)

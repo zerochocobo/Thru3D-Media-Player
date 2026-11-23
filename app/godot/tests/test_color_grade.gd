@@ -213,7 +213,7 @@ func _run() -> void:
 	check(["exposure", "saturation", "picture_sharpness", "depth_position", "alpha_feather", "view_zoom", "stereo_focus", "screen_curve"].all(func(key): return menu._clears_menu(key)), "Picture sliders clear the menu")
 	check(not ["screen_distance", "screen_scale", "screen_rotation", "portrait_distance", "portrait_scale", "cinema_picture_size", "playback_speed", "alpha_fps", "bar_transparency", "gallery_scale", "gallery_distance", "inspect_magnification"].any(func(key): return menu._clears_menu(key)), "Placement, pace and the menu's own look keep the menu")
 	check(commits == 5 and menu._adjust_hand.is_empty(), "Dismiss saves active drag")
-	menu.visible = true; menu._open_picture_controls(false)
+	menu.visible = true; menu._open_picture_controls()
 	check(Grade.PRESETS == ["Original", "Warm", "Cool", "Custom"] and menu._preset_buttons.size() == 4 and not menu._buttons.any(func(button): return button.target == 414), "Exactly four visible presets with no stale fifth target")
 	grade.adjust("red_gain", 1.5); var retained := grade.custom.duplicate()
 	menu._activate(412)

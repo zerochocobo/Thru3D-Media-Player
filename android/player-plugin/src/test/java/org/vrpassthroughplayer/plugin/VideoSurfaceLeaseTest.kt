@@ -2,8 +2,51 @@ package org.vrpassthroughplayer.plugin
 
 import org.junit.Assert.*
 import org.junit.Test
+import org.vrpassthroughplayer.plugin.VideoSurfaceLease.Output
 
 class VideoSurfaceLeaseTest {
+    @Test fun normalSwitchWaitsForAcknowledgementAndKeepsLayerOutput() {
+        val lease = VideoSurfaceLease<Any>()
+        val old = Any()
+        val next = Any()
+        assertEquals(Output.LAYER, lease.selectOutput(old, wantsLayer = true, slotsClosing = false, expired = false))
+        assertEquals(Output.WAIT, lease.selectOutput(next, true, false, false))
+        assertTrue(lease.release(old) {})
+        assertEquals(Output.LAYER, lease.selectOutput(next, true, false, true))
+    }
+
+    @Test fun heldSurfaceAtTheDeadlineFailsTheLayerOpenInsteadOfFallingBack() {
+        val lease = VideoSurfaceLease<Any>()
+        val writing = Any()
+        val next = Any()
+        assertTrue(lease.acquire(writing))
+        // An eye-buffer open never needs the Surface.
+        assertEquals(Output.EYE_BUFFER, lease.selectOutput(next, false, false, false))
+        assertEquals(Output.WAIT, lease.selectOutput(next, true, false, false))
+        // No second source at the deadline: a stuck one can wedge the process (5YKQKKN4).
+        assertEquals(Output.SURFACE_TIMEOUT, lease.selectOutput(next, true, false, true))
+        assertSame(writing, lease.owner)
+        assertFalse(lease.release(next) { fail("A failed open must not destroy the live Surface") })
+        assertTrue(lease.release(writing) {})
+        assertEquals(Output.LAYER, lease.selectOutput(Any(), true, false, true))
+    }
+
+    @Test fun thirdOpenCannotTakeEitherOutputWhenBothNativeSlotsAreClosing() {
+        val lease = VideoSurfaceLease<Any>()
+        val old = Any()
+        val next = Any()
+        assertTrue(lease.acquire(old))
+        for (wantsLayer in listOf(false, true)) {
+            assertEquals(Output.WAIT, lease.selectOutput(next, wantsLayer, true, false))
+            assertEquals(Output.SLOTS_FULL, lease.selectOutput(next, wantsLayer, true, true))
+        }
+        assertSame(old, lease.owner)
+        assertTrue(lease.release(old) {})
+        assertEquals(Output.SLOTS_FULL, lease.selectOutput(next, true, true, true))
+        assertNull(lease.owner)
+        assertEquals(Output.LAYER, lease.selectOutput(next, true, false, false))
+    }
+
     @Test fun delayedBrowserDecoderKeepsItsSurfaceUntilAcknowledgedClose() {
         for (origin in listOf("browser", "dlna", "external", "library")) {
             val lease = VideoSurfaceLease<Any>()

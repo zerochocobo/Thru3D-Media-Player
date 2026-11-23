@@ -35,6 +35,16 @@ class GeckoFixtureActivity : Activity() {
     private val instance = UUID.randomUUID().toString()
     private var trace = JSONObject()
     private var iqiyiSchema = JSONObject()
+    private var miguTrace = JSONObject()
+    private var miguObservation = JSONObject()
+    private var lastMiguObservation = 0L
+    private var miguProbeToken = ""
+    private var miguProbePort: WebExtension.Port? = null
+    private var miguProbeNavigation = -1
+    private var miguOneOff = JSONObject()
+    private var lastMiguOneOff = 0L
+    private var miguSnapshotRequests = 0
+    private var miguSnapshotPostErrors = 0
     private var rejectedNavigations = 0
     private val navigationShapes = java.util.ArrayDeque<JSONObject>()
     private val media = mutableMapOf<WebExtension.Port, JSONArray>()
@@ -54,7 +64,18 @@ class GeckoFixtureActivity : Activity() {
     private var seekWaitReports = 0
     private var suspendConfirmed = false
     private val ticker = object : Runnable {
-            override fun run() { updateHandoff();publish(); handler.postDelayed(this, 1000) }
+        override fun run() {
+            // A fresh playhead sample must come from the currently displayed Migu document.
+            if (active && FixtureMediaBinding.miguSample(page)!=null && SystemClock.uptimeMillis()-lastReport>=1000) {
+                miguProbePort?.takeIf { portNavigation[it]==navigation && it.sender.url==page }?.let { port ->
+                    val request=++miguSnapshotRequests
+                    runCatching { port.postMessage(JSONObject().put("action","snapshot").put("fixture_migu_request",request)) }
+                        .onFailure { miguSnapshotPostErrors++ }
+                }
+            }
+            updateHandoff();publish()
+            handler.postDelayed(this, 1000)
+        }
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -78,6 +99,7 @@ class GeckoFixtureActivity : Activity() {
                 return GeckoResult.fromValue(if(allowed) AllowOrDeny.ALLOW else AllowOrDeny.DENY)
             }
             override fun onLocationChange(s: GeckoSession,url: String?,perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>,hasUserGesture: Boolean) {
+                if (url!=null && url!=page) { miguTrace=JSONObject();clearMiguObservation() }
                 if (url != null) { page = url;recordNavigation("location",url) }
                 sendPolicy();publish()
             }
@@ -89,7 +111,9 @@ class GeckoFixtureActivity : Activity() {
             override fun onPageStart(s: GeckoSession,url: String) {
                 recordNavigation("start",url)
                 if(!WebBrowserAddress.navigable(url)) { recordNavigation("ignored_start",url);publish();return }
-                invalidateHandoff();page=url;navigation++;media.clear();reports.clear();observedRequest=0;trace=JSONObject();iqiyiSchema=JSONObject();lastReport=0;progress=0;publish()
+                invalidateHandoff();page=url;navigation++;media.clear();reports.clear()
+                observedRequest=0;trace=JSONObject();iqiyiSchema=JSONObject();miguTrace=JSONObject();lastReport=0;progress=0
+                clearMiguObservation();publish()
             }
             override fun onProgressChange(s: GeckoSession,value: Int) { progress=value;publish() }
             override fun onPageStop(s: GeckoSession,success: Boolean) { state=if(success) "loaded" else "load_failed";publish() }
@@ -108,6 +132,17 @@ class GeckoFixtureActivity : Activity() {
     }
     private fun bind(installed: WebExtension) {
         session.webExtensionController.setMessageDelegate(installed,object : WebExtension.MessageDelegate {
+            override fun onMessage(nativeApp: String, message: Any, sender: WebExtension.MessageSender): GeckoResult<Any>? {
+                if (!active || sender.session!==session || sender.webExtension.id!=EXTENSION || !sender.isTopLevel ||
+                    sender.url!=page || FixtureMediaBinding.miguSample(page)==null || miguProbeToken.isEmpty() ||
+                    miguProbeNavigation!=navigation) return null
+                val data=message as? JSONObject ?: return null
+                if (data.optString("type")!="fixture_migu_observation" || data.optString("token")!=miguProbeToken) return null
+                miguOneOff=readMiguObservation(data) ?: return null
+                lastMiguOneOff=SystemClock.uptimeMillis()
+                publish()
+                return null
+            }
             override fun onConnect(port: WebExtension.Port) {
                 if (port.sender.session !== session || port.sender.webExtension.id != EXTENSION || ports.size>=64) { port.disconnect();return }
                 ports.add(port);portNavigation[port]=navigation
@@ -115,6 +150,13 @@ class GeckoFixtureActivity : Activity() {
                     override fun onPortMessage(message: Any,port: WebExtension.Port) {
                         if (portNavigation[port]!=navigation) return
                         val data=message as? JSONObject ?: return
+                        val miguDocument=FixtureMediaBinding.miguSample(page)!=null && port.sender.url==page
+                        if (data.optString("type")=="fixture_migu_observation") {
+                            if (!miguDocument || port!==miguProbePort) return
+                            miguObservation=readMiguObservation(data) ?: return
+                            lastMiguObservation=SystemClock.uptimeMillis()
+                            publish();return
+                        }
                         if (data.optString("type")=="fixture_iqiyi") {
                             if (!WebBrowserIqiyi.enabled(page) || port.sender.url!=page || data.toString().length>100*1024) return
                             val schema=data.optJSONObject("state") ?: return
@@ -129,6 +171,9 @@ class GeckoFixtureActivity : Activity() {
                         if (data.optString("type")!="media" || data.toString().length>256*1024) return
                         val list=data.optJSONArray("videos") ?: return
                         reports[port]=data
+                        if (miguDocument) {
+                            miguTrace=readMiguTrace(data.optJSONObject("fixture_migu_trace"))
+                        }
                         // The optional local trace exports counts only. Never copy its raw object.
                         val source=data.optJSONObject("mango_capture")?.optJSONObject("fixture_trace")
                         trace=JSONObject()
@@ -143,12 +188,9 @@ class GeckoFixtureActivity : Activity() {
                             val valid=FixtureMediaBinding.metadata(item,page)!=null
                             val iqiyiValid=WebBrowserIqiyi.metadata(item,page)!=null
                             captured.put("frame_matches",item.optString("frame")==page).put("binding_valid",WebBrowserMango.metadata(item,page)!=null)
-                            safe.put(JSONObject().put("id",item.optString("id").takeIf { it.matches(Regex("[0-9]{1,8}")) }.orEmpty())
-                                .put("width",item.optInt("width").coerceIn(0,32768)).put("height",item.optInt("height").coerceIn(0,32768))
-                                .put("duration",item.optDouble("duration",0.0).takeIf { it.isFinite() && it in 0.0..172800.0 } ?: 0.0)
-                                .put("time",item.optDouble("time",0.0).takeIf { it.isFinite() && it in 0.0..172800.0 } ?: 0.0)
-                                .put("playing",item.optBoolean("playing")).put("protected",item.optBoolean("protected"))
-                                .put("blob",item.optBoolean("blob")).put("adapter",kind.orEmpty()).put("js_ready",kind!=null && item.optBoolean("${kind}_ready"))
+                            safe.put(readVideoSnapshot(item,miguDocument)
+                                .put("id",item.optString("id").takeIf { it.matches(Regex("[0-9]{1,8}")) }.orEmpty())
+                                .put("adapter",kind.orEmpty()).put("js_ready",kind!=null && item.optBoolean("${kind}_ready"))
                                 .put("java_ready",valid).put("mango_capture",captured)
                                 .put("twitch_ready",item.optBoolean("twitch_ready")).put("twitch_binding",WebBrowserTwitch.metadata(item,page)!=null)
                                 .put("ted_ready",item.optBoolean("ted_ready")).put("ted_binding",WebBrowserTed.metadata(item,page)!=null)
@@ -164,17 +206,31 @@ class GeckoFixtureActivity : Activity() {
                         }
                         updateHandoff();publish()
                     }
-                    override fun onDisconnect(port: WebExtension.Port) { if(owner===port) invalidateHandoff();ports.remove(port);portNavigation.remove(port);media.remove(port);reports.remove(port);publish() }
+                    override fun onDisconnect(port: WebExtension.Port) {
+                        if(owner===port) invalidateHandoff()
+                        if(miguProbePort===port) miguProbePort=null
+                        ports.remove(port);portNavigation.remove(port);media.remove(port);reports.remove(port);publish()
+                    }
                 })
                 port.postMessage(JSONObject().put("action",if(active) "resume" else "suspend"));policy(port)
+                if (port.sender.isTopLevel && port.sender.url==page && FixtureMediaBinding.miguSample(page)!=null) {
+                    clearMiguObservation()
+                    miguProbePort=port
+                    miguProbeNavigation=navigation
+                    miguProbeToken=UUID.randomUUID().toString().replace("-","")
+                    runCatching { port.postMessage(JSONObject().put("action","fixture_migu_start").put("token",miguProbeToken)) }
+                }
             }
         },"thru3d_video")
     }
     private fun policy(port: WebExtension.Port) {
-        port.postMessage(JSONObject().put("action","network_policy").put("enabled",false).put("bilibili",false)
+        val miguPreview=FixtureMediaBinding.miguSample(page)!=null && port.sender.url==page
+        port.postMessage(JSONObject().put("action","network_policy").put("enabled",miguPreview).put("bilibili",false)
             .put("douyin",false).put("weibo",false).put("tencent",false).put("mango",WebBrowserMango.enabled(page))
             .put("iqiyi",WebBrowserIqiyi.enabled(page)).put("twitch",WebBrowserTwitch.enabled(page))
-            .put("ted",WebBrowserTed.observing(page)).put("diagnostics",true))
+            .put("youku",WebBrowserYouku.enabled(page))
+            .put("ted",WebBrowserTed.observing(page)).put("redbull",WebBrowserRedBull.document(page))
+            .put("redbull_prefer_avc",WebBrowserRedBull.preferAvc(page)).put("diagnostics",true))
     }
     private fun sendPolicy() { ports.filter { portNavigation[it]==navigation }.forEach { runCatching { policy(it) } } }
     override fun onNewIntent(value: Intent) { super.onNewIntent(value);intent=value;command(value) }
@@ -183,7 +239,7 @@ class GeckoFixtureActivity : Activity() {
         when(value.getStringExtra("operation") ?: "open") {
             "open" -> {
                 val url=value.getStringExtra("url") ?: "https://www.mgtv.com/b/427837/15588271.html"
-                if (FixtureMediaBinding.adapter(url)==null && !WebBrowserIqiyi.enabled(url)) { error="unsupported_public_page";publish();return }
+                if (FixtureMediaBinding.adapter(url)==null && !WebBrowserIqiyi.enabled(url) && FixtureMediaBinding.miguSample(url)==null) { error="unsupported_public_page";publish();return }
                 page=url;error="";session.loadUri(url)
             }
             "reload" -> session.reload()
@@ -192,7 +248,10 @@ class GeckoFixtureActivity : Activity() {
             "snapshot" -> postAll(JSONObject().put("action","snapshot"))
             "bridge" -> {
                 val kind=FixtureMediaBinding.adapter(page)
-                if (kind==null) { error="unsupported_native_bridge_page";publish();return }
+                val closedEntryResearch = value.getBooleanExtra("redbull_closed_entry", false)
+                if (kind==null || closedEntryResearch!=(kind=="redbull" && !WebBrowserRedBull.enabled(page))) {
+                    error="unsupported_native_bridge_page";publish();return
+                }
                 val name=value.getStringExtra("channel").orEmpty()
                 if(!name.matches(Regex("thru3d_fixture_[a-f0-9]{32}")) || android.os.Build.HARDWARE !in setOf("ranchu","goldfish")) {
                     error="invalid_local_channel";publish();return
@@ -318,22 +377,111 @@ class GeckoFixtureActivity : Activity() {
         val host=uri?.host.orEmpty()
         val site=when(host) {
             "www.iqiyi.com" -> "iqiyi";"www.mgtv.com","w.mgtv.com","mgtv.com" -> "mgtv"
-            "www.twitch.tv","twitch.tv","clips.twitch.tv" -> "twitch";"www.ted.com","ted.com" -> "ted";else -> "other"
+            "www.twitch.tv","twitch.tv","clips.twitch.tv" -> "twitch";"www.ted.com","ted.com" -> "ted"
+            "v.youku.com" -> "youku";"www.miguvideo.com" -> "migu"
+            "www.redbull.tv","redbull.tv" -> "redbull"
+            else -> "other"
         }
-        val id=WebBrowserIqiyi.page(value) ?: WebBrowserMango.page(value) ?: WebBrowserTwitch.page(value) ?: WebBrowserTed.page(value)
+        val id=publicPageId(value)
         navigationShapes.addLast(JSONObject().put("event",event).put("site",site)
             .put("scheme",uri?.scheme?.takeIf { it in setOf("http","https","about") } ?: "other")
             .put("public_id",id.orEmpty()).put("about_blank",value=="about:blank")
             .put("has_query",!uri?.rawQuery.isNullOrEmpty()).put("has_fragment",!uri?.rawFragment.isNullOrEmpty()))
         while(navigationShapes.size>16) navigationShapes.removeFirst()
     }
+    private fun publicPageId(value: String) = WebBrowserIqiyi.page(value) ?: WebBrowserMango.page(value) ?:
+        WebBrowserTwitch.page(value) ?: WebBrowserTed.page(value) ?: WebBrowserYouku.page(value) ?: WebBrowserRedBull.page(value) ?:
+        FixtureMediaBinding.miguSample(value)
+    private fun clearMiguObservation() {
+        lastMiguObservation=0;miguObservation=JSONObject()
+        miguProbePort=null;miguProbeNavigation=-1;miguProbeToken="";lastMiguOneOff=0;miguOneOff=JSONObject()
+        miguSnapshotRequests=0;miguSnapshotPostErrors=0
+    }
+    private fun readMiguObservation(data: JSONObject): JSONObject? {
+        if (data.toString().length>32*1024) return null
+        val input=data.optJSONArray("videos") ?: return null
+        val videos=JSONArray()
+        for (i in 0 until minOf(16,input.length())) {
+            val item=input.optJSONObject(i) ?: continue
+            videos.put(readVideoSnapshot(item,true))
+        }
+        return JSONObject().put("videos",videos).put("trace",readMiguTrace(data.optJSONObject("trace")))
+            .put("attempts",data.optInt("attempts").coerceIn(0,1000000))
+            .put("posted",data.optInt("posted").coerceIn(0,1000000))
+            .put("failure",data.optString("failure").takeIf { it=="build_error" || it=="post_error" }.orEmpty())
+            .put("snapshot_request",data.optInt("snapshot_request").takeIf { it in 1..miguSnapshotRequests } ?: 0)
+    }
+    private fun readVideoSnapshot(item: JSONObject, miguDocument: Boolean): JSONObject {
+        val miguCodecs=JSONArray()
+        if (miguDocument) {
+            val codecs=item.optJSONArray("fixture_migu_mse_video_codecs")
+            for (codec in listOf("av1","h264","hevc","vp9")) {
+                if (codecs!=null && (0 until minOf(4,codecs.length())).any { codecs.optString(it)==codec }) miguCodecs.put(codec)
+            }
+        }
+        return JSONObject().put("width",item.optInt("width").coerceIn(0,32768)).put("height",item.optInt("height").coerceIn(0,32768))
+            .put("duration",item.optDouble("duration",0.0).takeIf { it.isFinite() && it in 0.0..172800.0 } ?: 0.0)
+            .put("time",item.optDouble("time",0.0).takeIf { it.isFinite() && it in 0.0..172800.0 } ?: 0.0)
+            .put("playing",item.optBoolean("playing")).put("protected",item.optBoolean("protected"))
+            .put("migu_visible",miguDocument && item.optBoolean("fixture_migu_visible"))
+            .put("migu_mse_video_codecs",miguCodecs)
+            .put("migu_player_event",if(miguDocument) readMiguPlayerEvent(item.optJSONObject("fixture_migu_player_event")) else JSONObject())
+            .put("blob",item.optBoolean("blob"))
+    }
+    private fun readMiguPlayerEvent(input: JSONObject?): JSONObject {
+        if (input==null) return JSONObject()
+        val status=input.optString("status").takeIf {
+            it in listOf("video_data_ready","video_can_play","start_playing","playing","paused","waiting","ended")
+        }.orEmpty()
+        return JSONObject().put("status",status)
+            .put("program_matches",input.optBoolean("program_matches"))
+            .put("playurl_success",input.optBoolean("playurl_success"))
+            .put("declared_program_hls",input.optBoolean("declared_program_hls"))
+            .put("declared_hls_scheme",input.optString("declared_hls_scheme").takeIf { it=="http" || it=="https" }.orEmpty())
+            .put("exact_observed_hls",input.optBoolean("exact_observed_hls"))
+            .put("https_scheme_only_match",input.optBoolean("https_scheme_only_match"))
+    }
+
+    private fun readMiguTrace(input: JSONObject?): JSONObject {
+        val source=input ?: return JSONObject()
+        val leaves=JSONArray()
+        val manifests=source.optJSONArray("leaves") ?: JSONArray()
+        for (index in 0 until minOf(manifests.length(),8)) {
+            val leaf=manifests.optJSONObject(index) ?: continue
+            val duration=leaf.optDouble("duration")
+            if (!duration.isFinite() || duration<=0 || duration>172800) continue
+            val ranges=JSONArray()
+            val inputRanges=leaf.optJSONArray("ranges") ?: JSONArray()
+            for (i in 0 until minOf(inputRanges.length(),16)) {
+                val pair=inputRanges.optJSONArray(i) ?: continue
+                val start=pair.optDouble(0); val end=pair.optDouble(1)
+                if (start.isFinite() && end.isFinite() && start>=0 && end>start && end<=duration) {
+                    ranges.put(JSONArray().put(start).put(end))
+                }
+            }
+            leaves.put(JSONObject().put("duration",duration).put("segments",leaf.optInt("segments").coerceIn(0,2000))
+                .put("received",leaf.optInt("received").coerceIn(0,2000)).put("ranges",ranges))
+        }
+        return JSONObject().put("response_filter",source.optBoolean("response_filter"))
+            .put("route_hls",source.optInt("route_hls").coerceIn(0,32)).put("leaves",leaves)
+    }
     private fun publish() {
         val list=JSONArray();for (items in media.values) for (i in 0 until items.length()) if(list.length()<16) list.put(items.getJSONObject(i))
         val result=JSONObject().put("schema",1).put("scope","android_gecko_request_diagnostics_not_device_acceptance")
             .put("instance",instance).put("sequence",++sequence).put("state",state).put("error",error).put("navigation",navigation).put("progress",progress)
-            .put("active",active).put("page_id",WebBrowserMango.page(page) ?: WebBrowserIqiyi.page(page) ?: WebBrowserTwitch.page(page) ?: WebBrowserTed.page(page).orEmpty())
-            .put("site",if(WebBrowserIqiyi.enabled(page)) "iqiyi" else when(FixtureMediaBinding.adapter(page)) { "mango" -> "mgtv";null -> "unsupported";else -> FixtureMediaBinding.adapter(page) })
+            .put("active",active).put("page_id",publicPageId(page).orEmpty())
+            .put("site",if(WebBrowserIqiyi.enabled(page)) "iqiyi" else if(FixtureMediaBinding.miguSample(page)!=null) "migu"
+                else when(FixtureMediaBinding.adapter(page)) { "mango" -> "mgtv";null -> "unsupported";else -> FixtureMediaBinding.adapter(page) })
+            .put("migu_trace",miguTrace)
+            .put("migu_document_observation",miguObservation)
+            .put("migu_document_age_ms",if(lastMiguObservation==0L) -1 else SystemClock.uptimeMillis()-lastMiguObservation)
+            .put("migu_one_off_observation",miguOneOff)
+            .put("migu_one_off_age_ms",if(lastMiguOneOff==0L) -1 else SystemClock.uptimeMillis()-lastMiguOneOff)
+            .put("migu_snapshot_requests",miguSnapshotRequests)
+            .put("migu_snapshot_post_errors",miguSnapshotPostErrors)
             .put("iqiyi_schema",iqiyiSchema).put("extension_ready",extension!=null)
+            .put("redbull_prefer_avc",WebBrowserRedBull.preferAvc(page))
+            .put("extension_version",extension?.metaData?.version.orEmpty())
             .put("rejected_navigations",rejectedNavigations)
             .put("navigation_shapes",JSONArray(navigationShapes.toList()))
             .put("ports",ports.count { portNavigation[it]==navigation }).put("report_age_ms",if(lastReport==0L) -1 else SystemClock.uptimeMillis()-lastReport)

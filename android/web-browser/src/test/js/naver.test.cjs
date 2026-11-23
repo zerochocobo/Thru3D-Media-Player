@@ -29,7 +29,7 @@ test('an unchanged navigation seed does not overwrite the actually decoded card 
 });
 
 test('unsupported timeline service retains owned-document observation without authorizing a Beta binding',()=>{
- const f=fixture();f.document.location.href=f.document.location.href.replace('NTV','MOMENT');
+ const f=fixture();f.document.location.href=f.document.location.href.replace('NTV','OTHER');
  assert.equal(n.documentPage(f.document.location.href),true);assert.equal(n.playbackPage(f.document.location.href),false);
  assert.equal(n.binding(f.video,n.capture(f.raw),f.requests,f.document,[f.video]),null);
  assert.equal(n.documentPage('https://m.naver.com.evil/shorts/?serviceType=NTV'),false);
@@ -70,15 +70,15 @@ test('a tid fragment needs the exact observed current request; unrelated server 
  assert.equal(n.binding(f.video,n.capture(f.raw),f.requests,f.document,[f.video]),null);
 });
 
-function clipFixture(){
- const f=fixture();f.content.serviceType='CLIP';f.content.videoQuality.duration=26.38;
+function clipFixture(service='CLIP'){
+ const f=fixture();f.content.serviceType=service;f.content.videoQuality.duration=26.38;
  f.mpd['@mediaPresentationDuration']='PT26.333S';f.period['@duration']='PT26.333S';
  f.rep={'@id':'1080p','@width':'1080','@height':'1920','@codecs':'avc1.640028,mp4a.40.2',BaseURL:['https://segments.example/current/'],
   '@nvod:m3u':'https://manifest.example/current.m3u8?signature=DECLARED',SegmentTemplate:[{'@media':'$RepresentationID$-$Number$.ts?signature=EXACT',
     '@timescale':'1000','@startNumber':'0',SegmentTimeline:[{S:[{'@t':'0','@d':'4000','@r':'5'},{'@t':'24000','@d':'2333'}]}]}]};
  f.period.AdaptationSet=[{'@mimeType':'video/MP2T',Representation:[f.rep]}];
  f.video={...f.video,currentSrc:'blob:https://m.naver.com/rendered-current',videoWidth:1080,videoHeight:1920,duration:26.379777};
- f.document.location.href=n.page(mediaId,'CLIP');
+ f.document.location.href=n.page(mediaId,service);
  f.requests=[{url:'https://segments.example/current/1080p-0.ts?signature=EXACT',kind:'segment',at:Date.now()}];return f;
 }
 
@@ -89,6 +89,26 @@ test('a current CLIP uses the received exact signed TS timeline, without fetchin
  assert.equal(parsed.refs[0].url,f.requests[0].url);assert.equal(parsed.refs[6].duration,2.333);
  assert.equal(parsed.playlist.includes('#EXT-X-ENDLIST'),true);assert.equal(parsed.playlist.includes('signature=EXACT'),true);
  assert.equal(parsed.playlist.includes('signature=DECLARED'),false);
+});
+
+test('MOMENT only binds its own decoded TS representation and exact received segment',()=>{
+ const f=clipFixture('MOMENT');
+ f.content.videoQuality.duration=12.097;
+ f.video.duration=12.113111;
+ f.mpd['@mediaPresentationDuration']=f.period['@duration']='PT12.097S';
+ f.rep['@width']='720';f.rep['@height']='1280';f.video.videoWidth=720;f.video.videoHeight=1280;
+ f.rep.SegmentTemplate[0].SegmentTimeline=[{S:[{'@t':'0','@d':'4000','@r':'2'},{'@t':'12000','@d':'66'}]}];
+ const moment=n.capture(f.raw),clip=n.capture(clipFixture().raw);
+ const selected=n.binding(f.video,moment,f.requests,f.document,[f.video]);
+ assert.equal(selected.service_type,'MOMENT');assert.equal(selected.page,n.page(mediaId,'MOMENT'));
+ assert.equal(n.segments(selected.timeline).refs.length,4);
+ const peer={...selected,service_type:'CLIP',page:n.page(mediaId,'CLIP')};
+ assert.equal(n.binding(f.video,[peer],f.requests,f.document,[f.video]),null);
+ assert.equal(n.binding(f.video,moment,[],f.document,[f.video]),null);
+ assert.equal(n.binding(f.video,moment,f.requests,{location:{href:n.page(mediaId,'CLIP')}},[f.video]),null);
+ assert.equal(n.binding(f.video,clip,f.requests,f.document,[f.video]),null);
+ const ntv=fixture();
+ assert.equal(n.binding(ntv.video,n.capture(ntv.raw),ntv.requests,f.document,[ntv.video]),null);
 });
 
 test('CLIP cannot borrow another card, signature, representation, document or preloaded renderer',()=>{

@@ -10,6 +10,22 @@ const Thru3DRedBull=(()=>{
     return match?{id:match[2],page:value}:null;
   };
   const documentPage=value=>{try{const u=new URL(value);return typeof value==='string'&&value.length<=8192&&u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&['www.redbull.tv','redbull.tv'].includes(u.hostname);}catch(_){return false;}};
+  const hevcProbe = /^video\/mp4\s*;\s*codecs\s*=\s*"(?:hvc1|hev1)(?:\.[a-z0-9]+)*"\s*$/i;
+  const installAvcPreference = (enabled, scope = window) => {
+    if (scope.top !== scope || !documentPage(scope.location.href) || typeof exportFunction !== 'function') return false;
+    try {
+      const target = scope.wrappedJSObject?.MediaSource;
+      const mediaSource = scope.MediaSource;
+      const original = mediaSource?.isTypeSupported;
+      if (!target || typeof original !== 'function') return false;
+      // Red Bull caches this check when it reads the initial master playlist.
+      target.isTypeSupported = exportFunction(function isTypeSupported(type) {
+        if (typeof type === 'string' && hevcProbe.test(type) && enabled() && page(scope.location.href)) return false;
+        return Reflect.apply(original, mediaSource, arguments);
+      }, scope);
+      return true;
+    } catch (_) { return false; }
+  };
   const owner=(video,document)=>{
     const current=page(document.location.href);if(!current)return null;
     const root=video.getRootNode?.(),host=root?.host;
@@ -70,5 +86,5 @@ const Thru3DRedBull=(()=>{
     return {...data,width:video.videoWidth,height:video.videoHeight,duration:video.duration,
       revision:revision(data.id+'\n'+data.root+'\n'+video.videoWidth+'x'+video.videoHeight+'\n'+data.expected_duration)};
   };
-  return {address,page,documentPage,owner,states,declaration,read,binding};
+  return {address,page,documentPage,installAvcPreference,owner,states,declaration,read,binding};
 })();

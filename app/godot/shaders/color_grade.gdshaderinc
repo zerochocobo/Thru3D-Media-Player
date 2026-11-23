@@ -9,6 +9,8 @@ uniform float grade_saturation = 1.0;
 // QIYU factory runtime only (color_grade.gd): its eye buffer shows encoded RGB washed out, as with
 // browser pages (web_browser_page.gdshader). Decoding last keeps the grade's own controls unchanged.
 uniform bool display_decode = false;
+// QiyuController.DISPLAY_GAMMA: the decoded picture still shows dark on QIYU, so its midtones are lifted.
+uniform float display_gamma = 1.0;
 // QIYU with a linear 8-bit eye buffer (QiyuController.linear_eye_buffer): half a step of noise keeps
 // the dark levels the decode would otherwise round together.
 uniform bool display_dither = false;
@@ -21,7 +23,10 @@ vec3 color_grade(vec3 rgb, vec2 frag) {
 		float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
 		c = clamp(mix(vec3(luma), c, grade_saturation), vec3(0.0), vec3(1.0));
 	}
-	if (display_decode) { c = mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
+	if (display_decode) {
+		c = pow(max(c, vec3(0.0)), vec3(display_gamma));
+		c = mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+	}
 	if (display_dither) { c = max(c + (fract(52.9829189 * fract(dot(frag, vec2(0.06711056, 0.00583715)))) - 0.5) / 255.0, vec3(0.0)); }
 	return c;
 }

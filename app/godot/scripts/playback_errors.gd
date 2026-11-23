@@ -117,7 +117,7 @@ static func clean(report: Dictionary) -> Dictionary:
 		if report.has(key): result[key] = safe_detail(str(report[key]))
 	for key in ["http_status", "mpv_code", "session_id", "logical_session_id", "generation"]:
 		if report.has(key): result[key] = int(report[key])
-	for key in ["video", "decoder"]:
+	for key in ["video", "decoder", "media_server"]:
 		var section = report.get(key)
 		if not section is Dictionary: continue
 		var kept := {}
@@ -127,6 +127,28 @@ static func clean(report: Dictionary) -> Dictionary:
 			elif value is String: kept[str(field)] = safe_detail(value).left(64)
 		result[key] = kept
 	return result
+
+## A stalled-source record from the bridge (mpv_source_diagnostic): numbers, flags, short labels, the
+## startup marks and native close wait one level down, and MPV module names. Nothing else is logged.
+static func clean_source_diagnostic(report: Dictionary, session_id: int) -> Dictionary:
+	var result := {"session_id": session_id}
+	for key in report:
+		var value = report[key]
+		if value is Dictionary:
+			var kept := {}
+			for field in value:
+				var inner = value[field]
+				if inner is Array and str(field) == "recent_modules":
+					kept[field] = inner.slice(0, 8).filter(func(m): return m is String).map(func(m): return safe_detail(m).left(24))
+				elif _scalar(inner) != null: kept[str(field)] = _scalar(inner)
+			result[str(key)] = kept
+		elif _scalar(value) != null: result[str(key)] = _scalar(value)
+	return result
+
+static func _scalar(value) -> Variant:
+	if value is bool or value is int or value is float: return value
+	if value is String: return safe_detail(value).left(64)
+	return null
 
 ## "AV1 7680×7680 59.94fps": the numbers a user can read back to us from a screenshot.
 static func _video_text(report: Dictionary) -> String:

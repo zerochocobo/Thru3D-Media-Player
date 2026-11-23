@@ -6,13 +6,15 @@ import org.json.JSONObject
 
 /** Received card/MPD identity and both the DOM and actually requested HTTP file. */
 object WebBrowserNaver {
+    private val segmentedServices = setOf("CLIP", "MOMENT")
+    private val services = segmentedServices + "NTV"
     private fun query(uri: URI)=uri.rawQuery.orEmpty().split('&').filter(String::isNotEmpty).map {
         URLDecoder.decode(it.substringBefore('='),"UTF-8") to URLDecoder.decode(it.substringAfter('=',""),"UTF-8")
     }
     fun document(value: String): Boolean=runCatching {
         val u=URI(value);val q=query(u)
         value.length<=8192 && u.scheme=="https" && u.host=="m.naver.com" && u.rawPath=="/shorts/" &&
-            u.rawUserInfo==null && u.port in setOf(-1,443) && q.filter { it.first=="serviceType" }.map { it.second }.singleOrNull() in setOf("NTV","CLIP")
+            u.rawUserInfo==null && u.port in setOf(-1,443) && q.filter { it.first=="serviceType" }.map { it.second }.singleOrNull() in services
     }.getOrDefault(false)
     fun page(value: String): String?=runCatching {
         require(document(value));val u=URI(value);require(u.rawFragment==null)
@@ -96,7 +98,7 @@ object WebBrowserNaver {
             .put("dimensions_match",d.optInt("width")==item.optInt("width") && d.optInt("height")==item.optInt("height"))
             .put("duration_match",kotlin.math.abs(d.optDouble("duration")-item.optDouble("duration"))<=.001)
             .put("expected_match",kotlin.math.abs(d.optDouble("expected_duration")-item.optDouble("duration"))<=.5)
-            .put("clip_watch_match",kind=="CLIP" && service(currentPage)=="CLIP" && page(currentPage)==id)
+            .put("clip_watch_match",kind in segmentedServices && service(currentPage)==kind && page(currentPage)==id)
             .put("blob_flag",item.optBoolean("blob")).put("blob_origin_match",d.optString("current_source").startsWith("blob:https://m.naver.com/"))
             .put("blob_kind",d.optString("fragment_kind")=="blob").put("timeline_valid",plan!=null)
             .put("timeline_duration_match",plan!=null && kotlin.math.abs(plan.duration-item.optDouble("duration"))<=.5)
@@ -106,7 +108,7 @@ object WebBrowserNaver {
         require(document(currentPage) && item.optString("frame")==currentPage && !item.optBoolean("protected"))
         val data=item.getJSONObject("naver");val id=data.getString("id")
         val kind=data.optString("service_type","NTV")
-        require(kind in setOf("NTV","CLIP") && data.toString().length<=32*1024 && page(data.getString("page"))==id && data.getString("page")==canonical(id,kind))
+        require(kind in services && data.toString().length<=32*1024 && page(data.getString("page"))==id && data.getString("page")==canonical(id,kind))
         require(data.getString("document")==currentPage && data.getString("binding")=="received_card_mpd")
         require(data.getString("revision").matches(Regex("[a-f0-9]{1,8}")))
         val segmented=data.optString("format")=="segment_timeline"
@@ -118,14 +120,14 @@ object WebBrowserNaver {
         val expected=data.getDouble("expected_duration")
         require(expected.isFinite() && expected>0 && expected<=86400 && kotlin.math.abs(duration-expected)<=.5)
         if(data.optString("format")=="segment_timeline"){
-            require(kind=="CLIP" && service(currentPage)=="CLIP" && page(currentPage)==id && item.optBoolean("blob") &&
+            require(kind in segmentedServices && service(currentPage)==kind && page(currentPage)==id && item.optBoolean("blob") &&
                 current.length<=8192 && current.startsWith("blob:https://m.naver.com/") && current.none{it<' ' || it=='\u007f'} && data.getString("fragment_kind")=="blob")
             val plan=declared(data) ?: return null
             require(kotlin.math.abs(plan.duration-duration)<=.5)
             val requests=WebBrowserNetworkMedia.candidates(item,true)
             require((0 until requests.length()).any{val r=requests.getJSONObject(it);r.optString("kind")=="segment" && r.optString("url") in plan.refs})
         }else{
-            require(kind=="NTV" && !item.optBoolean("blob") && data.optString("format","file")=="file")
+            require(kind=="NTV" && service(currentPage)!="MOMENT" && !item.optBoolean("blob") && data.optString("format","file")=="file")
             val selected=resource(current) ?: return null
             require(data.getString("source")==selected.source && data.getString("fragment_kind")==selected.kind)
             require((selected.start==null || selected.start<=duration) && (selected.end==null || selected.end<=duration+.5))

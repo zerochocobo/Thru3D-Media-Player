@@ -183,6 +183,27 @@ internal object NarrationPolicy {
     }
     // A single automatic speed rule; obsolete saved manual rates are ignored.
     // The final output tempo (including video speed) shares the same cap.
+    /** One synthesis attempt for a sentence. `randomSkip` advances the engine's fixed random stream. */
+    data class Attempt(val precision: Boolean, val randomSkip: Int, val minimumFrames: Int)
+    /**
+     * Retry ladder for a sentence whose fast INT8 generation never reached EOS. The engine's random
+     * stream is fixed, so the same graph with the same draws repeats the failure. The engine's likely-end
+     * stop (narration_jni.cpp) already removes about three quarters of the failures this ladder was measured
+     * on; the ladder covers the rest. Host measurement before that stop
+     * (120 voice/sentence pairs, 12 presets): 14% of first attempts failed, none failed for every
+     * seed, a re-sampled INT8 retry succeeded 25/34 times against 11/17 for the 1.65x slower float
+     * local graph, and the ladder below lost 0 of 120 sentences instead of 6 at lower total compute.
+     * Skips stay below 1024 (the engine limit) and differ from each other.
+     */
+    val ATTEMPTS = listOf(Attempt(false,0,48),Attempt(false,211,64),Attempt(false,509,64),Attempt(true,0,64))
+    /**
+     * Saved clone voices run away far more often (host, 5 saved voices, 120 sentences x 3 draws: 44% of
+     * generations never ended, 28% with the likely-end stop, against 17% for presets) and re-sampling
+     * the INT8 graph rarely rescues them (16/46) while the float graph does (16/23). So the float graph
+     * comes second, and the later float attempts re-sample.
+     */
+    val CLONE_ATTEMPTS = listOf(Attempt(false,0,48),Attempt(true,0,64),Attempt(true,211,64),Attempt(true,509,64))
+    fun attempts(personalVoice: Boolean) = if(personalVoice) CLONE_ATTEMPTS else ATTEMPTS
     const val MAX_ADAPTIVE_RATE = 1.8
     const val MAX_BORROW_SECONDS = 2.0
     const val TARGET_BORROW_SECONDS = .5

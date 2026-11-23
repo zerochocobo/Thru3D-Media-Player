@@ -14,12 +14,13 @@ internal object WebVideoMangoCapture {
         require(page.site=="mgtv" && WebVideoMangoCapture.page(media.optString("frame"),media)==page && media.optBoolean("mango_ready"))
         val urls=media.getJSONObject("mango").getJSONArray("manifests")
         val declared=(0 until urls.length()).map { urls.getString(it) }.toSet()
-        val network=WebBrowserNetworkMedia.candidates(media)
-        val selected=(0 until network.length()).map { network.getJSONObject(it) }.filter {
+        val network=WebBrowserNetworkMedia.candidates(media,includeSegments=true)
+        val requests=(0 until network.length()).map { network.getJSONObject(it) }
+        val selected=requests.filter {
             it.optString("kind")=="hls" && (it.optString("url") in declared || it.optString("original_url") in declared)
         }.distinctBy { it.getString("url") }
         require(selected.size in 1..6)
-        JSONObject(media.toString()).put("network",JSONArray(selected))
+        JSONObject(media.toString()).put("network",JSONArray(selected+requests.filter { it.optString("kind")=="segment" }))
     }.getOrNull()
     fun resolve(page: WebVideoPage,media: JSONObject,network: WebVideoNetworkCapture): JSONObject? {
         val bound=candidate(page,media) ?: return null

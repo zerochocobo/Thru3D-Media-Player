@@ -6,6 +6,12 @@ const ALIASES := {
 	"onedrive": "onedrive", "webdav": "webdav", "emby": "emby", "jellyfin": "jellyfin",
 	"plex": "plex", "stash": "stash", "xbvr": "xbvr", "thunder": "thunder",
 }
+const DISPLAY_NAMES := {
+	"115": "115", "baidu": "Baidu Netdisk", "aliyun": "Aliyun Drive", "quark": "Quark Netdisk",
+	"123_open": "123 Cloud Drive", "onedrive": "OneDrive", "webdav": "WebDAV", "thunder": "Thunder Cloud Drive (Beta)",
+	"emby": "Emby", "jellyfin": "Jellyfin", "plex": "Plex", "stash": "Stash", "xbvr": "XBVR",
+}
+
 const TEXTURES := {
 	"provider_115": preload("res://assets/provider-icons/115.svg"),
 	"provider_baidu": preload("res://assets/provider-icons/baidu.svg"),
@@ -36,3 +42,6 @@ const LIGHT_COLORS := {
 static func key(provider: String, fallback: String = "cloud") -> String:
 	var name: String = ALIASES.get(provider.strip_edges().to_lower(), "")
 	return "provider_" + name if not name.is_empty() else fallback
+
+static func display_name_key(provider: String) -> String:
+	return DISPLAY_NAMES.get(ALIASES.get(provider, provider), provider)

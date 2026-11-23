@@ -11,6 +11,14 @@
 #include <future>
 
 namespace moss {
+// The local graph samples "continue" with probability p and stops when its draw exceeds p. INT8 flattens
+// the end-of-speech peak of 1 - p to 0.2-0.7 over a few frames, so the draw misses it about 14% of the time
+// on short cues and the sentence runs on. Stopping at the first frame with 1 - p >= 0.2 ended 14 of 17 such
+// host cases at the spoken sentence (Whisper large-v3: 9 exact) and cut none of 57 finished clips
+// mid-sentence (docs/NARRATION_THROUGHPUT_OPTIMIZATION_20261123_CN.md). Graphs without the
+// continue_probability output keep the plain sampling.
+constexpr float kLikelyEndProbability=0.2f;
+constexpr int kLikelyEndMinimumFrames=4;
 struct Engine {
     narration_ort::Lease environment;
     Ort::PrepackedWeightsContainer prepacked;
@@ -18,20 +26,35 @@ struct Engine {
     std::map<std::string,std::unique_ptr<Session>> sessions;
     std::string fallback_path;
     bool fallback_available=false;
+    // A voice's prompt prefix (template + reference codes) is the same for every sentence. The
+    // extend graph takes several rows with a causal mask, so only the sentence's own rows run per call.
+    bool extend_available=false;
+    Values prefix_kv;int64_t prefix_rows=0;std::string prefix_voice;
     sentencepiece::SentencePieceProcessor tokenizer;
     J manifest, codec_meta;
     std::map<std::string,std::vector<int32_t>> personal_voices;
     std::atomic<int64_t> epoch{0};
     std::mutex running;
     explicit Engine(const std::string& root) {
-        options.DisablePerSessionThreads();
-        options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-        options.AddConfigEntry("session.use_env_allocators","1");
-        options.AddConfigEntry("session.intra_op.allow_spinning","0"); options.AddConfigEntry("session.inter_op.allow_spinning","0");
+        auto configure=[](Ort::SessionOptions& o) {
+            o.DisablePerSessionThreads();
+            o.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+            o.AddConfigEntry("session.use_env_allocators","1");
+            // Every call is batch 1: fixed shapes let ORT fold the shape arithmetic.
+            o.AddFreeDimensionOverrideByName("batch",1);
+            o.AddConfigEntry("session.intra_op.allow_spinning","0"); o.AddConfigEntry("session.inter_op.allow_spinning","0");
+        };
+        configure(options);
+        // The frame loop runs one row per decode step. Bit-identical; on the host it saved only a few
+        // percent (decode step ~6% at best, local frame within noise).
+        options.AddFreeDimensionOverrideByName("step_seq",1);
+        Ort::SessionOptions extend_options;configure(extend_options);
         const std::string t=root+"/MOSS-TTS-Nano-100M-ONNX/", c=root+"/MOSS-Audio-Tokenizer-Nano-ONNX/";
         manifest=read_json(t+"browser_poc_manifest.json"); codec_meta=read_json(c+"codec_browser_onnx_meta.json");
         fallback_path=t+"moss_tts_local_fallback.onnx";
         fallback_available=std::ifstream(fallback_path).good();
+        const std::string extend_path=t+"moss_tts_extend.onnx";
+        extend_available=std::ifstream(extend_path).good();
         if(!tokenizer.Load(t+"tokenizer.model").ok()) throw std::runtime_error("Tokenizer unavailable");
         // Two loaders only. ORT 1.28 serializes shared prepack access internally;
         // graph parsing/optimization can overlap without duplicating weights.
@@ -40,10 +63,19 @@ struct Engine {
             auto local_options=options.Clone();
             return std::make_unique<Session>(*environment->env,local_options,path,static_cast<OrtPrepackedWeightsContainer*>(prepacked));
         });
+        std::future<std::unique_ptr<Session>> extend;
+        if(extend_available)extend=std::async(std::launch::async,[&,extend_path] {
+            auto clone=extend_options.Clone();
+            return std::make_unique<Session>(*environment->env,clone,extend_path,static_cast<OrtPrepackedWeightsContainer*>(prepacked));
+        });
         for (auto item : {std::pair{"prefill",t+"moss_tts_prefill.onnx"}, {"decode",t+"moss_tts_decode_step.onnx"},
                           {"codec",c+"moss_audio_tokenizer_decode_step.onnx"}})
             sessions[item.first]=std::make_unique<Session>(*environment->env,options,item.second,static_cast<OrtPrepackedWeightsContainer*>(prepacked));
         sessions["local"]=local.get();
+        if(extend_available) {
+            // An unreadable optional graph falls back to the full prefill instead of failing the engine.
+            try {sessions["extend"]=extend.get();} catch(const std::exception&) {extend_available=false;}
+        }
     }
     J generate(const std::string& text,const std::string& voice,int64_t token, const std::function<bool(const std::vector<float>&)>& output, int max_frames=250, int random_skip=0, bool precision_recovery=false) {
         std::lock_guard<std::mutex> lock(running);
@@ -77,6 +109,7 @@ struct Engine {
         if(!found) throw std::runtime_error("Voice preset unavailable");
         text_row(cfg["audio_end_token_id"]);
         for(int32_t id:tpl["user_prompt_after_reference_token_ids"]) text_row(id);
+        const size_t prefix_values=flat.size();
         for(int32_t id:tokens) text_row(id);
         for(int32_t id:tpl["assistant_prompt_prefix_token_ids"]) text_row(id);
         text_row(cfg["audio_start_token_id"]);
@@ -84,7 +117,7 @@ struct Engine {
         auto ids=tensor<int32_t>({1,valid,n+1},flat),mask=tensor<int32_t>({1,valid},1);
         auto started=Clock::now(); double first=-1;int frames=0;bool eos=false;
         const bool recovery=precision_recovery&&fallback_available;
-        double recovery_load_seconds=0;
+        double recovery_load_seconds=0;int probability_stops=0;
         if(recovery&&!sessions.count("local_fallback")) {
             auto load_started=Clock::now();
             sessions["local_fallback"]=std::make_unique<Session>(*environment->env,options,fallback_path,static_cast<OrtPrepackedWeightsContainer*>(prepacked));
@@ -92,7 +125,33 @@ struct Engine {
         }
         if(cancelled())return {{"cancelled",true}};
         auto& local_session=sessions.at(recovery?"local_fallback":"local");
-        auto outputs=sessions.at("prefill")->run({{"input_ids",&ids},{"attention_mask",&mask}});
+        Values outputs;bool prefix_hit=false;
+        const int prefix_len=int(prefix_values/(n+1));
+        auto prefill_started=Clock::now();
+        if(extend_available) {
+            try {
+                if(prefix_voice!=voice||prefix_rows!=prefix_len||prefix_kv.empty()) {
+                    prefix_kv.clear();prefix_voice.clear();
+                    std::vector<int32_t> head(flat.begin(),flat.begin()+prefix_values);
+                    auto head_ids=tensor<int32_t>({1,prefix_len,n+1},head),head_mask=tensor<int32_t>({1,prefix_len},1);
+                    auto head_out=sessions.at("prefill")->run({{"input_ids",&head_ids},{"attention_mask",&head_mask}});
+                    Values cache;
+                    for(auto& [name,value]:head_out)if(name.rfind("present_",0)==0)cache.emplace("past_"+name.substr(8),std::move(value));
+                    prefix_kv=std::move(cache);prefix_rows=prefix_len;prefix_voice=voice;
+                } else prefix_hit=true;
+                if(cancelled())return {{"cancelled",true}};
+                std::vector<int32_t> rest(flat.begin()+prefix_values,flat.end());
+                auto rest_ids=tensor<int32_t>({1,int64_t(rest.size()/(n+1)),n+1},rest),past_length=tensor<int32_t>({1},prefix_len);
+                Feeds extend_feeds{{"input_ids",&rest_ids},{"past_valid_lengths",&past_length}};
+                for(auto& [name,value]:prefix_kv)extend_feeds[name]=&value;
+                outputs=sessions.at("extend")->run(extend_feeds);
+            } catch(const std::exception&) {
+                // Never lose a sentence to the cache: drop it, stop using it, run the full prefill below.
+                extend_available=false;prefix_kv.clear();prefix_voice.clear();outputs.clear();prefix_hit=false;
+            }
+        }
+        if(outputs.empty())outputs=sessions.at("prefill")->run({{"input_ids",&ids},{"attention_mask",&mask}});
+        const double prefill_seconds=elapsed(prefill_started);
         auto hidden=last_hidden(outputs.at("global_hidden"));
         std::vector<int32_t> seen(n*book,0),pending;
         Codec codec(*sessions.at("codec"),codec_meta["streaming_decode"]);
@@ -108,7 +167,10 @@ struct Engine {
             float assistant_random=random.next();std::vector<float> draws(n);for(auto& x:draws)x=random.next();
             auto seen_tensor=tensor<int32_t>({1,n,book},seen),ar=tensor<float>({1},assistant_random),au=tensor<float>({1,n},draws);
             auto local=local_session->run({{"global_hidden",&hidden},{"repetition_seen_mask",&seen_tensor},{"assistant_random_u",&ar},{"audio_random_u",&au}});
-            if(local.at("should_continue").GetTensorData<int32_t>()[0]==0) {eos=true;break;}
+            const auto probability=local.find("continue_probability");
+            const bool likely_end=probability!=local.end()&&frames>=kLikelyEndMinimumFrames&&
+                1.0f-probability->second.GetTensorData<float>()[0]>=kLikelyEndProbability;
+            if(local.at("should_continue").GetTensorData<int32_t>()[0]==0||likely_end) {eos=true;if(likely_end&&local.at("should_continue").GetTensorData<int32_t>()[0]!=0)++probability_stops;break;}
             auto codes=local.at("frame_token_ids").GetTensorData<int32_t>();
             if(local.at("frame_token_ids").GetTensorTypeAndShapeInfo().GetElementCount()!=size_t(n))throw std::runtime_error("Invalid audio tokens");
             std::vector<int32_t> row(n+1,pad);row[0]=slot;
@@ -122,6 +184,7 @@ struct Engine {
         }
         emit();
         return {{"cancelled",cancelled()},{"eos",eos},{"audio_seconds",frames*0.08},{"first_audio_seconds",first},{"wall_seconds",elapsed(started)},
+                {"probability_stop",probability_stops>0},{"prefix_cached",extend_available},{"prefix_hit",prefix_hit},{"prefill_seconds",prefill_seconds},
                 {"precision_recovery",recovery},{"precision_recovery_available",fallback_available},{"precision_model_loaded",sessions.count("local_fallback")>0},{"precision_load_seconds",recovery_load_seconds}};
     }
 };
@@ -151,6 +214,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_NarrationN
         if(!std::all_of(values.begin(),values.end(),[](int32_t x){return x>=0&&x<1024;}))throw std::runtime_error("Invalid codes");
         auto engine=moss::engine(id);std::lock_guard<std::mutex> lock(engine->running);
         engine->personal_voices.clear();engine->personal_voices.emplace(key,std::move(values));
+        engine->prefix_kv.clear();engine->prefix_voice.clear();
     } catch(const std::exception&) {narration_error(e,"Unable to load personal voice");}
 }
 static jstring narration_synthesize(JNIEnv* e,jlong id,jstring text,jstring voice,jlong epoch,jobject sink,int max_frames,int random_skip,bool precision_recovery=false) {

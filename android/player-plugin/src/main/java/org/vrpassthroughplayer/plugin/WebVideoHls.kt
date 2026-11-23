@@ -1,6 +1,7 @@
 package org.vrpassthroughplayer.plugin
 
 import java.io.Closeable
+import java.io.EOFException
 import java.net.URI
 import java.util.LinkedHashMap
 
@@ -24,14 +25,14 @@ internal class WebVideoHls(private val server: LocalStreamServer, private val st
     fun prepare(track: WebVideoTrack): String {
         selectedTrack = track
         browserHeaders = track.browserHeaders
-        initialManifest = track.browserManifest?.let { track.url to it.toByteArray(Charsets.UTF_8) }
+        initialManifest = track.browserManifest?.let { (track.browserManifestBase ?: track.url) to it.toByteArray(Charsets.UTF_8) }
         iqiyiResources=track.browserIqiyi?.let { WebVideoIqiyiResources(it,track.browserManifest ?: error("Missing selected timeline")) }
         return manifest(track.url, track.headers, 0)
     }
 
     private fun bytes(uri: URI, headers: Map<String, String>, limit: Int): Pair<URI, ByteArray> {
         check(!closed)
-        initialManifest?.takeIf { it.first == uri }?.let { require(it.second.size <= limit); return it }
+        initialManifest?.takeIf { selectedTrack?.url == uri }?.let { require(it.second.size <= limit); return it }
         check(transfers.tryAcquire(30, java.util.concurrent.TimeUnit.SECONDS)) { "Media transfer busy" }
         try { return fetch(uri, headers, limit) } finally { transfers.release() }
     }
@@ -67,7 +68,8 @@ internal class WebVideoHls(private val server: LocalStreamServer, private val st
         // Complete bounded resources: dynamic playlist endpoints may implement Range incorrectly.
         val c = http.open(uri, "", headers)
         try {
-            require(c.contentLengthLong <= limit) { "Media resource exceeds limit" }
+            val declaredLength = c.contentLengthLong
+            require(declaredLength <= limit) { "Media resource exceeds limit" }
             val body = c.inputStream.use { input ->
                 val out = java.io.ByteArrayOutputStream()
                 val buffer = ByteArray(32768)
@@ -80,6 +82,8 @@ internal class WebVideoHls(private val server: LocalStreamServer, private val st
                 }
                 out.toByteArray()
             }
+            // Some HTTP clients report a clean EOF even when the server sends only part of the body.
+            if (declaredLength >= 0 && body.size.toLong() != declaredLength) throw EOFException("Incomplete media resource")
             // A bounded response containing only a prefix is not a complete segment/manifest.
             if (c.responseCode == 206) {
                 val range = Regex("bytes 0-([0-9]+)/([0-9]+)").matchEntire(c.getHeaderField("Content-Range").orEmpty())

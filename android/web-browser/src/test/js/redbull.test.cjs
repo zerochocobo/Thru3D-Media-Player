@@ -2,7 +2,7 @@ const {test}=require('node:test'),assert=require('node:assert/strict'),fs=requir
 const assets=path.join(__dirname,'../../main/assets/web-browser');
 const id='rrn:content:films:f9d7a128-fd11-4e0c-9049-77de0f9515bd',page='https://www.redbull.tv/en/page/'+id+'/anytime';
 const root='https://related.example:8443/current.m3u8?signature=exact&selector=a%2Fb';
-function setup(){
+function setup(globals={}){
  const video={isConnected:true,videoWidth:1920,videoHeight:1080,duration:3945.0661,currentTime:12,readyState:4,currentSrc:'blob:https://www.redbull.tv/current',getBoundingClientRect:()=>({left:0,top:0,right:1600,bottom:900,width:1600,height:900})};
  const state={videoLoaded:true,isShowingAd:false,durationInSec:3945.066125,playbackPosInSec:12,
   playerConfiguration:{assetId:id},mediaMetaData:{videoId:id,assetId:'different-legacy-id',duration:3945,isLive:false,mediaSrc:{videoUrl:root,mediaType:'hls'}}};
@@ -10,11 +10,40 @@ function setup(){
  const host={localName:'rbup-video-tv-streaming',isConnected:true,getAttribute:k=>k==='asset-id'?id:null,_root:{__k:{__k:[vnode]}}};
  const shadow={host,querySelectorAll:selector=>selector==='.rbup-video-core-container__player > video'?[video]:[video]};host.shadowRoot=shadow;video.getRootNode=()=>shadow;
  const document={location:{href:page},querySelectorAll:()=>[host]};
- const context=vm.createContext({URL,Date,innerWidth:1600,innerHeight:1000,getComputedStyle:()=>({}),document});
+ const context=vm.createContext({URL,Date,innerWidth:1600,innerHeight:1000,getComputedStyle:()=>({}),document,...globals});
  for(const file of ['tiktok.js','redbull.js'])vm.runInContext(fs.readFileSync(path.join(assets,file),'utf8'),context);
  const api=vm.runInContext('Thru3DRedBull',context),requests=[{kind:'hls',url:root,at:Date.now()}];
  return {api,video,state,host,document,shadow,vnode,requests,bind:()=>api.binding(video,requests,document,[video])};
 }
+
+test('Red Bull AVC preference changes only single-codec HEVC MSE probes on a public top-level player page',()=>{
+ const f=setup({exportFunction:fn=>fn});
+ const originalCalls=[];
+ const original={isTypeSupported(...args){originalCalls.push(args);return true;}};
+ const target={isTypeSupported:original.isTypeSupported};
+ const scope={location:{href:'https://www.redbull.tv/en/'},MediaSource:original,wrappedJSObject:{MediaSource:target}};
+ scope.top={};
+ let enabled=true;
+ const hevc='video/mp4; codecs="hvc1.2.4.L120.90"';
+ assert.equal(f.api.installAvcPreference(()=>enabled,scope),false);
+ assert.equal(target.isTypeSupported,original.isTypeSupported);
+ scope.top=scope;
+ assert.equal(f.api.installAvcPreference(()=>enabled,scope),true);
+ assert.equal(target.isTypeSupported(hevc),true);
+ scope.location.href=page;
+ assert.equal(target.isTypeSupported(hevc),false);
+ assert.equal(target.isTypeSupported('video/mp4; codecs="hev1.1.6.L93.B0"'),false);
+ const passthrough=['video/mp4; codecs="avc1.640028"','audio/mp4; codecs="mp4a.40.2"',
+  'video/mp4; codecs="hvc1.2.4.L120.90, mp4a.40.2"','video/mp4; codecs="hvc1.2.4.L120.90"; other=value'];
+ for(const type of passthrough)assert.equal(target.isTypeSupported(type),true);
+ assert.equal(target.isTypeSupported(),true);
+ enabled=false;
+ assert.equal(target.isTypeSupported(hevc),true);
+ enabled=true;
+ scope.location.href=page.replace('redbull.tv','redbull.tv.evil');
+ assert.equal(target.isTypeSupported(hevc),true);
+ assert.deepEqual(originalCalls,[[hevc],...passthrough.map(type=>[type]),[],[hevc],[hevc]]);
+});
 test('Red Bull binds the current full shadow player to its public RRN and exact requested source, ignoring a legacy asset ID',()=>{
  const f=setup(),data=f.bind();assert.equal(data.id,id);assert.equal(data.root,root);assert.equal(data.width,1920);assert.equal(data.duration,3945.0661);
  assert.equal(f.api.page('https://www.redbull.tv.evil/en/page/'+id+'/anytime'),null);

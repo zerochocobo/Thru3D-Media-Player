@@ -97,11 +97,58 @@ internal object DiagnosticLogs {
             "other periodic lines every 30 s; repeated messages merged)\n\n")
         append(webBetaSection()).append('\n')
         append(webBrowserSection()).append('\n')
+        if (DouyinPlaybackLog.enabled && PlaybackPrivacy.diagnostics) {
+            append("== Douyin hardware decoder Surface and Gecko composite (same draw) ==\n")
+            append(DouyinFrameEvidence.export(logcat(null, "-t", "4096", "Thru3DGeckoFrame:I", "*:S"))).append('\n')
+            append("== Gecko video codec events (by decoder surface, latest count per reason) ==\n")
+            val faultPattern = Regex("""(surface=\d+ mime=[A-Za-z0-9/_.+-]{1,70} codec=[A-Za-z0-9_.-]{1,100} stage=[a-z_]{1,32} type=[A-Za-z0-9_]{1,80} code=(?:na|-?\d+)) count=(\d+) boot_ms=(\d+)""")
+            val sessionStart = android.os.Process.getStartElapsedRealtime()
+            val faults = linkedMapOf<String, String>()
+            logcat(null, "-t", "1024", "Thru3DCodecFault:I", "*:S").lineSequence().forEach { line ->
+                val event = faultPattern.matchEntire(line.substringAfter("Thru3DCodecFault:", "").trim())
+                if (event != null && (event.groupValues[3].toLongOrNull() ?: -1L) >= sessionStart)
+                    faults[event.groupValues[1]] = event.groupValues[2]
+            }
+            append(faults.entries.toList().takeLast(32).joinToString("\n") { "${it.key} count=${it.value}" }
+                .ifEmpty { "(no codec diagnostic event in buffer)" }).append('\n')
+            val formatField = "(?:width|height|profile|level|bitrate|color-format|color-standard|color-range|color-transfer)"
+            val formatRow = Regex("""(surface=\d+ codec=[A-Za-z0-9_.-]{1,100} stage=(?:input|output)(?: $formatField=-?\d+){0,9}) boot_ms=(\d+)""")
+            val formats = logcat(null, "-t", "256", "Thru3DCodecFormat:I", "*:S").lineSequence().mapNotNull { line ->
+                val row = formatRow.matchEntire(line.substringAfter("Thru3DCodecFormat:", "").trim())
+                row?.groupValues?.takeIf { (it[2].toLongOrNull() ?: -1L) >= sessionStart }?.get(1)
+            }.distinct().toList().takeLast(24)
+            append(formats.joinToString("\n").ifEmpty { "(no codec format in buffer)" }).append('\n')
+        }
         append(redact(CrashRecords.exportSection(context))).append('\n')
+        append(redact(otherProcessesSection())).append('\n')
         append(events(context, if (full) 6000 else 1500)).append('\n')
         append("== Log of this session ==\n")
         val log = logcat(android.os.Process.myPid(), "-t", "30000")
-        append(redact(if (full) log else condense(log)))
+        val session = if (DouyinPlaybackLog.enabled) log.lineSequence()
+            .filterNot { it.contains("Thru3DGeckoFrame:") }.joinToString("\n") else log
+        append(redact(if (full) session else condense(session)))
+    }
+
+    /** GeckoView's media, GPU and content processes run as other processes of this app: the session log
+     * below holds this process only, so the decoder a web video got (its component names the codec, e.g.
+     * OMX.qcom.video.decoder.hevc) and those processes' warnings and errors come from here. */
+    private fun otherProcessesSection(): String {
+        val started = System.currentTimeMillis() - (android.os.SystemClock.elapsedRealtime() - android.os.Process.getStartElapsedRealtime())
+        val since = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(Date(started))
+        val log = runCatching { logcat(null, "-T", since, *OTHER_PROCESS_TAGS, "*:W") }.getOrDefault("")
+        return "== Other processes of this app (codecs, warnings and errors) ==\n" + otherProcessLines(log, android.os.Process.myPid())
+    }
+
+    private val OTHER_PROCESS_TAGS = arrayOf("MediaCodec:I", "ACodec:I", "ExtendedACodec:I", "CCodec:I", "CCodecConfig:I",
+        "Codec2Client:I", "OMXClient:I", "GeckoRemoteCodec:I", "GeckoCodecProxy:I", "GeckoSurfaceTexture:I",
+        "GeckoConsole:S") // page scripts' console: plentiful, and it may quote page content
+    private val threadTime = Regex("""^\d\d-\d\d \d\d:\d\d:\d\d\.\d+ +(\d+) +\d+ """)
+
+    /** The lines of [log] (logcat threadtime) not written by [pid], the newest [limit], repeats merged. */
+    internal fun otherProcessLines(log: String, pid: Int, limit: Int = 400): String {
+        val lines = log.lineSequence().filter { line -> threadTime.find(line)?.groupValues?.get(1)?.toIntOrNull()?.let { it != pid } == true }.toList()
+        if (lines.isEmpty()) return "(none in buffer)\n"
+        return condense(lines.takeLast(limit).joinToString("\n"))
     }
 
     internal fun webBetaSection(): String = buildString {

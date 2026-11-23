@@ -42,6 +42,23 @@ class WebBrowserTwitchTest {
             assertNull(WebBrowserTwitch.page(bad))
     }
 
+    @Test fun listRangeDoesNotChangeTheSameLiveClipIdentity() {
+        val clip = "https://www.twitch.tv/creator/clip/PublicClip"
+        val withTracking = "$clip?tt_medium=clips%2Bapi"
+        assertEquals(withTracking, WebBrowserTwitch.handoffPage("$clip?range=7d&tt_medium=clips%2Bapi"))
+        val item = media().put("frame", withTracking)
+        item.getJSONObject("twitch").put("page", withTracking)
+        assertNotNull(WebBrowserTwitch.metadata(item, "$withTracking&range=7d"))
+        for (different in listOf("$clip?range=7d", "$withTracking&range=7d&range=30d", "$withTracking&r%61nge=7d&range=7d",
+            "$withTracking&range=invalid", "$withTracking&range=7d&quality=source", "$page?tt_medium=clips%2Bapi&range=7d",
+            "$withTracking&range=7d#fragment", withTracking.replace("/clip/PublicClip", "/clip/OtherClip"))) {
+            assertFalse(WebBrowserTwitch.sameHandoffPage(withTracking, different))
+            assertNull(WebBrowserTwitch.metadata(item, different))
+        }
+        item.getJSONObject("twitch").put("page", "$withTracking&range=7d")
+        assertNull("The typed declaration must still use its recorded frame", WebBrowserTwitch.metadata(item, "$withTracking&range=7d"))
+    }
+
     @Test fun integerCatalogueDurationCanContainTheSameDecodedSecond() {
         val item = media().put("duration", 15.782942)
         item.getJSONObject("twitch").put("duration", 15.782942).put("expected_duration", 15.0)

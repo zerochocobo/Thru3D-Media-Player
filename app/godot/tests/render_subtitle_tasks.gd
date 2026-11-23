@@ -28,12 +28,13 @@ func run() -> void:
 	player.toggle(); player._subtitle_open = true; player._set_subtitle_detail("listening")
 	for language in ["zh", "en", "ja", "zh_Hant"]:
 		I18n.use(language)
-		for kind in ["start", "progress", "complete"]:
+		for kind in ["start", "progress", "complete", "outdated"]:
 			state.subtitle_task = queue.jobs[0] if kind == "progress" else {}
-			state.listening_cache_complete = kind == "complete"; state.listening_translation_complete = kind == "complete"; state.listening_cache_persistent = true
+			state.listening_cache_complete = kind in ["complete", "outdated"]; state.listening_translation_complete = state.listening_cache_complete; state.listening_cache_persistent = true
+			state.listening_cache_outdated = kind == "outdated"
 			player.refresh(); await shot(viewport, output.path_join(language + "-" + kind + ".png"))
 	player.free(); viewport.queue_free(); await process_frame
-	print("Subtitle task previews: 20 frames")
+	print("Subtitle task previews: 24 frames")
 	quit(0)
 func shot(viewport: SubViewport, path: String) -> void:
 	await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw

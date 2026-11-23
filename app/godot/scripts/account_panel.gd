@@ -102,8 +102,7 @@ func start(type: String, selected_provider: String = "", id: String = "", defaul
 	_begin_field_input()
 
 func provider_name(value: String) -> String:
-	if value == "thunder": return I18n.t("Thunder Cloud Drive (Beta)")
-	return {"115": "115", "115_open": "115", "onedrive": "OneDrive", "webdav": "WebDAV", "baidu": I18n.t("Baidu Netdisk"), "aliyun_open": I18n.t("Aliyun Drive"), "quark_open": I18n.t("Quark Netdisk"), "123_open": I18n.t("123 Cloud Drive"), "emby": "Emby", "jellyfin": "Jellyfin", "stash": "Stash", "xbvr": "XBVR", "plex": "Plex"}.get(value, value)
+	return I18n.t(menu.Icons.Providers.display_name_key(value))
 
 func poll() -> void:
 	if session <= 0 or not menu.platform: return

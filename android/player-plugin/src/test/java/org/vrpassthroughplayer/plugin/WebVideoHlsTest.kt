@@ -7,6 +7,55 @@ import org.vrpassthroughplayer.plugin.MediaServerClientTest.Fixture
 import org.vrpassthroughplayer.plugin.MediaServerClientTest.Reply
 
 class WebVideoHlsTest {
+    @Test fun retriesATruncatedSegmentBeforePublishingItsBytes() {
+        val segment = ByteArray(188 * 2) { it.toByte() }
+        val attempts = java.util.concurrent.atomic.AtomicInteger()
+        Fixture { request, _, _ ->
+            when (request.split(' ')[1]) {
+                "/list.m3u8" -> Reply(body = "#EXTM3U\n#EXTINF:6,\nsegment.ts\n#EXT-X-ENDLIST\n".toByteArray())
+                "/segment.ts" -> Reply(
+                    body = if (attempts.incrementAndGet() == 1) segment.copyOf(188) else segment,
+                    declaredLength = segment.size,
+                )
+                else -> Reply(404, body = byteArrayOf())
+            }
+        }.use { origin -> LocalStreamServer().use { local -> WebVideoHls(local).use { hls ->
+            val playlist = read(hls.prepare(track(origin.url + "/list.m3u8"))).toString(Charsets.UTF_8)
+            val url = playlist.lines().first { it.startsWith("http") }
+            assertArrayEquals(segment, read(url))
+            assertArrayEquals(segment, read(url))
+            assertEquals(2, attempts.get())
+        } } }
+    }
+
+    @Test fun servesValidatedVodWithoutRefetchingItsRootAndResolvesRelativeReferencesAtTheFinalAddress() {
+        val requests = mutableListOf<String>()
+        Fixture { request, headers, _ ->
+            val path = request.split(' ')[1]
+            synchronized(requests) { requests.add(path) }
+            assertNull(headers["authorization"])
+            when (path) {
+                "/final/init.mp4" -> Reply(body = "init".toByteArray())
+                "/final/segment.m4s?ticket=exact" -> Reply(body = "segment".toByteArray())
+                else -> Reply(404, body = byteArrayOf())
+            }
+        }.use { origin -> LocalStreamServer().use { local -> WebVideoHls(local).use { hls ->
+            val body = "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:10,\nsegment.m4s?ticket=exact\n#EXT-X-ENDLIST\n"
+            val root = URI(origin.url + "/initial/list.m3u8")
+            val manifestBase = URI(origin.url + "/final/media.m3u8")
+            val rootHeaders = mapOf("authorization" to "root-only")
+            val track = WebVideoTrack("observed", root, rootHeaders, "mp4", "avc1", "mp4a", 1920, 1080, 24.0,
+                transport = "hls", browserManifest = body, browserManifestBase = manifestBase,
+                browserHeaders = WebVideoRequestHeaders(mapOf(root.toString() to rootHeaders), org.json.JSONArray()))
+            val playlist = read(hls.prepare(track)).toString(Charsets.UTF_8)
+            val init = playlist.lineSequence().first { it.startsWith("#EXT-X-MAP:") }.substringAfter('"').substringBefore('"')
+            val segment = playlist.lineSequence().first { it.startsWith("http") }
+            assertEquals("init", read(init).toString(Charsets.UTF_8))
+            assertEquals("segment", read(segment).toString(Charsets.UTF_8))
+            assertEquals(listOf("/final/init.mp4", "/final/segment.m4s?ticket=exact"), synchronized(requests) { requests.toList() })
+        } } }
+    }
+
     @Test fun servesExplicitLocalByteRangesOverOneObservedGetThatIgnoresUpstreamRange() {
         val received=java.util.concurrent.atomic.AtomicInteger();val exact="/current.ts?signature=EXACT&start=4&end=12"
         Fixture { request,headers,_ ->
@@ -185,16 +234,22 @@ class WebVideoHlsTest {
             if (!line.startsWith("#EXT-X-BYTERANGE:")) line
             else if (firstRange) { firstRange=false;line } else line.substringBefore('@')
         })
+        val segmentAttempts = java.util.concurrent.atomic.AtomicInteger()
         Fixture { request, _, _ ->
             val name = request.split(' ')[1].substringAfterLast('/')
             val file = java.io.File(root, name)
-            if (file.isFile && file.parentFile == root) Reply(200, body = file.readBytes()) else Reply(404, body = ByteArray(0))
+            if (!file.isFile || file.parentFile != root) return@Fixture Reply(404, body = byteArrayOf())
+            val bytes = file.readBytes()
+            if (name == "sample1.ts" && segmentAttempts.incrementAndGet() == 1) {
+                Reply(body = bytes.copyOf(188), declaredLength = bytes.size)
+            } else Reply(body = bytes)
         }.use { origin -> LocalStreamServer().use { local ->
             for (name in listOf("sample.m3u8","ranges.m3u8")) WebVideoHls(local).use { hls ->
                 val url = hls.prepare(track(origin.url + "/" + name))
                 run("-v", "error", "-i", url, "-map", "0:v", "-map", "0:a", "-f", "null", "-")
                 run("-v", "error", "-ss", "2", "-i", url, "-t", "1", "-map", "0:v", "-map", "0:a", "-f", "null", "-")
             }
+            assertEquals(2, segmentAttempts.get())
         } }
     }
 

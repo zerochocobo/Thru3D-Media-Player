@@ -103,6 +103,7 @@ func tick() -> void:
 		window.image_material.shader = load("res://shaders/airplay_mirror.gdshader")
 		window.image_material.set_shader_parameter("video_texture", texture)
 		window.image_material.set_shader_parameter("decode_srgb", QiyuController.runtime and QiyuController.page_decode)
+		window.image_material.set_shader_parameter("decode_gamma", QiyuController.DISPLAY_GAMMA)
 		window.source_muted = bool(data.get("muted", false))
 		window.set_compositor(layer != null); window.frame.visible = false; window.refresh()
 	if epoch > 0 and pip.windows.has(1):

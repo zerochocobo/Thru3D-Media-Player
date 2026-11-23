@@ -10,7 +10,7 @@ object WebBrowserOdysee {
     private const val ENABLED=true // Current free-claim file flow passed the production desktop preflight.
     private data class Identity(val id: String,val slug: String,val prefix: String)
     private data class FileIdentity(val claim: String,val file: String,val slug: String?)
-    private val slugCharacters=Regex("[\\p{L}\\p{M}\\p{N}_.-]+")
+    private val slugCharacters=Regex("[\\p{L}\\p{M}\\p{N}_.!-]+")
     private fun slug(value: String): String?=URLDecoder.decode(value,"UTF-8")
         .takeIf { slugCharacters.matches(it) && !it.contains("..") }
     fun document(value: String): Boolean=runCatching {

@@ -4,6 +4,31 @@ const Thru3DTencentResponses = (stateFor,publish,hasFrame) => {
   hasFrame ||= ()=>false;
   const filter={urls:['https://*/getvinfo*','https://*/getinfo*','https://*/proxyhttp*','https://*/vinfo_proxy*'],types:['xmlhttprequest','script','other']};
   const active=new Map(),early=new Map(),TTL=15000;
+  const playbackRequest=d=>{
+    try {
+      const raw=d.requestBody?.raw;
+      if(d.method!=='POST'||d.frameId!==0||!Array.isArray(raw)||raw.length>8)return null;
+      let size=0;
+      const chunks=raw.map(part=>{
+        if(!(part.bytes instanceof ArrayBuffer)||(size+=part.bytes.byteLength)>128*1024)throw new Error();
+        return new Uint8Array(part.bytes);
+      });
+      const bytes=new Uint8Array(size);let offset=0;
+      for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
+      const body=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
+      if(typeof body?.vinfoparam!=='string')return null;
+      const param=body.vinfoparam.trim();
+      const wire=param.startsWith('{')?JSON.parse(param):new URLSearchParams(param);
+      const query=new URL(d.url).searchParams;
+      const one=key=>{
+        const values=[...query.getAll(key),...(Object.hasOwn(body,key)?[body[key]]:[]),
+          ...(wire instanceof URLSearchParams?wire.getAll(key):wire&&Object.hasOwn(wire,key)?[wire[key]]:[])];
+        return values.length===1&&typeof values[0]==='string'?values[0]:'';
+      };
+      const id=one('vid'),flowid=one('flowid');
+      return /^[A-Za-z0-9]{11}$/.test(id)&&/^[^\x00-\x20\x7f]{1,128}$/.test(flowid)?{id,flowid}:null;
+    }catch(_){return null;}
+  };
   const same=(a,b)=>a.key===b.key&&a.page===b.page&&a.privateContext===b.privateContext&&
     (!a.document||!b.document||a.document===b.document)&&(!a.cookieStore||!b.cookieStore||a.cookieStore===b.cookieStore);
   const notify=state=>{if(!state.early)publish(state);};
@@ -51,7 +76,8 @@ const Thru3DTencentResponses = (stateFor,publish,hasFrame) => {
     const u=new URL(d.url);if(!['/getvinfo','/getinfo','/proxyhttp','/vinfo_proxy'].includes(u.pathname)||active.size>=8)return;
     const ids=u.searchParams.getAll('vid');if(ids.length>1||ids.length&&!/^[A-Za-z0-9]{11}$/.test(ids[0]))return;
     let stream;try{stream=browser.webRequest.filterResponseData(d.requestId);}catch(_){return;}
-    const e={id:d.requestId,state,stream,chunks:[],size:0,ok:null,stopped:false,released:false};active.set(e.id,e);
+    const e={id:d.requestId,state,stream,chunks:[],size:0,ok:null,stopped:false,released:false,
+      playback:u.pathname==='/proxyhttp'?playbackRequest(d):null};active.set(e.id,e);
     state.tencentCapture||={response_seen:0,early_responses:0};state.tencentCapture.response_seen++;
     if(state.early)state.tencentCapture.early_responses++;
     state.tencentStatus='observing';notify(state);
@@ -72,6 +98,7 @@ const Thru3DTencentResponses = (stateFor,publish,hasFrame) => {
         }
         Object.assign(state.tencentCapture,shape);
         if(data){
+          if(e.playback?.id===data.id)data.request_flow=e.playback.flowid;
           state.tencentData||=new Map();const key=data.id+':'+data.revision;
           state.tencentData.delete(key);state.tencentData.set(key,data);
           while(state.tencentData.size>8||JSON.stringify([...state.tencentData.values()]).length>192*1024)state.tencentData.delete(state.tencentData.keys().next().value);
@@ -89,7 +116,7 @@ const Thru3DTencentResponses = (stateFor,publish,hasFrame) => {
     };
     stream.onstop=()=>{if(e.detached)return;e.stopped=true;try{stream.close();}catch(_){release(e,'stream_error');return;}if(!e.released)e.complete();};
     stream.onerror=()=>release(e,'stream_error');
-  },filter,['blocking']);
+  },filter,['blocking','requestBody']);
   browser.webRequest.onHeadersReceived.addListener(d=>{
     const e=active.get(d.requestId);if(!e)return;
     const mime=(d.responseHeaders||[]).find(h=>h.name.toLowerCase()==='content-type')?.value||'';

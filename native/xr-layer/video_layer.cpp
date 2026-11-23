@@ -128,10 +128,10 @@ void destroy_image(Picture& p) {
     }
     p = Picture{};
 }
-/** Layers may still name a picture swapchain about to go: never submit a destroyed handle. */
-void drop_layers_of(const Picture& p) {
+/** Invalidate a submitted layout only when it still references the retiring swapchain. */
+void drop_layers_of(XrSwapchain swapchain) {
     for (int i = 0; i < state.count; ++i) {
-        if (p.image != XR_NULL_HANDLE && state.layers[i].quad.subImage.swapchain == p.image) { state.count = 0; break; }
+        if (swapchain != XR_NULL_HANDLE && state.layers[i].quad.subImage.swapchain == swapchain) { state.count = 0; break; }
     }
 }
 /** Restores the GL state the picture uploads and copies touch (Godot keeps its own cache). */
@@ -275,7 +275,7 @@ struct DrawState {
     }
 };
 void destroy(JNIEnv* env) {
-    state.count = 0;
+    drop_layers_of(state.swapchain);
     if (state.swapchain != XR_NULL_HANDLE && state.destroy_swapchain) state.destroy_swapchain(state.swapchain);
     state.swapchain = XR_NULL_HANDLE;
     if (state.surface) env->DeleteGlobalRef(state.surface);
@@ -296,7 +296,7 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_bind(JNIEnv* env, jclass, j
         if (!instance || !session || !get_proc || !space) throw std::runtime_error("OpenXR handles unavailable");
         const auto new_session = reinterpret_cast<XrSession>(static_cast<uintptr_t>(session));
         // A different session invalidates its swapchain; the caller recreates the surface.
-        if (state.session != XR_NULL_HANDLE && state.session != new_session) { destroy(env); for (auto& p : state.pictures) destroy_image(p); }
+        if (state.session != XR_NULL_HANDLE && state.session != new_session) { state.count = 0; destroy(env); for (auto& p : state.pictures) destroy_image(p); }
         if (state.session != new_session) qiyu = Qiyu{};
         state.instance = reinterpret_cast<XrInstance>(static_cast<uintptr_t>(instance));
         state.session = new_session;
@@ -328,7 +328,7 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_bind(JNIEnv* env, jclass, j
     }
 }
 
-/** Returns the producer Surface of a new swapchain (the previous one is destroyed). */
+/** Returns a producer Surface only after the previous swapchain has been released. */
 extern "C" JNIEXPORT jobject JNICALL
 Java_org_vrpassthroughplayer_plugin_VideoLayerNative_createSurface(JNIEnv* env, jclass, jint width, jint height) {
     std::lock_guard<std::mutex> lock(mutex);
@@ -601,7 +601,7 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_createImage(JNIEnv* env, jc
     if (width <= 0 || height <= 0 || width > 16384 || height > 16384 || levels < 1 || levels > 15) { fail(env, "Picture layer size invalid"); return JNI_FALSE; }
     if (p.image != XR_NULL_HANDLE && p.width == width && p.height == height &&
         p.levels == levels && p.is_static == (is_static == JNI_TRUE) && !p.is_static) return JNI_TRUE;
-    drop_layers_of(p);
+    drop_layers_of(p.image);
     destroy_image(p);
     XrSwapchainCreateInfo info{};
     info.type = XR_TYPE_SWAPCHAIN_CREATE_INFO;
@@ -628,7 +628,7 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_destroyImage(JNIEnv*, jclas
     std::lock_guard<std::mutex> lock(mutex);
     Picture* p = picture(slot);
     if (!p) return;
-    drop_layers_of(*p);
+    drop_layers_of(p->image);
     destroy_image(*p);
 }
 

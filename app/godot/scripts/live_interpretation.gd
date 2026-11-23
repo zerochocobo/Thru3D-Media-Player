@@ -148,6 +148,12 @@ func _stop_cast(state: String = "") -> void:
 func _failure_notice() -> String:
 	return I18n.t(status_label(_failure_state)) if is_cast_source() and _allowed() and Time.get_ticks_msec() < _failure_until else ""
 
+# Deletes this film's recognized text (kept from an earlier recognizer); live
+# subtitles then rebuild it and full-film pre-generation becomes available again.
+func discard_cache() -> void:
+	if video.media.session_id <= 0 or not Methods.supports(video.platform, "discard_listening_cache"): return
+	if video.platform.discard_listening_cache(video.media.session_id): report = {}; _poll_at = 0
+
 func tick() -> void:
 	if not Methods.supports(video.platform, "set_mpv_listening") or video.media.session_id <= 0: return
 	if is_cast_source() and enabled and not _allowed(): _stop_cast()
@@ -247,7 +253,8 @@ func snapshot() -> Dictionary:
 		"listening_notice": notice,
 		"listening_caption": preparation_caption(), "listening_status_caption": status_caption(position),
 		"listening_detail_caption": detail_caption(position), "listening_cache_complete": report.get("cache_complete", false),
-		"listening_cache_persistent": report.get("cache_persistent", false), "listening_translation_complete": report.get("translation_complete", false)}
+		"listening_cache_persistent": report.get("cache_persistent", false), "listening_translation_complete": report.get("translation_complete", false),
+		"listening_cache_outdated": report.get("cache_outdated", false)}
 
 func preparation_caption() -> String:
 	if not active() or report.get("state", "preparing") not in ["preparing", "catching_up"]: return ""

@@ -176,6 +176,8 @@ internal class MpvVideoBridge(
         @Volatile var owner: EGLContext? = null
         @Volatile var closing = false
         @Volatile var closeStuckLogged = false
+        @Volatile var closeRequestedMs = -1L // elapsedRealtime of the close request; diagnostics only
+        @Volatile var closeReported = false
         @Volatile var playing = true
         var speed = 1.0 // synchronized(host), retained across processing revisions
         @Volatile var subtitleDelay = 0.0 // also read by the narration clock
@@ -439,7 +441,13 @@ internal class MpvVideoBridge(
         val session = Session(scope, host, stereo, profile, alpha, vulkan, debugNormalFastPath, depth,
             stereo && topBottom)
         sessions[id] = session; hosts.add(host)
-        sessions.values.filter { it.id != id }.forEach { dispose(it, true) }
+        // Diagnostics only: an earlier source still closing holds a native slot this open may wait on.
+        runCatching { stuckCloses(host).firstOrNull()?.let { oldest ->
+            emitSource(id, JSONObject().put("kind", "open_with_stuck_source").put("scheme", MpvSourceDiagnostics.scheme(uri))
+                .put("layer_requested", host.layerRequested).put("stuck_sources", stuckCloses(host).size)
+                .put("oldest_stuck_ms", closingMs(oldest)))
+        } }
+        sessions.values.filter { it.id != id }.forEach { dispose(it, true, "replaced") }
         prepareModel(session)
         worker.post {
             try {
@@ -549,25 +557,30 @@ internal class MpvVideoBridge(
                         if (host.closing || stopped) return
                         // A layer return followed at once by an eye-buffer reopen leaves two sources
                         // still terminating (Quest 3, 2026-11-09): wait for a slot like the Surface below.
-                        if (closingSourcesFillSlots(host)) {
-                            if (android.os.SystemClock.elapsedRealtime() < surfaceReleaseDeadline) {
+                        val output = layerSurfaceLease.selectOutput(host, host.layerRequested,
+                            closingSourcesFillSlots(host), android.os.SystemClock.elapsedRealtime() >= surfaceReleaseDeadline)
+                        when (output) {
+                            VideoSurfaceLease.Output.WAIT -> {
                                 worker.postDelayed({ render(this) }, 16L)
                                 return
                             }
-                        }
-                        if (host.layerRequested && !layerSurfaceLease.acquire(host)) {
-                            // The XR swapchain backs MediaCodec. RequestClose is asynchronous:
-                            // do not destroy its Surface while the preceding decoder can still write.
-                            // Retry off-frame; never block Godot's render thread or the source worker.
-                            if (android.os.SystemClock.elapsedRealtime() >= surfaceReleaseDeadline) {
+                            VideoSurfaceLease.Output.SLOTS_FULL -> {
+                                fail(session, "MPV_SOURCE_START_FAILED", IllegalStateException("MPV source capacity exhausted"))
+                                return
+                            }
+                            VideoSurfaceLease.Output.SURFACE_TIMEOUT -> {
+                                // The XR swapchain backs MediaCodec. RequestClose is asynchronous: never destroy
+                                // its Surface while the preceding decoder can still write. Where that source
+                                // waits is in the exported log (mpv_source_diagnostic close_stuck).
                                 fail(session, "MPV_SURFACE_RELEASE_TIMEOUT", IllegalStateException("Previous decoder Surface is still closing"))
-                            } else worker.postDelayed({ render(this) }, 16L)
-                            return
+                                return
+                            }
+                            VideoSurfaceLease.Output.EYE_BUFFER, VideoSurfaceLease.Output.LAYER -> Unit
                         }
                         try {
                             host.owner = EGL14.eglGetCurrentContext()
                             host.markStartup("native_create_started_ms")
-                            if (host.layerRequested) {
+                            if (output == VideoSurfaceLease.Output.LAYER) {
                                 host.layerSurface = runCatching { VideoLayerNative.createSurface(surfaceWidth, surfaceHeight) }
                                     .onFailure { android.util.Log.w("QuestPlayer", "Video layer surface unavailable", it) }.getOrNull()
                                 host.layer = host.layerSurface != null
@@ -825,6 +838,10 @@ internal class MpvVideoBridge(
                 foreground&&host.listeningOutputReady&&!host.cloneHolding&&!globalVoiceHolding,host.discInput,host.discPlaylist,host.userAudioDelay,host.uri.startsWith("cloud://"),host.listeningPrimaryAudio)
         },{refreshPlayback()},prepareListeningSource,networkFailure,retainListeningAudio,listeningInput).also {host.listening=it}}
         return controller.configure(json)
+    }
+    fun discardListeningCache(id: Int): Boolean {
+        val listening=sessions[id]?.takeIf {active(it)}?.host?.listening ?: return false
+        listening.discardCache();return true
     }
     fun listeningStatus(id: Int)=sessions[id]?.takeIf {active(it)}?.host?.listening?.status() ?: "{}"
     fun listeningReady(id: Int,epoch: Long){sessions[id]?.takeIf {active(it)}?.host?.listening?.ready(epoch)}
@@ -1387,11 +1404,15 @@ internal class MpvVideoBridge(
         for (host in hosts) if (host.closing && !host.sourcePreparing && sessions.values.none { it.host === host }) {
             try {
                 if (host.handle == 0L || MpvSourceNative.close(host.handle, host.owner != EGL14.eglGetCurrentContext())) {
-                    host.handle = 0; host.closeDescriptors()
+                    host.handle = 0
                     // Release only after MPV and its optional copy producer have stopped writing.
-                    host.fanout?.close(); host.fanout = null
-                    host.copy?.close(); host.copy = null
-                    if (host.layer) layerSurfaceLease.release(host) { VideoLayerNative.destroySurface() }
+                    if (host.frames?.pollClosed() == false) continue
+                    host.fanout = null; host.copy = null
+                    layerSurfaceLease.release(host) { if (host.layer) VideoLayerNative.destroySurface() }
+                    host.layer = false; host.layerSurface = null
+                    host.closeDescriptors()
+                    if (host.closeReported) emitSource(0, JSONObject().put("kind", "close_finished")
+                        .put("scheme", MpvSourceDiagnostics.scheme(host.uri)).put("closing_ms", closingMs(host)))
                     hosts.remove(host)
                 } else if (!host.closeStuckLogged) {
                     // Diagnostics only: a source that does not finish closing keeps a native slot.
@@ -1403,6 +1424,48 @@ internal class MpvVideoBridge(
                 }
             } catch (_: Throwable) { /* Preserve ownership and retry; never close a descriptor still used by MPV. */ }
         }
+        reportStuckCloses()
+    }
+    private fun closingMs(host: Host) =
+        if (host.closeRequestedMs < 0) -1L else android.os.SystemClock.elapsedRealtime() - host.closeRequestedMs
+    private fun emitSource(id: Int, json: JSONObject) = emit("mpv_source_diagnostic", id, json.toString())
+    /** Diagnostics only, once per source: where a close still waits after five seconds. A source that never
+     * finishes keeps its native slot, and later opens wait behind it. */
+    private fun reportStuckCloses() {
+        for (host in hosts) {
+            if (!host.closing || host.closeReported || closingMs(host) < MpvSourceDiagnostics.STUCK_MS) continue
+            host.closeReported = true
+            try {
+                val attached = sessions.values.firstOrNull { it.host === host }
+                val wait = if (host.handle > 0) runCatching { JSONObject(MpvSourceNative.closeWait(host.handle)) }.getOrNull() else null
+                val report = MpvSourceDiagnostics.source("close_stuck", host.uri, host.loadingPhase, host.layerRequested, host.layer,
+                    host.startup.containsKey("first_pair_bound_ms"), host.startup)
+                    .put("closing_ms", closingMs(host))
+                    .put("stage", MpvSourceDiagnostics.closeStage(host.sourcePreparing, attached != null, host.handle > 0, wait?.optString("stage")))
+                    .put("held_claims", attached?.let { synchronized(it.lock) { it.display.heldClaims() } } ?: 0)
+                MpvSourceDiagnostics.native(wait)?.let { report.put("native", it) }
+                emitSource(attached?.id ?: 0, report)
+            } catch (_: Throwable) { /* Diagnostics never change the close. */ }
+        }
+    }
+    /** Closing sources past the stuck threshold, oldest first; diagnostics only. */
+    private fun stuckCloses(except: Host) = hosts.filter { it !== except && it.closing && closingMs(it) >= MpvSourceDiagnostics.STUCK_MS }
+        .sortedByDescending { closingMs(it) }
+    private fun reportAbandoned(session: Session, reason: String) {
+        val host = session.host
+        val firstFrame = host.startup.containsKey("first_pair_bound_ms")
+        if (!MpvSourceDiagnostics.abandoned(firstFrame, host.elapsedMs(), reason)) return
+        try {
+            val wait = if (host.handle > 0) runCatching { JSONObject(MpvSourceNative.closeWait(host.handle)) }.getOrNull() else null
+            val stuck = stuckCloses(host)
+            val report = MpvSourceDiagnostics.source("abandoned_before_first_frame", host.uri, host.loadingPhase,
+                host.layerRequested, host.layer, false, host.startup)
+                .put("reason", reason).put("elapsed_ms", host.elapsedMs()).put("source_preparing", host.sourcePreparing)
+                .put("native_created", host.handle > 0).put("stuck_sources", stuck.size)
+                .put("oldest_stuck_ms", stuck.firstOrNull()?.let(::closingMs) ?: -1L)
+            MpvSourceDiagnostics.native(wait)?.let { report.put("native", it) }
+            emitSource(session.id, report)
+        } catch (_: Throwable) { /* Diagnostics never change the close. */ }
     }
     private fun capture(session: Session, source: JSONObject): Boolean {
         if (source.optString("color_target") == "layer") return captureLayer(session, source)
@@ -2083,6 +2146,7 @@ internal class MpvVideoBridge(
                 session.host.narration?.close(); session.host.narration = null
                 session.host.listening?.close(); session.host.listening = null
                 session.host.closing = true
+                if (session.host.closeRequestedMs < 0) session.host.closeRequestedMs = android.os.SystemClock.elapsedRealtime()
                 MpvSourceNative.close(session.host.handle, true)
             }
             session.pendingSource = null
@@ -2106,11 +2170,15 @@ internal class MpvVideoBridge(
         sessions.remove(session.id)
         event("mpv_released", session, JSONObject().put("renderer_closed", true).put("held_slots", 0))
     }
-    private fun dispose(session: Session, closeHost: Boolean) {
+    /** reason (diagnostics only): "replaced", "closed", "failed" or "shutdown". */
+    private fun dispose(session: Session, closeHost: Boolean, reason: String = "closed") {
         if (!session.disposed.compareAndSet(false, true)) return
         session.model?.close(); session.depthModel?.close(); session.textProtection?.close(); session.portraitDepth?.close(); session.normal.close()
         synchronized(session.lock) { session.display.close() }
         if (closeHost) {
+            // Before the close request: the core's recent modules still show what the open was waiting on.
+            reportAbandoned(session, reason)
+            if (session.host.closeRequestedMs < 0) session.host.closeRequestedMs = android.os.SystemClock.elapsedRealtime()
             session.host.narration?.close(); session.host.narration = null
             session.host.listening?.close(); session.host.listening = null
             session.host.closing = true
@@ -2138,7 +2206,7 @@ internal class MpvVideoBridge(
         // Diagnostics only: which earlier sources still hold the native slots, and the teardown step each waits on.
         if (failure.message?.contains("capacity exhausted") == true) report.put("held_sources", heldSources(session.host))
         event("mpv_error", session, report)
-        gate.invalidate(session.id); dispose(session, true)
+        gate.invalidate(session.id); dispose(session, true, "failed")
     }
     /** mpv_source.cpp admits two native sources; a closing one keeps its slot until MPV terminates. */
     private fun closingSourcesFillSlots(except: Host): Boolean {
@@ -2198,7 +2266,8 @@ internal class MpvVideoBridge(
          * native hole-filling warp. */
         @Volatile private var depthTextProtection = false
         @Volatile var depthStretch = true
-        /** 2D->3D steady edges (edge stretching only): the near map is refitted to the picture's contours. */
+        /** 2D->3D steady edges (edge stretching only: with Fill gaps the snapped steps shred): the near map is
+         * refitted to the picture's contours. */
         @Volatile var depthSteady = true
         /** Alpha plan B: masks shown so far in this Alpha layer session and the mask swapchain size, "count w h". */
         @Volatile var layerMask = "0 0 0"
@@ -2216,7 +2285,7 @@ internal class MpvVideoBridge(
         comicReader?.close();comicReader=null
         setInterleaveReopen(false)
         globalVoiceManager?.close();globalVoiceManager=null
-        gate.shutdown(); sessions.values.forEach { dispose(it, true) }
+        gate.shutdown(); sessions.values.forEach { dispose(it, true, "shutdown") }
         Thread({narrationRuntime.close()},"NarrationRuntimeDispose").start()
         subtitleWorker.shutdownNow()
         companionWorker.shutdownNow()

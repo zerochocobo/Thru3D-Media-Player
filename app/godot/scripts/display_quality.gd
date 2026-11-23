@@ -97,8 +97,8 @@ const REFRESH_HINTS := {120: "60 fps → 120 Hz, 30 fps → 90 Hz · steadiest p
 	90: "30 fps → 90 Hz, others 72 Hz · steadier picture, moderate GPU load",
 	72: "Every video at 72 Hz · lowest GPU load, power and heat"}
 
-## Power saving also keeps plain playback at sustained-low CPU/GPU levels (Alpha and 2D->3D still
-## request sustained-high for their inference).
+## Power saving also keeps plain playback at sustained-low CPU/GPU levels (Alpha, 2D->3D and subtitle
+## narration still request sustained-high for their inference).
 const POWER_SAVING_CAP := 72
 
 ## The saved cap; XR2 Gen1 class GPUs (Quest 2, PICO Neo3) stop at 90 Hz.

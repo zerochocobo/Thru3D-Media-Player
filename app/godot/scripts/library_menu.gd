@@ -77,6 +77,8 @@ var current_file_provider: Callable
 const Collections := preload("res://scripts/collection_menu.gd")
 var collections := Collections.new(self)
 var quick_access := preload("res://scripts/library_quick_access.gd").new(self)
+const PathMenu := preload("res://scripts/library_path_menu.gd")
+var path_menu := PathMenu.new(self)
 var archives := preload("res://scripts/archive_panel.gd").new(self)
 const FileActions := preload("res://scripts/library_file_actions.gd")
 var file_actions := FileActions.new(self)
@@ -497,7 +499,7 @@ func _align_playback_panel() -> void:
 	transform = Transform3D(Basis.IDENTITY, Vector3(0, top + 0.08 - bottom, 0))
 
 func has_pointer_capture() -> bool:
-	return not release_notes.capture.is_empty() or not theme_editor.capture.is_empty() or not web_browser.hand.is_empty() or not _voice_drag.is_empty() or not audio_preview_seek.capture.is_empty() or not _drag.is_empty() or not choices.capture.is_empty() or not account_panel.web_hand.is_empty()
+	return (path_menu.present and path_menu.open) or not release_notes.capture.is_empty() or not theme_editor.capture.is_empty() or not web_browser.hand.is_empty() or not _voice_drag.is_empty() or not audio_preview_seek.capture.is_empty() or not _drag.is_empty() or not choices.capture.is_empty() or not account_panel.web_hand.is_empty()
 
 func _place_device_status(centre: Vector2) -> void:
 	if release_notes.opened or theme_editor.opened or compact or playback_expanded:
@@ -539,6 +541,7 @@ func toggle() -> void:
 			_load_cloud(); refresh()
 
 func dismiss() -> void:
+	if path_menu.open: path_menu.close()
 	thumbnail_prefetch.cancel()
 	if release_notes.opened: release_notes.close(self); return
 	_cancel_smb_connect(false)
@@ -764,6 +767,7 @@ func _ready() -> void:
 		platform.connect("media_list", _on_media_list)
 
 func attach_platform(value: Object) -> void:
+	if platform != value: collections.source_accounts.clear()
 	platform = value
 	file_actions.sync_platform()
 	if platform and platform.has_signal("media_list") and not platform.is_connected("media_list", _on_media_list):
@@ -862,6 +866,10 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	update_pointer(hand, origin, direction, tracked)
 	var hit := ray_hit(origin, direction) if tracked else {}
 	var target := int(hit.get("target", NONE))
+	if path_menu.present and path_menu.open and tracked:
+		if path_menu.contains(target): path_menu.action(target)
+		else: path_menu.close()
+		return true
 	if not hit.is_empty() and target not in [SCROLLBAR, NONE] and not _row_target(target) and not collections.row_target(target) and not file_actions.selection_target(target):
 		hit["hand"] = hand
 		_activate_hit(hit)
@@ -995,6 +1003,9 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 
 ## Thumbstick y (up positive) scrolls the list; it never selects.
 func stick_scroll(y: float, delta: float) -> void:
+	if visible and path_menu.present and path_menu.open:
+		path_menu.scroll(y, delta)
+		return
 	if release_notes.opened: release_notes.stick(self, y, delta); return
 	if theme_editor.opened: return
 	if web_browser.scroll(y, delta): return
@@ -1036,6 +1047,7 @@ func stick_scroll_horizontal(x: float, delta: float) -> void:
 		server_browser.gallery.stick_scroll(x, delta)
 
 func _process(delta: float) -> void:
+	path_menu.tick(Time.get_ticks_msec())
 	Thumbnails.poll()
 	_apply_loaded_thumbnail()
 	thumbnail_prefetch.tick(delta)
@@ -1769,12 +1781,15 @@ func _on_media_list(id: int, payload: String) -> void:
 			if visible: refresh()
 			return
 		if event is Dictionary and event.get("source") == "medialib" and event.get("state") == "accounts_changed":
+			collections.source_accounts.erase("server")
 			server_browser.setup = false
 			server_browser.forget_section()
 			if section == Section.MEDIA_SERVER:
 				# Let a VR deletion finish its saved-filter cleanup before reloading.
 				if server_browser.pending.values().any(func(request): return request.action == "remove"): return
 				server_browser.load_servers()
+				refresh()
+			elif visible and (section == Section.RECENT or quick_access.shown()):
 				refresh()
 			return
 	if cloud_pagination.receive(id, payload): return
@@ -2673,6 +2688,10 @@ func _clear_storage_cache(category: String) -> void:
 ## Video state changes arrive several times a second: redraw only when the Alpha profiles
 ## (current, compiling, cold) shown on the Alpha tab change.
 func _activate(target: int) -> void:
+	if path_menu.action(target): return
+	if target >= PathMenu.INLINE and target < PathMenu.INLINE + 4:
+		_go_to(_crumbs().size() - 1 - (target - PathMenu.INLINE))
+		return
 	if release_notes.opened: release_notes.action(self, target); return
 	if target == BACKGROUND_PICKER_DONE and background_picker_mode:
 		var files: Array = audio_selection.values().duplicate(true)
@@ -3035,6 +3054,7 @@ func _choose(row: Dictionary) -> void:
 
 ## True when a child layer was consumed; false means the source's top-level list.
 func navigate_back() -> bool:
+	if path_menu.present and path_menu.open: path_menu.close(); return true
 	if release_notes.opened: release_notes.close(self); return true
 	if subtitle_queue_open and section == Section.SETTINGS and tab == VIDEO_TAB:
 		if not choices.opened.is_empty(): choices.reset(); refresh(); return true
@@ -3438,6 +3458,7 @@ func _draw_compact() -> void:
 	_set_backdrop(COMPACT_SIZE)
 	_block_rays(_backdrop, COMPACT_SIZE)
 	var crumbs := _crumbs()
+	var path_controls := path_menu.available(crumbs)
 	_button(BACK, "", Vector2(-0.51, 0.36), Vector2(0.075, 0.065), not crumbs.is_empty() or section == Section.MEDIA_SERVER or (cloud_search.active and not archives.browsing), "up")
 	var heading: String = cloud_search.query if (cloud_search.active and not archives.browsing) else (_header_title() if not _header_title().is_empty() else I18n.t(NAV[section]))
 	if not archives.browsing and section == Section.RECENT:
@@ -3447,11 +3468,15 @@ func _draw_compact() -> void:
 	else:
 		var usb := not archives.browsing and not _external_volumes().is_empty()
 		var title_x := -0.32 if usb else -0.45
-		var title_width := 0.53 if usb else 0.65
+		if path_controls: title_x = path_menu.draw_header(crumbs, title_x, 0.36) + 0.018
+		var title_width := 0.20 - title_x
 		var provider_icon := _header_provider_icon()
 		if not provider_icon.is_empty():
 			_icon(provider_icon, Vector3(title_x + 0.022, 0.36, 0.004), 0.048, UiTheme.color("provider_ink"))
 			title_x += 0.060; title_width -= 0.060
+		if path_controls:
+			var trail := " › ".join(crumbs.slice(-2))
+			heading = trail if text_width(trail, 19) <= title_width else str(crumbs.back())
 		var title := _label(_fit_title(heading, "", title_width, 19), Vector3(title_x, 0.36, 0.004), 19)
 		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	if not archives.browsing: _draw_storage_stop(Vector2(-0.40, 0.36))
@@ -3514,6 +3539,7 @@ func _draw_compact() -> void:
 			_button(CloudBrowseError.OPEN, "", Vector2(0.39, 0.36), Vector2(0.065, 0.065), true, "info")
 			_tips[CloudBrowseError.OPEN] = I18n.t("Error details")
 	quick_access.draw()
+	path_menu.draw_popup()
 
 func _draw_compact_rows() -> void:
 	_list = Node3D.new(); add_child(_list); _decorations.append(_list); _bar_thumb = null
@@ -3557,6 +3583,7 @@ func _draw_compact_rows() -> void:
 	_place_list()
 
 func _draw() -> void:
+	path_menu.present = false
 	_thumbnail_indicator = null
 	# Reuse the compositor's region key to retire login bounds when returning to the library.
 	# Same-page redraws keep grow-only bounds and all existing swapchains.
@@ -3699,8 +3726,11 @@ func _draw() -> void:
 			var title := _label(web_browser.library.title() if web_browser.library.active() else I18n.t(NAV[section]), Vector3(-0.42, _header_y(), 0.004), 24)
 			title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	else:
-		_button(BACK, "", Vector2(-0.52 + _folder_header_inset(), _header_y()), Vector2(0.09, 0.07), true, "up")
-		_draw_crumbs(crumbs)
+		var inset := _folder_header_inset()
+		_button(BACK, "", Vector2(-0.52 + inset, _header_y()), Vector2(0.09, 0.07), true, "up")
+		var path_x := -0.455 + inset
+		if path_menu.available(crumbs): path_x = path_menu.draw_header(crumbs, path_x, _header_y()) + 0.018
+		_draw_crumbs(crumbs, path_x)
 	if (archives.browsing or section in [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD]) and not cloud_managing:
 		_button(REFRESH, "", _action_position(0.80), Vector2(0.09, 0.065), platform != null, "refresh")
 		_tips[REFRESH] = I18n.t("Refresh")
@@ -3825,6 +3855,7 @@ func _draw() -> void:
 	line.modulate = UiTheme.color("danger") if has_cloud_error else MUTED
 	if file_actions.uncertain or file_actions.pending > 0:
 		_button(FileActions.CHECK_STATUS, I18n.t(file_actions.pending_text()), Vector2(0.66, -0.59), Vector2(0.30, 0.06), file_actions.pending == 0, "refresh")
+	path_menu.draw_popup()
 
 ## Pack the visible folder actions against the view buttons, without gaps for absent actions.
 func _align_folder_tools() -> void:
@@ -3848,19 +3879,22 @@ func _header_provider_icon() -> String:
 	return ""
 
 ## Path pills (last four segments); every segment but the current one jumps there.
-func _draw_crumbs(crumbs: Array, base: int = CRUMB_BASE) -> void:
-	if archives.browsing: base = archives.CRUMB
-	var x := -0.455 + _folder_header_inset()
+func _draw_crumbs(crumbs: Array, x: float) -> void:
+	var base: int = archives.CRUMB if archives.browsing else CRUMB_BASE
 	# Leave room for account actions; the up button still exposes every parent.
 	var first := maxi(0, crumbs.size() - (2 if section in [Section.CLOUD, Section.LOCAL] or file_actions.sortable() else 4))
+	var provider := not archives.browsing and section == Section.CLOUD and not _cloud_stack.is_empty()
+	var count := crumbs.size() - first
+	var max_text := minf(0.24, (0.83 - x - (0.070 if provider else 0.0) - 0.035 * (count - 1)) / count - 0.05)
 	for i in range(first, crumbs.size()):
-		if not archives.browsing and section == Section.CLOUD and not _cloud_stack.is_empty() and i == maxi(1, first):
+		if provider and i == maxi(1, first):
 			_icon(Icons.provider(cloud_pagination.provider()), Vector3(x + 0.025, _header_y(), 0.004), 0.055, UiTheme.color("provider_ink"))
 			x += 0.070
-		var text := _fit_title(str(crumbs[i]), "", 0.24, 19)
+		var text := _fit_title(str(crumbs[i]), "", max_text, 19)
 		var width := text_width(text, 19) + 0.05
 		var current := i == crumbs.size() - 1
-		_button(base + i, text, Vector2(x + width * 0.5, _header_y()), Vector2(width, 0.065), not current)
+		var target := PathMenu.INLINE + crumbs.size() - 1 - i if not archives.browsing and i >= 10 else base + i
+		_button(target, text, Vector2(x + width * 0.5, _header_y()), Vector2(width, 0.065), not current)
 		var label: Label3D = _buttons.back().node.get_child(0)
 		set_label_size(label, 19)
 		label.modulate = ACCENT if current else MUTED
@@ -4402,7 +4436,7 @@ func _video_depth_rows(settings: Dictionary) -> Array[Dictionary]:
 		{"value": "stretch", "label": "Stretch edges", "hint": "Stretches edges, like spatial photos"}], true))
 	var steady := DepthEdgeSteady.choice(bool(settings.get(DepthEdgeSteady.KEY, DepthEdgeSteady.DEFAULT)))
 	steady.title = I18n.t(DepthEdgeSteady.TITLE); steady.info = DepthEdgeSteady.HINT
-	# Fill gaps warps from the model's own map: nothing for this to change there.
+	# With Fill gaps the snapped steps follow picture texture and shred (photo_fill_sheet.py): stretch only.
 	if str(settings.get("depth_render", "stretch")) == "stretch": entries.append(steady)
 	var position := preload("res://scripts/depth_position.gd").row(settings.get("depth_position_default", 0), "depth_position_default")
 	position.title = I18n.t("3D position"); position.info = position.hint; position.erase("hint")

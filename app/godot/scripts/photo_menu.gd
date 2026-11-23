@@ -80,6 +80,8 @@ const DEPTH_MODES := [
 	["fast", "Fastest", "3D almost instantly. Edges are softer."],
 ]
 const PHOTO_FILL_BASE := 446 # + index in FILL_MODES
+const PHOTO_STEADY_ON := 466
+const PHOTO_STEADY_OFF := 467
 const FILL_MODES := [
 	["fill", "Fill gaps", "Fills the background behind moving edges"],
 	["stretch", "Stretch edges", "Stretches edges, like spatial photos"],
@@ -612,7 +614,11 @@ func _draw_panel() -> void:
 	const GRADE_ROW := 0.11
 	const DEPTH_MODE_ROW := 0.11
 	const FILL_ROW := 0.11
-	_set_backdrop(Vector2(1.16, 1.205 + extra + GRADE_ROW + DEPTH_MODE_ROW + FILL_ROW), Vector2(0, -0.3275 - (extra + GRADE_ROW + DEPTH_MODE_ROW + FILL_ROW) / 2))
+	# Steady edges: edge stretching only, so the row shows with it.
+	var stretch := str(_state.get("fill_mode", "fill")) == "stretch"
+	var steady_row := 0.11 if stretch else 0.0
+	_set_backdrop(Vector2(1.16, 1.205 + extra + GRADE_ROW + DEPTH_MODE_ROW + FILL_ROW + steady_row),
+		Vector2(0, -0.3275 - (extra + GRADE_ROW + DEPTH_MODE_ROW + FILL_ROW + steady_row) / 2))
 	_button(10, "", Vector2(-0.48, 0.2), Vector2(0.085, 0.065), true, "up")
 	_label(I18n.t("Images"), Vector3(0, 0.2, 0.004), 21)
 	_button(PHOTO_STRENGTH, I18n.t("3D depth") + "  " + _depth_caption(), Vector2(-0.26, 0.035), Vector2(0.49, 0.105), _can_depth(), "depth")
@@ -650,6 +656,14 @@ func _draw_panel() -> void:
 		if str(_state.get("fill_mode", "fill")) == fill[0]: _buttons.back().base_color = SELECTED
 		_tips[PHOTO_FILL_BASE + i] = I18n.t(fill[2])
 	extra += FILL_ROW
+	if stretch:
+		_label(I18n.t(DepthEdgeSteady.TITLE), Vector3(-0.29, -0.515 - extra, 0.004), TEXT_AUX)
+		for enabled in [true, false]:
+			var target := PHOTO_STEADY_ON if enabled else PHOTO_STEADY_OFF
+			_button(target, I18n.t("On" if enabled else "Off"), Vector2(0.08 if enabled else 0.36, -0.515 - extra), Vector2(0.25, 0.075))
+			if bool(_state.get("edge_steady", DepthEdgeSteady.DEFAULT)) == enabled: _buttons.back().base_color = SELECTED
+			_tips[target] = I18n.t(DepthEdgeSteady.HINT)
+	extra += steady_row
 	var vertical: bool = _state.get("ground_vertical", false)
 	_label(I18n.t("Vertical to ground"), Vector3(-0.29, -0.515 - extra, 0.004), TEXT_AUX)
 	for enabled in [true, false]:
@@ -811,6 +825,8 @@ func _translation_status() -> String:
 
 func _activate(target: int) -> void:
 	if target == PHOTO_AUTOPLAY: action_requested.emit("photo_autoplay"); refresh(); return
+	if target in [PHOTO_STEADY_ON, PHOTO_STEADY_OFF]:
+		setting_requested.emit("photo_edge_steady", target == PHOTO_STEADY_ON); refresh(); return
 	if target in [PHOTO_GROUND_VERTICAL_ON, PHOTO_GROUND_VERTICAL_OFF]:
 		setting_requested.emit("ground_vertical", target == PHOTO_GROUND_VERTICAL_ON); refresh(); return
 	if target == PHOTO_TRANSLATION: _adjustment = "comic_translation"; refresh(); return

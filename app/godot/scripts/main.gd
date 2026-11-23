@@ -255,6 +255,7 @@ var _external_video_poll_ms := 0
 var player_menu: Node3D
 var settings := ConfigFile.new()
 var settings_path := SETTINGS_PATH
+var web_picture := {} # the browser's sharpness, denoise and colour
 var directory_browse_memory := preload("res://scripts/directory_browse_memory.gd").new()
 var _audio_save_after := 0
 var background: Node
@@ -688,7 +689,9 @@ func _ready() -> void:
 	ChineseInput.on_open = _on_chinese_keyboard_opened
 	recent_menu.web_browser.configure_quality(low_end_gpu, str(settings.get_value("web", "clarity", "high" if QiyuController.runtime else "")))
 	recent_menu.web_browser.picture_quality = bool(settings.get_value("web", "picture_quality", false))
-	recent_menu.web_browser.picture_provider = func() -> Variant: return video.picture_defaults if video else null
+	# The browser keeps its own look where the player's old shared defaults were saved; videos no longer read it.
+	web_picture = Video.PictureMemory.new().load_defaults(settings)
+	recent_menu.web_browser.picture_provider = func() -> Variant: return web_picture
 	if QiyuController.runtime:
 		DiagnosticLog.record("qiyu_display", {"menu_eye_buffer": menu_composition.eye_buffer_only,
 			"menu_layers": menu_composition.enabled, "menu_fallback": menu_composition.fallback_reason,
@@ -1856,7 +1859,9 @@ func _sync_display_policy() -> void:
 	var playing: bool = not _vr_passthrough_active() and video != null and not photo_active and not video.local_uri.is_empty() and video.media.state in ["playing", "paused"]
 	# Playback keeps 0.12.5's sustained-high levels (network demux, decode, inference); menus, idle
 	# and power-saving playback without inference drop to sustained-low.
-	var inference: bool = playing and (video.alpha_requested or video.depth_requested)
+	# Narration synthesis was tuned at sustained-high (2026-10-18), before power saving became the
+	# default; it has no real-time margin to lose to lower clocks.
+	var inference: bool = playing and (video.alpha_requested or video.depth_requested or video.narration.running())
 	var saving: bool = Quality.load_refresh_cap(settings, low_end_gpu) == Quality.POWER_SAVING_CAP
 	# The cinema hall and the beach draw a whole world into the eye buffers every refresh. Quest
 	# raises clocks on demand under sustained-low; PICO 4 Pro reported 14-17 fps idle there.
@@ -1893,7 +1898,9 @@ func _sync_display_policy() -> void:
 	_sample_playback_diagnostics(playing and video.media.state == "playing")
 	var slow: Dictionary = frame_budget.tick(get_viewport(), display.xr.display_refresh_rate if display.xr is OpenXRInterface and display.xr.is_initialized() else 0.0,
 		{"playing": playing, "passthrough": display.applied_passthrough, "menu_layers": display.menu_layers})
-	if not slow.is_empty(): Log.record("frame_budget", slow)
+	if not slow.is_empty():
+		slow.merge(_picture_copy_diagnostics())
+		Log.record("frame_budget", slow)
 
 ## Slow frames only: where the time goes (see frame_diagnostics.gd).
 var frame_budget := preload("res://scripts/frame_diagnostics.gd").new()
@@ -1919,10 +1926,24 @@ func _playback_diagnostic_sample() -> Dictionary:
 		"container_fps": str(details.get("container_fps", "")), "seek_serial": video.server_playback.seek_serial,
 		"path": "L" if video.video_layer_shown else "E:" + video.layer_block_reason(),
 		"menu": "" if menu == null else "player" if menu == player_menu else "library" if recent_menu and recent_menu.visible else "other",
+		"menu_layers": display.menu_layers, "menu_layer_repaints": menu_composition.repaints if is_instance_valid(menu_composition) else 0,
 		"refresh": display.xr.display_refresh_rate if display.xr is OpenXRInterface and display.xr.is_initialized() else 0.0,
 		"cap": Quality.load_refresh_cap(settings, low_end_gpu), "performance": display.performance_levels,
 		"foveation": display.foveation_level, "relief": display.scene_relief, "render_scale": display.render_scale,
-		"inference": video.alpha_requested or video.depth_requested}
+		"inference": video.alpha_requested or video.depth_requested}.merged(_picture_copy_diagnostics())
+
+## The picture settings on show and the layer copy's size and cost: paused or playing ("media"), a
+## copy redraws with the head and draws every new frame, so its GPU time tells a slow frame's cause.
+func _picture_copy_diagnostics() -> Dictionary:
+	if photo_active or not video: return {}
+	var result := {"media": str(video.media.state), "picture": video.picture_diagnostic()}
+	var copy: Variant = video.media.playback.get("layer_copy")
+	if copy is Dictionary:
+		result.merge({"copy_out": "%dx%d" % [int(copy.get("output_width", 0)), int(copy.get("output_height", 0))],
+			"copy_gpu_ms": snappedf(float(copy.get("gpu_ms", 0.0)), 0.01), "copy_draw_ms": snappedf(float(copy.get("draw_ms", 0.0)), 0.01),
+			"copy_window": snappedf(float(copy.get("window_degrees", 0.0)), 0.1), "copy_deep": bool(copy.get("deep", false)),
+			"copy_drawn": int(copy.get("drawn", 0)), "copy_failed": int(copy.get("failed", 0))})
+	return result
 
 func _process_sticks(left: Vector2, right: Vector2, delta: float) -> void:
 	_stick_diagnostic_routes.clear()
@@ -3361,8 +3382,12 @@ func _trigger_held(hand: String) -> bool:
 
 func _update_menu_pointer(hand: String, pressed: bool = false) -> bool:
 	var menu := _active_menu()
+	# Playback controls forward both hands to their attached library. Clearing the
+	# child between those updates discards the other hand's dwell and hover state.
+	var attached_library: bool = menu is PlayerMenu and is_instance_valid(recent_menu) and recent_menu.visible and recent_menu.get_parent() == menu
 	for previous in [recent_menu, video_menu, photo_menu, music_menu, scenery_menu]:
-		if is_instance_valid(previous) and previous != menu: previous.clear_pointer_visuals()
+		if is_instance_valid(previous) and previous != menu and not (attached_library and previous == recent_menu):
+			previous.clear_pointer_visuals()
 	if not menu or hand not in ["left_hand", "right_hand"]:
 		return false
 	var ray: Variant = _ray(hand)
@@ -3978,6 +4003,10 @@ func _on_photo_adjustment(key: String, value: Variant) -> void:
 	if key == "photo_fill_mode":
 		if not photo.set_fill_mode(str(value)): return
 		settings.set_value("photo", "fill_mode", photo.fill_mode); settings.save(settings_path)
+		photo_menu.refresh(); return
+	if key == "photo_edge_steady":
+		photo.set_edge_steady(bool(value))
+		settings.set_value("photo", "edge_steady", photo.edge_steady); settings.save(settings_path)
 		photo_menu.refresh(); return
 	if key == "photo_cache_each":
 		if typeof(value) not in [TYPE_INT, TYPE_FLOAT] or not is_finite(float(value)): return
@@ -5120,13 +5149,11 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 				for window in browser.windows.values():
 					window.picture_failed = false; window.refresh()
 		"web_picture_sharpness", "web_picture_denoise":
-			# The browser's menu edits the player's picture defaults: one look for videos and web video.
 			var field := str(key).trim_prefix("web_")
-			if video:
-				video.picture_defaults = video.picture_memory.edited(video.picture_defaults, field, value)
-				settings.set_value("video", field, video.picture_defaults[field]); settings.save(settings_path)
-				if recent_menu:
-					for window in recent_menu.web_browser.windows.values(): window.refresh()
+			web_picture = Video.PictureMemory.new().edited(web_picture, field, value)
+			settings.set_value("video", field, web_picture[field]); settings.save(settings_path)
+			if recent_menu:
+				for window in recent_menu.web_browser.windows.values(): window.refresh()
 		"display_quality":
 			display_quality = clampi(int(value), Quality.AUTO, Quality.SCALES.size() - 1)
 			# Apply at next startup: live OpenXR resizing fails to free GLES3 targets on Quest.
@@ -5502,7 +5529,7 @@ func _on_player_setting(key: String, value: Variant) -> void:
 	if key in ["picture_quality", "picture_upscale", "picture_denoise"]:
 		if photo_active or not video: return
 		if not _picture_controls_current(): return
-		video.preview_picture(key, value, player_menu.editing_picture_defaults())
+		video.preview_picture(key, value)
 		_commit_picture_adjustment()
 		return
 	if key == "reuse_last_picture":
@@ -5534,6 +5561,7 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		return
 	if key == "listening_generate": subtitle_tasks.enqueue(); video.changed.emit(); return
 	if key == "listening_cancel": subtitle_tasks.command({"operation": "cancel", "id": str(value)}); video.changed.emit(); return
+	if key == "listening_cache_delete": video.listening.discard_cache(); video.changed.emit(); return
 	if key == "subtitle_tasks_open":
 		_show_full_library(); recent_menu.section = recent_menu.Section.SETTINGS; recent_menu.tab = recent_menu.VIDEO_TAB
 		recent_menu.subtitle_queue_open = true; recent_menu.scroll = 0; recent_menu.refresh(); return
@@ -5861,7 +5889,6 @@ func _menu_state() -> Dictionary:
 	result["reuse_last_picture"] = video.reuse_last_picture
 	result["picture_source"] = video.picture_source
 	result["picture_open_id"] = video.picture_open_id
-	result["picture_defaults"] = video.picture_defaults
 	result["picture_inherit_available"] = video._picture_can_inherit()
 	result["picture_clear_available"] = video._picture_can_remember() and video.picture_source == "file"
 	result["depth_text_protection"] = false
@@ -5912,10 +5939,12 @@ func _menu_error() -> String:
 		"LOCAL_DOCUMENT_PROVIDER_FAILED": error = "The system file provider could not open this file. Try again."
 		"TIMEOUT", "LOCAL_DOCUMENT_TIMEOUT": error = "File access timed out. Try opening again."
 		"UNREADABLE": error = "Unable to read the video. Select another file."
+	if _usb_takeover_offer(): error = USB_TAKEOVER_ERROR
 	return I18n.t(error)
 
 ## PICO lists a system-mounted USB disk but its file provider cannot hand files to apps;
 ## the app's own USB entry can open the same disk after the user's explicit takeover.
+const USB_TAKEOVER_ERROR := "The system cannot read this USB drive. Tap Open directly to play from it."
 func _usb_takeover_offer() -> bool:
 	return usb_takeover_offer(OS.has_feature("pico"), video.local_uri, video.picker_error, video.media.error, video.media.error_report)
 
@@ -6873,7 +6902,11 @@ func _update_background() -> void:
 	if display.applied_passthrough != passthrough or display.requested_passthrough != passthrough:
 		display.set_passthrough(passthrough)
 	portrait_screen.finish(self)
-	if video: video.set_cinema_alpha_overlay(alpha and keep_background and _cinema_scene_active() and not photo_active)
+	# A VR cutout lies on the 50 m sphere, behind every wall of an imported scene; only the flat
+	# portrait has a real place among the scene's surfaces.
+	var scene_shown: bool = _cinema_scene_active() or (scene_import != null and scene_import.movable() \
+		and video != null and video.geometry != Geometry.Geometry.FLAT)
+	if video: video.set_cinema_alpha_overlay(alpha and keep_background and scene_shown and not photo_active)
 	if photo: photo.transparent_background = display.applied_passthrough and not display.preview
 	if video:
 		# A native Surface mask cannot recover scenery erased from the projection.
@@ -7305,7 +7338,7 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 		return
 	if not photo_active and video and not video.cast_allows(key): return
 	if Video.PictureMemory.is_adjustment(key):
-		if not photo_active and video and _picture_controls_current(): video.preview_picture(key, value, player_menu.editing_picture_defaults())
+		if not photo_active and video and _picture_controls_current(): video.preview_picture(key, value)
 		return
 	if key in ["video_aspect_preset", "video_aspect_factor"]:
 		if not photo_active and video and video.set_video_aspect(key, value): _sync_cinema_screen()
@@ -7430,20 +7463,14 @@ func _save_subtitle_centers() -> void:
 	video.SubtitleDepth.save_follow(settings, video.subtitle_follow_horizontal_offset, video.subtitle_follow_vertical_offset)
 
 func _picture_controls_current() -> bool:
-	return not player_menu.editing_picture() or player_menu.editing_picture_defaults() \
-		or player_menu.picture_controls_open_id == video.picture_open_id
+	return not player_menu.editing_picture() or player_menu.picture_controls_open_id == video.picture_open_id
 
 func _on_player_adjustment_committed() -> void:
 	if player_menu.editing_picture(): _commit_picture_adjustment()
 	else: _save_playback_adjustments()
 
 func _commit_picture_adjustment() -> void:
-	if player_menu.editing_picture_defaults():
-		if video.picture_defaults == video.picture_memory.load_defaults(settings): return
-		for key in video.picture_defaults: settings.set_value("video", key, video.picture_defaults[key])
-		settings.save(settings_path)
-	elif _picture_controls_current():
-		video.commit_picture()
+	if _picture_controls_current(): video.commit_picture()
 
 func _save_playback_adjustments() -> void:
 	video.commit_stereo_view()
@@ -7893,6 +7920,11 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 	elif operation == "menu_nav" and OS.is_debug_build():
 		_debug_menu_nav(str(command.get("target", "")))
 	elif operation == "menu_bench" and OS.is_debug_build():
+		if str(command.get("profile", "")) == "library_path_tree":
+			var probe := preload("res://scripts/library_path_device_probe.gd").new()
+			add_child(probe)
+			probe.run(self, str(command.get("request_key", "")))
+			return
 		var bench := preload("res://scripts/menu_bench_probe.gd").new()
 		add_child(bench)
 		bench.start(self, str(command.get("profile", "run")).validate_filename())

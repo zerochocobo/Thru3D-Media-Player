@@ -70,7 +70,16 @@ func run() -> void:
 		"strength":1.0, "convergence":0.35, "rotation":0, "fill":"fill"}
 	check(not photo._fill_matches(pair), "A fill pair is not reused for stretching")
 	pair.fill = "stretch"
+	check(not photo._fill_matches(pair), "A stretch pair without steady edges is not reused while they are on")
+	pair.steady = true
 	check(photo._fill_matches(pair), "A stretch pair is reused for stretching")
+	photo.edge_steady = false
+	check(not photo._fill_matches(pair), "Turning steady edges off rebuilds a stretch pair")
+	photo.edge_steady = true
+	photo.set_fill_mode("fill")
+	pair.fill = "fill"; pair.steady = false
+	check(photo._fill_matches(pair), "Fill pairs never carry steady edges, whatever the switch says")
+	photo.set_fill_mode("stretch")
 	check(photo._fill_matches({}) == false, "Pairs without the field were filled")
 	photo.set_fill_mode("fill")
 	check(photo._fill_matches({}), "Pairs without the field match the default fill")

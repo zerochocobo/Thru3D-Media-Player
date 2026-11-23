@@ -45,7 +45,8 @@ class WebVideoMp4HeaderTest {
     }
 
     @Test fun frontMetadataCrossingThePrefixIsReadAsOneExactMetadataRange() {
-        val large=box("moov",ByteArray(4_814_955-8));val media=box("mdat",ByteArray(32))
+        val large = box("moov", ByteArray(9_930_620 - 8))
+        val media = box("mdat", ByteArray(32))
         val file=ftyp+large+media;val reads=ArrayList<Pair<Long,Int>>()
         val reader=object:Mp4InterleavePolicy.Reader {
             override val size=file.size.toLong()

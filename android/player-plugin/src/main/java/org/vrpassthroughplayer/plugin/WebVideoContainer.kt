@@ -29,8 +29,8 @@ internal object WebVideoContainer {
         }
         return result
     }
-    fun parse(d: ByteArray): Info? = runCatching {
-        if (d.size >= 8 && String(d, 4, 4, Charsets.US_ASCII) == "ftyp") mp4(d)
+    fun parse(d: ByteArray, allowAv1: Boolean = false, allowMultipleMp4aTracks: Boolean = false): Info? = runCatching {
+        if (d.size >= 8 && String(d, 4, 4, Charsets.US_ASCII) == "ftyp") mp4(d, allowAv1, allowMultipleMp4aTracks)
         else if (d.size >= 4 && uint(d, 0) == 0x1a45dfa3L) webm(d) else null
     }.getOrNull()
 
@@ -131,13 +131,14 @@ internal object WebVideoContainer {
         null
     }.getOrNull()
 
-    private fun mp4(d: ByteArray, allowAv1: Boolean = false): Info {
+    private fun mp4(d: ByteArray, allowAv1: Boolean = false, allowMultipleMp4aTracks: Boolean = false): Info {
         val top = boxes(d, 0, d.size, true)
         require(top.none { it.type == "pssh" })
         val moov = top.single { it.type == "moov" }
         val children = boxes(d, moov.from, moov.end)
         require(children.none { it.type == "pssh" })
         var video = "none"; var audio = "none"; var width = 0; var height = 0; var duration = 0.0
+        var multipleMp4aAllowed = allowMultipleMp4aTracks
         var pixelAspect=1.0
         for (trak in children.filter { it.type == "trak" }) {
             val mdia = boxes(d, trak.from, trak.end).single { it.type == "mdia" }
@@ -204,7 +205,18 @@ internal object WebVideoContainer {
                     // Unverified profiles/bit depth must not bypass existing SDR selection.
                     else -> error("Unverified video profile")
                 }
-            } else { require(audio == "none"); audio = when (sample.type) { "mp4a" -> "mp4a.40.2"; "Opus" -> "opus"; else -> error("Unverified audio codec") } }
+            } else {
+                val codec = when (sample.type) { "mp4a" -> "mp4a.40.2"; "Opus" -> "opus"; else -> error("Unverified audio codec") }
+                // Archive whole files can contain several ordinary AAC tracks. Keep every
+                // track in the file and let the native player apply normal track selection.
+                if (multipleMp4aAllowed) {
+                    multipleMp4aAllowed = sample.type == "mp4a" && sample.end - sample.from >= 28 &&
+                        uint(d, sample.from + 8, 2) == 0L &&
+                        boxes(d, sample.from + 28, sample.end).none { it.type == "sinf" || it.type == "wave" }
+                }
+                require(audio == "none" || multipleMp4aAllowed)
+                audio = codec
+            }
         }
         // SegmentBase files commonly leave mdhd.duration at zero and describe their full
         // timeline in sidx. Standalone init segments have neither duration nor references.

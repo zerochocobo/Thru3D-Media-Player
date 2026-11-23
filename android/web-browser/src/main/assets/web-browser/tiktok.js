@@ -36,6 +36,8 @@ const Thru3DTikTok=(()=>{
     const raw=node.wrappedJSObject||node;
     return Object.getOwnPropertyNames(raw).filter(k=>/^__reactProps\$/.test(k)).slice(0,2).map(k=>own(raw,k));
   };
+  const fileAddresses=source=>[...new Set([...addresses(own(source,'url')),...addresses(own(source,'playAddr'))])];
+  const protectionFields=['has_drm','is_drm','drm_type','is_encrypted','hasDrm','isDrm','drmType','isEncrypted'];
   const declaration=(video,document,diagnostics)=>{
     const fail=status=>{if(diagnostics)diagnostics.status=status;return null;};
     try{
@@ -70,9 +72,8 @@ const Thru3DTikTok=(()=>{
       }
       if(diagnostics)Object.assign(diagnostics,{public_id:selected.id,public_page:selected.page});
       if(!items.length||items.some(item=>own(item,'id')!==selected.id))return fail('different_item');
-      const bad=['has_drm','is_drm','drm_type','is_encrypted','hasDrm','isDrm','drmType','isEncrypted'];
       if(diagnostics)diagnostics.advertisement=items.some(item=>marked(item,['isAd','isAds','is_ads']));
-      if(items.some(item=>marked(item,['isAd','isAds','is_ads','isLive','is_live','isSlides','isSlideShow','imagePost',...bad])||marked(own(item,'video'),bad)))return fail('excluded_content');
+      if(items.some(item=>marked(item,['isAd','isAds','is_ads','isLive','is_live','isSlides','isSlideShow','imagePost',...protectionFields])||marked(own(item,'video'),protectionFields)))return fail('excluded_content');
       let sources=[];
       for(let n=video,depth=0;n&&depth<8;n=n.parentElement,depth++){
         sources=props(n).flatMap(p=>targets(p,'videoSource'));
@@ -80,19 +81,31 @@ const Thru3DTikTok=(()=>{
       }
       const normalized=[];
       for(const source of new Set(sources)){
-        if(own(source,'id')!==selected.id||['vid','groupId'].some(k=>own(source,k)!==undefined&&own(source,k)!==selected.id)||marked(source,bad))return fail('source_identity');
+        if(own(source,'id')!==selected.id||['vid','groupId'].some(k=>own(source,k)!==undefined&&own(source,k)!==selected.id)||marked(source,protectionFields))return fail('source_identity');
         const width=own(source,'width'),height=own(source,'height'),duration=own(source,'duration');
         if(!Number.isInteger(width)||!Number.isInteger(height)||width<=0||height<=0||width>8192||height>8192||
           !Number.isInteger(duration)||duration<=0||duration>86400)return fail('source_shape');
         if(diagnostics)Object.assign(diagnostics,{expected_width:width,expected_height:height,expected_duration:duration});
-        // url/playAddr describe the active file; bitrateList contains alternatives.
-        // audioBitrateList and the post's unrelated music are never guessed/paired.
-        const urls=[...new Set([...addresses(own(source,'url')),...addresses(own(source,'playAddr'))])];
+        const urls=fileAddresses(source);
         if(!urls.length||urls.length>16)return fail('source_address');
-        normalized.push({id:selected.id,width,height,duration,urls,...(inFeed?{page:selected.page,document,binding:'rendered_card',active_id:selected.id}:{})});
+        const stream={width,height,urls};
+        // The owner can keep its original dimensions while the active file comes
+        // from a lower rendition. Only files for the decoded size can match an observed request.
+        if(width!==video.videoWidth||height!==video.videoHeight){
+          const renditions=list(own(source,'bitrateList'),16).filter(track=>
+            own(track,'id')===selected.id&&own(track,'vid')===selected.id&&
+            ['groupId','videoId'].every(key=>own(track,key)===undefined||own(track,key)===selected.id)&&
+            own(track,'width')===video.videoWidth&&own(track,'height')===video.videoHeight&&
+            own(track,'duration')===duration&&!marked(track,protectionFields));
+          const matchingUrls=[...new Set(renditions.flatMap(fileAddresses))];
+          if(matchingUrls.length>16)return fail('source_address');
+          if(matchingUrls.length)Object.assign(stream,{width:video.videoWidth,height:video.videoHeight,urls:matchingUrls});
+        }
+        normalized.push({id:selected.id,...stream,duration,...(inFeed?{page:selected.page,document,binding:'rendered_card',active_id:selected.id}:{})});
       }
-      const unique=[...new Map(normalized.map(d=>[JSON.stringify(d),d])).values()];
-      return unique.length===1?unique[0]:fail('ambiguous_declaration');
+      // The rendered owner can list the same signed mirrors in a different order.
+      const unique=new Set(normalized.map(d=>JSON.stringify({...d,urls:[...d.urls].sort()})));
+      return unique.size===1?normalized[0]:fail('ambiguous_declaration');
     }catch(_){return fail('declaration_error');}
   };
   const visible=video=>{
@@ -114,6 +127,8 @@ const Thru3DTikTok=(()=>{
   const read=(video,document,diagnostics)=>{
     const fail=status=>{if(diagnostics)diagnostics.status=status;return null;};
     if(!video.isConnected||video.mediaKeys||video.seeking||video.readyState<2||!presented(video)||
+      !Number.isInteger(video.videoWidth)||video.videoWidth<=0||video.videoWidth>8192||
+      !Number.isInteger(video.videoHeight)||video.videoHeight<=0||video.videoHeight>8192||
       !Number.isFinite(video.duration)||video.duration<=0||video.duration>86400)return fail('not_decoded');
     if(diagnostics)diagnostics.decoded_duration=video.duration;
     const source=video.currentSrc||'';

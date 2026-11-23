@@ -7,7 +7,7 @@
   const filter = { urls: ["http://*/*", "https://*/*"] };
   const liveBodies = new Map();
   const key = d => `${d.tabId}:${d.frameId}`;
-  const oldest = state => ((state.ted||state.redbull||state.streamable||state.archive||state.odysee||state.dailymotionBodies) && [...state.items].find(([,r])=>r.kind==='segment')?.[0]) || state.items.keys().next().value;
+  const oldest = state => ((state.mango||state.ted||state.redbull||state.streamable||state.archive||state.odysee||state.dailymotionBodies) && [...state.items].find(([,r])=>r.kind==='segment')?.[0]) || state.items.keys().next().value;
   const url = (value, page = false) => {
     try { const u = new URL(value); return /^https?:$/.test(u.protocol) && !u.username && !u.password &&
       (page || !u.hash) && value.length <= 16384 ? u : null; } catch (_) { return null; }
@@ -152,12 +152,11 @@
           new URL(message.page).origin===new URL(state.page).origin;
         // The site can reuse clip metadata when returning through its Clips tab.
         // Keep declarations on this document's port, while dropping its prior file requests.
-        const twitchDocument=!!state.document&&s.frameId===0&&
-          ['https://www.twitch.tv','https://twitch.tv','https://clips.twitch.tv'].includes(new URL(s.url).origin);
+        const twitchDocument=!!state.document&&s.frameId===0&&typeof Thru3DTwitch!=='undefined'&&Thru3DTwitch.documentPage(s.url);
         if (!sameBili) { responses?.cancel(state); state.biliStatus = 'idle'; state.biliResponses = new Map(); state.biliRequests = new Map(); state.biliViews = new Map(); }
         if (!sameDouyin) { douyinResponses?.cancel(state); state.douyinData = new Map(); state.douyinApiPaths = new Set(); }
         if (!sameTencent) { tencentResponses?.cancel(state); state.tencentData = new Map();state.tencentEnvelopes=new Map(); }
-        if (!sameMango) mangoResponses?.cancel(state);
+        if (!sameMango) mangoResponses?.cancel(state,mango&&state.mango?message.page:'');
         if (!sameYouku) youkuResponses?.cancel(state);
         if (!sameNiconico) niconicoResponses?.cancel(state);
         if (!sameTwitch) twitchResponses?.cancel(state,twitchDocument);
@@ -173,6 +172,7 @@
         state.youku = youku;state.iqiyi=iqiyi;state.niconico=niconico;state.twitch=twitch;state.tiktok=tiktok;state.instagram=instagram;state.ted=ted;state.redbull=redbull;state.naver=naver;state.reddit=reddit;state.streamable=streamable;state.archive=archive;state.odysee=odysee;
         if(message.page!==state.page||message.enabled!==true&&message.dailymotion!==true)dailymotionResponses?.cancel(state);
         state.page = message.page; state.enabled = message.enabled === true;state.dailymotion=dailymotion;
+        if(mango&&!sameMango)mangoResponses?.attach(state);
         if(sameNiconico)niconicoResponses?.observeMedia(state);
         if (!sameLiveRoom && !sameBili && !sameDouyin && !sameTencent && !sameMango && !sameYouku && !sameIqiyi && !sameNiconico && !sameTwitch && !sameTikTok && !sameInstagram && !sameTed && !sameRedBull && !sameNaver && !sameReddit && !sameStreamable && !sameArchive && !sameOdysee && !sameDailymotion) for (const [request, value] of pending) if (value.state === state) pending.delete(request);
         publish(state);
@@ -212,8 +212,14 @@
       (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
     const sameTencent = state?.tencent && typeof Thru3DTencent !== 'undefined' && Thru3DTencent.page(d.documentUrl) &&
       (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
-    const sameMango = state?.mango && typeof Thru3DMango !== 'undefined' && Thru3DMango.page(d.documentUrl)?.id===Thru3DMango.page(state.page)?.id &&
-      (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
+    const mangoDocument = state?.mango && typeof Thru3DMango !== 'undefined' && Thru3DMango.page(d.documentUrl);
+    // The Gecko request document URL can stay on the previous episode after
+    // Mango's history change. Only the original URL on the same top document
+    // may follow the current route; the response still has to declare its ID.
+    const sameMango = mangoDocument && (mangoDocument.id===Thru3DMango.page(state.page)?.id &&
+      (d.documentId && state.document || d.documentUrl.split('#')[0]===state.documentPage.split('#')[0]) ||
+      d.frameId===0 && !!d.documentId && d.documentId===state.document &&
+      d.documentUrl.split('#')[0]===state.documentPage.split('#')[0] && new URL(d.documentUrl).origin===new URL(state.page).origin);
     const sameYouku = state?.youku && typeof Thru3DYouku !== 'undefined' && !!Thru3DYouku.page(d.documentUrl) &&
       (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
     const sameNiconico=state?.niconico&&d.frameId===0&&typeof Thru3DNiconico!=='undefined'&&Thru3DNiconico.documentPage(d.documentUrl)&&
@@ -395,7 +401,7 @@
       }
       if (type !== 'hls') return;
     }
-    if (!type || type === "segment" && !(state.tencent || state.iqiyi || state.niconico || state.ted || state.redbull || state.naver || state.reddit || state.streamable || state.archive || state.odysee || state.dailymotion)) return;
+    if (!type || type === "segment" && !(state.tencent || state.mango || state.iqiyi || state.niconico || state.ted || state.redbull || state.naver || state.reddit || state.streamable || state.archive || state.odysee || state.dailymotion)) return;
     if(state.niconico&&type!=="hls"&&!niconicoResponses?.resource(state,d.url))return;
     // Bilibili's paused cover can load a cached alternate audio URL without any
     // onSendHeaders event. It cannot replace a replayable request with empty headers:

@@ -16,8 +16,6 @@ import android.os.SystemClock
 import android.view.Surface
 import org.json.JSONObject
 import java.util.ArrayDeque
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -87,6 +85,7 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
     @Volatile private var outputSize = 0 to 0 // what the last frame was drawn at, for the info page
     @Volatile private var lastError = ""
     @Volatile private var closed = false
+    @Volatile private var teardownComplete = false
     @Volatile private var delayMs = DEFAULT_DELAY_MS
     @Volatile private var blendDelayMs = 0L // the part of delayMs that waits for the following mask
 
@@ -367,12 +366,10 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
         .put("window_degrees", halfDegrees.toDouble()).put("focus", focus?.let { "%.3f,%.3f".format(it[0], it[1]) } ?: "")
         .put("data_space", windowDataSpace).put("source_data_space", sourceDataSpace)
 
-    /** Waits (up to a second) for the copy thread to let go of the compositor surface, which its owner
-     * destroys next. */
-    override fun close() {
+    override fun pollClosed(): Boolean {
+        if (closed) return teardownComplete
         closed = true
         reader.setOnImageAvailableListener(null, null)
-        val done = CountDownLatch(1)
         handler.post {
             handler.removeCallbacksAndMessages(this)
             while (held.isNotEmpty()) runCatching { held.removeFirst().image?.close() }
@@ -388,10 +385,10 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
             }
             window = EGL14.EGL_NO_SURFACE; context = EGL14.EGL_NO_CONTEXT
             runCatching { reader.close() }
-            done.countDown()
             thread.quitSafely()
+            teardownComplete = true
         }
-        done.await(1, TimeUnit.SECONDS)
+        return false
     }
 
     companion object {

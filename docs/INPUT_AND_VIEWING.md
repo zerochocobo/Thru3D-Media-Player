@@ -50,7 +50,7 @@ Compatible fisheye and AI person passthrough paths support picture controls, inc
 
 ## Per-video picture controls in 0.18.5
 
-The picture-controls popup combines quality mode, sharpness, Super Resolution, denoising and color. Default Picture changes the global defaults. Saved per-video adjustments take priority when reopening a video and can be cleared in the popup footer; saving follows the per-file privacy preference. Optional Reuse Last Picture Settings applies only to videos without their own adjustments and lasts for the current app session. Super Resolution respects the output-size cap, and the information page shows the processed size. Panorama direction supports one-degree steps, saved independently for global and photo backgrounds.
+The picture-controls popup combines quality mode, sharpness, Super Resolution, denoising and color. As of 0.18.8, the Settings entry opens the same current-video panel as the control bar and is unavailable without a video. New videos start from factory values or the optional reuse-last-picture setting; player-wide picture defaults are no longer used. Browser picture settings remain independent. Saved per-video adjustments take priority when reopening a video and can be cleared in the popup footer; saving follows the per-file privacy preference. Optional Reuse Last Picture Settings applies only to videos without their own adjustments and lasts for the current app session. Super Resolution respects the output-size cap, and the information page shows the processed size. Panorama direction supports one-degree steps, saved independently for global and photo backgrounds.
 
 ## Photo 3D and previews in 0.18.6
 
@@ -59,3 +59,7 @@ Photo 3D offers Fast then fine (default), Best quality and Fastest; an existing 
 ## 0.18.7 viewing changes
 
 Steady Edges is enabled by default for Stretch Edges in real-time video 3D; it fits depth contours to the picture with slightly softer local depth. Photo gap filling and edge stretching support separate processing of magazine pages. Portrait positions and sizes can be retained separately for cinema, beach and ordinary backgrounds. These source changes do not establish device frame rate or visual acceptance. The withdrawn hard-subtitle protection feature remains hidden and disabled.
+
+## 0.18.8 viewing and library changes
+
+The library folder tree navigates deep paths without changing account binding. Recent items and favorites identify their source account. The image toolbar again offers puzzles. VR cutout subjects are no longer occluded by imported-scene objects in that display mode. PICO USB failure panels offer direct open where supported. QIYU applies display brightness correction to video, photos, browser pages and AirPlay; this runtime-specific correction is not applied to every headset.

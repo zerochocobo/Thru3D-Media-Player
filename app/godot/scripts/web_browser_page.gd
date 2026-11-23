@@ -147,4 +147,5 @@ func present(_pose: Transform3D, _size: Vector2, crop: Rect2) -> bool:
 	var shown := Rect2(0, 0, 1, 1) if stereo else crop
 	material.set_shader_parameter("crop", Vector4(shown.position.x, shown.position.y, shown.size.x, shown.size.y))
 	material.set_shader_parameter("decode_srgb", QiyuController.runtime and QiyuController.page_decode)
+	material.set_shader_parameter("decode_gamma", QiyuController.DISPLAY_GAMMA)
 	return true

@@ -17,6 +17,7 @@ func reset() -> void:
 	removing = {}
 
 func changed() -> void:
+	menu.collections.source_accounts.erase("cloud")
 	menu.cloud_search.close()
 	menu._cloud_setup = false
 	reset()
@@ -31,6 +32,8 @@ func changed() -> void:
 	menu._cloud_total = -1
 	if menu.section == menu.Section.CLOUD:
 		menu._load_cloud()
+		menu.refresh()
+	elif menu.visible and (menu.section == menu.Section.RECENT or menu.quick_access.shown()):
 		menu.refresh()
 
 func receive(id: int, payload: String) -> bool:

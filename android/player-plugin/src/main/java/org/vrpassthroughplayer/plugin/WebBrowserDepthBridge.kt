@@ -89,6 +89,8 @@ object WebBrowserDepthBridge {
     }
     /** Picture quality mode over the pair (WebBrowserPicture.look's values; empty for none). */
     @JvmStatic fun quality(id: Int, values: FloatArray) { windows[id]?.quality(values) }
+    /** The player's steady-edges preference (MpvVideoBridge.depthSteady) changed: redraw every window. */
+    internal fun steadyChanged() { windows.values.forEach { it.redraw() } }
     @JvmStatic fun status(id: Int): String = windows[id]?.status() ?: "{}"
     /** Gecko must acknowledge surfaceDestroyed before this call; stops output before XR destruction. */
     @JvmStatic fun stop(id: Int): Boolean {
@@ -165,6 +167,7 @@ object WebBrowserDepthBridge {
         private var latched = false
         private var shown = 0L
         private var maskUploaded = false
+        private var limited: Pair<Float, Boolean>? = null // the shown slot's near limit and steady edges
         private var model = 0L // DepthWorker only
         private var modelRevision = -1L
         private var modelFrame = 0L
@@ -196,6 +199,7 @@ object WebBrowserDepthBridge {
             if (next == null && look == null) return
             look = next; gl.post { dirty = true }
         }
+        fun redraw() { gl.post { dirty = true } }
         fun status(): String = JSONObject().put("frames", frames).put("maps", maps).put("error", error)
             .put("quality", if (look == null) "off" else if (picture.failed) "failed" else "on")
             .put("depth_backend", depthBackend).put("matte_backend", matteBackend)
@@ -377,13 +381,20 @@ object WebBrowserDepthBridge {
             var packed = false
             var depthReady = false
             if (near != null && strength > 0f && depthEnabled) {
+                // Steady edges follow the player's preference, edge stretching only (as in the player).
+                val view = .0175f * strength to (MpvVideoBridge.depthSteady && !fill)
                 if (!maskUploaded) {
+                    // The upload limits (and steadies) the map itself: set both first.
+                    RenderBridgeNative.steadyEdges(renderer, view.second); RenderBridgeNative.limitNear(renderer, 0L, view.first)
                     // Player slots accept a mask exactly once, with non-overlapping eye buffers.
                     try { check(RenderBridgeNative.uploadAlpha(renderer, shown, near.left, near.right)) }
                     finally { synchronized(mapLock) { reading = null } }
-                    maskUploaded = true
+                    maskUploaded = true; limited = view
+                } else if (limited != view) {
+                    // Only a changed strength or preference redoes the held map, not every redraw.
+                    RenderBridgeNative.steadyEdges(renderer, view.second); RenderBridgeNative.limitNear(renderer, shown, view.first)
+                    limited = view
                 }
-                RenderBridgeNative.limitNear(renderer, shown, .0175f * strength)
                 depthReady = RenderBridgeNative.alphaReady(renderer, shown)
                 if (fill && depthReady) {
                     val warped = if (matte) RenderBridgeNative.warpAlpha(renderer,shown,.0175f*strength,convergence,matteTexture,matteContent)

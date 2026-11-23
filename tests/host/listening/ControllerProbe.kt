@@ -12,9 +12,10 @@ import java.util.concurrent.atomic.AtomicReference
 internal object MpvSourceNative {
     var position=5.0
     var track=0
+    var lateNs=0L
     fun narrationStatus(handle: Long): String = JSONObject().put("seeks_started",0).put("seeks_completed",0)
         .put("details",JSONObject().put("position_seconds",position.toString()).put("duration_seconds","120")
-            .put("observed_monotonic_ns",System.nanoTime()).put("paused","yes").put("paused_for_cache","no")
+            .put("observed_monotonic_ns",System.nanoTime()-lateNs).put("paused","yes").put("paused_for_cache","no")
             .put("audio_track_id",(track+1).toString()).put("playback_speed","1").put("demuxer_start_time","0")
             .put("audio_tracks",JSONArray().put(JSONObject().put("id",track+1).put("stream_index",track)))).toString()
     fun setListeningCache(handle: Long,seconds: Double): Boolean=error("Unexpected shared-reader change")
@@ -64,6 +65,15 @@ fun main(args: Array<String>){
         val next=ListeningPolicy.Cue(15.0,19.0,"The next sentence is visible too")
         cues[next.key]=next;cache?.add(next);tick(controller)
         verify(JSONObject(controller.status()).getJSONArray("cues").length()==1,"$mode next finalized cue delivered")
+        // A busy MPV control loop publishes its snapshot late. That is not a
+        // seek: keep the reader epoch and the visible cue, resume next tick.
+        val epoch=JSONObject(controller.status()).getLong("epoch")
+        MpvSourceNative.lateNs=800_000_000;tick(controller)
+        verify(JSONObject(controller.status()).getJSONArray("cues").length()==1,"$mode late clock snapshot keeps visible cue")
+        verify(JSONObject(controller.status()).getLong("epoch")==epoch,"$mode late clock snapshot keeps reader epoch")
+        MpvSourceNative.lateNs=0;tick(controller)
+        verify(JSONObject(controller.status()).getJSONArray("cues").length()==1,"$mode cue still shown after clock recovers")
+        verify(JSONObject(controller.status()).getLong("epoch")==epoch,"$mode clock recovery does not restart reader")
         MpvSourceNative.track=1;tick(controller)
         verify(JSONObject(controller.status()).getJSONArray("cues").length()==0,"$mode changing audio track rejects previous recognized text")
         controller.transportChanged()

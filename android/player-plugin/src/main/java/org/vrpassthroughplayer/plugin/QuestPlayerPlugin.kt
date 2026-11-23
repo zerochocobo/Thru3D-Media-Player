@@ -543,6 +543,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun set_photo_pages(id: Int, split: Double): Boolean = !closed.get() && PhotoPages.set(id, split.toFloat())
     /** fill (default) | stretch: how a still's pair covers what the near content uncovers. */
     @UsedByGodot fun set_photo_fill_mode(mode: String) { if (mode == "fill" || mode == "stretch") PhotoStereo.stretch = mode == "stretch" }
+    @UsedByGodot fun set_photo_edge_steady(enabled: Boolean) { PhotoStereo.steady = enabled }
     /** Quality map for the picture on screen, shown with the fast one; reported as photo_depth_refined. */
     @UsedByGodot fun refine_photo_3d(id: Int, strength: Double, convergence: Double, rotation: Int): Boolean = !closed.get() &&
         (photos.depth(id,strength.toFloat(),true,false,rotation=rotation,convergence=convergence.toFloat(),refine=true)
@@ -661,6 +662,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         SignalInfo("mpv_error", Int::class.javaObjectType, String::class.java),
         SignalInfo("mpv_detach", Int::class.javaObjectType, String::class.java),
         SignalInfo("mpv_released", Int::class.javaObjectType, String::class.java),
+        SignalInfo("mpv_source_diagnostic", Int::class.javaObjectType, String::class.java),
         SignalInfo("mpv_debug_command", Int::class.javaObjectType, String::class.java),
         SignalInfo("mpv_pixel_mask", Int::class.javaObjectType, String::class.java),
         SignalInfo("mpv_frozen_pair", Int::class.javaObjectType, String::class.java),
@@ -849,7 +851,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         return true
     }
     /** Video 2D->3D steady edges (with edge stretching): depth contours follow the picture's own. */
-    @UsedByGodot fun set_depth_edge_steady(enabled: Boolean) { mpv.setDepthSteady(enabled) }
+    @UsedByGodot fun set_depth_edge_steady(enabled: Boolean) { mpv.setDepthSteady(enabled); WebBrowserDepthBridge.steadyChanged() }
     @UsedByGodot fun set_depth_text_protection(enabled: Boolean) { mpv.setTextProtection(enabled) }
     @Volatile private var rvmModel = "fast"
     /** "fast" (default) or "quality"; Alpha sessions opened afterwards use it. */
@@ -990,6 +992,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
     @UsedByGodot fun set_mpv_playing(id: Int, playing: Boolean) { if (!closed.get()) mpv.setPlaying(id, playing) }
     @UsedByGodot fun set_mpv_listening(id: Int,json: String): Boolean = !closed.get() && mpv.setListening(id,json)
+    @UsedByGodot fun discard_listening_cache(id: Int): Boolean = !closed.get() && mpv.discardListeningCache(id)
     @UsedByGodot fun get_mpv_listening(id: Int): String = if(closed.get()) "{}" else mpv.listeningStatus(id)
     @UsedByGodot fun listening_ready(id: Int,epoch: Long) {if(!closed.get())mpv.listeningReady(id,epoch)}
     private val listeningTasks by lazy { ListeningTasks({activity?.applicationContext},sources::capturePlayable,

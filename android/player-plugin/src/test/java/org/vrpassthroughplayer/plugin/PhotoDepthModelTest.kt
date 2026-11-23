@@ -59,7 +59,7 @@ class PhotoDepthModelTest {
     @Test fun fastPairsNeverAnswerForQualityPairs() {
         val quality = PhotoStereo.cachePrefix(1f, 0)
         val fast = PhotoStereo.cachePrefix(1f, 0, fast = true)
-        assertTrue(quality.startsWith("stereo-v6-"))
+        assertTrue(quality.startsWith("stereo-v9-"))
         assertFalse(fast.startsWith(quality))
         assertFalse(quality.startsWith(fast))
         assertTrue(abs(fast.length - quality.length) == 1)

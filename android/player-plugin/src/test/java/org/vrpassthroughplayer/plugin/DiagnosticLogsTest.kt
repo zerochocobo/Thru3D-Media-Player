@@ -28,6 +28,22 @@ class DiagnosticLogsTest {
         assertTrue(exported.contains("Suppressed: java.io.FileNotFoundException"))
         assertFalse(exported.contains("PrivateClip"))
     }
+    @Test fun otherProcessesKeepGeckoCodecLinesAndDropThisProcess() {
+        val log = listOf(
+            "11-23 19:42:37.101  7443  9359 W godot   : main process warning",
+            "11-23 19:42:37.102 27511 27530 I MediaCodec: [OMX.qcom.video.decoder.hevc] setting surface generation to 1",
+            "11-23 19:42:37.103 27511 27530 I MediaCodec: [OMX.qcom.video.decoder.hevc] setting surface generation to 1",
+            "--------- beginning of main",
+            "11-23 19:42:37.104 27602 27610 E GeckoRemoteCodec: codec error"
+        ).joinToString("\n")
+        val kept = DiagnosticLogs.otherProcessLines(log, 7443)
+        assertFalse(kept.contains("main process warning"))
+        assertFalse(kept.contains("beginning of main"))
+        assertTrue(kept.contains("OMX.qcom.video.decoder.hevc"))
+        assertTrue(kept.contains("(repeated 1 times)"))
+        assertTrue(kept.contains("GeckoRemoteCodec: codec error"))
+        assertEquals("(none in buffer)\n", DiagnosticLogs.otherProcessLines("11-23 19:42:37.101  7443  9359 W godot   : x", 7443))
+    }
     @Test fun masksMediaNamesAccountsAndParameters() {
         val line = """I QuestPlayer: open smb://alice:secret@192.168.1.5/Movies/My Holiday 2025.mkv """ +
             """http://127.0.0.1:18889/stream.mp4?token=abc&sign=1 {"title":"Private clip","access_token":"xyz"} me@example.com"""

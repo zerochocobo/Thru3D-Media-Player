@@ -41,8 +41,9 @@ internal class RemoteMediaHttp : Closeable {
                     target = target.resolve(c.getHeaderField("Location") ?: throw MediaServerFailure("Invalid remote media response"))
                     release(c); redirects++
                 } else {
-                    if (status in setOf(401, 403)) throw MediaServerFailure("Remote media access denied", status)
-                    if (status !in 200..299) throw MediaServerFailure("Remote media unavailable", status)
+                    val redirect = redirectKind(redirects, uri, target)
+                    if (status in setOf(401, 403)) throw MediaServerFailure("Remote media access denied", status, redirect = redirect)
+                    if (status !in 200..299) throw MediaServerFailure("Remote media unavailable", status, redirect = redirect)
                     return c
                 }
             } catch (error: Exception) {

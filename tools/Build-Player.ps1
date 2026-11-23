@@ -20,6 +20,8 @@ param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT }
     [switch]$PicoChinaStore,
     # Optional Meta store identity, separate from the ordinary Quest application.
     [switch]$QuestStore,
+    [switch]$DouyinPlaybackLog,
+    [string]$GeckoProbeAar = '',
     # Comparison build: store native libraries without ZIP compression, retaining extraction.
     [switch]$UncompressedNativeLibraries,
     # Legacy: every build includes the private beach now; accepted so older commands still run.
@@ -39,6 +41,10 @@ if ($PicoChinaStore -and $AndroidVersionCode -eq 0) { throw 'PICO China requires
 if ($QuestStore -and ($BuildType -ne 'Release' -or $XrVendor -ne 'Quest')) { throw 'QuestStore is limited to QUEST Release builds.' }
 $distributionChannel = if ($PicoChinaStore) { 'pico_cn_store' } elseif ($QuestStore) { 'quest_store' } else { 'standard' }
 if ($UncompressedNativeLibraries -and ($BuildType -ne 'Release' -or $XrVendor -ne 'Quest')) { throw 'UncompressedNativeLibraries is limited to QUEST Release comparison builds.' }
+if ($DouyinPlaybackLog -and -not $QuestStore) { throw 'DouyinPlaybackLog is limited to the dedicated QUEST store diagnostic package.' }
+if ($DouyinPlaybackLog -and (-not $GeckoProbeAar -or -not (Test-Path -LiteralPath $GeckoProbeAar -PathType Leaf))) { throw 'The diagnostic build requires the patched ARM64 GeckoProbeAar.' }
+if ($GeckoProbeAar -and -not $DouyinPlaybackLog) { throw 'GeckoProbeAar is only for the diagnostic build.' }
+if ($env:THRU3D_PROBE_MAVEN -or $env:THRU3D_PROBE_COORDINATE) { throw 'Unexpected inherited diagnostic engine override.' }
 $customApkName = [bool]$ApkName
 if (-not $ApkName) {
     $ApkName = if ($BuildType -eq 'Release') {
@@ -108,6 +114,15 @@ try {
         catch [Threading.AbandonedMutexException] { $buildLockHeld = $true }
     }
 . "$PSScriptRoot\environment\Activate-QuestEnvironment.ps1" -ToolRoot $ToolRoot
+if ($DouyinPlaybackLog) {
+    $probeRepo = Join-Path $workspace 'build/gecko-frame-maven'
+    $probeTool = Join-Path $workspace 'tools/geckoview/stage_engine.py'
+    $probeArgs = @($GeckoProbeAar, '--gradle-cache', $env:GRADLE_USER_HOME, '--repository', $probeRepo)
+    $coordinate = & (Join-Path $workspace '.venv/Scripts/python.exe') $probeTool @probeArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Could not stage diagnostic GeckoView.' }
+    $env:THRU3D_PROBE_MAVEN = ([Uri]$probeRepo).AbsoluteUri
+    $env:THRU3D_PROBE_COORDINATE = $coordinate
+}
 # Bouncy Castle contains newer-JDK multi-release entries. It has no Android support
 # library references to rewrite; old Jetifier must leave this pure Java jar alone.
 [Environment]::SetEnvironmentVariable('ORG_GRADLE_PROJECT_android.jetifier.ignorelist',
@@ -158,6 +173,9 @@ if ($DebugApplicationId -or $QuestStore) {
     }
     [IO.File]::WriteAllText($exportPresetsPath, $packagePresets, [Text.UTF8Encoding]::new($false))
 }
+if ($DouyinPlaybackLog) {
+    $ApkName = "Thru3D-QUEST-META-STORE-$appVersion-DOUYIN-FRAME-$releaseStamp.apk"
+}
 if ($IncludeDiagnostics) {
     if ($null -eq $originalExportPresets) { $originalExportPresets = [IO.File]::ReadAllBytes($exportPresetsPath) }
     $diagnosticPresets = [IO.File]::ReadAllText($exportPresetsPath).Replace('exclude_filter="tests/*,media/*"', 'exclude_filter="tests/*"').Replace('include_filter="i18n/*.json,', 'include_filter="media/*.mp4,i18n/*.json,')
@@ -199,7 +217,7 @@ if (-not (Test-Path -LiteralPath $godotApi)) {
 # A cold Gradle daemon prints an SDK XML warning on stderr; only the exit code decides.
 $ErrorActionPreference = 'Continue'
 [string[]]$pluginTasks = @(':player-plugin:assembleDebug', ':player-plugin:assembleRelease', ':web-browser:assembleDebug', ':web-browser:assembleRelease')
-& "$workspace\android\gradlew.bat" -p "$workspace\android" "-PgodotAarPath=$godotApi" "-PincludeDiagnostics=$($IncludeDiagnostics.IsPresent.ToString().ToLowerInvariant())" @pluginTasks $(if ($SkipUnitTests) { @() } else { @(':player-plugin:testDebugUnitTest', ':web-browser:testDebugUnitTest') }) --console=plain 2>&1 | Out-File (Join-Path $logDirectory 'plugin-build.log') -Encoding utf8
+& "$workspace\android\gradlew.bat" -p "$workspace\android" "-PgodotAarPath=$godotApi" "-PincludeDiagnostics=$($IncludeDiagnostics.IsPresent.ToString().ToLowerInvariant())" "-PdouyinPlaybackLog=$($DouyinPlaybackLog.IsPresent.ToString().ToLowerInvariant())" @pluginTasks $(if ($SkipUnitTests) { @() } else { @(':player-plugin:testDebugUnitTest', ':web-browser:testDebugUnitTest') }) --console=plain 2>&1 | Out-File (Join-Path $logDirectory 'plugin-build.log') -Encoding utf8
 $ErrorActionPreference = 'Stop'
 if ($LASTEXITCODE -ne 0) { throw 'Android plugin build failed; inspect build/output/logs/plugin-build.log.' }
 $pluginDirectory = Join-Path $projectDirectory 'addons\quest_player\bin'
@@ -364,6 +382,10 @@ foreach ($storagePermission in @('android.permission.READ_EXTERNAL_STORAGE','and
 }
 if ($manifestText -notmatch ('android:versionCode[^\r\n]*=' + $expectedVersionCode + '\b')) { throw 'APK Android versionCode differs from the requested build number.' }
 & "$PSScriptRoot/Assert-DistributionPackaged.ps1" -ArchivePath $apkPath -ExpectedChannel $distributionChannel
+if ($DouyinPlaybackLog) {
+    & (Join-Path $workspace '.venv/Scripts/python.exe') $probeTool @probeArgs --apk $apkPath
+    if ($LASTEXITCODE -ne 0) { throw 'Packaged GeckoView differs from the diagnostic engine.' }
+}
 & (Join-Path $workspace '.venv/Scripts/python.exe') $notesChecker $releaseNotesPath $appVersion --build-type $BuildType --apk $apkPath
 if ($LASTEXITCODE -ne 0) { throw 'Packaged release notes check failed.' }
 if ($manifestText -notmatch ('android:versionName[^\r\n]*="' + [regex]::Escape($appVersion) + '"')) {
@@ -768,6 +790,10 @@ if ($BuildType -eq 'Release') {
     $codeSuffix = if ($XrVendor -eq 'Pico') { "-vc$expectedVersionCode" } else { '' }
     $compressionSuffix = if ($UncompressedNativeLibraries) { '-NO-NATIVE-COMPRESSION' } else { '' }
     $releaseApk = Join-Path $releaseDirectory "Thru3D-$platformName-$appVersion$codeSuffix$compressionSuffix-release-$releaseStamp.apk"
+    if ($DouyinPlaybackLog) {
+        $releaseApk = Join-Path $releaseDirectory $ApkName
+        $buildManifest['douyin_playback_log'] = $true
+    }
     if (Test-Path -LiteralPath $releaseApk) {
         if ((Get-FileHash -LiteralPath $releaseApk).Hash.ToLowerInvariant() -ne $buildManifest.apk_sha256) { throw 'Permanent release archive already contains different bytes.' }
     } else { Copy-Item -LiteralPath $apkPath -Destination $releaseApk }
@@ -781,6 +807,9 @@ $buildManifest | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $artifactDirec
 Write-Output "Built: $apkPath"
 Write-Output "SHA256: $($buildManifest.apk_sha256)"
 } finally {
+    if ($DouyinPlaybackLog) {
+        Remove-Item Env:THRU3D_PROBE_MAVEN,Env:THRU3D_PROBE_COORDINATE -ErrorAction SilentlyContinue
+    }
     if ($null -ne $originalAndroidBuildScript) {
         if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($androidBuildScript)) -eq [Convert]::ToBase64String($uncompressedAndroidBuildScript)) {
             [IO.File]::WriteAllBytes($androidBuildScript, $originalAndroidBuildScript)

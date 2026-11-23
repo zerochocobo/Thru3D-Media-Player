@@ -4,6 +4,20 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.18.8 — 2026-11-23
+
+- Add a folder tree to the media library for navigating deep directory paths.
+- Show specific account sources in recent items and favorites to distinguish accounts on the same storage service.
+- Both Settings and the control bar now open the same picture panel for the current video, unavailable when no video is open. New videos use factory values or the reuse-last-picture option instead of global player defaults. Web picture settings remain independent.
+- Use speech segments for Japanese look-ahead and whole-film captions to improve dialogue detection and filter breath-only or invalid segments.
+- Reduce repeated live-caption restarts caused by briefly delayed playback position updates, and reduce repeated captions.
+- Optimize subtitle narration generation and voice prompt reuse. Stop retrying sentences past their speech deadline so failed sentences do not hold the generation queue for as long.
+- Restore the puzzle button on the image toolbar so you can open puzzles directly while viewing images.
+- Fix some VR cutout subjects being completely hidden behind imported scene walls. In this display mode, scene objects no longer occlude the VR subject.
+- Fix the browser picture menu not appearing after activation while the page frame is hidden or person passthrough is enabled.
+- Offer direct open from PICO USB file failure panels with clearer guidance in error messages.
+- Apply display brightness correction to video, photos, web pages and AirPlay on QIYU to improve dark pictures.
+
 ## 0.18.7 — 2026-11-22
 
 - Add Steady Edges for real-time 2D-to-3D, on by default. With Stretch Edges, object contours follow the original picture more closely to reduce shimmer, with slightly softer depth around edges. Toggle it in global or player settings.

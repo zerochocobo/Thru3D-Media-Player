@@ -1,5 +1,5 @@
 extends RefCounted
-## The retained auditorium is a background to the cutout, including its 50 m VR sphere.
+## The retained auditorium or imported scene is a background to the cutout, including its 50 m VR sphere.
 ## Reuse RayMenu's opt-in depth-free shader variant without changing the decoder material.
 var material := ShaderMaterial.new()
 var source: ShaderMaterial

@@ -96,7 +96,7 @@ object WebVideoCnDesktopProbe {
                     }finally{http.release(connection)}
                 }
             },prefix)
-            result.put("header_bytes",inspected.size).put("parsed",WebVideoContainer.parse(inspected)!=null)
+            result.put("header_bytes",inspected.size).put("parsed",WebVideoContainer.parse(inspected, allowMultipleMp4aTracks = true)!=null)
         }}catch(error:Exception){result.put("error_type",error.javaClass.simpleName)}
         return result
     }
@@ -135,9 +135,10 @@ object WebVideoCnDesktopProbe {
         return result
     }
 
-    private fun run(arguments: List<String>, limit: Int = 65536, traceLiveFrames: Boolean = false): Output {
+    private fun run(arguments: List<String>, limit: Int = 65536, traceLiveFrames: Boolean = false, inputBytes: ByteArray? = null): Output {
         val process = ProcessBuilder(arguments).start()
-        val reader = Executors.newFixedThreadPool(2)
+        val reader = Executors.newFixedThreadPool(if (inputBytes == null) 2 else 3)
+        if (inputBytes != null) reader.submit { runCatching { process.outputStream.use { it.write(inputBytes) } } }
         val output = reader.submit<ByteArray> { process.inputStream.use { it.readNBytes(limit + 1) } }
         val trace = JSONObject()
         val errors = reader.submit<ByteArray> { process.errorStream.use { input ->
@@ -382,11 +383,67 @@ object WebVideoCnDesktopProbe {
                 val item=JSONObject().put("prefix",prefix)
                 if(reads.length()<12)reads.put(item)
                 try {
-                    RemoteMediaHttp().use { http -> WebVideoBrowserResourceReader.read(uri,headers,prefix,http) { check(System.nanoTime()<deadline) } }.also { (_,body) ->
+                    RemoteMediaHttp().use { http -> WebVideoBrowserResourceReader.read(uri,headers,prefix,http) { check(System.nanoTime()<deadline) } }.also { (finalUri,body) ->
                         item.put("bytes",body.size)
-                        if(archive && prefix && WebVideoContainer.parse(body)==null)
+                        if(archive && prefix && WebVideoContainer.parse(body, allowMultipleMp4aTracks = true)==null)
                             item.put("archive_header_shape",archiveHeaderShape(uri,headers,body){check(System.nanoTime()<deadline)})
+                        if (twitch && prefix) {
+                            val header = WebVideoContainer.parse(body)
+                            item.put("container_parsed", header != null)
+                            if (header != null) {
+                                item.put("header_video_codec", header.video).put("header_audio_codec", header.audio)
+                                    .put("header_width", header.width).put("header_height", header.height).put("header_seconds", header.duration)
+                                item.put("observed_width", media.optInt("width")).put("observed_height", media.optInt("height"))
+                                    .put("observed_seconds", media.optDouble("duration", 0.0))
+                            } else runCatching {
+                                val diagnostic = run(listOf("ffprobe", "-v", "error", "-f", "mov", "-i", "pipe:0",
+                                    "-show_entries", "stream=codec_name,profile,codec_type,codec_tag_string,width,height,pix_fmt,color_space,color_transfer,color_primaries,duration:format=duration",
+                                    "-of", "json"), inputBytes = body)
+                                item.put("container_inspection", JSONObject(diagnostic.bytes.toString(Charsets.UTF_8)))
+                                    .put("container_inspection_exit", diagnostic.code)
+                            }.onFailure { item.put("container_inspection_error", it.javaClass.simpleName) }
+                        }
                         if(!prefix && body.take(7).toByteArray().toString(Charsets.UTF_8)=="#EXTM3U") {
+                            if (mango) {
+                                val network = WebBrowserNetworkMedia.candidates(media, includeSegments = true)
+                                val receipts = (0 until network.length()).map { network.getJSONObject(it) }
+                                    .filter { it.optString("kind") in setOf("segment", "file") }
+                                val refs = body.toString(Charsets.UTF_8).lineSequence().map(String::trim)
+                                    .filter { it.isNotEmpty() && !it.startsWith('#') }
+                                    .mapNotNull { ref -> runCatching { finalUri.resolve(ref) }.getOrNull() }.toList()
+                                val exact = mutableListOf<Int>()
+                                val samePath = mutableListOf<Int>()
+                                val queryDifferences = linkedSetOf<String>()
+                                fun query(address: java.net.URI) = address.rawQuery.orEmpty().split('&')
+                                    .filter { it.substringBefore('=').matches(Regex("[A-Za-z][A-Za-z0-9_-]{0,31}")) }
+                                    .groupBy { it.substringBefore('=') }
+                                for ((index, receipt) in receipts.withIndex()) {
+                                    val urls = listOf("url", "original_url").mapNotNull { name ->
+                                        WebBrowserNetworkMedia.address(receipt.optString(name))
+                                    }
+                                    if (urls.any { it in refs }) exact.add(index)
+                                    val sameResource = urls.asSequence().flatMap { url -> refs.asSequence().map { url to it } }
+                                        .firstOrNull { (url, ref) -> url.host == ref.host && url.rawPath == ref.rawPath }
+                                    if (sameResource != null) {
+                                        samePath.add(index)
+                                        val received = query(sameResource.first)
+                                        val declared = query(sameResource.second)
+                                        queryDifferences.addAll((received.keys + declared.keys).mapNotNull { key ->
+                                            when {
+                                                key !in declared -> "added:$key"
+                                                key !in received -> "removed:$key"
+                                                received[key] != declared[key] -> "changed:$key"
+                                                else -> null
+                                            }
+                                        })
+                                    }
+                                }
+                                item.put("mango_segments", JSONObject().put("references", refs.size)
+                                    .put("receipt_kinds", JSONArray(receipts.map { it.optString("kind") }))
+                                    .put("receipt_ms", JSONArray(receipts.map { it.optLong("at") - (receipts.firstOrNull()?.optLong("at") ?: 0) }))
+                                    .put("exact_indexes", JSONArray(exact)).put("same_path_indexes", JSONArray(samePath))
+                                    .put("query_differences", JSONArray(queryDifferences)))
+                            }
                             // Tag names only; no attribute values, URLs, hashes or response text.
                             val tags=body.toString(Charsets.UTF_8).lineSequence().filter { it.contains("URI=") }
                                 .map { Regex("^(#[A-Za-z0-9-]{1,64})(?=:|$)").find(it)?.groupValues?.get(1) ?: "other" }.distinct().take(32).toList()
@@ -499,16 +556,26 @@ object WebVideoCnDesktopProbe {
                 // Resource-only iQIYI preflight covers the beginning and tail, separately
                 // from the future real-button resume-position acceptance.
                 val start=if(instagram || tiktok)media.getJSONObject(if(instagram)"instagram" else "tiktok").getDouble("start_seconds").coerceIn(0.0,maxOf(0.0,duration-4.0)) else if(iqiyi && media.optLong("iqiyi_request")==0L)0.0 else media.optDouble("time").coerceIn(0.0,maxOf(0.0,duration-4.0))
-                if (tencent && selected.video.transport == "hls") {
-                    val lines = java.net.URI(local).toURL().openStream().use { it.readNBytes(256*1024) }.toString(Charsets.UTF_8).lines()
+                val usualSeekAt=when {
+                    instagram || (niconico || douyin || youku) && duration>120 -> duration/2
+                    iqiyi && duration>120 -> duration-4
+                    else -> minOf(start+20.0,maxOf(0.0,duration-4.0))
+                }
+                val seekAt=if(kotlin.math.abs(usualSeekAt-start)<.1) { if(start>.1)0.0 else duration/2 } else usualSeekAt
+                fun hlsTiming(): JSONArray {
+                    val lines = java.net.URI(local).toURL().openStream().use { it.readNBytes(2*1024*1024) }.toString(Charsets.UTF_8).lines()
                     val parts = ArrayList<Triple<Int,Double,String>>();var position=0.0;var length=0.0
                     for (line in lines) {
                         if (line.startsWith("#EXTINF:")) length=line.substringAfter(':').substringBefore(',').toDouble()
                         else if(line.startsWith("http")) {parts.add(Triple(parts.size,position,line));position+=length}
                     }
                     val timing = org.json.JSONArray()
-                    for (at in listOf(0.0,start,minOf(start+20,maxOf(0.0,duration-4)))) {
-                        val part = parts.lastOrNull { it.second <= at } ?: continue
+                    val near = if (youku) parts.indexOfLast { it.second <= seekAt } else -1
+                    val targets = if (youku) listOf(0.0,maxOf(0.0,seekAt-20),seekAt) +
+                        listOfNotNull(parts.getOrNull(near-1)?.second,parts.getOrNull(near+1)?.second)
+                        else listOf(0.0,start,seekAt)
+                    val requestedParts = targets.mapNotNull { at -> parts.lastOrNull { it.second <= at }?.let { at to it } }
+                    for ((at,part) in if (youku) requestedParts.distinctBy { it.second.first } else requestedParts) {
                         val probePart=run(listOf("ffprobe","-v","error","-show_entries","stream=index,id,codec_name,codec_type,width,height,start_time,duration:format=start_time,duration","-of","json",part.third))
                         val keyframes=run(listOf("ffprobe","-v","error","-select_streams","v:0","-show_frames","-show_entries","frame=pts_time,key_frame","-of","json",part.third))
                         val frameList=runCatching { JSONObject(keyframes.bytes.toString(Charsets.UTF_8)).getJSONArray("frames") }.getOrNull()
@@ -518,8 +585,9 @@ object WebVideoCnDesktopProbe {
                             .put("timing",partInfo?.optJSONObject("format")).put("tracks",partInfo?.optJSONArray("streams"))
                             .put("video_frames",pts.size).put("key_pts",org.json.JSONArray(pts.filter { it.optInt("key_frame")==1 }.map { it.optString("pts_time") })))
                     }
-                    result.put("segment_timing",timing)
+                    return timing
                 }
+                if (tencent && selected.video.transport == "hls") result.put("segment_timing",hlsTiming())
                 fun decode(at: Double, label: String = if(at==start) "decode" else "seek"): Boolean {
                     // CLI input seeking can discard up to the *next* HLS keyframe.
                     // Keep a bounded preroll, then accurately trim the same requested
@@ -551,8 +619,6 @@ object WebVideoCnDesktopProbe {
                 val pcm=if(explicitSilent)null else run(listOf("ffmpeg","-v","error","-ss",(soundAt-audioPreroll).toString(),"-i",audio ?: local,"-ss",audioPreroll.toString(),"-t","3","-map","0:a:0","-vn","-ac","2","-ar","48000","-f","s16le","pipe:1"),1024*1024)
                 result.put("audio_samples_48k_stereo",(pcm?.bytes?.size ?: 0)/4).put("audio_nonzero",pcm?.bytes?.any{it!=0.toByte()} ?: false)
                     .put("audio_seconds",soundAt)
-                val usualSeekAt=if(instagram)duration/2 else if(niconico && duration>120)duration/2 else if(douyin && duration>120)duration/2 else if(iqiyi && duration>120)duration-4 else minOf(start+20.0,maxOf(0.0,duration-4.0))
-                val seekAt=if(kotlin.math.abs(usualSeekAt-start)<.1) { if(start>.1)0.0 else duration/2 } else usualSeekAt
                 stage="seek_decode";result.put("seeked",decode(seekAt,"seek")).put("seek_seconds",seekAt).put("seek_distance_seconds",kotlin.math.abs(seekAt-start))
                 // Check distant tail resources, then actually seek back to the middle
                 // before returning. iQIYI's normal skip-credits action can navigate to
@@ -560,6 +626,12 @@ object WebVideoCnDesktopProbe {
                 val returnAt=if(iqiyi && duration>120)duration/2 else seekAt
                 val returnSeeked=if(returnAt!=seekAt) { stage="return_decode";decode(returnAt,"return") } else result.getBoolean("seeked")
                 result.put("return_seeked",returnSeeked).put("return_seconds",returnAt)
+                if (youku && selected.video.transport == "hls") {
+                    // Inspect after seeking so the probe does not prefetch the target segments.
+                    runCatching { hlsTiming() }
+                        .onSuccess { result.put("segment_timing",it) }
+                        .onFailure { result.put("segment_timing_error",it.javaClass.simpleName) }
+                }
                 streams.release(local);result.put("lease_closed",!server.hasSource(local))
                 result.put("passed",result.getBoolean("decoded") && result.getBoolean("seeked") && returnSeeked && (if(explicitSilent)result.getBoolean("audio_absent_verified") else pcm!=null && pcm.code==0 && pcm.bytes.size>=48000*4*2 && result.getBoolean("audio_nonzero")) && result.getBoolean("lease_closed"))
             } }

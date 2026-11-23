@@ -6,8 +6,10 @@ extends RefCounted
 const WINDOW_MS := 10000
 ## Changes inside a shorter window join it and mark it mixed: held seeks must not flood the log.
 const MIN_WINDOW_MS := 2000
-const STATE_KEYS := ["path", "menu", "refresh", "cap", "performance", "foveation", "relief", "render_scale", "inference"]
-const COUNTERS := ["decoder_drops", "vo_drops", "vo_late"]
+const STATE_KEYS := ["path", "menu", "menu_layers", "refresh", "cap", "performance", "foveation", "relief", "render_scale", "inference", "picture"]
+const COUNTERS := ["decoder_drops", "vo_drops", "vo_late", "menu_layer_repaints", "copy_failed"]
+## The layer copy's last size and cost (picture quality mode): what each video frame cost on the GPU.
+const LATEST_KEYS := ["copy_out", "copy_gpu_ms", "copy_draw_ms", "copy_window", "copy_deep"]
 
 var _start_ms := -1
 var _start := {}
@@ -73,6 +75,9 @@ func _finish(now_ms: int) -> Dictionary:
 	var frames := int(_latest.get("frames", 0)) - int(_start.get("frames", 0))
 	event["video_fps"] = snappedf(frames / seconds, 0.1) if _seeks == 0 and frames >= 0 else -1.0
 	event["xr_fps"] = snappedf((int(_latest.get("xr_frames", 0)) - int(_start.get("xr_frames", 0))) / seconds, 0.1)
+	if _latest.has("copy_drawn"):
+		event["copy_fps"] = snappedf(maxi(0, int(_latest.copy_drawn) - int(_start.get("copy_drawn", 0))) / seconds, 0.1)
+		for key in LATEST_KEYS: event[key] = _latest.get(key)
 	event["container_fps"] = _latest.get("container_fps", "")
 	event["avsync"] = _latest.get("avsync", "")
 	event["cache_ticks"] = _cache_ticks

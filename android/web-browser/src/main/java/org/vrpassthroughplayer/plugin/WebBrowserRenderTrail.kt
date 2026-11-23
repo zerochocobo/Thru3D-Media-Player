@@ -92,14 +92,16 @@ internal class WebBrowserRenderWatch {
     class Verdict(val fresh: List<String>, val recovered: List<String>)
     /** One perf window: page composites per second, the longest gap and gaps of [HITCH_MS] or more while
      * video decodes (an idle page legitimately stops compositing), and the video's own frame rates. */
-    class Perf(val seconds: Double, val composites: Double, val maxGapMs: Long, val hitches: Int,
-               val decodedRate: Double, val presentedRate: Double, val dropped: Long) {
-        private fun rate(value: Double) = String.format(Locale.US, "%.1f", value)
-        override fun toString() = "fps=${rate(composites)} max_gap_ms=$maxGapMs hitches=$hitches " +
-            "video_decoded_fps=${rate(decodedRate)} video_shown_fps=${rate(presentedRate)} video_dropped=$dropped window_s=${rate(seconds)}"
+    class Perf(val seconds: Double, val composites: Double?, val maxGapMs: Long, val hitches: Int,
+               val decodedRate: Double?, val presentedRate: Double?, val dropped: Long?, val videoSeconds: Double) {
+        private fun rate(value: Double?) = value?.let { String.format(Locale.US, "%.1f", it) } ?: "unknown"
+        override fun toString() = "fps=${rate(composites)} max_gap_ms=${maxGapMs.takeIf { composites != null } ?: "unknown"} " +
+            "hitches=${hitches.takeIf { composites != null } ?: "unknown"} video_decoded_fps=${rate(decodedRate)} " +
+            "video_shown_fps=${rate(presentedRate)} video_dropped=${dropped ?: "unknown"} " +
+            "video_sample_s=${rate(videoSeconds)} window_s=${rate(seconds)}"
         /** Coarse buckets: a steady page logs once, a change of a few frames per second does not repeat it. */
-        fun signature(): String = listOf(Math.round(composites / 5), Math.round(presentedRate / 5),
-            when { dropped == 0L -> 0; dropped < 10 -> 1; dropped < 60 -> 2; else -> 3 },
+        fun signature(): String = listOf(composites?.let { Math.round(it / 5) }, presentedRate?.let { Math.round(it / 5) },
+            when { dropped == null -> -1; dropped == 0L -> 0; dropped < 10 -> 1; dropped < 60 -> 2; else -> 3 },
             when { hitches == 0 -> 0; hitches < 3 -> 1; hitches < 10 -> 2; else -> 3 }).joinToString(":")
     }
     var bound = false; private set
@@ -112,20 +114,20 @@ internal class WebBrowserRenderWatch {
     var pageStopAt = 0L; private set
     var pageOk = false; private set
     private var playing = false
-    private var decoded = -1L
     private var decodedAt = 0L
     private val reported = linkedSetOf<String>()
     private var perfStart = 0L
     private var perfDraws = 0
     private var perfMaxGap = 0L
     private var perfHitches = 0
-    /** Decoded, presented and dropped video frames: the latest report and the window's first one. */
-    private val frames = LongArray(3)
-    private var framesAtStart: LongArray? = null
+    private var videoInterval = WebBrowserVideoFrames.Interval()
     var lastPerf = ""; private set
 
     /** A reported page verdict then shows as recovered: the next document starts its own episode. */
-    fun pageStart() { pageStopAt = 0; pageOk = false; loadError = false; composite = false; contentfulPaint = false }
+    fun pageStart() {
+        pageStopAt = 0; pageOk = false; loadError = false; composite = false; contentfulPaint = false
+        playing = false; decodedAt = 0; videoInterval = WebBrowserVideoFrames.Interval()
+    }
     fun pageStop(now: Long, ok: Boolean) { pageStopAt = now; pageOk = ok }
     fun loadFailed(now: Long) { loadError = true; pageStopAt = now; pageOk = false }
     fun firstComposite() { composite = true }
@@ -133,11 +135,14 @@ internal class WebBrowserRenderWatch {
     /** Gecko recomposites after a reset; the document's contentful paint does not repeat. */
     fun paintReset() { composite = false }
     fun bind(now: Long) {
-        bound = true; boundAt = now; draws = 0; reported.remove(NO_FRAME); reported.remove(MEDIA)
-        perfStart = now; perfDraws = 0; perfMaxGap = 0; perfHitches = 0; framesAtStart = null
+        bound = true; boundAt = now; draws = 0; lastDraw = 0; composite = false
+        reported.remove(NO_FRAME); reported.remove(MEDIA)
+        perfStart = now; perfDraws = 0; perfMaxGap = 0; perfHitches = 0; lastPerf = ""
+        playing = false; decodedAt = 0; videoInterval = WebBrowserVideoFrames.Interval()
     }
     fun unbind() { bound = false }
     fun draw(now: Long) {
+        if (!bound) return
         if (lastDraw > 0 && decodingAt(now)) {
             val gap = now - maxOf(lastDraw, perfStart)
             perfMaxGap = maxOf(perfMaxGap, gap)
@@ -145,23 +150,24 @@ internal class WebBrowserRenderWatch {
         }
         draws++; perfDraws++; lastDraw = now
     }
-    fun media(now: Long, isPlaying: Boolean, decodedFrames: Long, presentedFrames: Long = 0, droppedFrames: Long = 0) {
-        if (decodedFrames != decoded) { if (decoded >= 0) decodedAt = now; decoded = decodedFrames }
+    fun media(now: Long, isPlaying: Boolean, interval: WebBrowserVideoFrames.Interval) {
         playing = isPlaying
-        frames[0] = decodedFrames; frames[1] = presentedFrames; frames[2] = droppedFrames
-        if (framesAtStart == null) framesAtStart = frames.copyOf()
+        if (interval.decoded > 0) decodedAt = now
+        if (bound) videoInterval += interval
     }
 
     /** The window since the previous call, once [PERF_WINDOW_MS] has passed; null while unbound, early or idle. */
     fun perf(now: Long): Perf? {
         if (!bound || now - perfStart < PERF_WINDOW_MS) return null
         val seconds = (now - perfStart) / 1000.0
-        val start = framesAtStart
-        // A new video restarts its counters: count that window from zero rather than negative.
-        fun delta(index: Int) = if (start == null) 0L else (frames[index] - start[index]).let { if (it < 0) frames[index] else it }
-        val result = Perf(seconds, perfDraws / seconds, perfMaxGap, perfHitches, delta(0) / seconds, delta(1) / seconds, delta(2))
-        perfStart = now; perfDraws = 0; perfMaxGap = 0; perfHitches = 0; framesAtStart = if (start == null) null else frames.copyOf()
-        if (result.composites == 0.0 && result.decodedRate == 0.0) return null
+        val videoSeconds = videoInterval.ms / 1000.0
+        val sampledVideo = videoSeconds > 0
+        val result = Perf(seconds, (perfDraws / seconds).takeIf { draws > 0 }, perfMaxGap, perfHitches,
+            if (sampledVideo) videoInterval.decoded / videoSeconds else null,
+            if (sampledVideo) videoInterval.presented / videoSeconds else null,
+            videoInterval.dropped.takeIf { sampledVideo }, videoSeconds)
+        perfStart = now; perfDraws = 0; perfMaxGap = 0; perfHitches = 0; videoInterval = WebBrowserVideoFrames.Interval()
+        if (!sampledVideo && (result.composites ?: 0.0) == 0.0) return null
         lastPerf = result.toString()
         return result
     }
@@ -171,13 +177,29 @@ internal class WebBrowserRenderWatch {
         if (!bound) return Verdict(emptyList(), emptyList())
         val found = buildSet {
             if (loadError) add(LOAD_ERROR)
-            if (draws == 0L && now - boundAt >= SURFACE_GRACE_MS) add(NO_FRAME)
+            if (draws == 0L && !composite && now - boundAt >= SURFACE_GRACE_MS) add(NO_FRAME)
             if (pageOk && !contentfulPaint && now - maxOf(pageStopAt, boundAt) >= PAINT_GRACE_MS) add(NO_PAINT)
-            if (decodingAt(now) && now - maxOf(lastDraw, boundAt) >= MEDIA_GRACE_MS) add(MEDIA)
+            // A first composite can arrive even when Gecko never delivers draw callbacks.
+            if (draws > 0 && decodingAt(now) && now - lastDraw >= MEDIA_GRACE_MS) add(MEDIA)
         }
         val recovered = reported.filter { it !in found }
         reported.removeAll(recovered.toSet())
         return Verdict(found.filter { reported.add(it) }, recovered)
+    }
+}
+
+/** Counter snapshots from one active element in a content-script port. */
+internal data class WebBrowserVideoFrames(val id: Long, val epoch: Long, val at: Long,
+    val decoded: Long, val presented: Long, val dropped: Long) {
+    data class Interval(val ms: Long = 0, val decoded: Long = 0, val presented: Long = 0, val dropped: Long = 0) {
+        operator fun plus(other: Interval) = Interval(ms + other.ms, decoded + other.decoded,
+            presented + other.presented, dropped + other.dropped)
+    }
+
+    fun since(previous: WebBrowserVideoFrames?, since: Long): Interval {
+        if (previous == null || previous.id != id || previous.epoch != epoch || previous.at < since ||
+            at <= previous.at || decoded < previous.decoded || presented < previous.presented || dropped < previous.dropped) return Interval()
+        return Interval(at - previous.at, decoded - previous.decoded, presented - previous.presented, dropped - previous.dropped)
     }
 }
 

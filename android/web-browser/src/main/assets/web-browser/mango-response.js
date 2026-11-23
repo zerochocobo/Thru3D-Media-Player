@@ -4,9 +4,14 @@ const Thru3DMangoResponses = (stateFor,publish,hasFrame) => {
   hasFrame ||= ()=>false;
   const filter={urls:['https://*/*'],types:['xmlhttprequest','script','other']};
   const active=new Map(),early=new Map(),TTL=15000,LIMIT=2*1024*1024;
+  const PREFETCH_TTL=60000;
+  const episode=s=>s.nextEpisode||Thru3DMango.page(s.page)?.id;
+  const sameDocument=(a,b)=>!!a.document&&a.document===b.document&&a.key===b.key&&
+    a.privateContext===b.privateContext&&a.cookieStore===b.cookieStore&&new URL(a.page).origin===new URL(b.page).origin;
   const same=(a,b)=>{
-    const x=Thru3DMango.page(a.page),y=Thru3DMango.page(b.page);
-    return !!x&&!!y&&x.id===y.id&&a.key===b.key&&a.privateContext===b.privateContext&&
+    const x=episode(a),y=episode(b);
+    if(a.nextEpisode)return x===y&&sameDocument(a,b);
+    return !!x&&!!y&&x===y&&a.key===b.key&&a.privateContext===b.privateContext&&
       (!a.document||!b.document||a.document===b.document)&&(!a.cookieStore||!b.cookieStore||a.cookieStore===b.cookieStore)&&
       new URL(a.page).origin===new URL(b.page).origin;
   };
@@ -21,10 +26,25 @@ const Thru3DMangoResponses = (stateFor,publish,hasFrame) => {
     const state=early.get(key);if(!state)return;early.delete(key);clearTimeout(state.expiry);
     for(const e of active.values())if(e.state===state)release(e,'context_changed');
   };
-  const prune=()=>{for(const [key,state] of early)if(Date.now()-state.created>TTL)drop(key);};
-  const owner=d=>{
+  const prune=()=>{for(const [key,state] of early)if(Date.now()-state.created>(state.nextEpisode?PREFETCH_TTL:TTL))drop(key);};
+  const owner=(d,nextId='',create=true)=>{
     const state=stateFor(d);
-    if(state)return state.privateContext===d.incognito&&(!state.cookieStore||!d.cookieStoreId||state.cookieStore===d.cookieStoreId)?state:null;
+    if(state){
+      if(state.privateContext!==d.incognito||state.cookieStore&&d.cookieStoreId&&state.cookieStore!==d.cookieStoreId)return null;
+      if(!nextId||episode(state)===nextId)return state;
+      // The site fetches the next episode while still playing the old one.
+      // Keep that response private to this document and its declared episode.
+      if(!state.mango||d.frameId!==0||!d.documentId||d.documentId!==state.document||
+         !Thru3DMango.page(d.documentUrl)||new URL(d.documentUrl).origin!==new URL(state.page).origin)return null;
+      prune();const key=`${state.key}:${state.document}:mango-prefetch:${nextId}`;
+      if(create&&!early.has(key)){
+        const pending={key:state.key,page:state.page,document:state.document,privateContext:state.privateContext,cookieStore:state.cookieStore,
+          mango:true,early:true,nextEpisode:nextId,created:Date.now()};
+        early.set(key,pending);pending.expiry=setTimeout(()=>drop(key),PREFETCH_TTL);
+      }
+      while(early.size>16)drop(early.keys().next().value);
+      return early.get(key)||null;
+    }
     if(hasFrame(d)||!Number.isInteger(d.tabId)||d.tabId<0||!Number.isInteger(d.frameId)||d.frameId<0||typeof d.incognito!=='boolean')return null;
     const page=d.documentUrl||d.originUrl;if(!Thru3DMango.page(page))return null;
     try{if(d.originUrl&&new URL(d.originUrl).origin!==new URL(page).origin)return null;}catch(_){return null;}
@@ -71,9 +91,14 @@ const Thru3DMangoResponses = (stateFor,publish,hasFrame) => {
     for(const e of active.values())if(e.state===value)e.state=s;
     notify(s);
   };
-  const cancel=s=>{
+  const cancel=(s,nextPage='')=>{
     for(const e of active.values())if(e.state===s)release(e,'cancelled');
-    for(const [key,value] of early)if(same(value,s))drop(key);
+    const nextId=Thru3DMango.page(nextPage)?.id;
+    for(const [key,value] of early){
+      if(value.nextEpisode){
+        if(sameDocument(value,s)&&(!nextId||value.nextEpisode!==nextId||new URL(nextPage).origin!==new URL(s.page).origin))drop(key);
+      }else if(same(value,s))drop(key);
+    }
     s.mangoData?.clear();s.mangoDeclared=[];s.mangoManifests?.clear();s.mangoMeta=null;s.mangoFiles=[];s.mangoInline=[];
   };
   const navigate=d=>{
@@ -81,10 +106,12 @@ const Thru3DMangoResponses = (stateFor,publish,hasFrame) => {
   };
   browser.webRequest.onBeforeRequest.addListener(d=>{
     if(d.method!=='GET'||active.size>=8)return;
-    const s=owner(d),p=s?.mango&&Thru3DMango.page(s.page),u=Thru3DMango.address(d.url);if(!p||!u)return;
+    const u=Thru3DMango.address(d.url);if(!u)return;
     const api=['/player/video','/player/getSource','/video/streamList'].includes(u.pathname);
     const ids=u.searchParams.getAll('video_id');
-    if(api&&(ids.length!==1||ids[0]!==p.id))return;
+    const nextId=u.pathname==='/video/streamList'&&ids.length===1&&/^[1-9][0-9]{0,19}$/.test(ids[0])?ids[0]:'';
+    const s=owner(d,nextId),id=s?.mango&&episode(s);if(!id)return;
+    if(api&&(ids.length!==1||ids[0]!==id))return;
     const kind=api?u.pathname:Thru3DMango.matchDispatch(s.mangoDeclared||[],d.url)?'dispatch':'';
     if(!kind)return;
     if(api){
@@ -98,23 +125,23 @@ const Thru3DMangoResponses = (stateFor,publish,hasFrame) => {
     e.timer=setTimeout(()=>release(e,'timeout'),TTL);
     const complete=()=>{
       if(e.released||!e.stopped||e.ok===null)return;
-      if(!e.ok||owner(d)!==e.state||e.generation!==e.state.mangoGeneration){release(e,'context_changed');return;}
+      if(!e.ok||owner(d,nextId,false)!==e.state||e.generation!==e.state.mangoGeneration){release(e,'context_changed');return;}
       e.released=true;clearTimeout(e.timer);active.delete(e.id);
       try{
         const bytes=new Uint8Array(e.size);let at=0;for(const c of e.chunks){bytes.set(c,at);at+=c.length;}
         const raw=Thru3DMango.json(new TextDecoder('utf-8',{fatal:true}).decode(bytes)),state=e.state;
         if(kind==='/video/streamList'){
-          state.mangoMeta=Thru3DMango.video(raw,p.id);state.mangoDeclared=Thru3DMango.sources(raw,p.id,state.mangoMeta);state.mangoManifests=new Set();
-          state.mangoFiles=Thru3DMango.files(raw,p.id,state.mangoMeta);
-          state.mangoInline=Thru3DMango.inline(raw,p.id,state.mangoMeta);
+          state.mangoMeta=Thru3DMango.video(raw,id);state.mangoDeclared=Thru3DMango.sources(raw,id,state.mangoMeta);state.mangoManifests=new Set();
+          state.mangoFiles=Thru3DMango.files(raw,id,state.mangoMeta);
+          state.mangoInline=Thru3DMango.inline(raw,id,state.mangoMeta);
           state.mangoStatus=state.mangoDeclared.length?'sources':state.mangoMeta?.clear?'unbound_sources':'protected_or_invalid';
         }else if(kind==='/player/video'){
-          state.mangoMeta=Thru3DMango.video(raw,p.id);state.mangoDeclared=[];state.mangoManifests=new Set();
+          state.mangoMeta=Thru3DMango.video(raw,id);state.mangoDeclared=[];state.mangoManifests=new Set();
           state.mangoStatus=state.mangoMeta?.clear?'metadata':'protected_or_invalid';
         }else if(kind==='/player/getSource'){
-          state.mangoDeclared=Thru3DMango.sources(raw,p.id,state.mangoMeta);
-          state.mangoFiles=Thru3DMango.files(raw,p.id,state.mangoMeta);
-          state.mangoInline=Thru3DMango.inline(raw,p.id,state.mangoMeta);
+          state.mangoDeclared=Thru3DMango.sources(raw,id,state.mangoMeta);
+          state.mangoFiles=Thru3DMango.files(raw,id,state.mangoMeta);
+          state.mangoInline=Thru3DMango.inline(raw,id,state.mangoMeta);
           state.mangoStatus=state.mangoDeclared.length?'sources':'unbound_sources';
         }else{
           const manifest=Thru3DMango.manifest(raw);

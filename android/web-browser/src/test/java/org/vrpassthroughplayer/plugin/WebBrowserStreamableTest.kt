@@ -35,11 +35,20 @@ class WebBrowserStreamableTest {
         assertNull(WebBrowserMediaPolicy.selectedCandidate(listOf(media().put("streamable_ready",false)),"selected"))
     }
 
-    @Test fun onlyOfficialDetailDocumentsMatch() {
+    @Test fun onlyOfficialDetailAndEmbedDocumentsMatch() {
+        val embedded = "https://streamable.com/e/abc123"
         assertEquals("abc123",WebBrowserStreamable.page(page))
+        assertEquals("abc123",WebBrowserStreamable.page(embedded))
         for(bad in listOf(page.replace("https:","http:"),page.replace("streamable.com","streamable.com.evil"),
-            page.replace("https://","https://user@"),page+"#other","https://streamable.com/e/abc123"))
+            page.replace("https://","https://user@"),page+"#other","https://streamable.com/embed/abc123"))
             assertNull(WebBrowserStreamable.page(bad))
         assertTrue(WebBrowserStreamable.enabled(page))
+        assertTrue(WebBrowserStreamable.enabled(embedded))
+        val item = media().put("frame",embedded)
+        val metadata = item.getJSONObject("streamable").put("page",embedded)
+        assertNull(WebBrowserStreamable.metadata(item,embedded))
+        metadata.put("embedded",true)
+        assertNotNull(WebBrowserStreamable.metadata(item,embedded))
+        assertNull(WebBrowserStreamable.metadata(item,page))
     }
 }

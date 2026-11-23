@@ -8,7 +8,11 @@ import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 
 /** Errors crossing into Godot are codes, never server bodies or credential-bearing URLs. */
-internal class MediaServerFailure(val code: String, val httpStatus: Int = 0, val transportError: String = "") : Exception(code)
+internal class MediaServerFailure(val code: String, val httpStatus: Int = 0, val transportError: String = "",
+    /** For an HTTP status failure: "none", "same_host" or "other_host" (host and port) — never the address itself. */
+    val redirect: String = "") : Exception(code)
+internal fun redirectKind(redirects: Int, from: URI, to: URI): String =
+    if (redirects == 0) "none" else if (from.host.equals(to.host, true) && from.port == to.port) "same_host" else "other_host"
 internal fun mediaRequire(value: Boolean, code: String = "Invalid server response") {
     if (!value) throw MediaServerFailure(code)
 }
@@ -77,7 +81,7 @@ internal class MediaServerHttp(private val account: MediaServerAccount,
         method: String = if (json == null) "GET" else "POST"): HttpURLConnection {
         mediaRequire(method in setOf("GET", "POST", "DELETE"), "Invalid server request")
         var target = uri
-        repeat(6) {
+        repeat(6) { redirects ->
             mediaRequire(account.accepts(target), "Media address differs from server")
             mediaRequire(!closed && !Thread.currentThread().isInterrupted, "Request cancelled")
             val c = target.toURL().openConnection() as HttpURLConnection
@@ -129,8 +133,9 @@ internal class MediaServerHttp(private val account: MediaServerAccount,
                     val location = c.getHeaderField("Location") ?: throw MediaServerFailure("Invalid server response")
                     target = target.resolve(location); release(c)
                 } else {
-                    if (status == 401 || status == 403) throw MediaServerFailure("Server authentication required", status)
-                    if (status !in 200..299) throw MediaServerFailure("Server request failed", status)
+                    val redirect = redirectKind(redirects, uri, target)
+                    if (status == 401 || status == 403) throw MediaServerFailure("Server authentication required", status, redirect = redirect)
+                    if (status !in 200..299) throw MediaServerFailure("Server request failed", status, redirect = redirect)
                     return c
                 }
             } catch (e: Exception) { release(c); throw if (e is MediaServerFailure) e else MediaServerFailure("Server unavailable", transportError = e.javaClass.simpleName) }

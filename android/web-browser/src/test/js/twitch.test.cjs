@@ -15,6 +15,17 @@ test('only official clip pages have a public identity; no live/VOD or embedded p
     'https://www.twitch.tv/ea','https://www.twitch.tv/videos/123','https://player.twitch.tv/?video=v123','https://clips.twitch.tv/embed?clip=PublicClip',
     'https://clips.twitch.tv/Bad%2FClip'])assert.equal(t.page(u),null,u);
 });
+test('handoff identity ignores only one known list range and preserves other query fields verbatim', () => {
+  const clip='https://www.twitch.tv/creator/clip/PublicClip';
+  const original=clip+'?tt_medium=clips%2Bapi';
+  assert.equal(t.handoffPage(clip+'?range=7d&tt_medium=clips%2Bapi'),original);
+  assert.equal(t.handoffPage(original+'&range=24hr'),original);
+  for(const value of [original+'&range=7d&range=30d',original+'&r%61nge=7d&range=7d',original+'&range=other',
+    original+'&range=7d#fragment','https://example.test/creator/clip/PublicClip?range=7d',signed+'&range=7d']){
+    assert.equal(t.handoffPage(value),value);
+  }
+  assert.equal(t.handoffPage(original+'&quality=source&range=7d'),original+'&quality=source');
+});
 test('actual API fragments do not disable metadata observation or change signed media handling',()=>{
   assert.equal(t.api('https://actual-api.example/gql#origin=twilight'),true);
   for(const u of ['http://actual-api.example/gql','https://user:secret@actual-api.example/gql','https://actual-api.example/other'])assert.equal(t.api(u),false);

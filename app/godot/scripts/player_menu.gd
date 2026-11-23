@@ -78,6 +78,7 @@ const NARRATION_VOICES := 528
 const SUBTITLE_GENERATE := 529
 const SUBTITLE_TASK_CANCEL := 530
 const SUBTITLE_TASKS := 531
+const SUBTITLE_CACHE_DELETE := 532
 const ClonePanel := preload("res://scripts/narration_clone_panel.gd")
 var clone_panel := ClonePanel.new(self)
 const AudioTiming := preload("res://scripts/file_audio_timing.gd")
@@ -263,7 +264,7 @@ const OPERATIONS := [
 	["color_grade", "loop", "seek_mode", "hdr_to_sdr", "stereo_view", "video_auto_3d", "depth_render", "depth_edge_steady",
 		"alpha_keep_background", "show_status_info", "show_fps"],
 	["capabilities"]]
-const HEADINGS := ["Default picture", "Playback mode", "Video time positioning", HdrToSdr.TITLE, "Stereo viewing", VideoAuto3D.TITLE, "2D to 3D effect", DepthEdgeSteady.TITLE,
+const HEADINGS := ["Picture quality & color", "Playback mode", "Video time positioning", HdrToSdr.TITLE, "Stereo viewing", VideoAuto3D.TITLE, "2D to 3D effect", DepthEdgeSteady.TITLE,
 	"Keep background during passthrough", "Show status information", "Show FPS"]
 const SETTING_ICONS := ["adjust", "loop", "history", "quality", "eyes", "depth", "depth", "depth", "keep_background", "status_info", "frame_rate"]
 ## Plain on/off tiles: display choices of the player itself, on offer whatever is playing or cast.
@@ -911,29 +912,14 @@ func _bar_target(target: int) -> bool:
 	return target >= 100 and target < 100 + OPERATIONS[0].size()
 
 func editing_picture() -> bool:
-	return _adjustment in ["picture", "picture_defaults"]
-
-func editing_picture_defaults() -> bool:
-	return _adjustment == "picture_defaults"
+	return _adjustment == "picture"
 
 func _picture_button_x() -> float:
 	var capture_shown: bool = _state.get("capture", {}).get("available", false)
 	return 0.42 + 0.14 * (int(capture_shown) + int(disc_titles.available()))
 
 func _read_state() -> Dictionary:
-	var state: Dictionary = state_provider.call() if state_provider.is_valid() else {}
-	if editing_picture_defaults() and state.has("picture_defaults"):
-		state = state.duplicate()
-		state.merge(state.picture_defaults, true)
-		state.picture_sharpness = roundf(float(state.picture_sharpness) * 100.0)
-		var grade := Grade.new()
-		grade.restore(state.color_grade)
-		state.grade_values = grade.values(true)
-		state.picture_quality_available = state.get("picture_quality_supported", false)
-		state.grade_curves_locked = state.picture_quality_available and not state.picture_quality
-		state.picture_upscale_available = true
-		state.picture_upscale_sizes = {}
-	return state
+	return state_provider.call() if state_provider.is_valid() else {}
 
 func _drop_replaced_picture_controls() -> bool:
 	if _adjustment != "picture" or picture_controls_open_id == int(_state.get("picture_open_id", 0)): return false
@@ -950,9 +936,9 @@ func _picture_key() -> Array:
 		_state.get("picture_upscale_available"), _state.get("picture_denoise"), _state.get("picture_upscale"),
 		_state.get("picture_source"), _state.get("picture_clear_available"), _state.get("reuse_last_picture"), _state.get("picture_inherit_available")]
 
-func _open_picture_controls(defaults: bool) -> void:
+func _open_picture_controls() -> void:
 	picture_controls_open_id = int(_state.get("picture_open_id", 0))
-	_adjustment = "picture_defaults" if defaults else "picture"
+	_adjustment = "picture"
 	_picture_tab = 0 if _state.get("picture_quality_supported", false) else 1
 	_picture_advanced = false
 	_grade_page = 0
@@ -975,8 +961,7 @@ func _draw_picture_panel() -> void:
 	add_child(panel); _decorations.append(panel)
 	_block_rays(panel, size)
 	_picture_drawn = _picture_key()
-	var title := "Default picture" if editing_picture_defaults() else "Picture quality & color"
-	_label(I18n.t(title), Vector3(x, top - 0.039, 0.004), TEXT_TITLE)
+	_label(I18n.t("Picture quality & color"), Vector3(x, top - 0.039, 0.004), TEXT_TITLE)
 	_glyph(PICTURE_CLOSE, "close", Vector2(x + 0.33, top - 0.039), 0.054, true, I18n.t("Close"))
 	var tabs_y := top - 0.155
 	if has_mode:
@@ -987,7 +972,7 @@ func _draw_picture_panel() -> void:
 			if index == _picture_tab: _buttons.back().base_color = SELECTED
 	if in_color: _draw_picture_color(x, top - (0.214 if has_mode else 0.114), keys)
 	else: _picture_quality_rows(top - 0.215)
-	if not editing_picture_defaults(): _draw_picture_footer(x, bottom + 0.035)
+	_draw_picture_footer(x, bottom + 0.035)
 	_refresh_adjustments()
 
 func _draw_picture_footer(x: float, y: float) -> void:
@@ -1125,10 +1110,13 @@ func _draw_bar() -> void:
 	_back_filename(_title, title_width)
 	if not str(_state.get("error", "")).is_empty():
 		_title.visible = false
-		_button(ERROR_OPEN, I18n.t("Playback failed") + "  ›", Vector2(0, 0.1), Vector2(0.90, 0.055))
+		var takeover := bool(_state.get("usb_takeover_offer", false)) and not _failure_open
+		# The USB takeover sits where the failure is first seen, beside the failure entry.
+		_button(ERROR_OPEN, I18n.t("Playback failed") + "  ›", Vector2(-0.17 if takeover else 0.0, 0.1), Vector2(0.5 if takeover else 0.90, 0.055))
 		_buttons.back().base_color = Color(TILE, 0.0)
 		_buttons.back().foreground = WARNING
 		_buttons.back().node.get_child(0).modulate = WARNING
+		if takeover: _button(USB_TAKEOVER, I18n.t("Open directly"), Vector2(0.28, 0.1), Vector2(0.38, 0.055), true, "usb", true)
 	_title.modulate = MUTED
 	var row := 0.025
 	_glyph(109, _sound_icon(), Vector2(VOLUME_X, row), 0.075, _enabled("mute"), _volume_tip())
@@ -1675,7 +1663,12 @@ func _draw_subtitle_task(y: float, status: bool) -> void:
 		if translated and (_state.get("listening_translation_complete", false) or job.get("state") == "complete"):
 			caption = I18n.t("Full-film translated subtitles cached" if _state.get("listening_cache_persistent", job.get("persistent", false)) else "Full-film translated subtitles ready for this session")
 		if translated and job.get("state") == "translating": caption += " · %d/%d" % [int(job.get("translated", 0)), int(job.get("total", 0))]
-	var label := _label(_fit_title(caption, "", 0.58, TEXT_AUX), Vector3(0, y + 0.014, 0.004), TEXT_AUX)
+	# A finished film from an earlier recognizer stays in use; offer to delete it.
+	var outdated: bool = complete and not running and _state.get("listening_cache_outdated", false)
+	if outdated:
+		caption = I18n.t("Full-film subtitles from an earlier recognizer")
+		_glyph(SUBTITLE_CACHE_DELETE, "trash", Vector2(0.265, y + 0.014), 0.052, true, I18n.t("Delete these subtitles to regenerate with the current recognizer"))
+	var label := _label(_fit_title(caption, "", 0.48 if outdated else 0.58, TEXT_AUX), Vector3(-0.05 if outdated else 0.0, y + 0.014, 0.004), TEXT_AUX)
 	label.modulate = MUTED
 	if running:
 		var ratio := float(job.get("progress", 0)) / 100.0
@@ -2749,7 +2742,7 @@ func _setting_choices(operation: String) -> Dictionary:
 				{"value": false, "label": "Off", "hint": "Protects burned-in subtitles from distortion during 2D-to-3D conversion."},
 				{"value": true, "label": "On", "hint": "Protects burned-in subtitles from distortion during 2D-to-3D conversion."}]}
 		"depth_edge_steady":
-			# Fill gaps warps from the model's own map: nothing for this to change there.
+			# With Fill gaps the snapped steps follow picture texture and shred (photo_fill_sheet.py): stretch only.
 			if _state.get("depth_render", "stretch") != "stretch": return {}
 			return DepthEdgeSteady.choice(bool(_state.get("depth_edge_steady", DepthEdgeSteady.DEFAULT)))
 		"depth_render":
@@ -2831,6 +2824,8 @@ func _activate_hit(hit: Dictionary) -> void:
 
 func _activate(target: int) -> void:
 	if screen_lock_ui.blocked(target): return
+	if section == 0 and _subtitle_open and target == SUBTITLE_CACHE_DELETE:
+		setting_requested.emit("listening_cache_delete", true); refresh(); return
 	if section == 0 and _subtitle_open and target in [SUBTITLE_GENERATE, SUBTITLE_TASK_CANCEL, SUBTITLE_TASKS]:
 		setting_requested.emit("listening_generate" if target == SUBTITLE_GENERATE else ("listening_cancel" if target == SUBTITLE_TASK_CANCEL else "subtitle_tasks_open"), _state.get("subtitle_task", {}).get("id", ""))
 		refresh(); return
@@ -2858,7 +2853,7 @@ func _activate(target: int) -> void:
 		if not _state.get("has_video", false) or not _cast_allowed("color_grade"): return
 		var was_open := _adjustment == "picture"
 		_reset_navigation()
-		if not was_open: _open_picture_controls(false)
+		if not was_open: _open_picture_controls()
 		else: refresh()
 		return
 	if target == PIP:
@@ -2933,7 +2928,7 @@ func _activate(target: int) -> void:
 		var entry := _failure_log()
 		if entry.has("action"): action_requested.emit(entry.action)
 		return
-	if target == USB_TAKEOVER and _failure_open and _state.get("usb_takeover_offer", false):
+	if target == USB_TAKEOVER and _state.get("usb_takeover_offer", false):
 		_failure_open = false; _error_details_open = false
 		action_requested.emit("usb_takeover"); return
 	if target == ERROR_DETAILS and (_failure_open or section == 2) and not str(_state.get("error", "")).is_empty():
@@ -3005,7 +3000,7 @@ func _activate(target: int) -> void:
 	if section == 1 and target >= SETTINGS_TILE and target < SETTINGS_TILE + OPERATIONS[1].size() and OPERATIONS[1][target - SETTINGS_TILE] in ["color_grade", "stereo_view"]:
 		if not _enabled(OPERATIONS[1][target - SETTINGS_TILE]): return
 		if OPERATIONS[1][target - SETTINGS_TILE] == "color_grade":
-			_open_picture_controls(true); return
+			_open_picture_controls(); return
 		_adjustment = "stereo_view"
 		refresh()
 		return
@@ -3254,7 +3249,7 @@ func _enabled(operation: String) -> bool:
 		"eyes", "stereo_view": return has_video and _state.get("stereo", false)
 		"volume_down", "volume_up": return has_video and _state.get("audio_available", false) and _state.get("volume_writable", true)
 		"mute": return has_video and _state.get("audio_available", false)
-		"audio": return has_video
+		"audio", "color_grade": return has_video
 		"clone_voice": return has_video and _state.get("clone_voice", false)
 		"depth": return has_video and not _state.get("spatial_video", false) and int(_state.get("geometry", 0)) == 0 and not _state.get("stereo", false)
 		"depth_strength": return _can_depth()
@@ -3309,7 +3304,7 @@ func _caption_text(operation: String) -> String:
 		"capabilities": return "Refresh device info"
 		"subtitle_distance": return "%.1f m · %+.0f°" % [float(_state.get("subtitle_distance", 5.0)), float(_state.get("subtitle_position", SubtitleDepth.DEFAULT_POSITION))]
 		"screen_distance": return "%.1f m" % float(_state.get("screen_distance", Surface.SCREEN_DISTANCE))
-		"color_grade": return str(_state.get("picture_defaults", {}).get("color_grade", {}).get("preset", "Original"))
+		"color_grade": return str(_state.get("color_grade", {}).get("preset", "Original"))
 		"screen_curve": return _curve_caption(float(_state.get("screen_curve", 0.0)))
 	return operation
 
@@ -3781,7 +3776,7 @@ func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: 
 	var width: float = g.width
 	var centre := left + width / 2
 	_button(target, "", Vector2(centre, y), Vector2(width + g.hit, g.height))
-	_buttons.back().enabled = key == "bar_transparency" or editing_picture_defaults() or _state.get("has_video", false)
+	_buttons.back().enabled = key == "bar_transparency" or _state.get("has_video", false)
 	_buttons.back().base_color = Color(TILE, 0)
 	var track := _decoration(Vector2(width, g.thickness), Vector2(centre, y), MUTED)
 	var fill := _decoration(Vector2(width, g.thickness), Vector2(centre, y), ACCENT)
@@ -3843,7 +3838,7 @@ func _activate_depth_off(target: int) -> bool:
 
 ## The grade has something to apply to: the video, or in the photo menu the image on show.
 func _grade_target_ready() -> bool:
-	return editing_picture_defaults() or _state.get("has_video", false)
+	return _state.get("has_video", false)
 
 func _grade_page_needs_reset() -> bool:
 	var values: Dictionary = _state.get("grade_values", Grade.DEFAULTS)
@@ -4015,7 +4010,7 @@ func _activate_adjustment(target: int) -> void:
 		elif target == PICTURE_ADVANCED:
 			_picture_advanced = not _picture_advanced
 			_grade_page = 0
-		elif target == PICTURE_CLEAR and not editing_picture_defaults() and _state.get("picture_clear_available", false):
+		elif target == PICTURE_CLEAR and _state.get("picture_clear_available", false):
 			setting_requested.emit("clear_current_picture", true)
 		elif target >= 410 and target < 410 + Grade.PRESETS.size():
 			adjustment_requested.emit("grade_preset", Grade.PRESETS[target - 410])

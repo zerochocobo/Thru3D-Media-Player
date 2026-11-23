@@ -108,6 +108,18 @@ test('escaped separators, malformed UTF-8 and double-encoded slugs stay ineligib
   }
 });
 
+test('a literal or encoded exclamation mark binds only the matching public claim',()=>{
+  const f=hlsFixture();
+  for(const suffix of ['!','%21']){
+    f.document.location.href=page.replace('PublicClip','PublicClip'+suffix);
+    f.owner.uri='lbry://@PublicChannel#2/PublicClip!#1';
+    assert.equal(O.binding(f.video,f.requests,f.document,[f.video]).root,f.root);
+    f.owner.uri='lbry://@PublicChannel#2/PublicClip#1';
+    assert.equal(O.binding(f.video,f.requests,f.document,[f.video]),null);
+  }
+  assert.equal(O.page(page.replace('PublicClip','PublicClip%2521')),null);
+});
+
 function renderedFileFixture(){
   const f=hlsFixture();f.video.currentSrc=source;delete f.video._hls;f.video.__reactProps$test.src=source;
   f.requests=[{kind:'file',url:source,at:Date.now()}];f.scripts.length=0;f.canonical.length=0;return f;

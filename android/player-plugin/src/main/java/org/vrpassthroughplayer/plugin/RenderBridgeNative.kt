@@ -12,7 +12,7 @@ internal object RenderBridgeNative {
      * pair[0]: the pair's GPU token for [photoPairBegin] (0 when it exists only in [output]); an empty pair keeps none. */
     @JvmStatic external fun photoStereo(rgba: ByteBuffer, width: Int, height: Int, near: ByteBuffer,
         modelWidth: Int, modelHeight: Int, content: FloatArray, strength: Float, convergence: Float, turns: Int, stretch: Boolean,
-        basis: Int, output: ByteBuffer, pair: IntArray): Long
+        basis: Int, steady: Boolean, output: ByteBuffer, pair: IntArray): Long
     /** Any thread: [bitmap] (RGBA8) turned upright for EXIF [orientation] 5-8 into a T3DI v2 file at [path]. */
     @JvmStatic external fun writeUprightRaw(bitmap: Bitmap, orientation: Int, path: String): Boolean
     /** Godot's GL thread: photo pairs share this context's objects from the next still on. */

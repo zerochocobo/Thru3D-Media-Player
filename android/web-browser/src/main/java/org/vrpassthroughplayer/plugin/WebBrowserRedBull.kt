@@ -1,11 +1,25 @@
 package org.vrpassthroughplayer.plugin
 
+import android.media.MediaCodecList
 import java.net.URI
 import org.json.JSONObject
 
 /** The currently rendered full Red Bull TV player, not its hero preview. */
 object WebBrowserRedBull {
     private const val ENABLED=false // Open after real button/native/seek/retained-return closure.
+    private val supportsAvcFallback by lazy {
+        runCatching {
+            val hardwareDecoders = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.filter {
+                !it.isEncoder && it.isHardwareAccelerated
+            }
+            hardwareDecoders.any { codec -> codec.supportedTypes.any { it.equals("video/avc", true) } } &&
+                hardwareDecoders.none { codec -> codec.supportedTypes.any { it.equals("video/hevc", true) } }
+        }.getOrDefault(false)
+    }
+
+    // Gecko can answer MSE capability queries affirmatively even when Red Bull's HEVC stream fails to decode.
+    fun preferAvc(value: String): Boolean = document(value) && supportsAvcFallback
+
     fun page(value: String): String?=runCatching {
         val uri=URI(value)
         require(value.length<=8192 && uri.scheme=="https" && uri.host in setOf("www.redbull.tv","redbull.tv") &&

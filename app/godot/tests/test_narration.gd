@@ -187,10 +187,12 @@ func _run() -> void:
 	var tracks: Array = video.media.playback.details.subtitle_tracks.duplicate(true)
 	video.media.playback.details.subtitle_tracks = [];video.narration.apply()
 	check(host.calls.size()==before and video.narration.available(),"Transient seek metadata does not disable narration")
+	check(video.narration.running(),"Active narration counts as running inference")
 	video.media.playback.details.subtitle_tracks = tracks
 	for unsupported in [0,4]:
 		video.subtitles.select(unsupported);video.narration.apply();menu.refresh()
 		check(not video.narration.available() and not menu._narration_on(),"Off/PGS removes active narration icon")
+		check(video.narration.enabled and not video.narration.running(),"A remembered preference without text subtitles is not running inference")
 		check(option(menu,"narration_enabled",true)<0 and not button(menu,menu.NARRATION_PREVIEW).enabled,"Off/PGS retains preferences but disables activation and preview")
 		check(not host.calls.back()[1].enabled,"Off/PGS sends runtime disable")
 		check(not video.narration.set_option("narration_preview",true),"Off/PGS rejects stale preview actions")

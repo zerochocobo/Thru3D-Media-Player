@@ -204,6 +204,16 @@ class WebVideoNetworkCaptureTest {
         assertEquals(file,selected.video.url.toString());assertEquals(listOf(URI(file)),reads.map{it.first})
         assertEquals("final-only",reads.single().second["authorization"])
         assertTrue(WebVideoArchiveCapture.keeps(p,m,m,selected.video))
+        val multipleAudio = mp4(audioTracks = listOf("mp4a", "mp4a", "mp4a"))
+        assertNull(WebVideoContainer.parse(multipleAudio))
+        val multipleAudioInfo = WebVideoArchiveCapture.resolve(p,m,resolver(mapOf(file to multipleAudio)))!!
+        val multipleAudioTrack = WebVideoFormats.select(p,multipleAudioInfo){true}.video
+        assertEquals(file,multipleAudioTrack.url.toString())
+        assertTrue(WebVideoArchiveCapture.keeps(p,m,m,multipleAudioTrack))
+        for (alternate in listOf("enca", "Opus", "mp4a+sinf")) {
+            val incompatible = mp4(audioTracks = listOf("mp4a", alternate))
+            assertNull(WebVideoArchiveCapture.resolve(p,m,resolver(mapOf(file to incompatible))))
+        }
         val changed=JSONObject(m.toString());changed.getJSONObject("archive").put("revision","a2")
         assertFalse(WebVideoArchiveCapture.keeps(p,m,changed,selected.video))
         changed.getJSONArray("network").getJSONObject(0).put("original_url",original+"?another=1")
@@ -417,6 +427,8 @@ class WebVideoNetworkCaptureTest {
         val selected=WebVideoFormats.select(p,info){true}
         assertEquals(root,selected.video.url.toString());assertEquals(listOf(URI(root),URI(init)),reads.map{it.first})
         assertEquals("root-only",reads.first().second["authorization"]);assertFalse(reads.last().second.containsKey("authorization"))
+        assertEquals(body, selected.video.browserManifest)
+        assertEquals(URI(root), selected.video.browserManifestBase)
         assertTrue(WebVideoYoukuCapture.keeps(p,m,m,selected.video))
 
         val cdn = URI("https://edge.test/redirected/list.m3u8?signature=new")
@@ -443,6 +455,8 @@ class WebVideoNetworkCaptureTest {
         assertEquals(URI(root), redirectedTrack.url)
         assertEquals("root-only", redirectedTrack.headers["authorization"])
         assertEquals(listOf(URI(root), redirectedInit), redirectedReads)
+        assertEquals(body, redirectedTrack.browserManifest)
+        assertEquals(cdn, redirectedTrack.browserManifestBase)
         assertTrue(WebVideoYoukuCapture.keeps(p,m,m,redirectedTrack))
 
         for(bad in listOf(mp4(width=1280,height=720),mp4(audio=false),mp4(protected=true)))
@@ -492,19 +506,55 @@ class WebVideoNetworkCaptureTest {
         assertNull(WebVideoWeiboCapture.candidate(page,JSONObject(item.toString()).put("source",other)))
         assertNull(WebVideoWeiboCapture.page("https://weibo.com/another-document",item))
     }
+    @Test fun mangoSameSizeLeavesRequireTheCurrentObservedMediaSegment() {
+        val page = WebVideoPage("mgtv", "15588271", "https://www.mgtv.com/b/15588271.html")
+        val first = "https://first.test/selected/playlist.m3u8"
+        val second = "https://second.test/alternate/playlist.m3u8"
+        val firstSegment = "https://first.test/selected/payload.ts?selector=first&ftc=0"
+        val nextSegment = "https://first.test/selected/next.ts?selector=first&ftc=0"
+        val secondSegment = "https://second.test/alternate/payload.ts?selector=second&ftc=0"
+        fun hls(selector: String) = ("#EXTM3U\n#EXTINF:5,\npayload.ts?selector=$selector&ftc=0\n" +
+            "#EXTINF:5,\nnext.ts?selector=$selector&ftc=0\n#EXT-X-ENDLIST\n").toByteArray()
+        val bodies = mapOf(first to hls("first"), second to hls("second"), firstSegment to mp4(), secondSegment to mp4())
+        fun captured(vararg segments: JSONObject) = media(candidate(first,"hls"),candidate(second,"hls"),*segments)
+        fun receipt(url: String, at: Long) = candidate(url,"segment").put("at",at)
+
+        assertNull(resolver(bodies).resolveCurrent(page,captured()))
+        assertNull(resolver(bodies).resolveCurrent(page,captured(receipt(firstSegment.replace("selector=first", "selector=other"), 1))))
+        assertNull(resolver(bodies).resolveCurrent(page,captured(receipt(firstSegment+"&ftc=2", 1))))
+        assertNull(resolver(bodies).resolveCurrent(page,captured(receipt(firstSegment, 2), receipt(secondSegment, 2))))
+        assertNull(resolver(bodies).resolveCurrent(page,captured(receipt(secondSegment, 1), receipt(firstSegment, 2))))
+        assertNull(resolver(bodies).resolveCurrent(page,captured(receipt(secondSegment, 1), receipt(firstSegment, 2),
+            receipt(firstSegment.replace("ftc=0", "ftc=18"), 3))))
+        assertNull(resolver(bodies).resolveCurrent(page,captured(receipt(firstSegment, 1), receipt(nextSegment, 2), receipt(secondSegment, 3))))
+        val reads = mutableListOf<Pair<URI, Map<String, String>>>()
+        val info = resolver(bodies, reads).resolveCurrent(page,captured(receipt(secondSegment, 1),
+            receipt(firstSegment.replace("ftc=0", "ftc=0xa21"), 2), receipt(nextSegment.replace("ftc=0", "ftc=0xa22"), 3)))!!
+        val selected = WebVideoFormats.select(page,info){true}.video
+        assertEquals(URI(first),selected.url)
+        assertEquals(String(hls("first")),selected.browserManifest)
+        assertEquals(listOf(URI(first), URI(second), URI(firstSegment)), reads.map { it.first })
+    }
+
     private val page = WebVideoPage("browser", "fixture", "webvideo://capture/fixture")
     private fun box(type: String, data: ByteArray) = ByteBuffer.allocate(8 + data.size).putInt(data.size + 8).put(type.toByteArray()).put(data).array()
-    private fun mp4(video: Boolean = true, audio: Boolean = true, duration: Int = 10, protected: Boolean = false, width: Int = 1920, height: Int = 1080, aspect: Pair<Int,Int>?=null, avcConfig: ByteArray?=null,durationMs: Int=duration*1000): ByteArray {
-        fun track(kind: String): ByteArray {
+    private fun mp4(video: Boolean = true, audio: Boolean = true, duration: Int = 10, protected: Boolean = false, width: Int = 1920, height: Int = 1080, aspect: Pair<Int,Int>?=null, avcConfig: ByteArray?=null,durationMs: Int=duration*1000, av1Config: ByteArray? = null,
+        audioTracks: List<String> = if (audio) listOf("mp4a") else emptyList()): ByteArray {
+        fun track(kind: String, audioType: String = "mp4a"): ByteArray {
             val video = kind == "vide"
-            val sample = if (video) ByteArray(78).also { ByteBuffer.wrap(it).putShort(24, width.toShort()).putShort(26, height.toShort()) } + box("avcC", avcConfig ?: byteArrayOf(1, 100, 0, 40)) +
-                (aspect?.let {box("pasp",ByteBuffer.allocate(8).putInt(it.first).putInt(it.second).array())} ?: byteArrayOf()) else ByteArray(28)
-            val stsd = box("stsd", ByteBuffer.allocate(8).putInt(0).putInt(1).array() + box(if (protected) if (video) "encv" else "enca" else if (video) "avc1" else "mp4a", sample))
+            val config = if (av1Config == null) box("avcC", avcConfig ?: byteArrayOf(1, 100, 0, 40)) else box("av1C", av1Config)
+            val videoType = if (av1Config == null) "avc1" else "av01"
+            val sample = if (video) ByteArray(78).also { ByteBuffer.wrap(it).putShort(24, width.toShort()).putShort(26, height.toShort()) } + config +
+                (aspect?.let {box("pasp",ByteBuffer.allocate(8).putInt(it.first).putInt(it.second).array())} ?: byteArrayOf())
+                else ByteArray(28) + if (audioType == "mp4a+sinf") box("sinf", ByteArray(0)) else ByteArray(0)
+            val type = if (protected) if (video) "encv" else "enca" else if (video) videoType else audioType.substringBefore('+')
+            val stsd = box("stsd", ByteBuffer.allocate(8).putInt(0).putInt(1).array() + box(type, sample))
             val mdhd = ByteBuffer.allocate(24).putInt(12, 1000).putInt(16, durationMs).array()
             val hdlr = ByteArray(24).also { kind.toByteArray().copyInto(it, 8) }
             return box("trak", box("mdia", box("mdhd", mdhd) + box("hdlr", hdlr) + box("minf", box("stbl", stsd))))
         }
-        return box("ftyp", "isom0000isom".toByteArray()) + box("moov", (if (video) track("vide") else byteArrayOf()) + (if (audio) track("soun") else byteArrayOf())) + box("mdat", ByteArray(16))
+        val tracks = audioTracks.fold(if (video) track("vide") else ByteArray(0)) { all, type -> all + track("soun", type) }
+        return box("ftyp", "isom0000isom".toByteArray()) + box("moov", tracks) + box("mdat", ByteArray(16))
     }
     private fun candidate(url: String, kind: String = "file", headers: JSONObject = JSONObject(), cookies: JSONArray = JSONArray()) =
         JSONObject().put("url", url).put("kind", kind).put("headers", headers).put("cookies", cookies)
@@ -514,6 +564,31 @@ class WebVideoNetworkCaptureTest {
     private fun resolver(data: Map<String, ByteArray>, observed: MutableList<Pair<URI, Map<String, String>>> = arrayListOf()) = WebVideoNetworkCapture({ uri, headers, _ ->
         observed.add(uri to headers); uri to (data[uri.toString()] ?: error("Unexpected request"))
     }, { it.height <= 1080 })
+
+    @Test fun twitchAcceptsTheExactSdrAv1FileOnlyWithAnEligibleDecoder() {
+        val clip = "https://www.twitch.tv/channel/clip/CurrentClip"
+        val source = "https://cdn.test/current.mp4?selection=EXACT"
+        val other = "https://cdn.test/other.mp4?selection=OTHER"
+        val observed = mutableListOf<Pair<URI, Map<String, String>>>()
+        val input = media(candidate(source), candidate(other), direct = source)
+            .put("frame", clip).put("capture_identity", "actual-click").put("twitch_ready", true).put("twitch_enabled", true)
+            .put("twitch", JSONObject().put("id", "CurrentClip").put("page", clip).put("source", source).put("revision", "ab12")
+                .put("width", 1920).put("height", 1080).put("duration", 10).put("expected_duration", 10))
+        val twitch = requireNotNull(WebVideoTwitchCapture.page(clip, input))
+        val av1 = byteArrayOf(0x81.toByte(), 8, 0x0c, 0)
+        val clear = mp4(av1Config = av1)
+        val info = requireNotNull(WebVideoTwitchCapture.resolve(twitch, input, resolver(mapOf(source to clear), observed)))
+        val track = WebVideoFormats.select(twitch, info) { it.videoCodec == "av01.0.08m.08" }.video
+        assertEquals(listOf(URI(source)), observed.map { it.first })
+        assertTrue(track.hasAudio)
+        assertTrue(WebVideoTwitchCapture.keeps(twitch, input, input, track))
+        assertThrows(WebVideoFormats.DecoderRejected::class.java) { WebVideoFormats.select(twitch, info) { false } }
+        assertNull(resolver(mapOf(source to clear)).resolve(page, input))
+        for (unsupported in listOf(mp4(av1Config = av1, protected = true), mp4(av1Config = av1, audio = false),
+            mp4(av1Config = byteArrayOf(0x81.toByte(), 8, 0x6c, 0)))) {
+            assertNull(WebVideoTwitchCapture.resolve(twitch, input, resolver(mapOf(source to unsupported))))
+        }
+    }
 
     @Test fun verifiedMuxedFileUsesActualHeadersAndBypassesExtractorAndCookieExport() {
         val url = "https://cdn.test/movie?token=private"

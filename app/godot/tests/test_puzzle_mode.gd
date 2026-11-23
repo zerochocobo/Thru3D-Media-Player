@@ -39,7 +39,7 @@ func _run() -> void:
 	check(host.active and not host.panel.can_start and not has_button(host.panel,14) and has_button(host.panel,13),"The default hub contains mode and progress without an image-browser link")
 	host.panel._activate(13)
 	check(host.mode_enabled and Store.new(host.store.directory).mode_enabled(),"Turning mode on is explicit and durable")
-	check(not has_button(app.photo_menu,app.photo_menu.PHOTO_PUZZLE),"Floating photo puzzle entry remains hidden while mode is enabled")
+	check(has_button(app.photo_menu,app.photo_menu.PHOTO_PUZZLE),"Floating photo puzzle entry stays available while mode is enabled")
 	host.finish(); app._show_full_library()
 	check(not host.active and app.recent_menu.visible and app.recent_menu.media_filter==0,"Closing mode settings does not force the browser into an image filter")
 	app.recent_menu._choose({"uri":"file://"+path,"title":"mode.png","kind":"image"})

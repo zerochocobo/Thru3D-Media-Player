@@ -176,6 +176,10 @@ This source follows the fixed release input records, not temporary channel overr
 
 ## Dated release archives
 
-Release APK archives default to the build completion date. Use the optional PowerShell parameter -ReleaseDate YYYYMMDD with Release builds to choose the archive date. Standard 0.18.7 Android source uses versionCode 118 and the PICO China store build uses 119.
+Release APK archives default to the build completion date. Use the optional PowerShell parameter -ReleaseDate YYYYMMDD with Release builds to choose the archive date. Standard 0.18.8 Android source uses versionCode 120 and the PICO China store build uses 121.
 
 Public-source builds support saving diagnostic logs locally and sharing them on Wi-Fi. Remote diagnostic upload is disabled in this export.
+
+## Optional Gecko diagnostics
+
+Normal builds retain the pinned official GeckoView artifact. The optional -DouyinPlaybackLog -GeckoProbeAar build requires a separately rebuilt ARM64 AAR and the published [probe source and staging helper](GECKOVIEW_DIAGNOSTICS.md). It is a diagnostic tool, not a supported browser color fix or device-acceptance claim.

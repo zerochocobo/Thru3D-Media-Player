@@ -7,7 +7,7 @@ const Thru3DOdysee=(()=>{
   const slug=value=>{
     try{
       const decoded=decodeURIComponent(value);
-      return /^[\p{L}\p{M}\p{N}_.-]+$/u.test(decoded)&&!decoded.includes('..')?decoded:null;
+      return /^[\p{L}\p{M}\p{N}_.!-]+$/u.test(decoded)&&!decoded.includes('..')?decoded:null;
     }catch(_){return null;}
   };
   const documentPage=value=>{const u=address(value);return !!u&&value.length<=8192&&!u.port&&['odysee.com','www.odysee.com'].includes(u.hostname);};
@@ -89,13 +89,20 @@ const Thru3DOdysee=(()=>{
       const unique=[...new Map(found.map(d=>[JSON.stringify(d),d])).values()];return unique.length===1?unique[0]:null;
     }catch(_){return null;}
   };
+  const currentDeclaration=(video,document)=>{
+    const diagnostics={},rendered=renderedDeclaration(video,document,diagnostics);
+    return diagnostics.denied?null:rendered||declaration(video,document);
+  };
+  const matchesReturn=(video,document,target)=>{
+    const current=currentDeclaration(video,document);
+    return !!current&&current.id===target.id&&current.page===target.page&&current.claim_id===target.claim_id&&
+      current.source===target.source&&current.declared_source===target.declared_source;
+  };
   const read=(video,document=globalThis.document)=>{
     if(!video.isConnected||video.mediaKeys||video.seeking||video.ended||video.readyState<2||!visible(video)||
       !Number.isInteger(video.videoWidth)||!Number.isInteger(video.videoHeight)||video.videoWidth<=0||video.videoHeight<=0||video.videoWidth>16384||video.videoHeight>16384||
       !Number.isFinite(video.duration)||video.duration<=0||video.duration>86400)return null;
-    const diagnostics={},rendered=renderedDeclaration(video,document,diagnostics);
-    if(diagnostics.denied)return null;
-    const data=rendered||declaration(video,document);
+    const data=currentDeclaration(video,document);
     return data&&(data.whole_seconds?Math.floor(video.duration)===data.expected_duration:Math.abs(video.duration-data.expected_duration)<=.5)?data:null;
   };
   const binding=(video,requests,document,live)=>{
@@ -106,5 +113,5 @@ const Thru3DOdysee=(()=>{
       revision:revision((data.binding?data.binding+'\n'+data.claim_id+'\n':'')+data.id+'\n'+data.source+'\n'+data.declared_source+'\n'+data.expected_duration+'\n'+video.videoWidth+'x'+video.videoHeight)};
   };
   const hlsDeclaration=(video,document)=>video.currentSrc?.startsWith('blob:')?renderedDeclaration(video,document):null;
-  return {address,documentPage,page,file,declaration,hlsDeclaration,renderedDeclaration,read,binding};
+  return {address,documentPage,page,file,declaration,hlsDeclaration,renderedDeclaration,read,binding,matchesReturn};
 })();

@@ -6,8 +6,10 @@ const Thru3DNaver=(()=>{
   const id=value=>typeof value==='string'&&/^[A-F0-9]{32,64}$/.test(value)?value:null;
   const address=value=>{try{const u=new URL(value);return typeof value==='string'&&value.length<=16384&&u.protocol==='https:'&&!u.username&&!u.password&&!value.includes('#')?u.href:null;}catch(_){return null;}};
   const documentPage=value=>{try{const u=new URL(value);return value.length<=8192&&u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&u.hostname==='m.naver.com'&&u.pathname==='/shorts/';}catch(_){return false;}};
-  const playbackPage=value=>{try{const u=new URL(value);return documentPage(value)&&u.searchParams.getAll('serviceType').length===1&&['NTV','CLIP'].includes(u.searchParams.get('serviceType'));}catch(_){return false;}};
-  const page=(mediaId,service='NTV')=>id(mediaId)&&['NTV','CLIP'].includes(service)?'https://m.naver.com/shorts/?serviceType='+service+'&seedMediaId='+mediaId:null;
+  const segmentedService=service=>service==='CLIP'||service==='MOMENT';
+  const supportedService=service=>service==='NTV'||segmentedService(service);
+  const playbackPage=value=>{try{const u=new URL(value);return documentPage(value)&&u.searchParams.getAll('serviceType').length===1&&supportedService(u.searchParams.get('serviceType'));}catch(_){return false;}};
+  const page=(mediaId,service='NTV')=>id(mediaId)&&supportedService(service)?'https://m.naver.com/shorts/?serviceType='+service+'&seedMediaId='+mediaId:null;
   const temporal=value=>{
     if(typeof value!=='string'||value.length>16384)return null;
     const marker=value.indexOf('#');if(marker<0){const source=address(value);return source?{source,start:null,end:null}:null;}
@@ -80,7 +82,7 @@ const Thru3DNaver=(()=>{
       return diagnostic?{valid:true,reason:'valid',count:refs.length,duration,gap_ticks:gapTicks}:{refs:timed,duration,playlist};
     }catch(_){return fail('parse_error');}
   };
-  const clipRepresentations=(sets,mediaId,expected)=>{
+  const segmentedRepresentations=(sets,mediaId,expected,service)=>{
     const result=[];
     for(const set of sets)for(const rep of own(set,'Representation')||[]){
       if(String(own(rep,'@mimeType')||own(set,'@mimeType')||'').toLowerCase()!=='video/mp2t')continue;
@@ -96,7 +98,7 @@ const Thru3DNaver=(()=>{
       const timeline={base:bases[0],media:own(t,'@media'),representation:own(rep,'@id'),start:numeric(t,'@startNumber',NaN),timescale:numeric(t,'@timescale',NaN),
         rows:rows.map(r=>({t:numeric(r,'@t',NaN),d:numeric(r,'@d',NaN),r:numeric(r,'@r',0)}))};
       const parsed=segments(timeline);if(!parsed||Math.abs(parsed.duration-expected)>.5)continue;
-      result.push({id:mediaId,service_type:'CLIP',format:'segment_timeline',page:page(mediaId,'CLIP'),source,width,height,expected_duration:expected,
+      result.push({id:mediaId,service_type:service,format:'segment_timeline',page:page(mediaId,service),source,width,height,expected_duration:expected,
         timeline,binding:'received_card_mpd',protection_unverified:true});
     }
     return result;
@@ -105,15 +107,15 @@ const Thru3DNaver=(()=>{
     try{
       if(own(value,'cardType')!=='CONTENT')return [];
       const c=own(value,'content'),mediaId=id(own(c,'mediaId')),vod=own(c,'vod'),quality=own(c,'videoQuality');
-      const service=own(c,'serviceType'),expected=own(quality,'duration');if(!mediaId||!['NTV','CLIP'].includes(service)||own(vod,'playable')!==true||
+      const service=own(c,'serviceType'),expected=own(quality,'duration');if(!mediaId||!supportedService(service)||own(vod,'playable')!==true||
         !Number.isFinite(expected)||expected<=0||expected>86400)return [];
-      const playback=own(vod,'playback'),list=own(playback,'MPD');if(!clearWholeFile(playback,service==='CLIP')||!Array.isArray(list)||list.length!==1)return [];
+      const playback=own(vod,'playback'),list=own(playback,'MPD');if(!clearWholeFile(playback,segmentedService(service))||!Array.isArray(list)||list.length!==1)return [];
       const mpd=list[0],periods=own(mpd,'Period');
       if(own(mpd,'@nvod:videoId')!==mediaId||own(mpd,'@type')!=='static'||!Array.isArray(periods)||periods.length!==1)return [];
       const period=periods[0],duration=seconds(own(mpd,'@mediaPresentationDuration')),periodDuration=seconds(own(period,'@duration'));
       if(own(period,'@id')!==mediaId||!duration||!periodDuration||Math.abs(duration-expected)>.5||Math.abs(periodDuration-expected)>.5)return [];
       const sets=own(period,'AdaptationSet');if(!Array.isArray(sets)||sets.length<1||sets.length>4)return [];
-      if(service==='CLIP')return clipRepresentations(sets,mediaId,expected);
+      if(segmentedService(service))return segmentedRepresentations(sets,mediaId,expected,service);
       const result=[];
       for(const set of sets){
         const reps=own(set,'Representation');if(!Array.isArray(reps)||reps.length<1||reps.length>16)return [];
@@ -142,7 +144,7 @@ const Thru3DNaver=(()=>{
     try{
       const c=own(value,'content'),vod=own(c,'vod'),playback=own(vod,'playback'),mpd=own(playback,'MPD')?.[0],period=own(mpd,'Period')?.[0];
       const expected=own(own(c,'videoQuality'),'duration'),sets=own(period,'AdaptationSet'),service=own(c,'serviceType');
-      const result={id:id(own(c,'mediaId')),content:own(value,'cardType')==='CONTENT',service:['NTV','CLIP','MOMENT'].includes(service)?service:'other',
+      const result={id:id(own(c,'mediaId')),content:own(value,'cardType')==='CONTENT',service:supportedService(service)?service:'other',
         playable:own(vod,'playable')===true,expected:Number.isFinite(expected)&&expected>0&&expected<=86400?expected:null,
         protection_clear:clearWholeFile(playback,true),mpd_count:own(playback,'MPD')?.length||0,
         mpd_static:own(mpd,'@type')==='static',mpd_id_matches:own(mpd,'@nvod:videoId')===own(c,'mediaId'),
@@ -167,15 +169,17 @@ const Thru3DNaver=(()=>{
   const binding=(video,data,requests,document,live)=>{
     if(!playbackPage(document.location.href)||!video.isConnected||video.mediaKeys||video.seeking||video.readyState<2||!presented(video)||
       !Number.isFinite(video.duration)||video.duration<=0||!Array.isArray(data)||!Array.isArray(requests)||!Array.isArray(live))return null;
+    const u=new URL(document.location.href),service=u.searchParams.get('serviceType');
     if(video.currentSrc.startsWith('blob:')){
-      const u=new URL(document.location.href);if(u.searchParams.get('serviceType')!=='CLIP'||new URL(video.currentSrc).origin!==u.origin||live.filter(v=>v.isConnected&&v.readyState>=2&&presented(v)).length!==1)return null;
+      if(!segmentedService(service)||new URL(video.currentSrc).origin!==u.origin||live.filter(v=>v.isConnected&&v.readyState>=2&&presented(v)).length!==1)return null;
       const active=id(u.searchParams.get('seedMediaId'));if(!active||u.searchParams.getAll('seedMediaId').length!==1)return null;
-      const matches=data.filter(d=>d.format==='segment_timeline'&&d.id===active&&d.width===video.videoWidth&&d.height===video.videoHeight&&Math.abs(d.expected_duration-video.duration)<=.5)
+      const matches=data.filter(d=>d.format==='segment_timeline'&&d.service_type===service&&d.id===active&&d.width===video.videoWidth&&d.height===video.videoHeight&&Math.abs(d.expected_duration-video.duration)<=.5)
         .filter(d=>{const parsed=segments(d.timeline);return parsed&&requests.some(r=>r.kind==='segment'&&Date.now()-r.at>=0&&Date.now()-r.at<=1800000&&parsed.refs.some(s=>s.url===r.url));});
       const unique=[...new Map(matches.map(d=>[d.id+'\n'+d.source,d])).values()];if(unique.length!==1)return null;
       const d=unique[0];return {...d,current_source:video.currentSrc,document:document.location.href,duration:video.duration,start_seconds:video.ended?0:video.currentTime,
-        fragment_kind:'blob',fragment_start:null,fragment_end:null,revision:revision(d.id+'\n'+video.currentSrc+'\n'+JSON.stringify(d.timeline))};
+        fragment_kind:'blob',fragment_start:null,fragment_end:null,revision:revision(d.page+'\n'+video.currentSrc+'\n'+JSON.stringify(d.timeline))};
     }
+    if(service==='MOMENT')return null;
     const selected=resource(video.currentSrc);if(!selected||selected.start!==null&&selected.start>video.duration||selected.end!==null&&selected.end>video.duration+.5)return null;
     const matches=data.filter(d=>d.source===selected.source&&d.width===video.videoWidth&&d.height===video.videoHeight&&Math.abs(d.expected_duration-video.duration)<=.5);
     const unique=[...new Map(matches.map(d=>[d.id+'\n'+d.source,d])).values()];if(unique.length!==1)return null;

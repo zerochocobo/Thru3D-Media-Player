@@ -57,6 +57,7 @@ const KEEPALIVE_MS := 250
 ## Debug A/B only (0 disables the keepalive); read every frame.
 var keepalive_ms := KEEPALIVE_MS
 var _signature := 0
+var _signature_poses: Dictionary[int, Transform3D] = {}
 ## Repaints on consecutive frames (scrolling, dragging) skip the signature, which walks every
 ## captured node (about 3 ms a frame on Quest 3); the first quiet frame repaints once more to record it.
 var _signature_stale := false
@@ -472,9 +473,12 @@ func update() -> void:
 		return
 	_sync_opaque_scene()
 	var peer_poses := []
-	for peer in _visible_peers(): peer_poses.append([peer.get_instance_id(),active.global_transform.affine_inverse()*peer.global_transform])
-	if peer_poses!=_peer_poses: _peer_poses=peer_poses; geometry_dirty=true
-	if geometry_dirty:
+	var peers := _visible_peers()
+	if not peers.is_empty():
+		var inverse := active.global_transform.affine_inverse()
+		for peer in peers: peer_poses.append([peer.get_instance_id(), inverse * peer.global_transform])
+	if geometry_dirty or _peer_geometry_changed(peer_poses):
+		_peer_poses = peer_poses
 		_collect(); geometry_dirty = false; dirty = true
 	var now := Time.get_ticks_msec()
 	var due := keepalive_ms > 0 and now - _painted_ms >= keepalive_ms
@@ -507,24 +511,41 @@ func update() -> void:
 	if display: display.set_menu_layers(_any_placed and not force_capture)
 	fallback_reason = "" if _any_placed else "no_planar_surfaces"
 
+func _peer_geometry_changed(poses: Array) -> bool:
+	if poses.size() != _peer_poses.size(): return true
+	# Shared origin motion introduces rounding noise in the relative poses.
+	# Compare against the poses used for the last collect so small real moves accumulate.
+	for index in poses.size():
+		var current: Transform3D = poses[index][1]
+		if poses[index][0] != _peer_poses[index][0] or not current.is_equal_approx(_peer_poses[index][1]): return true
+	return false
+
 ## Everything a capture shows of its nodes: visibility, pose in the menu, text, colours, textures
 ## and shader parameters. Equal signatures mean an identical repaint.
 func _visual_signature() -> int:
 	var inverse := _root_pose().affine_inverse()
 	var values := []
+	var poses: Dictionary[int, Transform3D] = {}
 	for slot in slots:
-		if slot.used: _sign_nodes(slot.nodes, inverse, values)
-	for kind in banded: _sign_nodes(banded[kind].nodes, inverse, values)
+		if slot.used: _sign_nodes(slot.nodes, inverse, values, poses)
+	for kind in banded: _sign_nodes(banded[kind].nodes, inverse, values, poses)
+	_signature_poses = poses
 	return hash(values)
 
-func _sign_nodes(nodes: Array, inverse: Transform3D, values: Array) -> void:
+func _sign_nodes(nodes: Array, inverse: Transform3D, values: Array, poses: Dictionary[int, Transform3D]) -> void:
 	for node in nodes:
 		if not is_instance_valid(node): values.append(0); continue
 		var visual := node as VisualInstance3D
 		var shown := visual.is_visible_in_tree()
 		values.append(shown)
 		if not shown: continue
-		values.append(inverse * visual.global_transform)
+		var pose := inverse * visual.global_transform
+		var id := visual.get_instance_id()
+		var previous: Transform3D = _signature_poses.get(id, pose)
+		# Keep a stable signature when only rounding in the global transforms changed.
+		if pose.is_equal_approx(previous): pose = previous
+		poses[id] = pose
+		values.append(pose)
 		if visual is Label3D:
 			var label := visual as Label3D
 			values.append_array([label.text, label.modulate, label.outline_modulate, label.font_size, label.width])

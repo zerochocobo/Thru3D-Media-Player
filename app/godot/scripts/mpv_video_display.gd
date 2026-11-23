@@ -311,6 +311,7 @@ var _subtitle_poll_ms := 0
 var _subtitle_received_ms := 0
 var mode_memory := ModeMemory.new()
 var picture_memory := PictureMemory.new()
+## The factory look: a video without its own settings (or the reused last ones) starts here; no global default is saved.
 var picture_defaults := picture_memory.load_defaults(ConfigFile.new())
 var picture_source := "default"
 var picture_open_id := 0
@@ -581,6 +582,8 @@ func _ready() -> void:
 		platform.connect("mpv_frozen_pair", _on_frozen_pair)
 		if platform.has_signal("rvm_warmup"):
 			platform.connect("rvm_warmup", _on_rvm_warmup)
+		if platform.has_signal("mpv_source_diagnostic"):
+			platform.connect("mpv_source_diagnostic", _on_source_diagnostic)
 		if PlatformMethods.supports(platform, "bind_video_layer"):
 			video_layer = VideoLayer.new(platform)
 	_hole_material = ShaderMaterial.new()
@@ -758,6 +761,11 @@ func reload_rvm() -> void:
 	_warm_rvm()
 	if alpha_requested:
 		_request_revision()
+
+## Any session, including one already replaced: a stalled source is reported after its owner moved on.
+func _on_source_diagnostic(id: int, payload: String) -> void:
+	var report: Variant = JSON.parse_string(payload)
+	if report is Dictionary: Log.record("mpv_source_diagnostic", PlaybackErrors.clean_source_diagnostic(report, id))
 
 func _on_rvm_warmup(payload: String) -> void:
 	var result: Variant = JSON.parse_string(payload)
@@ -4572,7 +4580,6 @@ var _copy_picture := PackedFloat32Array()
 var _copy_focus := []
 
 func load_picture_preferences(settings: ConfigFile) -> void:
-	picture_defaults = picture_memory.load_defaults(settings)
 	reuse_last_picture = bool(settings.get_value("video", "reuse_last_picture", false))
 	_apply_picture(picture_defaults)
 
@@ -4623,11 +4630,8 @@ func set_reuse_last_picture(enabled: bool) -> void:
 	if enabled: _remember_last_picture()
 	else: clear_last_picture()
 
-func preview_picture(key: String, value: Variant, defaults: bool = false) -> void:
+func preview_picture(key: String, value: Variant) -> void:
 	if not PictureMemory.is_adjustment(key): return
-	if defaults:
-		picture_defaults = picture_memory.edited(picture_defaults, key, value)
-		return
 	if not media.accepts(media.session_id) or not cast_allows("color_grade"): return
 	var current := picture_snapshot()
 	var edited := picture_memory.edited(current, key, value)
@@ -4647,6 +4651,14 @@ func commit_picture() -> void:
 		picture_source = "session"
 	_picture_committed = chosen
 	_remember_last_picture()
+	Log.record("picture_committed", {"picture": picture_diagnostic(), "source": picture_source})
+
+## For exported diagnostics: the picture settings on show, compact ("off", or "on up2 dn1 sh0.50"),
+## with why the copy cannot carry them when it cannot.
+func picture_diagnostic() -> String:
+	if not picture_quality: return "off"
+	var blocker := picture_quality_blocker()
+	return "on up%d dn%d sh%.2f%s" % [picture_upscale, picture_denoise, picture_sharpness, "" if blocker.is_empty() else " blocked:" + blocker]
 
 func clear_current_picture() -> void:
 	if picture_source != "file" or not _picture_can_remember(): return
@@ -5395,7 +5407,8 @@ func _reopen_at(position_ms: int, layer: bool, trigger: String = "", preserve_fr
 	var boost_mark := audio_boost_saved
 	var whisper_save := _whisper_remember or _whisper_restore_remember
 	Log.record("video_layer_reopen", {"layer": layer, "trigger": trigger, "position_ms": position, "alpha": alpha_requested,
-		"depth": depth_requested, "geometry": geometry, "compatible": media.playback.get("layer_compatible", true)})
+		"depth": depth_requested, "geometry": geometry, "compatible": media.playback.get("layer_compatible", true),
+		"picture": picture_diagnostic(), "copy": _quality_wanted()})
 	_eye_buffer_only = not layer
 	var return_uri := _layer_return_uri
 	var auto_subtitle := _subtitle_auto_pending # An internal reopen keeps an unfinished automatic choice.

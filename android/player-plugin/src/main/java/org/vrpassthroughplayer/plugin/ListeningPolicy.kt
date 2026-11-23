@@ -26,13 +26,36 @@ internal object ListeningPolicy {
         if(letters.isEmpty())return false
         // Keep short acknowledgements and ordinary repeated dialogue. Reject
         // only long decoder loops, never a blacklist of legitimate sentences.
-        if(language=="ja"&&letters.length>=12)for(size in 1..minOf(16,letters.length/4)){
+        // The small zh/en models loop the same way (desktop probe 2026-11-23).
+        if(letters.length>=12)for(size in 1..minOf(16,letters.length/4)){
             val unit=letters.take(size);var matched=size
             while(matched+size<=letters.length&&letters.regionMatches(matched,unit,0,size))matched+=size
             if(matched/size>=4&&matched>=letters.length*.9)return false
         }
         return true
     }
+    // A unit of 2-16 characters repeated four or more times in a row inside an
+    // otherwise real line ("五十円は五十円は…", "855-855-…") is a decoder loop.
+    private val loop=Regex("""(.{2,16}?)\1{3,}""")
+    // Japanese breath/moan chunk between spaces (ああ, うん, ふぅー, はぁ...). Words such
+    // as はい, いい, いいえ, ええ, わあ stay: い, え, わ and a bare は are not listed.
+    private val interjection=Regex("""^(?:[あぁうぅおぉんっーふアァウゥオォンッフ〜~…、。！!？?]|は[ぁー]|ハ[ァー])+$""")
+    /** Whole-line loops are dropped; a loop inside a real line keeps one copy.
+     * Japanese also drops breath-only chunks and lines faster than any speech. */
+    fun clean(cue: Cue,language: String): Cue? {
+        if(!accept(cue,language))return null
+        var text=cue.text.replace(loop,"$1").trim()
+        if(language=="ja"){
+            text=text.split(Regex("""\s+""")).filter{it.isNotEmpty()&&!interjection.matches(it)}.joinToString(" ")
+            // Above 12 characters per second is decoder garbage, not dialogue.
+            if(text.count{it.isLetterOrDigit()}>12*maxOf(.5,cue.end-cue.start))return null
+        }
+        if(text.isEmpty())return null
+        return if(text==cue.text)cue else Cue(cue.start,cue.end,text)
+    }
+    /** Languages whose look-ahead recognition uses Silero segments (measured on
+     * Japanese films, 2026-11-23); others keep Moonshine's streaming VAD. */
+    fun segmented(language: String)=language=="ja"
     fun failureState(stage: String, upstream: PlaybackFailure?): String = when {
         stage !in setOf("audio_open", "recognition") -> "listening_error"
         upstream?.sourceCode in setOf("cdn_connections_limited", "cdn_rate_limited") || upstream?.httpStatus in setOf(429,503) -> "source_busy"

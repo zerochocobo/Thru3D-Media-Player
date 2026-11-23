@@ -12,6 +12,10 @@ const Thru3DTwitch = (() => {
     try{const u=new URL(value);return typeof value==='string'&&value.length<=16384&&u.protocol==='https:'&&!u.username&&!u.password&&!u.port&&u.pathname==='/gql';}
     catch(_){return false;}
   };
+  const documentPage = value => {
+    const u = typeof value === 'string' ? address(value.split('#')[0]) : null;
+    return !!u && ['www.twitch.tv', 'twitch.tv', 'clips.twitch.tv'].includes(u.hostname);
+  };
   const page = value => {
     const u=address(value);if(!u)return null;
     if(u.hostname==='clips.twitch.tv'){
@@ -21,6 +25,17 @@ const Thru3DTwitch = (() => {
     return null;
   };
   const canonical = value => {const id=page(value);return id?'https://clips.twitch.tv/'+id:null;};
+  const handoffPage = value => {
+    if (!page(value)) return value;
+    const query = value.indexOf('?');
+    if (query < 0 || new URL(value).searchParams.getAll('range').length !== 1) return value;
+    const fields = value.slice(query + 1).split('&');
+    const filter = fields.findIndex(field => /^range=(24hr|7d|30d|all)$/.test(field));
+    if (filter < 0) return value;
+    // Preserve every other query field verbatim. This identity never rewrites a request.
+    fields.splice(filter, 1);
+    return value.slice(0, query) + (fields.length ? '?' + fields.join('&') : '');
+  };
   const revision = value => {let h=2166136261;for(let i=0;i<value.length;i++){h^=value.charCodeAt(i);h=Math.imul(h,16777619);}return (h>>>0).toString(16);};
   const metadata = (body,document) => {
     const expected=page(document);if(!expected||typeof body!=='string'||body.length>2*1024*1024)return [];
@@ -109,5 +124,5 @@ const Thru3DTwitch = (() => {
     const d=rows[0];return {id:d.id,page:document,source:d.source,revision:d.revision,expected_duration:d.expected_duration,
       width:video.videoWidth,height:video.videoHeight,duration:video.duration};
   };
-  return {address,api,page,canonical,revision,metadata,merge,matches,records,visible,owner,binding};
+  return {address,api,documentPage,page,canonical,handoffPage,revision,metadata,merge,matches,records,visible,owner,binding};
 })();

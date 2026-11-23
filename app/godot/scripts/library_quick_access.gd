@@ -87,8 +87,11 @@ func _draw_row(slot: int, row: Dictionary, centre: Vector2) -> void:
 	var source: String = menu.Presentation.source_icon(row)
 	var inset := 0.032 if not source.is_empty() else 0.0
 	if not source.is_empty(): menu._icon(source, Vector3(left + 0.012, -0.022, 0.005), 0.026, menu.UiTheme.color("label"), node)
-	var text := str(info.status) if not str(info.status).is_empty() else str(info.subtitle)
-	var detail: Label3D = menu._label(menu._fit_title(text, "", width - 0.095 - inset, 14), Vector3(left + inset, -0.022, 0.004), 14, node)
+	var available_width := width - 0.095 - inset
+	var text: String = menu._fit_title(str(info.status) if not str(info.status).is_empty() else str(info.subtitle), "", available_width, 14)
+	if row.has("source_label") and not str(info.status).is_empty():
+		text = menu._fit_title(str(row.source_label), " · " + str(info.status), available_width, 14)
+	var detail: Label3D = menu._label(text, Vector3(left + inset, -0.022, 0.004), 14, node)
 	detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; detail.modulate = menu.MUTED
 	menu._progress_on(node, float(info.ratio), Vector2(0, -0.039), width - 0.03)
 

@@ -18,9 +18,21 @@ const Thru3DWeibo = (() => {
     try { const u = new URL(value); return value.length <= 16384 && u.protocol === 'https:' &&
       !u.username && !u.password && !u.hash ? u.href : null; } catch (_) { return null; }
   };
+  const detailRoot = '#playInfo #playVideo';
+  const detailPlayer = detailRoot + ' .wbp-video';
+  const standaloneIdentity = box => {
+    const doc = box.ownerDocument, view = doc?.defaultView;
+    const current = view && view.top === view ? page(doc.location.href) : null;
+    if (!current?.id.includes(':') || !box.matches(detailPlayer)) return null;
+    const roots = [...doc.querySelectorAll(detailRoot)], root = box.closest(detailRoot);
+    if (roots.length !== 1 || roots[0] !== root) return null;
+    const players = root.querySelectorAll('video');
+    if (players.length !== 1 || !players[0].matches('video.wbpv-tech') || !box.contains(players[0])) return null;
+    return {...current, binding:'standalone'};
+  };
   const identity = container => {
     const card = container.closest?.('article');
-    if (!card) return null; // Login animation and the detached mini-player are not feed cards.
+    if (!card) return standaloneIdentity(container);
     const links = root => [...root.querySelectorAll('a[href]')].map(a=>page(a.href)).filter(Boolean);
     const unique = list => [...new Map(list.map(p=>[p.page,p])).values()];
     // A local video permalink disambiguates reposts and multi-video cards when present.
@@ -32,11 +44,12 @@ const Thru3DWeibo = (() => {
     if (videos.length > 1) return null;
     return all.length === 1 ? all[0] : null;
   };
-  const container = video => video.closest?.('[page-info]') || video.closest?.('.video-js')?.parentElement;
+  const container = video => video.closest?.(detailPlayer) || video.closest?.('[page-info]') || video.closest?.('.video-js')?.parentElement;
   const binding = (video, requests) => {
     const box = container(video), target = box && identity(box), source = address(video.currentSrc || '');
     if (!target || !source || video.readyState < 1 || !(video.videoWidth > 0 && video.videoHeight > 0) ||
         !Number.isFinite(video.duration) || video.duration <= 0 || video.duration > 86400) return null;
+    if (target.binding === 'standalone' && (video.mediaKeys || !video.hasAttribute('src') || address(video.src) !== source)) return null;
     const matched = requests.filter(r=>r.kind === 'file' && (r.url === source || r.original_url === source));
     if (new Set(matched.map(r=>r.url)).size !== 1) return null;
     return {...target, source};
@@ -54,7 +67,7 @@ const Thru3DWeibo = (() => {
       }
       if (!enabled) return;
       // Keep the UI bounded to visible cards; never load off-screen media to discover streams.
-      const boxes = [...doc.querySelectorAll('article [page-info], article .video-js')]
+      const boxes = [...doc.querySelectorAll('article [page-info], article .video-js, ' + detailPlayer)]
         .map(e=>e.matches('.video-js') ? e.parentElement : e);
       for (const box of new Set(boxes)) {
         let item = entries.get(box);
@@ -86,7 +99,7 @@ const Thru3DWeibo = (() => {
     };
     doc.addEventListener('pointerdown', e=>{
       if (!e.isTrusted) return;
-      const box = e.target.closest?.('[page-info], .video-js');
+      const box = e.target.closest?.('[page-info], .video-js, ' + detailPlayer);
       const list = box?.querySelectorAll('video'), target = box && identity(box);
       if (target && list?.length === 1) selected(list[0],target,false);
     }, true);

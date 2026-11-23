@@ -109,6 +109,49 @@ func check_controls() -> void:
 	main.video_menu.dismiss()
 	for node in pointer.values(): node.free()
 
+## An imported scene's walls stand between the viewer and the 50 m VR sphere.
+func check_imported_scene() -> void:
+	main.background.select("dark")
+	var scene := Node3D.new()
+	var wall := MeshInstance3D.new()
+	wall.mesh = BoxMesh.new(); (wall.mesh as BoxMesh).size = Vector3(30, 30, .1)
+	var paint := StandardMaterial3D.new(); paint.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED; paint.albedo_color = Color(.45, .4, .35)
+	wall.material_override = paint
+	scene.add_child(wall)
+	main.add_child(scene)
+	main.scene_import._root = scene
+	main.video.alpha_requested = false; main.video.packed_file = true; main.video.packed_alpha = true; main.video.stereo_sbs = true
+	main.video.geometry = 1; main.video.alpha_enabled = true
+	bind_source(true, false)
+	main.video.reset_view()
+	wall.global_transform = main.xr_camera.global_transform * Transform3D(Basis.IDENTITY, Vector3(0, 0, -3))
+	main._update_background()
+	check(main.scene_import.movable() and not main._cinema_scene_active(), "The imported scene shows instead of the hall")
+	check(main.video._scene_overlay != null and main.video.panel.material_override == main.video._scene_overlay.material, "A VR cutout draws over the imported scene")
+	for eye in [1, 2]:
+		main.video.set_viewing_eye(eye); main.video._sync_portrait()
+		var actual := await frame("scene-vr-native-alpha-eye" + str(eye))
+		wall.visible = false
+		var reference := await frame("scene-vr-native-alpha-eye" + str(eye) + "-reference")
+		wall.visible = true
+		var person := 0; var shown := 0
+		for y in range(0, actual.get_height(), 2):
+			for x in range(0, actual.get_width(), 2):
+				var ref := reference.get_pixel(x, y)
+				if ref.g > .9 and ref.r < .1: # the solid body; the soft contour blends with whatever lies behind
+					person += 1
+					if difference(ref, actual.get_pixel(x, y)) < .025: shown += 1
+		check(person > 100 and shown >= person * .98, "eye %d: the VR cutout is not hidden behind the scene's wall (%d/%d)" % [eye, shown, person])
+	main.video.set_viewing_eye(0)
+	main.video.packed_file = false; main.video.packed_alpha = false; main.video.stereo_sbs = false
+	main.video.geometry = 0; main.video.alpha_requested = true; main.video.alpha_enabled = true
+	main.video._apply_geometry(); bind_source(false, true); main._update_background(); main.video._sync_portrait()
+	check(main.video.panel.material_override in [main.video.material, main.video.portrait.material], "A flat portrait keeps its place among the scene's surfaces")
+	main.scene_import._root = null; main._update_background()
+	check(main.video.panel.material_override in [main.video.material, main.video.portrait.material], "Without a scene the original material returns")
+	scene.free()
+	main.background.select("cinema"); main._update_background()
+
 func run() -> void:
 	if DisplayServer.get_name() == "headless" or RenderingServer.get_current_rendering_method() != "gl_compatibility":
 		push_error("Cinema Alpha requires the real GL renderer"); quit(2); return
@@ -165,6 +208,7 @@ func run() -> void:
 		main.background.select("belfast"); main._update_background()
 		check(main.video.panel.material_override in [main.video.material,main.video.portrait.material], mode + " panorama keeps original depth policy")
 		main.background.select("cinema"); main._update_background()
+	await check_imported_scene()
 	main.video._binding.unbind()
 	check(not main.video._scene_overlay or RenderingServer.material_get_param(main.video._scene_overlay.material.get_rid(),"color_texture") == null,"Retiring the lease detaches the overlay texture")
 	main.video.local_uri = ""; main.video.media.session_id = 0; main.free(); view.free()

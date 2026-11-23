@@ -56,6 +56,7 @@ var selection_scope := ""
 var batch := []
 var history_undo := {}
 var pending_favorites := {}
+var source_accounts := {}
 var privacy_expanded := false
 var task_started := 0
 
@@ -174,6 +175,46 @@ func choose(row: Dictionary) -> bool:
 		open_location(row); return true
 	return false
 
+func _load_source_accounts(kind: String) -> Dictionary:
+	var by_id := {}
+	if not menu.PlatformMethods.supports(menu.platform, "account_list"): return by_id
+	var accounts: Variant = JSON.parse_string(menu.platform.account_list(kind))
+	if not accounts is Array: return by_id
+	for account in accounts:
+		if account is Dictionary and account.get("provider") is String and account.get("id") is String:
+			var name := str(account.get("name", "")).replace("\n", " ").replace("\r", " ").strip_edges()
+			by_id[account.id] = {"provider": account.provider, "name": name}
+	source_accounts[kind] = by_id
+	return by_id
+
+## Resolve old URI-only records and folder favorites against the same local account list.
+func _set_account_source(row: Dictionary, accounts: Dictionary) -> void:
+	var uri := str(row.get("uri", ""))
+	var location: Dictionary = row.location if row.get("location") is Dictionary else {}
+	if location.get("type") == "archive":
+		uri = str(location.get("source_uri", ""))
+		location = location.parent if location.get("parent") is Dictionary else {}
+	var kind := str(location.get("type", ""))
+	var id := ""
+	if uri.begins_with("cloud://") or uri.begins_with("medialib://"):
+		kind = "cloud" if uri.begins_with("cloud://") else "server"
+		id = uri.get_slice("://", 1).get_slice("/", 0)
+	elif kind == "cloud":
+		id = str(location.get("path", "")).trim_prefix("/").get_slice("/", 0)
+	elif kind == "server":
+		id = str(location.get("server_id", ""))
+	if id.is_empty(): return
+	if not accounts.has(kind): accounts[kind] = _load_source_accounts(kind)
+	var profile: Dictionary = accounts[kind].get(id, {})
+	if profile.is_empty() or str(profile.provider).is_empty(): return
+	var key: String = menu.Icons.Providers.display_name_key(profile.provider)
+	var brand: String = menu.I18n.t(key)
+	row.source_provider = profile.provider
+	row.source_label = brand
+	# Native account setup also uses the Simplified Chinese brand as a default account name.
+	if profile.name not in ["", brand, key, menu.I18n.translations.get("zh", {}).get(key, key)]:
+		row.source_label += " · " + str(profile.name)
+
 func home_rows() -> Array[Dictionary]:
 	var rows: Array[Dictionary] = []
 	if home_tab != 1 or menu.view_mode != "grid": pending_favorites.clear()
@@ -185,8 +226,11 @@ func home_rows() -> Array[Dictionary]:
 		for pending in pending_favorites.values():
 			var entry: Dictionary = pending.entry.duplicate(true); entry.pending_unfavorite = true; entries.append(entry)
 		entries.sort_custom(func(a, b):return float(a.added) > float(b.added) if a.added != b.added else str(a.uri) < str(b.uri))
+	# A temporarily unavailable account store is retried on the next rebuild, once per kind.
+	var accounts := source_accounts.duplicate()
 	for entry in entries:
 		var row: Dictionary = entry.duplicate(true)
+		_set_account_source(row, accounts)
 		row.kind = str(entry.get("kind", "image" if menu.ImageInfo.is_image(str(entry.get("uri", "")), str(entry.get("title", ""))) else "video"))
 		if row.kind == "folder": row.title = Location.folder_title(location_for(row), str(entry.get("title", "")))
 		elif row.kind in ["archive", "pdf"] and location_for(row).get("type") == "archive": row.title = Location.folder_title(location_for(row), str(entry.get("title", "")))
@@ -239,6 +283,7 @@ func decorate_row(slot: int, row: Dictionary, centre: Vector2, grid: bool, paren
 	var folder: bool = row.get("kind") in ["folder", "archive", "pdf"]
 	if grid:
 		_source_chip(row, centre, parent)
+		if row.has("source_label"): menu._tips[menu.ROW_BASE + slot] = str(row.title) + "\n" + str(row.source_label)
 		var spacing := 0.05 if folder else 0.085
 		_row_button(PLAY_ROW, slot, centre + Vector2(-spacing, 0.04), "folder" if folder else "play", "Open" if folder else "Play", not location.is_empty() if folder else true, parent, true)
 		if not folder: _row_button(DIRECTORY_ROW, slot, centre + Vector2(0, 0.04), "folder", "Open location", not location.is_empty(), parent, true)
@@ -248,19 +293,26 @@ func decorate_row(slot: int, row: Dictionary, centre: Vector2, grid: bool, paren
 		if not folder: _row_button(DIRECTORY_ROW, slot, Vector2(0.37 if menu.compact else 0.65, centre.y), "folder", "Open location", not location.is_empty(), parent)
 		_row_button(REMOVE_ROW, slot, Vector2(0.46 if menu.compact else 0.745, centre.y), "star_filled" if home_tab == 1 else "trash", "Remove favorite" if home_tab == 1 else "Remove from recent", true, parent)
 
-## Corner mark on a card: local disk, SMB, DLNA, cloud drive or media server.
+## Keep the provider name readable over both bright and dark thumbnails.
 func _source_chip(row: Dictionary, centre: Vector2, parent: Node3D) -> void:
 	var source: String = menu.Presentation.source_icon(row)
 	if source.is_empty(): return
 	var corner := Vector3(centre.x - menu.TILE_SIZE.x * 0.5 + 0.040, centre.y + 0.095, 0.012)
+	var caption: String = menu._fit_title(str(row.get("source_label", "")), "", menu.TILE_SIZE.x - 0.080, 14)
+	var extra: float = menu.text_width(caption, 14) + 0.005 if not caption.is_empty() else 0.0
 	# Thumbnails need a dark plate under the glyph; a folder card's plain face does not.
 	var picture: bool = str(row.get("icon", "video")) in ["video", "image"]
 	if picture:
-		var plate: MeshInstance3D = menu._quad(Vector2(0.052, 0.044), corner, Color(0, 0, 0, 0.62), 13)
+		var plate: MeshInstance3D = menu._quad(Vector2(0.052 + extra, 0.044), corner + Vector3(extra * 0.5, 0, 0), Color(0, 0, 0, 0.72), 13)
 		plate.material_override.set_shader_parameter("corner_radius", 0.008)
 		parent.add_child(plate)
 	var glyph: MeshInstance3D = menu._icon(source, corner + Vector3(0, 0, 0.001), 0.034, Color(1, 1, 1, 0.95) if picture else menu.MUTED, parent)
 	glyph.material_override.render_priority = 14
+	if not caption.is_empty():
+		var label: Label3D = menu._label(caption, corner + Vector3(0.024, 0, 0.001), 14, parent)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		label.render_priority = 14
+		if picture: label.modulate = Color.WHITE
 
 func open_password(value: String, callback: Callable = Callable()) -> void:
 	if not store: return

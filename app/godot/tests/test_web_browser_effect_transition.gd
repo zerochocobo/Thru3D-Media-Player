@@ -14,6 +14,8 @@ class Bridge extends RefCounted:
 	func windowReleaseState(_window: int,generation: int) -> int: return 1 if acknowledged == generation else 0
 	func requestWindowRelease(_window: int,_generation: int) -> bool: requests += 1;return true
 	func releaseWindowForResize(_window: int,_generation: int) -> bool: legacy_calls += 1;return false
+	var detaches := 0
+	func detachWindowBeforeSessionStop(_window: int,_generation: int) -> bool: detaches += 1;return true
 class Layer extends RefCounted:
 	var stereo := false
 	var alpha := false
@@ -67,6 +69,20 @@ func run() -> void:
 	check(old.asynchronous and producer.layer==old,"Effect cleanup is queued rather than waited on by the XR frame loop")
 	old.stop_ready=true;producer._process(0)
 	check(producer.created==1 and producer.layer!=old and transfer.legacy_calls==0,"Only the matching release and completed cleanup install the new producer")
+	# Leaving the browser while picture quality's thread is slow to stop (Quest 2, 2026-11-23: the view froze).
+	var idle:=Layer.new();idle.quality=true;producer.layer=idle;producer.attached=true;producer.retry_at=0;host.visible=false
+	for frame in 30: producer._process(0)
+	check(transfer.detaches==1 and idle.destroy_calls==30 and idle.asynchronous and producer.layer==idle,"A hidden window polls its slow cleanup each frame without detaching or waiting again")
+	host.visible=true;var created:=producer.created
+	for frame in 5: producer._process(0)
+	check(producer.layer==idle and idle.shown==0 and not producer.attached and not producer.hole.visible and producer.created==created,
+		"Reopening during the stop neither presents nor reuses the half-stopped layer")
+	idle.stop_ready=true;producer.retry_at=0;producer._process(0)
+	check(producer.layer!=idle and producer.created==created+1 and producer._stopping.is_empty(),"The reopened window gets a new layer once cleanup completes")
+	var hidden:=Layer.new();hidden.stop_ready=true;producer.layer=hidden;producer.attached=true;producer.retry_at=0;host.visible=false
+	producer._process(0)
+	check(producer.layer==null and not producer.attached and producer._stopping.is_empty(),"A hidden window drops its surface once cleanup completes")
+	host.visible=true
 	producer.layer=null;producer.bridge=null;producer.generation=0;producer.queue_free()
 	menu.free();platform.free();await process_frame
 	print("Browser effect transition: %d checks, %d failures" % [checks,failures.size()])

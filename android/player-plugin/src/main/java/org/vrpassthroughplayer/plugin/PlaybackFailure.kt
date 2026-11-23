@@ -21,11 +21,17 @@ internal data class PlaybackFailure(
     /** Numbers only: the video's container parameters and this device's hardware decoder limits. */
     val video: JSONObject? = null,
     val decoder: JSONObject? = null,
+    /** Coarse request context for a media-library open failure. */
+    val mediaServer: JSONObject? = null,
 ) {
     fun json(): JSONObject = JSONObject().put("reason", reason).put("stage", stage)
         .put("detail", safeDetail(detail)).put("http_status", httpStatus).put("mpv_code", mpvCode)
         .put("source_code", safeDetail(sourceCode)).put("exception_type", exceptionType)
-        .also { if (video != null) it.put("video", video); if (decoder != null) it.put("decoder", decoder) }
+        .also {
+            if (video != null) it.put("video", video)
+            if (decoder != null) it.put("decoder", decoder)
+            if (mediaServer != null) it.put("media_server", mediaServer)
+        }
 
     companion object {
         // Redact entire addresses, including local proxy tokens and non-HTTP credentials.

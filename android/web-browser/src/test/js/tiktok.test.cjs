@@ -24,6 +24,20 @@ test('nearest rendered source, article item and exact actual request agree witho
  assert.equal(t.binding(f.v,f.requests,page,[f.v]).id,id,'Gecko waived React data uses the same descriptor path');
 });
 
+test('identical TikTok declarations with reordered mirrors keep one exact observed file',()=>{
+ const f=fixture(),mirror='https://mirror.example/media?sig=backup';
+ f.source.url=[url,mirror];
+ const copy={...f.source,url:[mirror,url]};
+ f.parent.__reactProps$fixture.children.push({props:{videoSource:copy}});
+ const state={};
+ assert.equal(t.binding(f.v,f.requests,page,[f.v],state)?.source,url);
+ assert.equal(state.status,'bound');
+ assert.equal(t.binding(f.v,[...f.requests,{kind:'file',url:mirror,at:Date.now()}],page,[f.v]),null);
+ copy.url=[url,mirror+'&version=other'];
+ assert.equal(t.binding(f.v,f.requests,page,[f.v],state),null);
+ assert.equal(state.status,'ambiguous_declaration');
+});
+
 test('safe readiness diagnostics expose duration mismatches without relaxing the binding or copying private addresses',()=>{
  const f=fixture(),state={};f.source.duration=30;
  assert.equal(t.binding(f.v,f.requests,page,[f.v],state),null);
@@ -119,6 +133,23 @@ test('alternative qualities and unrelated audio are never selected for the activ
  const f=fixture();for(const value of ['https://other.example/alternative','https://music.example/unrelated',url+'&extra=1'])
   assert.equal(t.binding(f.v,[{url:value,kind:'file',at:Date.now()}],page,[f.v]),null);
  for(const change of [{kind:'hls'},{at:Date.now()-1800001},{at:Date.now()+1000}])assert.equal(t.binding(f.v,[{...f.requests[0],...change}],page,[f.v]),null);
+});
+test('a mismatched SDK size binds the unique observed rendition with the decoded size and current clip identity',()=>{
+ const f=fixture(),low='https://related.example/lower.mp4?sig=active',other='https://related.example/other.mp4?sig=active';
+ f.v.videoWidth=576;f.v.videoHeight=1024;
+ const track={id,vid:id,width:576,height:1024,duration:f.source.duration,url:[low]};
+ const observed=url=>({url,kind:'file',at:Date.now()});
+ f.source.bitrateList=[track,{...track,width:720,height:1280,url:[other]}];
+ const requests=[...f.requests,observed(other),observed(low)];
+ const bound=t.binding(f.v,requests,page,[f.v]);
+ assert.equal(bound.source,low);assert.equal(bound.width,576);assert.equal(bound.height,1024);
+ assert.equal(t.binding(f.v,[observed(low+'&changed=1'),...f.requests],page,[f.v]),null);
+ for(const bad of [{id:'6742501081818877191'},{vid:'6742501081818877191'},{duration:12},{hasDrm:true},{height:1023}]){
+  f.source.bitrateList=[{...track,...bad}];
+  assert.equal(t.binding(f.v,requests,page,[f.v]),null);
+ }
+ f.source.bitrateList=[track,{...track,url:[other]}];
+ assert.equal(t.binding(f.v,requests,page,[f.v]),null,'two observed files of the same size remain ambiguous');
 });
 test('approximate integer SDK time uses the existing bounded file budget without admitting invalid durations',()=>{
  const f=fixture();assert.notEqual(t.read(f.v,page),null);

@@ -14,6 +14,7 @@ function fixture(cookies = []) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/douyin.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/plex.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/weibo.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/mango.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/twitch.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/tiktok.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/archive.js'), 'utf8'), context);
@@ -86,6 +87,25 @@ test('Twitch homepage or live channel alone never enables this clip exception',(
   f.request('https://actual-related.test/home.mp4',{documentUrl:original});f.flush();assert.equal(p.last().length,0);
   p.port.onMessage.fire({type:'context',page:'https://www.twitch.tv/creator',twitch:true,enabled:false});
   f.request('https://actual-related.test/live.mp4',{documentUrl:original});f.flush();assert.equal(p.last().length,0);
+});
+
+test('Mango accepts the original request document URL only on its own top document after autoplay',()=>{
+  const f=fixture(),original='https://www.mgtv.com/b/822501/24669848.html';
+  const next='https://www.mgtv.com/b/822501/24661392.html',p=f.connect(1,0,original,false);
+  const mime=[{name:'Content-Type',value:'application/vnd.apple.mpegurl'}];
+  p.port.onMessage.fire({type:'context',page:original,mango:true,enabled:false});
+  f.request('https://example.test/old.m3u8',{documentUrl:original,responseHeaders:mime});f.flush();
+  assert.equal(p.last().length,1);
+  p.port.onMessage.fire({type:'context',page:next,mango:true,enabled:false,reset:true});
+  assert.equal(p.last().length,0);
+  for(const change of [{documentId:'other'},{documentId:undefined},{frameId:1},{tabId:2},
+    {documentUrl:'https://www.mgtv.com/b/822501/24661393.html'},{documentUrl:'https://w.mgtv.com/b/822501/24669848.html'}]){
+    f.request('https://example.test/rejected.m3u8',{documentUrl:original,responseHeaders:mime,...change});f.flush();
+    assert.equal(p.last().length,0,JSON.stringify(change));
+  }
+  f.request('https://example.test/new.m3u8',{documentUrl:original,responseHeaders:mime,
+    requestHeaders:[{name:'Authorization',value:'only-this-request'}]});f.flush();
+  assert.equal(p.last().length,1);assert.equal(p.last()[0].headers.authorization,'only-this-request');
 });
 
 function archiveRedirect(f, page, original, target, id='archive-redirect') {

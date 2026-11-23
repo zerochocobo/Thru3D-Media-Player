@@ -64,6 +64,36 @@ class ListeningPolicyTest {
         assertTrue(accepted("今日は駅で友達に会いました。"))
         assertTrue(accepted("いいえ、いいえ。私はそう思いません。"))
     }
+    @Test fun decoderLoopsAreRemovedInEveryLanguage() {
+        fun cleaned(text: String,language: String)=ListeningPolicy.clean(ListeningPolicy.Cue(1.0,5.0,text),language)?.text
+        // Loops observed from the packaged zh/ja models in the 2026-11-23 desktop probe.
+        assertEquals("うちの中学は弁当制で、持っていけない場合は、五十円は 50円の学校販売のパンを買う",
+            cleaned("うちの中学は弁当制で、持っていけない場合は、"+"五十円は".repeat(10)+" 50円の学校販売のパンを買う","ja"))
+        assertEquals("开放时间早上九点至下午 855-",cleaned("开放时间早上九点至下午 "+"855-".repeat(6),"zh"))
+        assertNull(cleaned("谢谢大家".repeat(5),"zh"))
+        assertNull(cleaned("thank you ".repeat(5),"en"))
+        // Ordinary repetition in dialogue stays as spoken.
+        assertEquals("No, no, no, no!",cleaned("No, no, no, no!","en"))
+        assertEquals("走吧走吧走吧",cleaned("走吧走吧走吧","zh"))
+        assertEquals("1000000円です",cleaned("1000000円です","ja"))
+        assertEquals("はい、はい、はい、はい。",cleaned("はい、はい、はい、はい。","ja"))
+    }
+    @Test fun japaneseBreathChunksAndGarbageRatesAreDropped() {
+        fun cleaned(text: String,seconds: Double=3.0)=ListeningPolicy.clean(ListeningPolicy.Cue(1.0,1.0+seconds,text),"ja")?.text
+        // Shapes seen from Moonshine on Silero segments of Japanese films.
+        assertEquals("なんか、新しいとこ気持ちいい",cleaned("なんか、新しいとこ気持ちいい ふぅ ふぅー ふぅー"))
+        assertEquals("いただきます。",cleaned("うん いただきます。"))
+        assertNull(cleaned("ああああああああ"))
+        assertNull(cleaned("はぁ はぁ…"))
+        assertNull(cleaned("んっ、あっ！"))
+        // Short words that are real answers stay.
+        for(word in listOf("はい","いい","いいえ","ええ","わあ、すごい","いや"))assertEquals(word,cleaned(word))
+        // More characters than anyone can say in the time is decoder output.
+        assertNull(cleaned("ちょっとしたほうが頼むやるか布団はしまっておいてね",1.0))
+        assertEquals("ちょっとしたほうが頼むやるか布団はしまっておいてね",cleaned("ちょっとしたほうが頼むやるか布団はしまっておいてね",3.0))
+        // Other languages keep breath words and are not rate limited.
+        assertEquals("ah ah",ListeningPolicy.clean(ListeningPolicy.Cue(1.0,1.2,"ah ah"),"en")?.text)
+    }
     @Test fun configHasOnlyExplicitLanguagesAndBoundedLead() {
         for(language in listOf("zh","en","ja"))for(lead in listOf(8,12,20)) {
             val c=ListeningPolicy.Config.parse("""{"enabled":true,"language":"$language","lead":$lead,"target":""}""")

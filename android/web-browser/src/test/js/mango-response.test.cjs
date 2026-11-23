@@ -57,6 +57,43 @@ test('wrong video, duplicate IDs and changed media parameters never enter this s
   for(const url of ['https://api.example/player/video?video_id=15588272','https://api.example/player/video?video_id=15588271&video_id=15588272',invoked+'&vid=other',invoked.replace('opaque-video','other-video')])assert.equal(h.begin(url).s,undefined);
   assert.equal(h.current.mangoData.get('15588271').manifests[0],manifest);
 });
+
+test('autoplay uses its prefetched official graph only after the exact same document changes episode',()=>{
+  const next='15588272',nextPage=page.replace('15588271',next);
+  const combined={code:200,data:{...video().data,...sources().data}};
+  combined.data.info.video_id=next;
+  combined.data.stream[0]={...combined.data.stream[0],disp:{status:'ok',info:manifest},videoWidth:960,videoHeight:540};
+  for(const finishesBeforeRoute of [true,false]){
+    const h=setup();h.establish();
+    const incoming=h.begin('https://api.example/video/streamList?video_id='+next);
+    assert.ok(incoming.s);
+    if(finishesBeforeRoute)h.respond(incoming,combined);
+    assert.equal(h.current.mangoMeta.id,'15588271');
+    assert.equal(h.current.mangoData.has(next),false);
+    h.observer.cancel(h.current,nextPage);h.current.page=nextPage;h.observer.attach(h.current);
+    if(!finishesBeforeRoute)h.respond(incoming,combined);
+    assert.equal(h.current.mangoMeta.id,next);
+    assert.equal(h.current.mangoData.size,0,'A prefetched declaration never replaces the real manifest request');
+    const request={at:Date.now(),kind:'hls',url:manifest};
+    h.current.items=new Map([[manifest,request]]);
+    h.observer.observeMedia(h.current,request);
+    assert.equal(h.current.mangoData.get(next).manifests[0],manifest);
+  }
+});
+
+test('a prefetched graph cannot enter an unrelated destination or a new browser document',()=>{
+  const next='15588272',nextPage=page.replace('15588271',next);
+  const result={code:200,data:{...video().data,...sources().data}};result.data.info.video_id=next;
+  for(const differentDocument of [false,true]){
+    const h=setup(),incoming=h.begin('https://api.example/video/streamList?video_id='+next);
+    h.respond(incoming,result);
+    h.observer.cancel(h.current,differentDocument?nextPage:page.replace('15588271','15588273'));
+    h.current.page=nextPage;
+    if(differentDocument)h.current.document='another-doc';
+    h.observer.attach(h.current);
+    assert.equal(h.current.mangoMeta,null);
+  }
+});
 test('a new metadata request invalidates old clear results immediately, including protected responses',()=>{
   const h=setup();h.establish();const r=h.begin('https://api.example/player/video?video_id=15588271');
   assert.equal(h.current.mangoData.size,0);h.respond(r,video(false));
@@ -113,7 +150,10 @@ test('the domestic SDK combined streamList binds metadata and sources before dis
   h.respond(h.begin('https://api.example/video/streamList?video_id=15588271',{type:'xmlhttprequest'}),combined);
   assert.equal(h.current.mangoMeta.id,'15588271');assert.equal(h.current.mangoDeclared.length,1);
   h.respond(h.begin(invoked),{status:'ok',info:manifest});assert.equal(h.current.mangoData.get('15588271').manifests[0],manifest);
-  assert.equal(h.begin('https://api.example/video/streamList?video_id=15588272').s,undefined);
+  const wrong=h.begin('https://api.example/video/streamList?video_id=15588272');
+  h.respond(wrong,combined);
+  assert.equal(h.current.mangoMeta.id,'15588271');
+  assert.equal(h.current.mangoData.get('15588271').manifests[0],manifest);
 });
 test('successful direct HLS is linked only to current clear metadata and expires at replacement',()=>{
   const h=setup(),combined=video(),hash='a'.repeat(32);Object.assign(combined.data,sources().data);combined.data.stream[0].fileHash=hash;

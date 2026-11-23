@@ -72,7 +72,23 @@ class WebBrowserRenderTrailTest {
         val recovered = watch.verdict(9_600)
         assertEquals(listOf(WebBrowserRenderWatch.NO_FRAME), recovered.recovered)
         watch.bind(20_000) // a new Surface starts a new episode
+        assertEquals(0L, watch.lastDraw)
         assertEquals(listOf(WebBrowserRenderWatch.NO_FRAME), watch.verdict(25_000).fresh)
+    }
+
+    @Test fun firstCompositeWithoutDrawCallbacksDoesNotReportAStall() {
+        val watch = WebBrowserRenderWatch()
+        watch.bind(1_000)
+        watch.firstComposite()
+        watch.contentfulPaint()
+        watch.media(10_000, isPlaying = true, WebBrowserVideoFrames.Interval(8_000, 240, 240, 0))
+        assertTrue(watch.verdict(11_000).fresh.isEmpty())
+        val perf = watch.perf(11_000)!!
+        assertEquals(null, perf.composites)
+        assertEquals(30.0, perf.presentedRate!!, 0.0)
+        assertTrue(perf.toString().startsWith("fps=unknown max_gap_ms=unknown hitches=unknown"))
+        watch.bind(12_000)
+        assertEquals(listOf(WebBrowserRenderWatch.NO_FRAME), watch.verdict(17_000).fresh)
     }
 
     @Test fun loadedDocumentWithoutContentfulPaint() {
@@ -99,7 +115,7 @@ class WebBrowserRenderTrailTest {
     @Test fun idleStaticPageIsNotWhite() {
         val watch = WebBrowserRenderWatch()
         watch.bind(0); watch.draw(200); watch.pageStart(); watch.pageStop(1_000, ok = true); watch.contentfulPaint()
-        watch.media(1_000, isPlaying = false, decodedFrames = 0)
+        watch.media(1_000, isPlaying = false, WebBrowserVideoFrames.Interval())
         assertTrue(watch.verdict(600_000).fresh.isEmpty())
     }
 
@@ -115,11 +131,11 @@ class WebBrowserRenderTrailTest {
     @Test fun decodingVideoWithoutCompositesIsWhite() {
         val watch = WebBrowserRenderWatch()
         watch.bind(0); watch.draw(1_000); watch.pageStart(); watch.pageStop(1_000, ok = true); watch.contentfulPaint()
-        watch.media(1_000, isPlaying = true, decodedFrames = 10) // first report: no advance known yet
+        watch.media(1_000, isPlaying = true, WebBrowserVideoFrames.Interval()) // first report: no advance known yet
         assertFalse(watch.decodingAt(1_000))
-        watch.media(5_000, isPlaying = true, decodedFrames = 130)
+        watch.media(5_000, isPlaying = true, WebBrowserVideoFrames.Interval(4_000, 120))
         assertTrue(watch.verdict(5_500).fresh.isEmpty())
-        watch.media(6_500, isPlaying = true, decodedFrames = 220)
+        watch.media(6_500, isPlaying = true, WebBrowserVideoFrames.Interval(1_500, 90))
         assertEquals(listOf(WebBrowserRenderWatch.MEDIA), watch.verdict(7_000).fresh)
         watch.draw(7_100)
         assertEquals(listOf(WebBrowserRenderWatch.MEDIA), watch.verdict(7_200).recovered)
@@ -131,24 +147,41 @@ class WebBrowserRenderTrailTest {
         val watch = WebBrowserRenderWatch()
         watch.bind(0)
         assertEquals(null, watch.perf(5_000)) // window not over
-        watch.media(0, isPlaying = true, decodedFrames = 0, presentedFrames = 0, droppedFrames = 0)
         // 30 fps video: decoded frames advance, composites every 33 ms, one 400 ms stall.
         var t = 0L
+        var previous = WebBrowserVideoFrames(1, 1, 0, 0, 0, 0)
         while (t < 10_000) {
             t += 33
             if (t in 5_000..5_400) continue
-            watch.media(t, isPlaying = true, decodedFrames = t * 30 / 1000, presentedFrames = t * 30 / 1000 - 12, droppedFrames = 12)
+            val decoded = t * 30 / 1000
+            val dropped = 12L.coerceAtMost(decoded)
+            val current = previous.copy(at = t, decoded = decoded, presented = decoded - dropped, dropped = dropped)
+            watch.media(t, isPlaying = true, current.since(previous, watch.boundAt))
+            previous = current
             watch.draw(t)
         }
         val perf = watch.perf(10_000)!!
         assertEquals(1, perf.hitches)
         assertTrue(perf.maxGapMs in 400..440)
-        assertTrue(perf.composites in 28.0..31.0)
-        assertTrue(perf.decodedRate in 29.0..31.0)
-        assertTrue(perf.presentedRate in 27.0..30.0)
-        assertEquals(12, perf.dropped)
+        assertTrue(perf.composites!! in 28.0..31.0)
+        assertTrue(perf.decodedRate!! in 29.0..31.0)
+        assertTrue(perf.presentedRate!! in 27.0..30.0)
+        assertEquals(12L, perf.dropped)
         assertTrue(perf.toString(), perf.toString().startsWith("fps=29."))
         assertTrue(watch.lastPerf.contains("hitches=1"))
+    }
+
+    @Test fun activeMediaCountersCannotCrossElementsLoadsOrDisplays() {
+        val first = WebBrowserVideoFrames(8, 12, 1000, 500, 498, 2)
+        val later = first.copy(at = 2000, decoded = 530, presented = 527, dropped = 3)
+        val empty = WebBrowserVideoFrames.Interval()
+        assertEquals(WebBrowserVideoFrames.Interval(1000, 30, 29, 1), later.since(first, 0))
+        assertEquals(empty, later.since(null, 0))
+        assertEquals(empty, later.copy(id = 10).since(first, 0))
+        assertEquals(empty, later.copy(epoch = 13).since(first, 0))
+        assertEquals(empty, later.copy(decoded = 50, presented = 48).since(first, 0))
+        assertEquals(empty, later.since(first, 1500))
+        assertEquals(WebBrowserVideoFrames.Interval(1000), first.copy(at = 2000).since(first, 0))
     }
 
     @Test fun idlePagePerfIsSilentAndGapsDoNotCount() {
@@ -157,9 +190,9 @@ class WebBrowserRenderTrailTest {
         val perf = watch.perf(10_000)!!
         assertEquals(0, perf.hitches); assertEquals(0L, perf.maxGapMs)
         assertEquals(null, watch.perf(20_000)) // nothing at all: no line
-        val steady = WebBrowserRenderWatch.Perf(10.0, 60.0, 20, 0, 30.0, 30.0, 0)
-        assertEquals(steady.signature(), WebBrowserRenderWatch.Perf(10.0, 61.0, 25, 0, 29.0, 29.5, 0).signature())
-        assertFalse(steady.signature() == WebBrowserRenderWatch.Perf(10.0, 35.0, 300, 12, 30.0, 18.0, 90).signature())
+        val steady = WebBrowserRenderWatch.Perf(10.0, 60.0, 20, 0, 30.0, 30.0, 0, 10.0)
+        assertEquals(steady.signature(), WebBrowserRenderWatch.Perf(10.0, 61.0, 25, 0, 29.0, 29.5, 0, 10.0).signature())
+        assertFalse(steady.signature() == WebBrowserRenderWatch.Perf(10.0, 35.0, 300, 12, 30.0, 18.0, 90, 10.0).signature())
     }
 
     @Test fun changeCanCompareACoarseSignature() {

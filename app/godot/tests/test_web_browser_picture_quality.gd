@@ -137,6 +137,25 @@ func run() -> void:
 	check(window.depth_settings and not window.picture_settings, "The settings popup replaces the picture menu")
 	window._activate(browser.BASE + 17)
 
+	# With the frame hidden (or the page blocked by person passthrough) the footer button still opens a visible menu.
+	var close_hit := func() -> bool:
+		var close: Array = window._buttons.filter(func(button): return button.target == controls.PICTURE)
+		if close.size() != 1 or not close[0].node.is_visible_in_tree(): return false
+		var origin: Vector3 = close[0].node.to_global(Vector3(0, 0, 1))
+		return int(window.ray_hit(origin, -close[0].node.global_basis.z).get("target", -1)) == controls.PICTURE
+	check(not window.on_screen(), "The fixture window floats in the room")
+	window.set_toolbar_shown(false)
+	check(window.chrome_hidden() and not window.picture_settings, "Hiding the frame closes the menus")
+	controls._activate(controls.PICTURE)
+	check(window.picture_settings and window._picture_nodes.size() > 0 and window._picture_nodes.all(func(node): return node.is_visible_in_tree()),
+		"Frame hidden: the picture menu shows")
+	check(close_hit.call(), "Frame hidden: the menu takes the ray")
+	window.depth.matte = true; window.refresh()
+	check(window.page_input_blocked() and window._picture_nodes.size() > 0 and close_hit.call(), "Person passthrough: the menu shows and takes the ray")
+	window._activate(controls.PICTURE)
+	check(not window.picture_settings and window.ray_hit(Vector3(0, 0, 1), Vector3(0, 0, -1)).is_empty(), "Closed, the blocked page takes no ray again")
+	window.depth.matte = false; window.set_toolbar_shown(true)
+
 	# An ultra clarity saved by the earlier build falls back to the default tier.
 	browser.configure_quality(false, "ultra")
 	check(browser.clarity == "high" and browser.pixel_units == 5, "A saved ultra clarity falls back to high")

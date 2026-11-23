@@ -2,6 +2,123 @@
   "schema": 1,
   "entries": [
     {
+      "version": "0.18.8",
+      "date": "2026-11-23",
+      "title": {
+        "zh": "画质设置、媒体库与字幕朗读改进",
+        "zh_Hant": "畫質設定、媒體庫與字幕朗讀改善",
+        "en": "Picture settings, library and narration improvements",
+        "ja": "画質設定・ライブラリ・字幕読み上げの改善"
+      },
+      "items": [
+        {
+          "id": "library-folder-tree",
+          "text": {
+            "zh": "媒体库新增文件夹树，方便在深层目录之间跳转。",
+            "zh_Hant": "媒體庫新增資料夾樹，方便在深層目錄之間跳轉。",
+            "en": "Add a folder tree to the media library for navigating deep directory paths.",
+            "ja": "メディアライブラリにフォルダーツリーを追加し、深い階層の移動をしやすくしました。"
+          }
+        },
+        {
+          "id": "specific-account-sources",
+          "text": {
+            "zh": "最近播放和收藏显示具体账号来源，便于区分同类存储中的不同账号。",
+            "zh_Hant": "最近播放和收藏顯示具體帳號來源，方便區分同類儲存中的不同帳號。",
+            "en": "Show specific account sources in recent items and favorites to distinguish accounts on the same storage service.",
+            "ja": "最近の再生とお気に入りに具体的なアカウントの保存元を表示し、同じサービスのアカウントを区別しやすくしました。"
+          }
+        },
+        {
+          "id": "current-video-picture-controls",
+          "text": {
+            "zh": "设置中的画质调色入口与控制栏打开同一个当前视频面板，无视频时不可用。取消播放器全局默认画质，新视频按出厂值或「沿用上次画面设置」开始；网页画质保留独立设置。",
+            "zh_Hant": "設定中的畫質調色入口與控制列開啟同一個目前影片面板，無影片時不可用。取消播放器全域預設畫質，新影片依出廠值或「沿用上次畫面設定」開始；網頁畫質保留獨立設定。",
+            "en": "Both Settings and the control bar now open the same picture panel for the current video, unavailable when no video is open. New videos use factory values or the reuse-last-picture option instead of global player defaults. Web picture settings remain independent.",
+            "ja": "設定と操作バーから同じ再生中動画の画質パネルを開くようにしました。動画がない場合は利用できません。新しい動画はプレーヤー全体の既定値ではなく、出荷時の値または前回の画面設定の引き継ぎを使用し、ウェブ画質は独立して保存します。"
+          }
+        },
+        {
+          "id": "japanese-caption-speech-segments",
+          "text": {
+            "zh": "日语预读字幕和整片字幕任务改为按语音片段识别，改善电影对白漏识别，并过滤纯呼吸等无效片段。",
+            "zh_Hant": "日語預讀字幕和整片字幕工作改為依語音片段辨識，改善電影對白漏辨識，並過濾純呼吸等無效片段。",
+            "en": "Use speech segments for Japanese look-ahead and whole-film captions to improve dialogue detection and filter breath-only or invalid segments.",
+            "ja": "日本語の先読み字幕と全編字幕生成で音声区間ごとに認識し、映画の台詞の取りこぼしを減らすとともに、呼吸音のみなどの無効な区間を除外します。"
+          }
+        },
+        {
+          "id": "live-caption-continuity",
+          "text": {
+            "zh": "改善实时听译因播放进度短暂延迟而反复重启的问题，并减少重复字幕。",
+            "zh_Hant": "改善即時聽譯因播放進度短暫延遲而反覆重新啟動的問題，並減少重複字幕。",
+            "en": "Reduce repeated live-caption restarts caused by briefly delayed playback position updates, and reduce repeated captions.",
+            "ja": "再生位置の更新が一時的に遅れた際にリアルタイム字幕認識が繰り返し再起動する問題を改善し、字幕の重複を減らしました。"
+          }
+        },
+        {
+          "id": "narration-generation-and-retries",
+          "text": {
+            "zh": "优化字幕朗读生成和音色提示复用；过期句子停止继续重试，减少失败句子长时间占用生成队列。",
+            "zh_Hant": "最佳化字幕朗讀生成和音色提示重用；過期句子停止繼續重試，減少失敗句子長時間占用生成佇列。",
+            "en": "Optimize subtitle narration generation and voice prompt reuse. Stop retrying sentences past their speech deadline so failed sentences do not hold the generation queue for as long.",
+            "ja": "字幕読み上げの生成と音声プロンプトの再利用を最適化しました。発話期限を過ぎた文の再試行を停止し、失敗した文が生成待ち行列を長時間占有するのを減らします。"
+          }
+        },
+        {
+          "id": "photo-puzzle-entry",
+          "text": {
+            "zh": "恢复看图工具栏的拼图入口，方便直接从图片观看中进入拼图。",
+            "zh_Hant": "恢復看圖工具列的拼圖入口，方便直接從圖片觀看中進入拼圖。",
+            "en": "Restore the puzzle button on the image toolbar so you can open puzzles directly while viewing images.",
+            "ja": "画像ツールバーのパズルボタンを復元し、画像の閲覧中に直接パズルを開けるようにしました。"
+          }
+        },
+        {
+          "id": "imported-scene-vr-cutout",
+          "text": {
+            "zh": "修复部分VR透视人物被导入场景墙壁完全遮住的问题；该显示方式下，场景物体不再遮挡VR人物。",
+            "zh_Hant": "修復部分VR透視人物被匯入場景牆壁完全遮住的問題；此顯示方式下，場景物件不再遮擋VR人物。",
+            "en": "Fix some VR cutout subjects being completely hidden behind imported scene walls. In this display mode, scene objects no longer occlude the VR subject.",
+            "ja": "一部のVR切り抜き人物がインポートしたシーンの壁に完全に隠れる問題を修正しました。この表示方式では、シーン内の物体はVR人物を遮りません。"
+          }
+        },
+        {
+          "id": "browser-picture-menu-hidden-frame",
+          "text": {
+            "zh": "修复隐藏网页边框或开启人物穿透时，画质按钮已打开但菜单不显示的问题。",
+            "zh_Hant": "修復隱藏網頁邊框或開啟人物穿透時，畫質按鈕已開啟但選單不顯示的問題。",
+            "en": "Fix the browser picture menu not appearing after activation while the page frame is hidden or person passthrough is enabled.",
+            "ja": "ウェブの枠を非表示にした場合や人物パススルーが有効な場合に、画質ボタンを押してもメニューが表示されない問題を修正しました。"
+          }
+        },
+        {
+          "id": "pico-usb-direct-open",
+          "text": {
+            "zh": "PICO的USB文件打开失败入口新增直接打开选项，并提供更明确的引导错误说明。",
+            "zh_Hant": "PICO的USB檔案開啟失敗入口新增直接開啟選項，並提供更明確的引導錯誤說明。",
+            "en": "Offer direct open from PICO USB file failure panels with clearer guidance in error messages.",
+            "ja": "PICOでUSBファイルを開けなかった場合の画面に直接開く選択肢を追加し、エラー時の案内を改善しました。"
+          },
+          "scope": [
+            "pico"
+          ]
+        },
+        {
+          "id": "qiyu-display-brightness",
+          "text": {
+            "zh": "奇遇运行时为视频、照片、网页和AirPlay加入显示亮度校正，改善画面偏暗。",
+            "zh_Hant": "奇遇執行環境為影片、照片、網頁和AirPlay加入顯示亮度校正，改善畫面偏暗。",
+            "en": "Apply display brightness correction to video, photos, web pages and AirPlay on QIYU to improve dark pictures.",
+            "ja": "QIYUで動画、写真、ウェブページ、AirPlayに表示の明るさ補正を適用し、映像が暗く見える問題を改善しました。"
+          },
+          "scope": [
+            "qiyu"
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.18.7",
       "date": "2026-11-22",
       "title": {

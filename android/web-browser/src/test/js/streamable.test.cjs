@@ -11,7 +11,25 @@ function fixture(){
 test('binds the decoded clip to its public canonical item, exact rendered file and actual request',()=>{
   const f=fixture(),b=S.binding(f.video,f.requests,f.document,[f.video]);assert.equal(b.id,'abc123');assert.equal(b.source,source);assert.equal(b.expected_duration,14.4144);
   assert.equal(S.page('https://streamable.com.evil/abc123'),null);assert.equal(S.page('https://user@streamable.com/abc123'),null);
-  assert.equal(S.page('https://streamable.com/e/abc123'),null);
+  assert.equal(S.page('https://streamable.com/e/abc123').id,'abc123');
+  assert.equal(S.page('https://streamable.com/other/abc123'),null);
+});
+test('the official embed binds only its owned video, canonical clip and exact declared and observed source',()=>{
+  function embed(){
+    const f=fixture();
+    f.document.location.href='https://streamable.com/e/abc123';
+    f.document.querySelector=selector=>selector==='#media-container .player > video#video-player-tag.video-player-tag'?f.video:null;
+    f.video.getAttribute=name=>name==='src'?source.replace('https:',''):null;
+    f.scripts.length=0;
+    return f;
+  }
+  const f=embed();const bound=S.binding(f.video,f.requests,f.document,[f.video]);
+  assert.equal(bound.embedded,true);assert.equal(bound.source,source);assert.equal(bound.expected_duration,14.42);
+  for(const mutate of [f=>f.document.querySelector=()=>null,f=>f.video.getAttribute=()=>null,
+    f=>f.video.getAttribute=()=>source.replace('ACTUAL','OTHER'),f=>f.canonical[0].href='https://streamable.com/other1',
+    f=>f.video.mediaKeys={},f=>f.requests[0].url=source.replace('ACTUAL','OTHER')]){
+    const f=embed();mutate(f);assert.equal(S.binding(f.video,f.requests,f.document,[f.video]),null);
+  }
 });
 test('another item, stale canonical declaration, substituted file, duration or protected/ambiguous player is rejected',()=>{
   for(const mutate of [f=>f.canonical[0].href='https://streamable.com/other1',f=>f.document.location.href='https://streamable.com/other1',

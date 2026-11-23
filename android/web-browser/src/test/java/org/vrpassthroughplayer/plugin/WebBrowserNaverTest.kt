@@ -51,17 +51,17 @@ class WebBrowserNaverTest {
         assertNull(WebBrowserNaver.page(page+"&seedMediaId="+"B".repeat(36)))
     }
     @Test fun unsupportedSameDocumentTimelineServicesRetainObservationsButCannotAuthorizeBeta() {
-        val moment=page.replace("NTV","MOMENT")
-        assertTrue(WebBrowserNaver.observing(moment));assertFalse(WebBrowserNaver.enabled(moment))
-        assertNull(WebBrowserNaver.metadata(media(moment),moment))
-        assertFalse(WebBrowserNaver.observing(moment.replace("m.naver.com","m.naver.com.evil")))
+        val other=page.replace("NTV","OTHER")
+        assertTrue(WebBrowserNaver.observing(other));assertFalse(WebBrowserNaver.enabled(other))
+        assertNull(WebBrowserNaver.metadata(media(other),other))
+        assertFalse(WebBrowserNaver.observing(other.replace("m.naver.com","m.naver.com.evil")))
     }
-    private fun clip(): JSONObject {
-        val frame=WebBrowserNaver.canonical(id,"CLIP")
+    private fun clip(service: String = "CLIP"): JSONObject {
+        val frame=WebBrowserNaver.canonical(id,service)
         val root="https://declared.test/current.m3u8?signature=ROOT"
         val item=media(frame).put("source", "").put("naver_source",root).put("blob",true)
             .put("width",1080).put("height",1920).put("duration",26.379777)
-        item.getJSONObject("naver").put("page",frame).put("service_type","CLIP").put("format","segment_timeline")
+        item.getJSONObject("naver").put("page",frame).put("service_type",service).put("format","segment_timeline")
             .put("source",root).put("current_source","blob:https://m.naver.com/current").put("fragment_kind","blob")
             .put("width",1080).put("height",1920).put("duration",26.379777).put("expected_duration",26.38)
             .put("timeline",JSONObject().put("base","https://segments.test/current/").put("media","\$RepresentationID\$-\$Number\$.ts?signature=EXACT")
@@ -86,6 +86,16 @@ class WebBrowserNaverTest {
             {it.getJSONArray("network").getJSONObject(0).put("url","https://segments.test/current/720p-0.ts?signature=EXACT")},
             {it.getJSONArray("network").getJSONObject(0).put("url","https://segments.test/current/1080p-0.ts?signature=CHANGED")}
         )){val item=clip();change(item);assertNull(WebBrowserNaver.metadata(item,item.getString("frame")))}
+    }
+    @Test fun momentRequiresItsOwnServiceAndTheCurrentlyObservedSegment() {
+        val item=clip("MOMENT");val frame=item.getString("frame")
+        assertEquals(frame,WebBrowserNaver.canonicalPage(frame))
+        assertNotNull(WebBrowserNaver.timeline(item,frame))
+        assertNull(WebBrowserNaver.metadata(media(frame),frame))
+        val wrongService=JSONObject(item.toString());wrongService.getJSONObject("naver")
+            .put("service_type","CLIP").put("page",WebBrowserNaver.canonical(id,"CLIP"))
+        assertNull(WebBrowserNaver.timeline(wrongService,frame))
+        assertNull(WebBrowserNaver.timeline(item.put("network",JSONArray()),frame))
     }
     @Test fun clipTimelineHolesUnboundedRepeatsAndUnknownSubstitutionsAreRejectedAgainInNative() {
         for(change in listOf<(JSONObject)->Unit>(

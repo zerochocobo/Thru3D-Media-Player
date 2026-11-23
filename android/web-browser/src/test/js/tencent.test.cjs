@@ -57,6 +57,30 @@ test('HLS readiness rejects the observed extra-ad timeline difference before nat
   assert.equal(T.binding({...p,duration:d.duration+.51},[d],requests,doc),null);
 });
 
+test('binds a differing HLS timeline only for the same current request, content and distinct observed segments',()=>{
+  const base='https://related-cdn.example/current/';
+  const manifest=(before,a,b)=>`#EXTM3U\n#EXTINF:${before},\nintro.ts\n#EXTINF:108,\n${a}\n#EXTINF:108,\n${b}\n#EXT-X-ENDLIST\n`;
+  const d=T.normalize(raw(),id),page={...d,playlist:manifest(15,'other-a.ts','other-b.ts'),duration:231,urls:[base]};
+  const observed={...d,playlist:manifest(30,'a.ts','b.ts'),duration:246,urls:[base],request_flow:'current-flow'};
+  const video={...player(),currentSrc:'blob:current',duration:246};
+  const requests=['a.ts','b.ts'].map(name=>({kind:'segment',url:base+name}));
+  const state={id,data:page,flowid:'current-flow'};
+  const bound=T.currentBinding(video,state,[observed],requests,doc);
+  assert.equal(bound.playlist,observed.playlist);assert.equal(bound.duration,video.duration);
+  assert(!JSON.stringify(bound).includes('current-flow'));
+  for(const candidate of [{...observed,request_flow:'earlier-flow'},{...observed,request_flow:undefined},
+    {...observed,content_duration:205},{...observed,id:'x1111111111'},{...observed,clear:false},{...observed,full:false}]){
+    assert.equal(T.currentBinding(video,state,[candidate],requests,doc),null);
+  }
+  for(const current of [null,{...page,clear:false},{...page,full:false}]){
+    assert.equal(T.currentBinding(video,{...state,data:current},[observed],requests,doc),null);
+  }
+  assert.equal(T.currentBinding(video,state,[observed],[requests[0],{...requests[0],url:base+'redirect.ts',original_url:requests[0].url}],doc),null);
+  assert.equal(T.currentBinding(video,state,[observed,{...observed,revision:'another'}],requests,doc),null);
+  const primaryRequests=['other-a.ts','other-b.ts'].map(name=>({kind:'segment',url:base+name}));
+  assert.equal(T.currentBinding({...video,duration:231},state,[observed],primaryRequests,doc).playlist,page.playlist);
+});
+
 test('startup diagnostics retain only bounded counts and identify metadata preceding native policy',()=>{
   const result=T.diagnostics([
     {name:'https://related-api.example/getvinfo?vid='+id+'&secret=never-report',initiatorType:'script',startTime:10},

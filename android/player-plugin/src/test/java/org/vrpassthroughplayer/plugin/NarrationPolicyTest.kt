@@ -149,6 +149,28 @@ class NarrationPolicyTest {
         assertTrue(NarrationPolicy.generationFrameBudget("一".repeat(2048),"zh",1.0)<=250)
         assertTrue(NarrationPolicy.generationFrameBudget("你好。","zh",1.0)>52)
     }
+    @Test fun retryLadderResamplesTheFastGraphBeforeTheSlowFloatGraph() {
+        val attempts=NarrationPolicy.ATTEMPTS
+        assertEquals(Triple(false,0,48),Triple(attempts[0].precision,attempts[0].randomSkip,attempts[0].minimumFrames))
+        // Same graph and same draws would repeat a failure: every fast attempt needs its own draws.
+        val fast=attempts.filter {!it.precision}
+        assertEquals(fast.size,fast.map {it.randomSkip}.toSet().size)
+        for(attempt in fast.drop(1)) {
+            assertTrue(attempt.randomSkip in 1..1024)
+        }
+        // The float recovery graph is only the last resort, and only once.
+        assertEquals(listOf(attempts.lastIndex),attempts.indices.filter {attempts[it].precision})
+        assertTrue(attempts.drop(1).all {it.minimumFrames==64})
+    }
+    @Test fun savedCloneVoicesTryTheFloatGraphRightAfterTheFastOne() {
+        val clone=NarrationPolicy.attempts(true);val preset=NarrationPolicy.attempts(false)
+        assertEquals(Triple(false,0,48),Triple(clone[0].precision,clone[0].randomSkip,clone[0].minimumFrames))
+        assertTrue(clone[1].precision&&clone[1].randomSkip==0)
+        // Later float attempts re-sample with their own draws.
+        assertEquals(clone.size,clone.map {it.precision to it.randomSkip}.toSet().size)
+        for(attempt in clone.drop(2))assertTrue(attempt.randomSkip in 1..1024)
+        assertEquals(NarrationPolicy.ATTEMPTS,preset)
+    }
     @Test fun subtitleFragmentsGetAnEndMarkWithoutChangingTheirWords() {
         assertEquals("你好。",NarrationPolicy.speechText("你好", "zh"))
         assertEquals("Hello.",NarrationPolicy.speechText("Hello", "en"))

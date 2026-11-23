@@ -5,7 +5,7 @@ package org.vrpassthroughplayer.plugin
 internal object WebVideoMp4Header {
     // Ordinary long MP4s can have multi-megabyte sample tables. Keep the initial
     // payload prefix at 2 MiB; only sparse, validated metadata may use this cap.
-    internal const val METADATA_LIMIT=8*1024*1024
+    internal const val METADATA_LIMIT = 12 * 1024 * 1024
     fun inspect(reader: Mp4InterleavePolicy.Reader, prefix: ByteArray): ByteArray {
         require(prefix.size >= 16 && String(prefix, 4, 4, Charsets.US_ASCII) == "ftyp")
         var offset = 0L

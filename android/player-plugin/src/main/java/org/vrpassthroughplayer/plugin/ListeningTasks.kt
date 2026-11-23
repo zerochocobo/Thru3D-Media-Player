@@ -138,8 +138,8 @@ internal class ListeningTasks(private val context: ()->Context?,private val reso
         val manifest=app.assets.open("moonshine/model.json").bufferedReader().use{JSONObject(it.readText())}
         val model=ListeningCueCache.modelIdentity(manifest,job.spec.language)
         if(job.spec.model.isNotEmpty()&&job.spec.model!=model)error("model_changed")
-        val key=ListeningCueCache.key(job.spec.media,job.spec.duration,job.spec.language,model,job.spec.track,job.spec.playlist)
-        return ListeningCueCache.obtain(if(job.spec.persist)ListeningCueCache.directory(app.filesDir) else null,key,job.spec.network).also{job.cache=it}
+        return ListeningCueCache.obtainFor(if(job.spec.persist)ListeningCueCache.directory(app.filesDir) else null,job.spec.media,
+            job.spec.duration,job.spec.language,model,job.spec.track,job.spec.playlist,job.spec.network).also{job.cache=it}
     }
     private fun shouldStop(job: Job)=cancelled || closed || synchronized(lock){jobs[job.id]!==job || job.state=="error" || blocked(job).isNotEmpty()}
     private fun delegate(job: Job){
@@ -162,7 +162,8 @@ internal class ListeningTasks(private val context: ()->Context?,private val reso
             NarrationModels.ensure(directory,bundle.getJSONObject("files"),{app.assets.open(bundle.getString("directory")+"/"+it)},{!shouldStop(job)},{})
             if(shouldStop(job))return
             job.phase="model_load"
-            engine=synchronized(ListeningWorkGate.lock){ListeningNative.create(directory.path,job.spec.language)};check(engine>0)
+            val vad=if(ListeningPolicy.segmented(job.spec.language))NarrationAssets.prepareVad(app){!shouldStop(job)}.path else ""
+            engine=synchronized(ListeningWorkGate.lock){ListeningNative.createAhead(directory.path,job.spec.language,vad)};check(engine>0)
             if(shouldStop(job))return
             job.phase="audio_open"
             resolved=shared(job.spec.uri)?.let(retain) ?: resolve(job.spec.uri)
@@ -202,7 +203,7 @@ internal class ListeningTasks(private val context: ()->Context?,private val reso
                 if(actualDuration>0 && kotlin.math.abs(actualDuration-job.spec.duration)>2.0)error("source_changed")
                 if(cache.revoked)break
                 val rows=result.getJSONArray("cues")
-                for(i in 0 until rows.length())ListeningPolicy.Cue.parse(rows.getJSONObject(i))?.takeIf{it.end>coverFrom&&ListeningPolicy.accept(it,job.spec.language)}?.let(cache::add)
+                for(i in 0 until rows.length())ListeningPolicy.Cue.parse(rows.getJSONObject(i))?.takeIf{it.end>coverFrom}?.let{ListeningPolicy.clean(it,job.spec.language)}?.let(cache::add)
                 cache.cover(coverFrom,minOf(job.spec.duration,result.getDouble("settled")))
                 if(result.getBoolean("eof")){cache.finish(through,job.spec.duration,result.optDouble("audio_end",0.0).takeIf{it>0} ?: job.spec.duration);through=-100.0}
                 if(!cache.flush(result.getBoolean("eof")))error(cache.error)

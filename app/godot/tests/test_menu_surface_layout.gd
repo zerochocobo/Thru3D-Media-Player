@@ -80,7 +80,7 @@ func run() -> void:
 				match mode:
 					"settings", "settings-alpha": menu.section = 1
 					"screen", "stereo_view": menu._adjustment = mode
-					"picture": menu._open_picture_controls(false)
+					"picture": menu._open_picture_controls()
 					"modes": menu._mode_open = true
 					"subtitles": menu._subtitle_open = true
 					"audio": menu._audio_open = true; menu._audio_source = str(state.source_uri); menu.choices.opened = "audio_track"

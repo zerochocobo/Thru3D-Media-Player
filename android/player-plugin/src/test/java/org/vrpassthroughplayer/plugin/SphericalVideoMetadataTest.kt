@@ -41,7 +41,8 @@ class SphericalVideoMetadataTest {
         val ftyp=original.copyOfRange(0,size(0))
         val at=original.toString(Charsets.ISO_8859_1).indexOf("moov")-4
         assertTrue(at>=ftyp.size)
-        val free=java.nio.ByteBuffer.allocate(3*1024*1024).putInt(3*1024*1024).put("free".toByteArray()).array()
+        val paddingBytes = 9 * 1024 * 1024
+        val free = java.nio.ByteBuffer.allocate(paddingBytes).putInt(paddingBytes).put("free".toByteArray()).array()
         val content=original.copyOfRange(at+8,at+size(at))+free
         val moov=java.nio.ByteBuffer.allocate(content.size+8).putInt(content.size+8).put("moov".toByteArray()).put(content).array()
         val header=ftyp+moov

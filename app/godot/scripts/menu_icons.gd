@@ -129,6 +129,7 @@ const PATHS := {
 	"back": '<path d="M13 6L7 12 13 18M20 6L14 12 20 18"/>',
 	"forward": '<path d="M4 6L10 12 4 18M11 6L17 12 11 18"/>',
 	"folder": '<path d="M3 7V19H21V8H12L10 5H3V7Z"/>',
+	"folder_tree": '<path d="M3 9V3H8L10 5H21V9H3ZM6 9V21H11M6 14.5H11M11 12H21V17H11ZM11 19H21V23H11Z"/>',
 	"library": '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8H16M8 12H16M8 16H13"/>',
 	"alpha": '<circle cx="12" cy="6" r="3"/><path d="M5 21V17C5 10 19 10 19 17V21M8 17V21M16 17V21"/>',
 	"loop": '<path d="M4 9C4 3 20 3 20 9V11M17 8L20 11 23 8M20 15C20 21 4 21 4 15V13M1 16L4 13 7 16"/>',

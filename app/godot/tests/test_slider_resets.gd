@@ -33,7 +33,7 @@ func run() -> void:
 	menu.adjustment_requested.connect(main._on_playback_adjustment)
 	menu.adjustment_committed.connect(main._on_player_adjustment_committed)
 	menu.adjustment_committed.connect(func(): commits += 1)
-	menu.visible = true; menu.refresh(); menu._open_picture_controls(false); menu._picture_advanced = true
+	menu.visible = true; menu.refresh(); menu._open_picture_controls(); menu._picture_advanced = true
 	for page in Grade.PAGES.size():
 		for key: String in Grade.PAGES[page]:
 			video.color_grade.reset_custom()

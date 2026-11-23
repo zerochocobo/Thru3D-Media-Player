@@ -8,6 +8,10 @@ class NativeFrameProbe extends Capture:
 	func update() -> void:
 		display.set_menu_layers(true)
 
+class CompanionMenu extends Menu:
+	func composition_root() -> Node3D:
+		return self
+
 var failures: Array[String] = []
 var checks := 0
 var output := ProjectSettings.globalize_path("res://../../build/output/menu-hd/composition")
@@ -244,6 +248,47 @@ func run() -> void:
 	capture.update()
 	check(capture.enabled and menu._buttons[0].node.layers != 1 and capture.snapshot().pixels == slow_frame_pixels,
 		"The rendered menu retains its layer masks and fixed capture density")
+
+	# Moving an origin with both surfaces attached is only a placement change.
+	var companion := CompanionMenu.new()
+	origin.add_child(companion)
+	companion.position = Vector3(0.43, -0.31, -0.08)
+	companion.rotation.y = 0.15
+	companion._button(91, "Companion", Vector2.ZERO, Vector2(0.35, 0.10))
+	companion.visible = true
+	menu.reparent(origin)
+	capture.register_companion(companion)
+	capture.keepalive_ms = 0
+	capture.update()
+	check(not slot_with(capture, companion._buttons[0].node).is_empty(), "The companion joins the capture")
+	var shared_pose_repaints: int = capture.repaints
+	for step in range(1, 9):
+		origin.position = Vector3(0.07 * step, 0.03 * step, -0.04 * step)
+		origin.rotation = Vector3(0.03 * step, -0.07 * step, 0.01 * step)
+		capture.update()
+	check(capture.repaints == shared_pose_repaints, "Moving the origin with a rigid companion does not repaint (%d extra)" %
+		(capture.repaints - shared_pose_repaints))
+	for step in range(8, 0, -1):
+		origin.position = Vector3(-0.04 * step, 0.07 * step, -0.02 * step)
+		origin.rotation = Vector3(0.02 * step, 0.06 * step, -0.04 * step)
+		capture.verify()
+		capture.update()
+	check(capture.repaints == shared_pose_repaints, "Playback value checks with rigid motion do not repaint (%d extra)" %
+		(capture.repaints - shared_pose_repaints))
+	var companion_button: Node3D = companion._buttons[0].node
+	var before_button_motion: int = capture.repaints
+	companion_button.position.x += 0.01
+	capture.verify()
+	capture.update()
+	check(capture.repaints == before_button_motion + 1, "Playback value checks detect actual control movement")
+	var before_companion_motion: int = capture.repaints
+	companion.position.x += 0.015
+	capture.update()
+	check(capture.repaints == before_companion_motion + 1, "Independent companion motion still repaints")
+	companion.hide()
+	capture.update()
+	check(slot_with(capture, companion._buttons[0].node).is_empty(), "Hiding a companion removes its capture geometry")
+
 	capture.shutdown("test_complete")
 	check(menu._buttons[0].node.layers == 1 and camera.cull_mask == original_eye_mask and not capture.is_processing() and main_slot.layer.quad_size.x < 0.001,
 		"Explicit cleanup restores the eye-buffer menu and parks layers")

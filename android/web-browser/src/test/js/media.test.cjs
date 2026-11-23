@@ -29,7 +29,7 @@ function fixture(count = 1, blob = true, options = {}) {
       livePlayer: {getVideoEl:()=>video,getPlayerInfo:()=>options.biliLive},
     }};
   }
-  if(options.tencent||options.niconico||options.tiktok||options.dailymotion){document.body={append(node){node.parentElement=this;}};document.createElement=()=>({style:{},dataset:{},remove(){this.parentElement=null;}});}
+  if(options.tencent||options.niconico||options.tiktok||options.instagram||options.twitch||options.dailymotion){document.body={append(node){node.parentElement=this;}};document.createElement=()=>({style:{},dataset:{},remove(){this.parentElement=null;}});}
   const location = { href: options.page || 'https://page.test/watch' }, clock = {now:Date.now()};
   const context = vm.createContext({ document, location, navigator: { userAgent: 'Fixture' }, URL, Date:class extends Date {static now(){return clock.now;}},
     browser: { runtime: { connectNative: () => native, connect: () => network } }, MutationObserver: class { constructor(callback) { observers.push(callback); } observe(root) {observedRoots.push(root);} disconnect() {} },
@@ -59,9 +59,10 @@ function fixture(count = 1, blob = true, options = {}) {
   if(options.tiktok){
     const v=videos[0],id='6742501081818877190',file='https://related.test/current-file';
     v.currentSrc='blob:https://www.tiktok.com/current';
+    v.presented=true;
     v.getBoundingClientRect=()=>({left:100,top:100,right:900,bottom:700,width:800,height:600});
-    context.Thru3DTikTok={documentPage:()=>true,page:()=>({id}),declaration:()=>({id}),read:()=>({urls:[file]}),
-      binding:(video,requests)=>video===v&&requests.some(r=>r.url===file)?{id,page:location.href,revision:'a1'}:null};
+    context.Thru3DTikTok={documentPage:()=>true,page:()=>({id}),declaration:()=>({id}),read:video=>video.presented?{urls:[file]}:null,
+      binding:(video,requests)=>video===v&&v.presented&&requests.some(r=>r.url===file)?{id,page:location.href,revision:'a1'}:null};
   }
   if(options.niconico){
     context.innerWidth=1600;context.innerHeight=1000;context.getComputedStyle=()=>({});
@@ -69,14 +70,54 @@ function fixture(count = 1, blob = true, options = {}) {
     videos[0].getBoundingClientRect=()=>({left:100,top:100,right:900,bottom:700,width:800,height:600});
     vm.runInContext(fs.readFileSync(path.join(__dirname,'../../main/assets/web-browser/niconico.js'),'utf8'),context);
   }
+  const navigationEvents = {};
+  if (options.twitch || options.mango || options.odysee || options.instagram || options.tiktok) {
+    context.window = { navigation: { addEventListener(name, fn) { (navigationEvents[name] ||= []).push(fn); } } };
+    context.window.top = context.window;
+    context.innerWidth = 1600; context.innerHeight = 1000;
+    videos[0].getBoundingClientRect = () => ({left:100,top:100,right:900,bottom:700,width:800,height:600});
+    for (const site of ['twitch','mango']) if (options[site]) {
+      vm.runInContext(fs.readFileSync(path.join(__dirname,'../../main/assets/web-browser/'+site+'.js'),'utf8'),context);
+    }
+  }
+  if (options.instagram) {
+    for (const [index, video] of videos.entries()) {
+      Object.assign(video, {paused:true,currentSrc:`blob:https://www.instagram.com/${index}`,instagramId:`ReelCode${index}`,
+        visible:index===0,top:100,getBoundingClientRect(){return {left:100,top:this.top,width:360,height:640};}});
+    }
+    const read=video=>video.visible?{id:video.instagramId}:null;
+    context.Thru3DInstagram={documentPage:value=>new URL(value).hostname==='www.instagram.com',read,
+      binding:(video,requests,url,live)=>read(video)&&!live.some(other=>other!==video&&other.visible)&&
+        requests.some(r=>r.url===`https://media.test/${video.instagramId}.mp4`)?{id:video.instagramId,revision:'a1',
+          page:new URL(url).pathname==='/reels/'?`https://www.instagram.com/reel/${video.instagramId}/`:url}:null};
+  }
+  if (options.odysee) {
+    document.location = location;
+    const video = videos[0], claim = '1' + 'a'.repeat(39);
+    const source = 'https://related.test/v6/streams/' + claim + '/abcdef.mp4';
+    const owner = {claimId:claim, uri:'lbry://@Public#2/Clip#1', claimValues:{video:{duration:100}},
+      isLivestreamClaim:false, isProtectedContent:false};
+    Object.assign(video, {
+      currentSrc:source, src:source, hasAttribute:name=>name==='src',
+      __reactProps$test:{src:source}, parentElement:{__reactProps$test:{children:{props:owner}}},
+      load() {
+        this.loadCalls = (this.loadCalls || 0) + 1;
+        this.currentTime = 0; this.readyState = 0; this.currentSrc = ''; this.error = null;
+      },
+    });
+    for (const asset of ['tiktok','streamable','odysee']) {
+      vm.runInContext(fs.readFileSync(path.join(__dirname,'../../main/assets/web-browser/'+asset+'.js'),'utf8'),context);
+    }
+  }
   if(options.dailymotion){
     const video=videos[0],id='x5kesuj',page='https://www.dailymotion.com/video/'+id;
     const source='blob:https://geo.dailymotion.com/current',root='https://related.test/current.m3u8';
     video.currentSrc=source;video.getBoundingClientRect=()=>({left:10,top:10,width:800,height:450});
     context.Thru3DDailymotion={frame:value=>value.startsWith('https://geo.dailymotion.com/player/'),
       documentPage:value=>/^https:\/\/(?:www\.)?dailymotion\.com(?:\/|$)/.test(value||''),
-      page:value=>/^https:\/\/www\.dailymotion\.com\/video\/([A-Za-z0-9]+)$/.exec(value||'')?.[1],
-      declaration:()=>({id}),read:()=>({id}),binding:(v,requests,doc,live,bodies)=>v===video&&v.currentSrc===source&&requests.some(r=>r.url===root)&&bodies.length===1?{id,page,revision:'a1'}:null};
+      page:value=>/^https:\/\/www\.dailymotion\.com\/video\/([A-Za-z0-9]+)$/.exec((value||'').split('?',1)[0])?.[1],
+      declaration:()=>({id}),read:()=>({id}),binding:(v,requests,doc,live,bodies)=>v===video&&v.currentSrc===source&&
+        !live.some(other=>other.advertising)&&requests.some(r=>r.url===root)&&bodies.length===1?{id,page,revision:'a1'}:null};
   }
   if(options.redbull)context.Thru3DRedBull={documentPage:value=>value.startsWith('https://www.redbull.tv/'),read:()=>null,binding:()=>null};
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../../main/assets/web-browser/direct-return.js'),'utf8'),context);
@@ -90,9 +131,105 @@ function fixture(count = 1, blob = true, options = {}) {
     videos.push(v); observers.forEach(f=>f([{addedNodes:[v],removedNodes:[]}])); flush(); return v;
   };
   flush(); return { videos, native, network, capture, flush, report, location, addVideo, clock, selectWeibo, playButtons,tencent:context.tencent,observedRoots,
+    navigate(next) { location.href = next; (navigationEvents.currententrychange || []).forEach(f => f()); },
     resources(entries) { resourceObservers.forEach(f=>f({getEntries:()=>entries})); },
     emit(name,value={}) { (events[name] || []).forEach(f=>f(value)); } };
 }
+
+test('Mango autoplay publishes the new observation route before the next periodic report', () => {
+  const home='https://www.mgtv.com/b/822501/24669848.html',next='https://www.mgtv.com/b/822501/24661392.html';
+  const f=fixture(1,true,{page:home,mango:true,fullscreen:false});
+  const context=()=>f.network.messages.filter(message=>message.type==='context').at(-1);
+  assert.equal(context().page,home);assert.equal(context().mango,true);
+  f.navigate(next);
+  assert.equal(context().page,next);assert.equal(context().mango,true);assert.equal(context().reset,true);
+});
+
+test('Twitch Clip observation tracks the current history entry before the native button policy arrives', () => {
+  const channel = 'https://www.twitch.tv/creator/clips';
+  const clip = 'https://www.twitch.tv/creator/clip/CurrentClip';
+  const f = fixture(1, false, {page:channel,twitch:true,playButtons:true,fullscreen:false});
+  const file = f.videos[0].currentSrc;
+  const lastContext = () => f.network.messages.filter(m => m.type === 'context').at(-1);
+  const policy = twitch => f.native.onMessage.fire({action:'network_policy',twitch});
+  const capture = () => {
+    f.network.onMessage.fire({type:'network',page:clip,candidates:[{url:file,kind:'file',at:f.clock.now,headers:{}}],
+      twitch:[{id:'CurrentClip',source:file,expected_duration:100,qualities:[2160],revision:'a1'}]});
+    f.flush();
+  };
+
+  policy(false);
+  assert.equal(lastContext().twitch, false);
+  f.navigate(clip);
+  assert.equal(lastContext().page, clip);
+  assert.equal(lastContext().twitch, true);
+  capture();
+  assert.equal(f.report()[0].twitch_ready, true);
+  assert.equal(f.playButtons.length, 0);
+
+  policy(true); f.flush();
+  const first = f.playButtons.at(-1);
+  first.click(); f.flush();
+  assert.equal(f.report()[0].twitch_request, 1);
+
+  f.location.href = channel;
+  first.click();
+  f.navigate(channel);
+  assert.equal(first.disposed, true);
+  assert.equal(lastContext().twitch, false);
+  f.flush();
+  assert.equal(f.report()[0].twitch_ready, false);
+
+  f.navigate(clip); f.flush();
+  assert.equal(lastContext().twitch, true);
+  assert.equal(f.report()[0].twitch_ready, false);
+  capture();
+  assert.equal(f.playButtons.length, 1);
+  policy(true); f.flush();
+  const second = f.playButtons.at(-1);
+  assert.notEqual(second, first);
+  second.click(); f.flush();
+  assert.equal(f.report()[0].twitch_request, 2);
+});
+
+test('Twitch retains and restores the selected clip when its list range changes in the same document', () => {
+  const clip = 'https://www.twitch.tv/creator/clip/CurrentClip';
+  const f = fixture(1, false, {page:clip,twitch:true,fullscreen:false});
+  const video = f.videos[0];
+  const report = () => f.native.messages.filter(m => m.type === 'media').at(-1);
+  const command = message => { f.native.onMessage.fire(message); f.flush(); };
+  f.network.onMessage.fire({type:'network',page:clip,
+    candidates:[{url:video.currentSrc,kind:'file',at:f.clock.now,headers:{}}],
+    twitch:[{id:'CurrentClip',source:video.currentSrc,expected_duration:100,qualities:[2160],revision:'a1'}]});
+  f.flush();
+  const selected = report().videos[0];
+  assert.equal(selected.twitch_ready, true);
+
+  command({action:'pause_media',token:4});
+  command({action:'suspend',keep_pause:true,pause_token:4});
+  f.navigate(clip+'?range=7d'); f.flush();
+  assert.equal(report().pause_token, 4);
+  assert.equal(report().videos[0].twitch.revision, selected.twitch.revision);
+  assert.equal(report().videos[0].twitch.page, clip+'?range=7d');
+
+  command({action:'resume'});
+  assert.equal(report().pause_held, true);
+  command({action:'release_pause_media',token:4,play:false});
+  const restore = {action:'restore_twitch',page:clip,id:String(selected.id),epoch:selected.network_epoch,
+    revision:selected.twitch.revision,time:19,play:false};
+  command({...restore,revision:'stale'});
+  assert.equal(video.currentTime, 3);
+  command({...restore,page:clip+'?quality=source'});
+  assert.equal(video.currentTime, 3);
+  command(restore);
+  assert.equal(video.currentTime, 19);
+  assert.equal(video.paused, true);
+
+  command({action:'pause_media',token:5});
+  f.navigate(clip+'?range=7d&quality=source'); f.flush();
+  assert.equal(report().pause_token, 0);
+  assert.equal(report().videos[0].twitch_ready, false);
+});
 
 test('Bilibili Live binds the declared rendition, retires the old click after a tier change and keeps the paused room clock', () => {
   const page = 'https://live.bilibili.com/12345';
@@ -301,6 +438,37 @@ test('a homepage-preloaded Dailymotion frame observes early media but exposes no
   f.native.onMessage.fire({action:'network_policy',dailymotion:true,dailymotion_owner:'https://www.dailymotion.com/video/another'});f.flush();
   assert.equal(f.report()[0].dailymotion_ready,false);
 });
+test('Dailymotion needs a new click after the parent visits another video and comes back',()=>{
+  const f=dailymotionFixture(),original='https://www.dailymotion.com/video/x5kesuj';
+  const parent=owner=>{f.native.onMessage.fire({action:'network_policy',dailymotion:true,dailymotion_owner:owner});f.flush();};
+  f.playButtons.at(-1).click();f.flush();
+  assert.equal(f.report()[0].dailymotion_request,1);
+  parent(original+'?tracking=kept');
+  assert.equal(f.report()[0].dailymotion_request,1);
+  parent('https://www.dailymotion.com/video/another');
+  assert.equal(f.report()[0].dailymotion_ready,false);
+  parent(original);
+  assert.equal(f.report()[0].dailymotion_ready,true);
+  assert.equal(f.report()[0].dailymotion_request,0);
+  f.playButtons.at(-1).click();f.flush();
+  assert.equal(f.report()[0].dailymotion_request,2);
+});
+
+test('Dailymotion does not carry a Beta click through a newly visible advert',()=>{
+  for (const advertBeforeClick of [true,false]) {
+    const f=dailymotionFixture(), advert=f.addVideo({ended:true,advertising:true});
+    advert.ended=!advertBeforeClick;
+    f.playButtons.at(-1).click();
+    advert.ended=false;advert.emit('playing');f.flush();
+    assert.equal(f.report()[0].dailymotion_ready,false);
+    advert.ended=true;advert.emit('ended');f.flush();
+    assert.equal(f.report()[0].dailymotion_ready,true);
+    assert.equal(f.report()[0].dailymotion_request,0);
+    f.playButtons.at(-1).click();f.flush();
+    assert.equal(f.report()[0].dailymotion_request,advertBeforeClick?1:2);
+  }
+});
+
 test('Dailymotion return rejects stale identity and preserves the paused position until a real page gesture',()=>{
   const f=dailymotionFixture(),v=f.videos[0],message={action:'restore_dailymotion',id:'1',epoch:1,page:'https://www.dailymotion.com/video/x5kesuj',revision:'a1',time:50,play:false};
   for(const change of [{revision:'stale'},{epoch:2},{page:'https://www.dailymotion.com/video/another'}]){
@@ -333,6 +501,107 @@ test('Niconico paused return rejects old revisions and holds delayed site autopl
   f.emit('pointerdown',{isTrusted:true});v.play();assert.equal(v.paused,false);
 });
 
+function instagramFixture() {
+  const page='https://www.instagram.com/reels/';
+  const f=fixture(2,true,{page,instagram:true,playButtons:true,fullscreen:false});
+  const capture=(address=page)=>{
+    f.network.onMessage.fire({type:'network',page:address,candidates:f.videos.map(video=>({kind:'file',
+      url:`https://media.test/${video.instagramId}.mp4`,at:f.clock.now}))});
+    f.flush();
+  };
+  f.native.onMessage.fire({action:'network_policy',instagram:true});
+  capture();
+  return {...f,page,capture};
+}
+
+test('Instagram overlay follows a paused Reel and switches cards when only the viewport scrolls',()=>{
+  const f=instagramFixture(), [first,second]=f.videos;
+  const old=f.playButtons.at(-1);
+  assert.equal(old.box.style.top,'100px');
+  first.top=55;
+  f.emit('scroll');f.flush();
+  assert.equal(old.box.style.top,'55px');
+
+  first.visible=false;second.visible=true;
+  f.emit('scroll');f.flush();
+  assert.equal(old.disposed,true);
+  assert.match(f.playButtons.at(-1).host.dataset.thru3dInstagramPage,/ReelCode1/);
+  f.playButtons.at(-1).click();f.flush();
+  assert.equal(f.report()[0].instagram_request,0);
+  assert.equal(f.report()[1].instagram_request,1);
+});
+
+test('Instagram retires the previous card as soon as a same-document Reel route changes',()=>{
+  const f=instagramFixture(), [first,second]=f.videos;
+  const old=f.playButtons.at(-1), detail='https://www.instagram.com/reel/ReelCode1/';
+  old.click();f.flush();
+  assert.equal(f.report()[0].instagram_request,1);
+  first.visible=false;second.visible=true;
+  f.navigate(detail);
+  assert.equal(f.network.messages.filter(m=>m.type==='context').at(-1).page,detail);
+  assert.equal(old.disposed,true);
+  f.flush();
+  assert.equal(f.report()[1].instagram_ready,false);
+  f.capture(detail);
+  assert.equal(f.report()[1].instagram_ready,true);
+  assert.equal(f.report()[1].instagram_request,0);
+  f.playButtons.at(-1).click();f.flush();
+  assert.equal(f.report()[1].instagram_request,2);
+});
+
+test('Instagram ignores a click on an overlay whose Reel already left the viewport',()=>{
+  const f=instagramFixture(), [first,second]=f.videos;
+  const old=f.playButtons.at(-1);
+  first.visible=false;second.visible=true;
+  old.click();
+  f.emit('scroll');f.flush();
+  first.visible=true;second.visible=false;
+  f.emit('scroll');f.flush();
+  assert.equal(f.report()[0].instagram_ready,true);
+  assert.equal(f.report()[0].instagram_request,0);
+});
+
+function tiktokFixture() {
+  const page='https://www.tiktok.com/explore';
+  const f=fixture(1,true,{page,tiktok:true,playButtons:true,fullscreen:false});
+  f.native.onMessage.fire({action:'network_policy',tiktok:true});
+  f.network.onMessage.fire({type:'network',page,candidates:[{kind:'file',url:'https://related.test/current-file',at:f.clock.now}]});
+  f.flush();
+  assert.equal(f.report()[0].tiktok_ready,true);
+  return f;
+}
+
+test('TikTok ignores a click on the old overlay before the next report catches a viewport change',()=>{
+  const f=tiktokFixture(),video=f.videos[0];
+  video.presented=false;
+  f.playButtons.at(-1).click();
+  video.presented=true;
+  f.flush();
+  assert.equal(f.report()[0].tiktok_request,0);
+  f.playButtons.at(-1).click();f.flush();
+  assert.equal(f.report()[0].tiktok_request,1);
+});
+
+test('TikTok retires a click after the viewport loses the target and when the document route changes',()=>{
+  const f=tiktokFixture(),video=f.videos[0],old=f.playButtons.at(-1);
+  old.click();f.flush();
+  assert.equal(f.report()[0].tiktok_request,1);
+  video.presented=false;
+  f.emit('scroll');f.flush();
+  assert.equal(f.report()[0].tiktok_ready,false);
+  assert.ok(old.disposed);
+  video.presented=true;
+  f.emit('resize');f.flush();
+  assert.equal(f.report()[0].tiktok_ready,true);
+  assert.equal(f.report()[0].tiktok_request,0);
+  const current=f.playButtons.at(-1),next='https://www.tiktok.com/@test/video/6742501081818877190';
+  f.navigate(next);
+  assert.ok(current.disposed);
+  assert.equal(f.network.messages.filter(m=>m.type==='context').at(-1).page,next);
+  f.flush();
+  assert.equal(f.report()[0].tiktok_ready,false);
+});
+
 test('TikTok paused return verifies revision, resists delayed autoplay and releases for a user or changed source',()=>{
   const make=()=>{
     const f=fixture(1,true,{page:'https://www.tiktok.com/@test/video/6742501081818877190',tiktok:true,playButtons:true,fullscreen:false});
@@ -347,6 +616,75 @@ test('TikTok paused return verifies revision, resists delayed autoplay and relea
   f.emit('pointerdown',{isTrusted:true});v.play();assert.equal(v.paused,false);
   const g=make();g.native.onMessage.fire(message);g.videos[0].currentSrc='blob:https://www.tiktok.com/replacement';
   g.videos[0].play();assert.equal(g.videos[0].paused,false);
+});
+
+function odyseeReturnFixture() {
+  const page = 'https://odysee.com/@Public:2/Clip:1';
+  const f = fixture(1,false,{page,odysee:true}), video = f.videos[0];
+  f.network.onMessage.fire({type:'network',page,candidates:[{kind:'file',url:video.src,at:f.clock.now}]});
+  f.flush();
+  const item = f.report()[0];
+  assert.equal(item.odysee.binding,'rendered_file');
+  const command = {action:'restore_odysee',id:String(item.id),epoch:item.network_epoch,page,
+    revision:item.odysee.revision,time:40,play:false};
+  return {f,video,command};
+}
+
+test('Odysee retries a failed decoder once on the same file and restores a new media epoch paused',()=>{
+  const {f,video,command} = odyseeReturnFixture();
+  video.error = {code:3};
+  f.native.onMessage.fire(command);
+  assert.equal(video.loadCalls,1);
+  assert.equal(video.currentTime,0);
+  video.currentSrc = video.src;
+  video.emit('loadstart');
+  video.readyState = 1;
+  video.emit('loadedmetadata');
+  assert.equal(video.currentTime,40);
+  video.play();
+  assert.equal(video.paused,true,'Automatic site playback remains paused after the reload');
+  video.readyState = 4;
+  video.emit('seeked');
+  f.flush();
+  assert.ok(f.report()[0].network_epoch > command.epoch);
+  assert.equal(f.report()[0].odysee.revision,command.revision);
+  f.native.onMessage.fire({...command,time:55});
+  assert.equal(video.currentTime,40,'The old media selection cannot seek the reopened element');
+  assert.equal(video.loadCalls,1);
+  f.emit('pointerdown',{isTrusted:true});
+  video.play();
+  assert.equal(video.paused,false);
+});
+
+test('Odysee aborts a decoder reload return on navigation, another source, protection or another load',()=>{
+  for (const change of [
+    ({f,command})=>{f.navigate(command.page.replace('Clip','Other'));f.navigate(command.page);},
+    ({video})=>{video.currentSrc += '?other=1';},
+    ({video})=>{video.parentElement.__reactProps$test.children.props.isProtectedContent = true;},
+    ({video})=>{video.mediaKeys = {};},
+    ({video})=>video.emit('loadstart'),
+    ({f})=>f.emit('keydown',{isTrusted:true}),
+  ]) {
+    const state = odyseeReturnFixture(), {f,video,command} = state;
+    video.error = {code:3};
+    f.native.onMessage.fire(command);
+    video.currentSrc = video.src;
+    video.emit('loadstart');
+    change(state);
+    video.readyState = 1;
+    video.emit('loadedmetadata');
+    assert.equal(video.currentTime,0);
+    assert.equal(video.loadCalls,1);
+  }
+});
+
+test('Odysee healthy return seeks directly and preserves pause for the rendered declaration',()=>{
+  const {f,video,command} = odyseeReturnFixture();
+  f.native.onMessage.fire(command);
+  assert.equal(video.loadCalls,undefined);
+  assert.equal(video.currentTime,40);
+  video.play();
+  assert.equal(video.paused,true);
 });
 
 test('retained suspension preserves the exact pause lease and failure restores original playing videos', async()=>{
@@ -450,6 +788,54 @@ test('Weibo selected late card is published before the 16-player limit and stays
   assert.equal(f.report()[0].weibo_selected,false);assert.equal(f.report()[0].weibo_request,0,'A recycled card cannot repeat the old click');
   target.currentSrc='https://cdn.test/changed.mp4';target.emit('loadstart');f.flush();
   assert.equal(f.report()[0].weibo_ready,false,'A new source cannot borrow the previous request');
+});
+
+test('Weibo pending Beta click cannot move to a replacement file on the same card',()=>{
+  const page='https://weibo.com/newlogin', post='https://weibo.com/123456/ABCDE';
+  for (const event of ['timeupdate','loadstart']) {
+    const f=fixture(1,false,{page,weibo:true});
+    const video=f.videos[0];
+    const originalSource=video.currentSrc;
+    const replacement='https://cdn.test/replacement.mp4';
+    f.selectWeibo(video,{page:post},true);
+    f.flush();
+    assert.equal(f.report()[0].weibo_request,0,'The original file request has not been observed');
+    video.currentSrc=replacement;
+    video.emit(event);
+    f.network.onMessage.fire({type:'network',page,candidates:[{kind:'file',url:video.currentSrc,at:f.clock.now}]});
+    f.flush();
+    assert.equal(f.report()[0].weibo_ready,true);
+    assert.equal(f.report()[0].weibo_request,0,event);
+    video.currentSrc=originalSource;
+    video.emit('timeupdate');
+    f.network.onMessage.fire({type:'network',page,candidates:[{kind:'file',url:video.currentSrc,at:f.clock.now}]});
+    f.flush();
+    assert.equal(f.report()[0].weibo_request,0,'Returning to the original file cannot revive the superseded click');
+    video.currentSrc=replacement;
+    f.selectWeibo(video,{page:post},true);
+    f.network.onMessage.fire({type:'network',page,candidates:[{kind:'file',url:video.currentSrc,at:f.clock.now}]});
+    f.flush();
+    assert.equal(f.report()[0].weibo_request,2,'A new trusted click can select the replacement');
+  }
+});
+
+test('Weibo can load an empty player on the first Beta click without carrying it into another media epoch',()=>{
+  const page='https://weibo.com/newlogin', post='https://weibo.com/123456/ABCDE';
+  const f=fixture(1,false,{page,weibo:true});
+  const video=f.addVideo({currentSrc:'',videoWidth:0,videoHeight:0,readyState:0,duration:0});
+  f.selectWeibo(video,{page:post},true);
+  video.currentSrc='https://cdn.test/first.mp4';
+  Object.assign(video,{videoWidth:1280,videoHeight:720,readyState:4,duration:60});
+  video.emit('loadstart');
+  f.network.onMessage.fire({type:'network',page,candidates:[{kind:'file',url:video.currentSrc,at:f.clock.now}]});
+  f.flush();
+  const current=()=>f.report().find(item=>item.weibo?.source===video.currentSrc);
+  assert.equal(current().weibo_request,1);
+  const firstEpoch=current().network_epoch;
+  video.emit('loadstart');
+  f.flush();
+  assert.ok(current().network_epoch>firstEpoch);
+  assert.equal(current().weibo_request,0,'Even a same-URL reload needs a new Beta gesture');
 });
 test('Plex header-authenticated DASH binds the single Blob player and restores its timeline',()=>{
   const page='http://127.0.0.1:32400/web/index.html#!/server/local/details?key=%2Flibrary%2Fmetadata%2F4';
@@ -624,6 +1010,9 @@ test('Bilibili SPA responses bind to the current part map, full duration and a s
   }
   capture(response); assert.equal(f.report()[0].bilibili.cid, '123');
   f.location.href = page + '?p=2'; f.videos[0].duration = 200; f.videos[0].emit('loadstart'); f.flush();
+  const context = f.network.messages.filter(m => m.type === 'context').at(-1);
+  assert.equal(context.page, page + '?p=2');
+  assert.equal(context.reset, true);
   capture(response); assert.equal(f.report()[0].bilibili, null);
   // API request started before pushState; only the independently mapped current CID may rebind.
   capture({ ...response, cid: '456', duration: 200 });

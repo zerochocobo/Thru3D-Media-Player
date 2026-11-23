@@ -57,7 +57,7 @@ class NarrationPreviewSessionTest {
         val backend=FakeNarrationBackend();backend.eos=false;val runtime=SharedNarrationEngine(backend);var started=false
         NarrationPreviewSession(runtime,{cache()},{ }).use {session->
             assertThrows(IllegalStateException::class.java){session.play(id,"zh","sample",IntArray(592),true,"v1",{true},{Output {started=true}},{},{_,_->},{})}}
-        assertFalse(started);assertEquals(listOf(false to 0,true to 0,false to 17,true to 17),backend.calls.map {it.second to it.third})
+        assertFalse(started);assertEquals(listOf(false to 0,true to 0,true to 211,true to 509),backend.calls.map {it.second to it.third})
         assertFalse(File(folder.root,"saved").walkTopDown().any {it.isFile})
     }
     @Test fun aRecoveredClausePlaysOnlyItsCompleteRetry() {

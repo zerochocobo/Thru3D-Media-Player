@@ -22,6 +22,75 @@ class ListeningCueCacheTest {
         assertEquals(2, cache.cues(0.0, 1000.0).size)
     }
 
+    @Test fun existingCachesKeepTheirIdentityAcrossRecognizerTweaks() {
+        // Pinned to the identity written by earlier releases: changing it would
+        // discard every cache users already built.
+        assertEquals("5a3fb1696a9b83ea6b0820c48157e71440b38ad874d5157f76657297e748f744", ListeningCueCache.modelIdentity(manifest, "ja"))
+    }
+
+    // A file as written before recognizer versions existed (6s segments).
+    private fun writeVersionOne(dir: File, key: String, whole: Boolean) {
+        val cache = ListeningCueCache(dir, key, false)
+        cache.add(cue(10.0, 12.0, "古い字幕")); cache.cover(0.0, if (whole) 100.0 else 40.0)
+        if (whole) cache.finish(100.0, 100.0)
+        val json = JSONObject(cache.snapshot(true)!!); json.remove("recognizer")
+        File(dir, "$key.json").writeText(json.toString())
+    }
+
+    @Test fun olderRecognizerKeepsWholeFilmsAndRebuildsPartialOnes() {
+        val dir = Files.createTempDirectory("cues").toFile()
+        try {
+            writeVersionOne(dir, "whole", true); writeVersionOne(dir, "partial", false)
+            val whole = ListeningCueCache.load(dir, "whole", false)
+            assertTrue(whole.outdated); assertTrue(whole.complete(100.0))
+            assertEquals("古い字幕", whole.cues(0.0, 50.0).single().text)
+            // Adding a translation keeps it marked as built by the earlier version.
+            assertTrue(whole.translate("古い字幕", "zh-Hans", "旧字幕")); assertTrue(whole.flush(true))
+            assertTrue(ListeningCueCache.load(dir, "whole", false).outdated)
+            val partial = ListeningCueCache.load(dir, "partial", false)
+            assertFalse(partial.outdated); assertNull(partial.coveredEnd(10.0)); assertEquals(0, partial.count())
+            // Current-version files are not outdated.
+            val current = ListeningCueCache(dir, "current", false)
+            current.add(cue(1.0, 2.0, "a")); current.cover(0.0, 10.0); assertTrue(current.flush(true))
+            assertFalse(ListeningCueCache.load(dir, "current", false).outdated)
+        } finally { dir.deleteRecursively() }
+    }
+
+    @Test fun aNewModelStillFindsWholeFilmsFromTheEarlierModel() {
+        val dir = Files.createTempDirectory("cues").toFile()
+        try {
+            val media = "cd".repeat(32)
+            val old = ListeningCueCache.obtainFor(dir, media, 100.0, "ja", "model-a", 0, -1, false)
+            old.add(cue(10.0, 12.0, "こんにちは")); old.cover(0.0, 100.0); old.finish(100.0, 100.0); assertTrue(old.flush(true))
+            val partial = ListeningCueCache.obtainFor(dir, "ef".repeat(32), 100.0, "ja", "model-a", 0, -1, false)
+            partial.add(cue(1.0, 2.0, "途中")); partial.cover(0.0, 30.0); assertTrue(partial.flush(true))
+            val reused = ListeningCueCache.obtainFor(dir, media, 100.0, "ja", "model-b", 0, -1, false)
+            assertTrue(reused.outdated); assertEquals(old.key, reused.key)
+            assertEquals(ListeningCueCache.key(media, 100.0, "ja", "model-b", 0, -1), reused.requested)
+            assertEquals("こんにちは", reused.cues(0.0, 50.0).single().text)
+            // Partial work from the earlier model is not carried over.
+            assertEquals(0, ListeningCueCache.obtainFor(dir, "ef".repeat(32), 100.0, "ja", "model-b", 0, -1, false).count())
+            // Another language never borrows it.
+            assertEquals(0, ListeningCueCache.obtainFor(dir, media, 100.0, "en", "model-b", 0, -1, false).count())
+            // Deleting gives an empty cache under the current model.
+            assertTrue(reused.delete())
+            val fresh = ListeningCueCache.obtainFor(dir, media, 100.0, "ja", "model-b", 0, -1, false)
+            assertFalse(fresh.outdated); assertEquals(0, fresh.count())
+        } finally { dir.deleteRecursively() }
+    }
+
+    @Test fun clearingNetworkCachesKeepsTheModelRecordForLocalFilms() {
+        val files = Files.createTempDirectory("files").toFile()
+        try {
+            val dir = ListeningCueCache.directory(files)
+            ListeningCueCache.obtainFor(dir, "cd".repeat(32), 100.0, "ja", "model-a", 0, -1, false)
+            assertTrue(ListeningCueCache.clear(files, true))
+            assertEquals(listOf("model-a"), ListeningCueCache.remember(dir, "ja", "model-b"))
+            assertTrue(ListeningCueCache.clear(files, false))
+            assertTrue(ListeningCueCache.remember(dir, "ja", "model-b").isEmpty())
+        } finally { files.deleteRecursively() }
+    }
+
     @Test fun storedEntryReloadsOnlyForTheSameVideoLanguageAndModel() {
         val dir = Files.createTempDirectory("cues").toFile()
         try {

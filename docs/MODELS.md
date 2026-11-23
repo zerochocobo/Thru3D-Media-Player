@@ -136,3 +136,7 @@ The separate `depth-mnn/photo_depth_vulkan.mnn` graph supports photo depth on Vu
 ## Fast photo depth in 0.18.6
 
 Progressive photo 3D uses the separately supplied `depth-mnn/photo_fast.mnn` graph before the fine photo graph. Its MIT provenance and deployment contract are retained in `models/manifest/zipdepth_photo.json`; runtime-assets.json pins its bytes and SHA-256. No weights, private sample names or numerical sample-evaluation records are distributed. Import-ModelAssets verifies the sixth model and creates its deployment manifest.
+
+## 0.18.8 narration graph preparation
+
+The exact external graph sizes and hashes are in third_party/narration/model.json. The install directory retains its older name for upgrades. tools/models/optimize_narration_kv.py transforms separately supplied MOSS Nano graphs to attention-layout KV caches, an extend graph and continuation-probability outputs. It does not distribute the input graphs, tensor payloads or voice recordings; existing model licensing and reference-recording provenance limits remain.

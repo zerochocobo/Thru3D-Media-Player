@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 internal class LayerFanout(target: Surface, width: Int, height: Int, private val holdable: Boolean = false) : LayerFrames {
     private val thread = HandlerThread("LayerFanout").apply { start() }
+    private val handler = Handler(thread.looper)
     // Debug experiment (debug.vrpp.layer.fanout_images "reader,writer"): how many buffers each side may hold.
     private val counts = debugCounts() ?: (if (holdable) HELD_IMAGES else MAX_IMAGES).let { it to it }
     private val reader = ImageReader.newInstance(width, height, ImageFormat.PRIVATE, counts.first,
@@ -41,6 +42,7 @@ internal class LayerFanout(target: Surface, width: Int, height: Int, private val
     @Volatile private var lastSize = ""
     @Volatile private var lastError = ""
     @Volatile private var closed = false
+    @Volatile private var teardownComplete = false
     private class Held(val image: Image, val sequence: Long, val arrivedMs: Long)
     private var latest: LayerFrame? = null // guarded by this
     private val held = ArrayDeque<Held>() // guarded by this, oldest first
@@ -86,8 +88,8 @@ internal class LayerFanout(target: Surface, width: Int, height: Int, private val
                 if (held.size > HELD_LIMIT) held.removeFirst() else null
             }
             overflow?.let { forced.incrementAndGet(); release(it) }
-        }, Handler(thread.looper))
-        writer.setOnImageReleasedListener({ released.incrementAndGet() }, Handler(thread.looper))
+        }, handler)
+        writer.setOnImageReleasedListener({ released.incrementAndGet() }, handler)
     }
 
     /** The newest frame not taken yet; the caller closes its buffer. */
@@ -138,16 +140,21 @@ internal class LayerFanout(target: Surface, width: Int, height: Int, private val
         .put("released", released.get()).put("distinct_buffers", bufferIds.size)
         .put("reader_images", counts.first).put("writer_images", counts.second)
 
-    override fun close() {
+    override fun pollClosed(): Boolean {
+        if (closed) return teardownComplete
         closed = true
-        synchronized(this) {
-            latest?.release(); latest = null
-            held.forEach { runCatching { it.image.close() } }; held.clear()
-        }
         reader.setOnImageAvailableListener(null, null)
-        runCatching { writer.close() }
-        runCatching { reader.close() }
-        thread.quitSafely()
+        handler.post {
+            synchronized(this) {
+                latest?.release(); latest = null
+                held.forEach { runCatching { it.image.close() } }; held.clear()
+            }
+            runCatching { writer.close() }
+            runCatching { reader.close() }
+            thread.quitSafely()
+            teardownComplete = true
+        }
+        return false
     }
 
     companion object {

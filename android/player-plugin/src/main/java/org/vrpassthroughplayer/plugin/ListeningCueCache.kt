@@ -26,6 +26,15 @@ internal class ListeningCueCache(private val directory: File?, val key: String, 
         private set
     @Volatile var error=""
         private set
+    // Which recognizer settings produced this text. A whole film from older
+    // settings or an older model stays usable and is reported as outdated.
+    var recognizer=RECOGNIZER
+        private set
+    @Volatile var outdated=false
+        private set
+    /** The key callers asked for; a reused older film keeps its own [key]. */
+    var requested=key
+        private set
     val instance=serial.incrementAndGet()
     val persistent get()=directory!=null
     @Synchronized fun coveredEnd(at: Double): Double? = if(revoked)null else covered.firstOrNull{at>=it[0] && at<it[1]}?.get(1)
@@ -36,6 +45,8 @@ internal class ListeningCueCache(private val directory: File?, val key: String, 
         return minOf(at,duration)
     }
     @Synchronized fun complete(duration: Double)=!revoked && error.isEmpty() && duration>0 && terminal>=duration && firstGap(duration)>=duration && (!persistent || savedRevision>=originalRevision)
+    /** Every second up to the recorded film end was recognized. */
+    @Synchronized fun whole()=terminal>0 && firstGap(terminal)>=terminal
     @Synchronized fun analyzed(duration: Double)=!revoked && duration>0 && terminal>=duration && firstGap(duration)>=duration
     @Synchronized fun count()=cues.size
     @Synchronized fun cues(from: Double,to: Double): List<ListeningPolicy.Cue> {
@@ -84,7 +95,7 @@ internal class ListeningCueCache(private val directory: File?, val key: String, 
     @Synchronized fun snapshot(force: Boolean): String? {
         if(revoked || directory==null || revision==savedRevision || (!force && System.nanoTime()-written<WRITE_INTERVAL_NS))return null
         return JSONObject().put("schema",SCHEMA).put("key",key).put("network",network).put("revision",revision)
-            .put("terminal",terminal).put("covered",JSONArray(covered.map{JSONArray().put(it[0]).put(it[1])}))
+            .put("recognizer",recognizer).put("terminal",terminal).put("covered",JSONArray(covered.map{JSONArray().put(it[0]).put(it[1])}))
             .put("cues",JSONArray(cues.map{JSONArray().put(it.start).put(it.end).put(it.text)}))
             .put("translation_schema",1).put("translations",JSONObject(translations.mapValues{JSONObject(it.value)})).toString()
     }
@@ -104,11 +115,17 @@ internal class ListeningCueCache(private val directory: File?, val key: String, 
         }catch(_:Exception){error="cache_write_error";false}
     }
     fun invalidate(){revoked=true}
+    /** User deletion: this file only; the next obtain starts an empty cache. */
+    fun delete(): Boolean {revoke();return synchronized(ioLock){directory==null || File(directory,"$key.json").let{!it.exists() || it.delete()}}}
     fun revoke(){invalidate();synchronized(ioLock){synchronized(this){cues.clear();covered.clear();translations.clear();hashes.clear()}}}
 
     companion object {
         const val SCHEMA=2
-        const val SETTLE_SECONDS=8.0 // 6s VAD limit plus bounded input/update context.
+        // Bump when recognizer options change the text (listening_jni.cpp). Files
+        // without the field are version 1 (6s VAD segments); 3 adds Silero segments
+        // for Japanese (2 was never released).
+        const val RECOGNIZER=3
+        const val SETTLE_SECONDS=12.0 // 10s ahead VAD limit plus bounded input/update context.
         private const val MAX_CUES=20000
         private const val MAX_BYTES=8*1024*1024
         private const val WRITE_INTERVAL_NS=15_000_000_000L
@@ -117,13 +134,43 @@ internal class ListeningCueCache(private val directory: File?, val key: String, 
         fun directory(files: File)=File(files,"listening-cues")
         fun key(media: String,duration: Double,language: String,model: String,track: Int=-1,playlist: Int=-1)=
             sha256("$SCHEMA|$media|${"%.3f".format(java.util.Locale.ROOT,duration)}|$language|$model|$track|$playlist")
+        /** Only the model files; recognizer options are versioned inside each file
+         * ([RECOGNIZER]) so that whole films survive an option change. */
         fun modelIdentity(manifest: JSONObject,language: String): String {
             val files=manifest.getJSONObject("models").getJSONObject(language).getJSONObject("files")
             return sha256(manifest.optString("revision")+"|"+files.keys().asSequence().sorted().joinToString("|"){it+":"+files.getJSONObject(it).getString("sha256")})
         }
-        @Synchronized fun obtain(directory: File?,key: String,network: Boolean): ListeningCueCache {
+        @Synchronized fun obtain(directory: File?,key: String,network: Boolean,earlier: List<String> = emptyList()): ListeningCueCache {
             val id="${directory?.absolutePath ?: "memory"}:$key";shared.entries.removeAll{it.value.get()==null}
-            return shared[id]?.get()?.takeIf{!it.revoked} ?: load(directory,key,network).also{shared[id]=WeakReference(it)}
+            shared[id]?.get()?.takeIf{!it.revoked}?.let{return it}
+            var cache=load(directory,key,network)
+            // Users spend hours building whole-film caches: after a model change,
+            // keep showing a finished film from an earlier model instead of nothing.
+            if(cache.revision==0L) for(old in earlier){
+                val previous=load(directory,old,network)
+                if(previous.whole()){previous.outdated=true;previous.requested=key;cache=previous;break}
+            }
+            return cache.also{shared[id]=WeakReference(it)}
+        }
+        /** Records the model identity so a later model can still find these films. */
+        fun obtainFor(directory: File?,media: String,duration: Double,language: String,model: String,
+                      track: Int,playlist: Int,network: Boolean): ListeningCueCache {
+            val earlier=if(directory==null)emptyList() else remember(directory,language,model)
+                .map{key(media,duration,language,it,track,playlist)}
+            return obtain(directory,key(media,duration,language,model,track,playlist),network,earlier)
+        }
+        private const val MODELS="models.json"
+        /** Earlier model identities for [language], newest first; records [model]. */
+        @Synchronized fun remember(directory: File,language: String,model: String): List<String> {
+            val file=File(directory,MODELS)
+            val json=runCatching{JSONObject(file.readText())}.getOrNull() ?: JSONObject()
+            val seen=json.optJSONArray(language)?.let{a->(0 until a.length()).map{a.getString(it)}}.orEmpty()
+            if(seen.firstOrNull()!=model) runCatching{
+                // Local caches survive "clear network caches": keep this record with them.
+                json.put("network",false).put(language,JSONArray((listOf(model)+seen.filter{it!=model}).take(16)))
+                check(directory.isDirectory || directory.mkdirs());file.writeText(json.toString())
+            }
+            return seen.filter{it!=model}
         }
         @Synchronized fun find(key: String,instance: Long)=shared.values.mapNotNull{it.get()}.firstOrNull{!it.revoked && it.key==key && it.instance==instance}
         fun load(directory: File?,key: String,network: Boolean): ListeningCueCache {
@@ -142,8 +189,12 @@ internal class ListeningCueCache(private val directory: File?, val key: String, 
                     cache.translations[target]=map
                 }
                 cache.terminal=json.optDouble("terminal",-1.0);require(cache.terminal.isFinite())
+                cache.recognizer=json.optInt("recognizer",1)
+                // Older settings: a finished film stays; a partial one is rebuilt.
+                if(cache.recognizer!=RECOGNIZER){require(cache.whole());cache.outdated=true}
                 cache.revision=maxOf(cache.revision,json.optLong("revision"));cache.originalRevision=cache.revision;cache.savedRevision=cache.revision
-            }.onFailure{cache.cues.clear();cache.covered.clear();cache.translations.clear();cache.terminal=-1.0;cache.revision=0;cache.originalRevision=0;cache.savedRevision=0}
+            }.onFailure{cache.cues.clear();cache.covered.clear();cache.translations.clear();cache.terminal=-1.0;cache.revision=0;cache.originalRevision=0;cache.savedRevision=0
+                cache.recognizer=RECOGNIZER;cache.outdated=false}
             return cache
         }
         @Synchronized fun clear(files: File,networkOnly: Boolean): Boolean {

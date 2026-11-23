@@ -209,8 +209,24 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
         if (MediaLibraryUri.isPhoto(uri)) return photo(uri)
         val (server, scene, sourceId) = MediaLibraryUri.identity(uri)
         val account = getAccount(server)
-        val source = HttpRangeStreamSource(account) { http ->
-            mediaClient(account, http).stream(scene, sourceId)
+        var request = "metadata"
+        val source = try {
+            HttpRangeStreamSource(account) { http ->
+                mediaClient(account, http).stream(scene, sourceId).also { link ->
+                    request = if (link.remote) "remote_original_range" else "server_original_range"
+                }
+            }
+        } catch (error: MediaServerFailure) {
+            if (error.httpStatus != 404) throw error
+            // Only fixed labels and flags leave the account scope in playback diagnostics.
+            // A redirect that lands on 404 points at a rewriting proxy or a storage link, not the item.
+            val context = JSONObject().put("provider", account.provider).put("request", request)
+                .put("redirect", error.redirect.ifEmpty { "unknown" })
+                .put("explicit_version", sourceId.isNotEmpty())
+            runCatching { URI(account.base).rawPath.orEmpty().trim('/').isNotEmpty() }
+                .onSuccess { context.put("has_base_path", it) }
+            val failure = PlaybackFailure.from(error, "resolving").copy(mediaServer = context)
+            throw PlaybackFailureException(failure, error)
         }
         try {
             synchronized(MediaServerStore) {

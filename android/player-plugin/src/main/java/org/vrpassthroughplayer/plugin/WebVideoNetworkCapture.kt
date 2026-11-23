@@ -111,7 +111,7 @@ internal class WebVideoNetworkCapture(
     fun resolve(page: WebVideoPage, media: JSONObject): JSONObject? = resolve(page, media, null)
 
     /** Explicit site Beta must preserve the decoded representation, including parallel HLS leaves. */
-    fun resolveCurrent(page: WebVideoPage, media: JSONObject): JSONObject? = resolve(page, media, null, true)
+    fun resolveCurrent(page: WebVideoPage, media: JSONObject): JSONObject? = resolve(page, media, null, true, segments = page.site == "mgtv")
 
     /** A GIF renderer explicitly names its current whole file. Inspect that exact
      * received resource; a GIF marker or a muted element never proves no audio. */
@@ -338,7 +338,11 @@ internal class WebVideoNetworkCapture(
         if (manifests.isNotEmpty()) return runCatching { manifestInfo(page, media, manifests, current) }.getOrNull()
         val files = resources.values.filter { it.kind == "file" && (direct == null || direct == it.uri) }
         if (files.isEmpty() || files.size > 8) return null
-        val probes = files.mapNotNull { resource -> runCatching { probe(resource, media) }.getOrNull() }
+        val probes = files.mapNotNull { resource ->
+            runCatching {
+                probe(resource, media, allowAv1 = page.site == "twitch", allowMultipleMp4aTracks = page.site == "archive")
+            }.getOrNull()
+        }
         if (boundPair != null) {
             if (files.size != 2 || files.map { it.uri }.toSet() != setOf(boundPair.first, boundPair.second) || probes.size != 2) return null
             val expected = media.optDouble("duration", 0.0)
@@ -362,11 +366,12 @@ internal class WebVideoNetworkCapture(
     }
 
     private fun durationMatches(actual: Double, expected: Double) = actual > 0 && kotlin.math.abs(actual - expected) <= maxOf(2.0, expected * .01)
-    private fun probe(source: Resource, media: JSONObject, manifestDuration: Double = 0.0): Probed {
+    private fun probe(source: Resource, media: JSONObject, manifestDuration: Double = 0.0, allowAv1: Boolean = false,
+        allowMultipleMp4aTracks: Boolean = false): Probed {
         val uri = wholeFile(source.uri) ?: error("Segmented request")
         val resource = Resource(uri, "file", source.headers)
         val (_, bytes) = read(resource, true)
-        val container = WebVideoContainer.parse(bytes) ?: error("Not a complete media header")
+        val container = WebVideoContainer.parse(bytes, allowAv1, allowMultipleMp4aTracks) ?: error("Not a complete media header")
         val duration = container.duration.takeIf { it > 0 } ?: manifestDuration.takeIf { it > 0 }
             ?: query(uri)["dur"]?.toDoubleOrNull()?.takeIf { group(uri)?.startsWith("youtube:") == true && it.isFinite() && it > 0 }
             ?: 0.0
@@ -417,7 +422,7 @@ internal class WebVideoNetworkCapture(
         }
     }
     private fun currentHlsLeaves(media: JSONObject, loaded: Map<Resource, Pair<Resource, String>>,
-        duration: Double = media.optDouble("duration")): JSONObject {
+        duration: Double = media.optDouble("duration"), retainManifest: Boolean = false): JSONObject {
         val width = media.optInt("width"); val height = media.optInt("height")
         require(width > 0 && height > 0 && duration.isFinite() && duration > 0)
         val matched = loaded.mapNotNull { (observed, response) -> runCatching {
@@ -429,20 +434,71 @@ internal class WebVideoNetworkCapture(
             val sample = read(target(base, init ?: first, "file"), true).second
             val container = WebVideoContainer.parse(sample) ?: WebVideoContainer.transportStream(sample) ?: error("Unknown HLS tracks")
             require(container.video != "none" && container.audio != "none" && container.width == width && container.height == height)
-            // Resolve relative segments at the redirected playlist, while retaining the
-            // exact browser request for the final selection check and authenticated replay.
-            format(observed, container.video, container.audio, container.width, container.height)
+            // The observed address still identifies the selected browser request.
+            // Keep the final response address for relative URIs in the validated body.
+            format(observed, container.video, container.audio, container.width, container.height).also {
+                if (retainManifest) it.put("browser_manifest", body).put("browser_manifest_base", base.uri.toString())
+            }
         }.getOrNull() }
         // An equal-size unrelated player or two unbound aliases remain ambiguous.
         require(matched.size == 1)
         return info(media, matched)
     }
+
+    private data class MangoSegmentIdentity(val url: String, val hasTimingCounter: Boolean = false)
+
+    private fun mangoSegmentIdentity(uri: URI): MangoSegmentIdentity {
+        val exact = MangoSegmentIdentity(uri.toString())
+        val parameters = uri.rawQuery?.split('&') ?: return exact
+        val timing = parameters.singleOrNull { it.substringBefore('=') == "ftc" } ?: return exact
+        if (!timing.substringAfter('=', "").matches(Regex("[A-Za-z0-9._~-]{1,32}"))) return exact
+        // Mango's SDK updates this counter when it fetches each segment. Compare
+        // identity only. All reads retain the original full URLs and credentials.
+        val query = parameters.joinToString("&") { if (it == timing) "ftc=" else it }
+        return MangoSegmentIdentity(uri.toString().substringBefore('?') + "?" + query, hasTimingCounter = true)
+    }
+
+    private fun mangoPlaybackLeaf(media: JSONObject, loaded: Map<Resource, Pair<Resource, String>>): Resource? {
+        val owners = HashMap<MangoSegmentIdentity, MutableSet<Resource>>()
+        for ((manifest, response) in loaded) {
+            val (base, body) = response
+            body.lineSequence().map(String::trim).filter { it.isNotEmpty() && !it.startsWith('#') }.forEach { ref ->
+                val uri = runCatching { WebBrowserNetworkMedia.address(base.uri.resolve(ref).toString()) }.getOrNull()
+                if (uri != null) owners.getOrPut(mangoSegmentIdentity(uri)) { mutableSetOf() }.add(manifest)
+            }
+        }
+        val network = WebBrowserNetworkMedia.candidates(media, includeSegments = true)
+        val receipts = (0 until network.length()).mapNotNull { index ->
+            val request = network.getJSONObject(index)
+            if (request.optString("kind") != "segment") return@mapNotNull null
+            val matches = listOf("url", "original_url").mapNotNull { name ->
+                WebBrowserNetworkMedia.address(request.optString(name))?.let(::mangoSegmentIdentity)?.takeIf { it in owners }
+            }.distinct()
+            val segment = matches.singleOrNull() ?: return@mapNotNull null
+            val owner = owners[segment]?.singleOrNull() ?: return@mapNotNull null
+            Triple(owner, segment, request.optLong("at"))
+        }
+        val latestTime = receipts.maxOfOrNull { it.third } ?: return null
+        val latest = receipts.filter { it.third == latestTime }.map { it.first }.distinct().singleOrNull() ?: return null
+        val lastAlternate = receipts.filter { it.first != latest }.maxOfOrNull { it.third } ?: return latest
+        // Prefetch or a single probe of another codec can finish later. Only
+        // consecutive distinct segments after the last competing receipt resolve it.
+        return latest.takeIf {
+            receipts.asSequence().filter { it.first == latest && it.third > lastAlternate }.map { it.second }.distinct().take(2).count() == 2
+        }
+    }
+
     private fun manifestInfo(page: WebVideoPage, media: JSONObject, manifests: List<Resource>, current: Boolean): JSONObject {
         require(manifests.size <= 6)
         if (manifests.any { it.kind == "dash" }) { require(manifests.size == 1); return dash(media, manifests.single()) }
         val loaded = manifests.associateWith { text(it) }
-        if (current && loaded.values.all { (_, body) -> body.lineSequence().none { it.startsWith("#EXT-X-STREAM-INF:") } })
-            return currentHlsLeaves(media, loaded)
+        if (current && loaded.values.all { (_, body) -> body.lineSequence().none { it.startsWith("#EXT-X-STREAM-INF:") } }) {
+            // Mango can fetch both AVC and HEVC playlists at the same dimensions.
+            // Only their actual media segments, excluding init, can disambiguate.
+            val playing = if (page.site == "mgtv" && loaded.size > 1) mangoPlaybackLeaf(media, loaded) else null
+            val pool = if (playing != null) mapOf(playing to loaded.getValue(playing)) else loaded
+            return currentHlsLeaves(media, pool, retainManifest = page.site in setOf("youku", "mgtv"))
+        }
         val referenced = HashSet<URI>()
         loaded.values.forEach { (base, body) -> body.lineSequence().map(String::trim).forEach { line ->
             if (line.isNotEmpty() && !line.startsWith('#')) referenced.add(base.uri.resolve(line))

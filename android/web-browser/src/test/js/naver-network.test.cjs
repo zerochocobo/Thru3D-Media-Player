@@ -24,7 +24,7 @@ test('owned Naver declarations and request scopes survive an unsupported same-do
  request(file,'video/mp4','file','FILE_ONLY');
  const drain=async()=>{await new Promise(resolve=>setImmediate(resolve));const batch=[...callbacks.values()];callbacks.clear();batch.forEach(f=>f());};
  await drain();assert.equal(messages.at(-1).naver.length,1);
- for(const service of ['MOMENT','CLIP']){
+ for(const service of ['OTHER','MOMENT','CLIP']){
   const next=page.replace('NTV',service);
   port.onMessage.fire({type:'context',page:next,enabled:false,naver:true,reset:true});await drain();
   const latest=messages.at(-1);assert.equal(latest.naver.length,1);assert.equal(latest.naver[0].id,id);

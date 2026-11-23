@@ -6,7 +6,8 @@ var checks := 0
 
 func sample(frames: int, changes: Dictionary = {}) -> Dictionary:
 	var result := {"frames": frames, "xr_frames": frames * 2, "decoder_drops": 0, "vo_drops": 0, "vo_late": 0, "avsync": "0.001", "cache": false, "container_fps": "59.94", "seek_serial": 0,
-		"path": "L", "menu": "", "refresh": 120.0, "cap": 120, "performance": "sustained_high", "foveation": 0, "relief": false, "render_scale": 1.1, "inference": false}
+		"path": "L", "menu": "", "menu_layers": false, "menu_layer_repaints": 0,
+		"refresh": 120.0, "cap": 120, "performance": "sustained_high", "foveation": 0, "relief": false, "render_scale": 1.1, "inference": false}
 	result.merge(changes, true)
 	return result
 
@@ -25,6 +26,13 @@ func _initialize() -> void:
 	expect(opened.get("menu") == "" and opened.get("window_ms") == 3000, "Opening a menu closes the window before it")
 	var with_menu: Dictionary = windows.tick(23000, sample(1380, {"menu": "player", "vo_drops": 8}))
 	expect(with_menu.get("menu") == "player" and with_menu.get("mixed") == false, "Time under the menu has its own window")
+	# A change in composition can happen while the same menu stays on screen.
+	windows = Windows.new()
+	windows.tick(0, sample(0, {"menu": "player", "menu_layer_repaints": 9}))
+	var before_layers: Dictionary = windows.tick(3000, sample(180, {"menu": "player", "menu_layers": true, "menu_layer_repaints": 9}))
+	expect(before_layers.get("menu_layers") == false and before_layers.get("window_ms") == 3000, "A change in menu composition starts a new window")
+	var with_layers: Dictionary = windows.tick(13000, sample(780, {"menu": "player", "menu_layers": true, "menu_layer_repaints": 12}))
+	expect(with_layers.get("menu_layers") == true and with_layers.get("menu_layer_repaints") == 3, "The window reports active menu layers and the repaint increment")
 	# A seek closes the window; the one after it counts the seek and has no frame rate.
 	windows = Windows.new()
 	windows.tick(0, sample(0))
@@ -55,6 +63,19 @@ func _initialize() -> void:
 	stopped = windows.tick(6000, {})
 	expect(stopped.get("window_ms") == 4000 and stopped.get("vo_drops") == 0, "Stopping closes the window; a restarted counter is not negative")
 	expect(windows.tick(7000, {}).is_empty(), "Idle samples write nothing")
+	# Picture quality mode: a settings change starts a window, which carries the copy's rate, size and cost.
+	windows = Windows.new()
+	var copy := {"picture": "on up2 dn0 sh0.50", "copy_drawn": 100, "copy_failed": 1, "copy_out": "3840x2160",
+		"copy_gpu_ms": 30.5, "copy_draw_ms": 34.0, "copy_window": 30.0, "copy_deep": true}
+	windows.tick(0, sample(0, {"picture": "off"}))
+	var before_picture: Dictionary = windows.tick(3000, sample(180, copy))
+	expect(before_picture.get("picture") == "off" and before_picture.get("window_ms") == 3000, "A picture settings change starts a new window")
+	var copying: Dictionary = windows.tick(13000, sample(780, copy.merged({"copy_drawn": 350, "copy_failed": 3}, true)))
+	expect(copying.get("picture") == "on up2 dn0 sh0.50" and copying.get("copy_fps") == 25.0 and copying.get("copy_failed") == 2,
+		"The window reports the copy's draws a second and failures")
+	expect(copying.get("copy_out") == "3840x2160" and copying.get("copy_gpu_ms") == 30.5 and copying.get("copy_window") == 30.0,
+		"The window carries the copy's output size, GPU time and window")
+	expect(not clean.has("copy_fps"), "Playback without a copy reports none")
 	# No media names or identifiers reach the event.
 	expect(not JSON.stringify(clean).contains("uri") and not JSON.stringify(clean).contains("title"), "The event carries no media identity")
 	print("Playback diagnostics: %d checks, %d failures" % [checks, failures.size()])

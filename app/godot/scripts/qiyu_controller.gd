@@ -12,6 +12,11 @@ static var runtime := false
 ## QIYU draws menus in the eye buffer and decodes its washed-out pictures (pages, video, photos,
 ## AirPlay); both always on since the user feedback of 2026-11-19, so no longer settings.
 static var page_decode := true
+## Decoded pictures are first lifted by this exponent on their encoded values (black and white stay
+## put). The decode alone left video dark: the QIYU tester lowered contrast and raised the shadow lift on
+## every video (2026-11-23), and a QIYU streaming client (moonproX, ALVR on the QiYu SDK) settled on the
+## same 0.65 on encoded values for this display.
+const DISPLAY_GAMMA := 0.65
 ## Godot turns off the GPU's sRGB encode on write only through GL_EXT_sRGB_write_control. With it the
 ## decoded pictures land in the 8-bit eye buffer as linear values, which keep few dark levels (user,
 ## 2026-11-21: dark hair blurred until shadows were lifted), so they are dithered. Without it the GPU

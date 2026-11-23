@@ -346,11 +346,11 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'file-manageme
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'file-management-entry-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'file-management-entry-host.log') -Raw) -notmatch 'File management entry: [0-9]+ checks, 0 failures') { throw 'File management discovery and settings return regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_library_sort.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'library-sort-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'library-sort-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Folder modification time and DLNA name sorting regression failed.' }
-foreach ($directorySortTest in @('test_directory_preferences', 'test_library_navigation_memory', 'test_directory_cloud_navigation')) {
+foreach ($directorySortTest in @('test_directory_preferences', 'test_library_navigation_memory', 'test_directory_cloud_navigation', 'test_library_path_menu')) {
     $directorySortLog = Join-Path $logDirectory ($directorySortTest + '.log')
     & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script ('res://tests/' + $directorySortTest + '.gd') 2>&1 | Tee-Object -FilePath $directorySortLog
     $directorySortResult = Get-Content -LiteralPath $directorySortLog -Raw
-    if ($LASTEXITCODE -ne 0 -or $directorySortResult -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or $directorySortResult -notmatch '(Directory preferences: [0-9]+ checks, 0 failures|Library navigation memory checks=[0-9]+ failures=0|Cloud directory navigation: [0-9]+ checks, 0 failures)') { throw ('Per-directory sorting and parent navigation regression failed: ' + $directorySortTest) }
+    if ($LASTEXITCODE -ne 0 -or $directorySortResult -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or $directorySortResult -notmatch '(Directory preferences: [0-9]+ checks, 0 failures|Library navigation memory checks=[0-9]+ failures=0|Cloud directory navigation: [0-9]+ checks, 0 failures|Library path menu: [0-9]+ checks, 0 failures)') { throw ('Per-directory sorting and parent navigation regression failed: ' + $directorySortTest) }
 }
 foreach ($browseTest in @('test_directory_browse_memory', 'test_directory_browse_cloud')) {
     $browseLog = Join-Path $logDirectory ($browseTest + '.log')

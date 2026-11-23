@@ -263,8 +263,22 @@ struct Engine {
     uint64_t emitted=0;
     double liveSeconds=0;
     bool renewLiveStream=false;
-    ~Engine(){if(stream>=0)moonshine_free_stream(model,stream);if(model>=0)moonshine_free_transcriber(model);}
+    // Look-ahead segment mode: Silero speech segments decoded whole. Moonshine's
+    // own streaming VAD missed about half of the dialogue in Japanese films where
+    // speech overlaps breathing (desktop study 2026-11-23).
+    std::string vadPath;
+    void* segmenter=nullptr;
+    ~Engine();
 };
+extern "C" void* thru3d_segmenter_create(const char* path);
+extern "C" void thru3d_segmenter_destroy(void* handle);
+extern "C" int thru3d_segmenter_accept(void* handle,const float* samples,int64_t count,int finish,
+        void (*emit)(void* context,int64_t start,const float* samples,int64_t count),void* context);
+extern "C" int64_t thru3d_segmenter_open_start(void* handle);
+Engine::~Engine(){
+    if(segmenter)thru3d_segmenter_destroy(segmenter);
+    if(stream>=0)moonshine_free_stream(model,stream);if(model>=0)moonshine_free_transcriber(model);
+}
 #ifdef __ANDROID__
 extern "C" void* thru3d_ort_acquire();
 extern "C" void thru3d_ort_release(void* lease);
@@ -278,9 +292,16 @@ std::shared_ptr<Engine> engine(int64_t id){std::lock_guard<std::mutex> guard(reg
 void ok(int value){if(value<0)throw std::runtime_error("listening_inference");}
 std::string quote(const char* value){std::string out="\"";for(auto p=reinterpret_cast<const unsigned char*>(value?value:"");*p;++p){if(*p=='"'||*p=='\\')out+='\\';if(*p>=32)out+=char(*p);else if(*p=='\n')out+="\\n";}return out+'"';}
 jstring utf8(JNIEnv* env,const std::string& value){auto bytes=env->NewByteArray(jsize(value.size()));env->SetByteArrayRegion(bytes,0,jsize(value.size()),reinterpret_cast<const jbyte*>(value.data()));auto type=env->FindClass("java/lang/String");auto charset=env->NewStringUTF("UTF-8");auto text=static_cast<jstring>(env->NewObject(type,env->GetMethodID(type,"<init>","([BLjava/lang/String;)V"),bytes,charset));env->DeleteLocalRef(bytes);env->DeleteLocalRef(charset);env->DeleteLocalRef(type);return text;}
-int listeningLoadModel(const char* path,const std::string& language,const char* vadThreshold="0.65"){
+// A live stream (AirPlay) shows each line once it ends, so keep segments short.
+// The file reader runs ahead of playback and can wait for whole sentences: a 6s
+// cap cut 7s lines and repeated words at the cut. listening_step's settle window
+// and ListeningCueCache.SETTLE_SECONDS must cover AHEAD_SEGMENT plus context.
+constexpr const char* LIVE_SEGMENT="6";
+constexpr const char* AHEAD_SEGMENT="10";
+constexpr double AHEAD_SETTLE=12.0;
+int listeningLoadModel(const char* path,const std::string& language,const char* vadThreshold="0.65",const char* segment=LIVE_SEGMENT){
     moonshine_option_t options[]={{"ort_providers","CPUExecutionProvider"},{"identify_speakers","false"},{"return_audio_data","false"},
-        {"max_tokens_per_second",language=="en"?"6.5":"13"},{"vad_max_segment_duration","6"},{"decode_incomplete_lines","false"},
+        {"max_tokens_per_second",language=="en"?"6.5":"13"},{"vad_max_segment_duration",segment},{"decode_incomplete_lines","false"},
         // Film music/room noise must not be treated as low-confidence speech.
         // Reuse Moonshine's existing VAD; no extra model or inference pass.
         {"vad_threshold",vadThreshold}};
@@ -288,12 +309,26 @@ int listeningLoadModel(const char* path,const std::string& language,const char* 
         sizeof(options)/sizeof(options[0]),MOONSHINE_HEADER_VERSION);
 }
 }
-extern "C" JNIEXPORT jlong JNICALL Java_org_vrpassthroughplayer_plugin_ListeningNative_create(JNIEnv* env,jclass,jstring directory,jstring language){
+// Whole-segment decoding with the options the desktop study measured; the
+// segmenter has already decided where speech is.
+int listeningLoadSegmentModel(const char* path,const std::string& language){
+    moonshine_option_t options[]={{"ort_providers","CPUExecutionProvider"},{"identify_speakers","false"},{"return_audio_data","false"},
+        {"max_tokens_per_second",language=="en"?"6.5":"13"}};
+    return moonshine_load_transcriber_from_files(path,MOONSHINE_MODEL_ARCH_TINY_STREAMING,options,
+        sizeof(options)/sizeof(options[0]),MOONSHINE_HEADER_VERSION);
+}
+static jlong listening_create(JNIEnv* env,jstring directory,jstring language,const char* segment,const std::string& vad=""){
     try{auto e=std::make_shared<Engine>();auto lang=narration_utf8(env,language);
-        auto path=narration_utf8(env,directory);
-        e->model=listeningLoadModel(path.c_str(),lang);ok(e->model);
+        auto path=narration_utf8(env,directory);e->vadPath=vad;
+        e->model=vad.empty()?listeningLoadModel(path.c_str(),lang,"0.65",segment):listeningLoadSegmentModel(path.c_str(),lang);ok(e->model);
         std::lock_guard<std::mutex> guard(registryMutex);auto id=++serial;engines[id]=e;return id;
     }catch(const std::exception&){narration_error(env,"listening_model_error");return 0;}
+}
+extern "C" JNIEXPORT jlong JNICALL Java_org_vrpassthroughplayer_plugin_ListeningNative_create(JNIEnv* env,jclass,jstring directory,jstring language){
+    return listening_create(env,directory,language,LIVE_SEGMENT);
+}
+extern "C" JNIEXPORT jlong JNICALL Java_org_vrpassthroughplayer_plugin_ListeningNative_createAhead(JNIEnv* env,jclass,jstring directory,jstring language,jstring vad){
+    return listening_create(env,directory,language,AHEAD_SEGMENT,vad?narration_utf8(env,vad):std::string());
 }
 static void listening_open(JNIEnv* env,jlong id,jstring path,jint track,jstring ca,jdouble start,jboolean disc,jint playlist,double origin,bool directAudio=true,jobject input=nullptr){
     try{auto e=engine(id);if(e->cancelled)throw std::runtime_error("listening_cancelled");e->reader.reset();
@@ -301,7 +336,12 @@ static void listening_open(JNIEnv* env,jlong id,jstring path,jint track,jstring 
         e->reader=std::make_unique<AudioReader>(&e->cancelled);
         e->reader->open(narration_utf8(env,path),narration_utf8(env,ca),track,start,disc==JNI_TRUE,playlist,origin,directAudio,
                         input?std::make_unique<ListeningJavaInput>(env,input):nullptr);
-        e->offset=start;e->stream=moonshine_create_stream(e->model,0);ok(e->stream);ok(moonshine_start_stream(e->model,e->stream));e->stopped=false;e->emitted=0;
+        e->offset=start;e->stopped=false;e->emitted=0;
+        if(!e->vadPath.empty()){
+            // A new reader position starts fresh speech state.
+            if(e->segmenter){thru3d_segmenter_destroy(e->segmenter);e->segmenter=nullptr;}
+            e->segmenter=thru3d_segmenter_create(e->vadPath.c_str());if(!e->segmenter)throw std::runtime_error("listening_vad");
+        }else{e->stream=moonshine_create_stream(e->model,0);ok(e->stream);ok(moonshine_start_stream(e->model,e->stream));}
     }catch(const std::exception& error){narration_error(env,error.what());}
 }
 extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_ListeningNative_open(JNIEnv* env,jclass,jlong id,jstring path,jint track,jstring ca,jdouble start,jboolean disc,jint playlist){
@@ -310,8 +350,50 @@ extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_ListeningN
 extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_ListeningNative_openWithClock(JNIEnv* env,jclass,jlong id,jstring path,jint track,jstring ca,jdouble start,jboolean disc,jint playlist,jdouble origin,jboolean directAudio,jobject input){
     listening_open(env,id,path,track,ca,start,disc,playlist,origin,directAudio==JNI_TRUE,input);
 }
+struct SegmentCue {double begin,end;std::string text;};
+static std::string segment_step(const std::shared_ptr<Engine>& e){
+    const auto began=std::chrono::steady_clock::now();
+    auto pcm=e->reader->read();
+    const auto decoded=std::chrono::steady_clock::now();
+    struct Context {Engine* engine;std::vector<SegmentCue> cues;bool failed=false;} context{e.get(),{},false};
+    auto emit=[](void* opaque,int64_t start,const float* samples,int64_t count){
+        auto& c=*static_cast<Context*>(opaque);if(c.failed||count<=0)return;
+        std::vector<float> audio(samples,samples+count);transcript_t* transcript=nullptr;
+        if(moonshine_transcribe_without_streaming(c.engine->model,audio.data(),uint64_t(count),16000,0,&transcript)!=0){c.failed=true;return;}
+        // One subtitle per speech segment, as measured: segments are short (median
+        // under 2 s) and the display shows one cue at a time.
+        std::string text;
+        for(uint64_t i=0;transcript&&i<transcript->line_count;++i){const auto& line=transcript->lines[i];
+            if(line.text&&line.text[0])text+=(text.empty()?"":" ")+std::string(line.text);}
+        if(!text.empty())c.cues.push_back({c.engine->offset+start/16000.,c.engine->offset+(start+count)/16000.,text});
+    };
+    const bool finish=e->reader->eof;
+    if(thru3d_segmenter_accept(e->segmenter,pcm.data(),int64_t(pcm.size()),finish?1:0,emit,&context)!=0||context.failed)
+        throw std::runtime_error("listening_inference");
+    if(finish)e->stopped=true;
+    if(e->cancelled)throw std::runtime_error("listening_cancelled");
+    const double through=e->reader->start+e->reader->cursor/16000.;
+    // A segment still being collected can extend back to its start; otherwise only
+    // the lead-in a new segment would take (0.3 s plus one window) stays open.
+    const int64_t open=thru3d_segmenter_open_start(e->segmenter);
+    const double settled=e->stopped?through:std::max(e->offset,open>=0?e->offset+open/16000.:through-0.5);
+    const auto recognized=std::chrono::steady_clock::now();
+    const auto* audioStream=e->reader->format->streams[e->reader->index];
+    const double audioEnd=audioStream->duration==AV_NOPTS_VALUE?0:
+        (audioStream->duration+(audioStream->start_time==AV_NOPTS_VALUE?0:audioStream->start_time))*av_q2d(audioStream->time_base)-e->reader->origin;
+    std::ostringstream json;json.precision(12);json<<"{\"through\":"<<through<<",\"settled\":"<<settled<<",\"eof\":"<<(e->stopped?"true":"false")
+        <<",\"audio_end\":"<<audioEnd
+        <<",\"duration\":"<<(e->reader->format->duration==AV_NOPTS_VALUE?0:e->reader->format->duration/double(AV_TIME_BASE))
+        <<",\"read_ms\":"<<std::chrono::duration<double,std::milli>(decoded-began).count()
+        <<",\"inference_ms\":"<<std::chrono::duration<double,std::milli>(recognized-decoded).count()<<",\"cues\":[";
+    for(size_t i=0;i<context.cues.size();++i){const auto& c=context.cues[i];
+        json<<(i?",":"")<<"{\"start\":"<<c.begin<<",\"end\":"<<std::min(through,c.end)<<",\"text\":"<<quote(c.text.c_str())<<'}';}
+    json<<"]}";
+    return json.str();
+}
 static std::string listening_step(const std::shared_ptr<Engine>& e){
     if(!e->reader||e->cancelled)throw std::runtime_error("listening_cancelled");
+    if(e->segmenter)return segment_step(e);
         const auto began=std::chrono::steady_clock::now();
         auto pcm=e->reader->read();
         const auto decoded=std::chrono::steady_clock::now();
@@ -321,8 +403,8 @@ static std::string listening_step(const std::shared_ptr<Engine>& e){
         if(e->cancelled)throw std::runtime_error("listening_cancelled");
         const double through=e->reader->start+e->reader->cursor/16000.;
         // Do not certify a time range while speech spanning it can still finish.
-        // The configured VAD cap is 6s; retain 8s for input/VAD look-behind too.
-        double settled=e->stopped?through:std::max(e->offset,through-8.0);
+        // Retain the ahead segment cap plus input/VAD look-behind.
+        double settled=e->stopped?through:std::max(e->offset,through-AHEAD_SETTLE);
         if(!e->stopped&&transcript&&transcript->line_count){const auto& last=transcript->lines[transcript->line_count-1];
             if(!last.is_complete&&std::isfinite(last.start_time))settled=std::min(settled,e->offset+last.start_time);}
         const auto recognized=std::chrono::steady_clock::now();

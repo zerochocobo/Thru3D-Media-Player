@@ -7,6 +7,7 @@ uniform vec4 crop = vec4(0.0, 0.0, 1.0, 1.0);
 uniform vec2 page_size = vec2(1.0);
 // QIYU factory runtime: white pages come out overexposed (user reports, 2026-11-17/18).
 uniform bool decode_srgb = false;
+uniform float decode_gamma = 1.0; // QiyuController.DISPLAY_GAMMA
 // Browser 3D: a side-by-side pair, left eye on the left; matte keeps the producer's alpha.
 uniform bool stereo = false;
 uniform bool matte = false;
@@ -33,7 +34,7 @@ void fragment() {
 	// The OES sampler yields SDR encoded RGB. Compatibility's lighting space is sRGB.
 	sum /= float(taps.x * taps.y);
 	vec3 color = sum.rgb;
-	if (decode_srgb) color = mix(color / 12.92, pow((color + 0.055) / 1.055, vec3(2.4)), step(0.04045, color));
+	if (decode_srgb) { color = pow(max(color, vec3(0.0)), vec3(decode_gamma)); color = mix(color / 12.92, pow((color + 0.055) / 1.055, vec3(2.4)), step(0.04045, color)); }
 	ALBEDO = color;
 	ALPHA = matte ? sum.a : 1.0;
 }

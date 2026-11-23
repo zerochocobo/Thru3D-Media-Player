@@ -2,6 +2,7 @@ extends RefCounted
 ## Local presentation only: never fetch metadata or change playback/history.
 const I18n := preload("res://scripts/i18n.gd")
 const Location := preload("res://scripts/media_location.gd")
+const Providers := preload("res://scripts/provider_icons.gd")
 
 static func mode(value: Variant) -> String:
 	return "list" if value == "list" else "grid"
@@ -86,12 +87,14 @@ static func source_icon(row: Dictionary) -> String:
 	var location: Dictionary = row.get("location", {}) if row.get("location") is Dictionary else {}
 	var uri := str(row.get("uri", ""))
 	# An archive page or comic belongs to wherever its container file is stored.
-	if location.get("type") == "archive": uri = str(location.get("source_uri", uri)); location = {}
+	if location.get("type") == "archive":
+		uri = str(location.get("source_uri", uri))
+		location = location.parent if location.get("parent") is Dictionary else {}
 	var kind := str(location.get("type", ""))
 	if uri.begins_with("usb://"): return "usb"
 	if uri.begins_with("smb://") or kind == "smb": return "server"
-	if uri.begins_with("cloud://") or kind == "cloud": return "cloud"
-	if uri.begins_with("medialib://") or kind == "server": return "media_library"
+	if uri.begins_with("cloud://") or kind == "cloud": return Providers.key(str(row.get("source_provider", "")), "cloud")
+	if uri.begins_with("medialib://") or kind == "server": return Providers.key(str(row.get("source_provider", "")), "media_library")
 	if uri.begins_with("dlna://") or uri.begins_with("http://") or uri.begins_with("https://") or kind == "dlna": return "cast"
 	if uri.begins_with("file://") or uri.begins_with("/") or uri.begins_with("content://") or kind == "local": return "device"
 	return ""
@@ -129,8 +132,20 @@ static func info(row: Dictionary, catalog: RefCounted = null, recent: bool = fal
 		if not path.is_empty(): parts.append(path)
 		if not bytes.is_empty(): parts.append(bytes)
 	elif recent:
-		var origin := Location.folder_path(Location.clean(row.get("location", {}))) if folder else source(uri)
-		if not origin.is_empty(): parts.append(origin)
+		var account := str(row.get("source_label", ""))
+		if not account.is_empty(): parts.append(account)
+		if folder:
+			var location := Location.clean(row.get("location", {}))
+			var path := Location.folder_path(location)
+			var first := path.get_slice(" / ", 0)
+			if not first.is_empty() and (first == account or account.ends_with(" · " + first)):
+				path = path.trim_prefix(first).trim_prefix(" / ")
+			if not path.is_empty(): parts.append(path)
+			elif parts.is_empty() and location.get("type") in ["cloud", "server"]:
+				parts.append(I18n.t("Cloud drives" if location.type == "cloud" else "Media servers"))
+		elif account.is_empty():
+			var origin := source(uri)
+			if not origin.is_empty(): parts.append(origin)
 		if duration > 0 and not photo and not folder: parts.append(time(duration))
 	elif folder:
 		var count := int(node.get("child_count", -1))

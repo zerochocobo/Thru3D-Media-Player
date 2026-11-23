@@ -7,7 +7,9 @@ android {
     namespace 'org.vrpassthroughplayer.browser'
     compileSdkVersion 'android-37.2'
     buildToolsVersion '36.1.0'
+    buildFeatures { buildConfig = true }
     defaultConfig {
+        buildConfigField 'boolean', 'DOUYIN_PLAYBACK_LOG', (providers.gradleProperty('douyinPlaybackLog').orNull == 'true').toString()
         minSdk 29
         consumerProguardFiles 'consumer-rules.pro'
         ndk { abiFilters 'arm64-v8a' }

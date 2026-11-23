@@ -34,4 +34,17 @@ class WebBrowserWeiboTest {
         assertNull(WebBrowserMediaPolicy.selectedCandidate(listOf(media().put("weibo_enabled",false)),"clicked"))
         for (bad in listOf("http://weibo.com/", "https://weibo.com.evil/", "https://user@weibo.com/", "https://m.weibo.cn/")) assertFalse(WebBrowserWeibo.document(bad))
     }
+
+    @Test fun standaloneVideoRequiresTheExactCurrentPublicFid() {
+        val fid = "1034:4967272104787984"
+        val detail = "https://weibo.com/tv/show/$fid"
+        val tracked = "$detail?refer=video"
+        val item = media().put("frame", tracked)
+        item.getJSONObject("weibo").put("id", fid).put("page", detail).put("binding", "standalone")
+        assertNotNull(WebBrowserWeibo.metadata(item, tracked))
+        val changed = "https://weibo.com/tv/show/1034:4967272104787985?refer=video"
+        assertNull(WebBrowserWeibo.metadata(item.put("frame", changed), changed))
+        assertNull(WebBrowserWeibo.metadata(item.put("frame", document), document))
+        assertNull(WebBrowserWeibo.metadata(item.put("frame", tracked).put("protected", true), tracked))
+    }
 }

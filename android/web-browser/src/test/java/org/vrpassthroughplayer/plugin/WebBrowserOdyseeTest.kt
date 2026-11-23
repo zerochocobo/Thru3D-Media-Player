@@ -89,8 +89,20 @@ class WebBrowserOdyseeTest {
         metadata.put("claim_uri","lbry://@PublicChannel#2/$name-其他#1")
         assertNull(WebBrowserOdysee.metadata(item,current))
     }
+    @Test fun exclamationMarkBindsOnlyToTheSameClaim() {
+        for (suffix in listOf("!", "%21")) {
+            val id = "@PublicChannel:2/PublicClip$suffix:1"
+            val current = "https://odysee.com/$id"
+            val item = hls().put("frame", current)
+            val metadata = item.getJSONObject("odysee").put("id", id).put("page", current)
+                .put("claim_uri", "lbry://@PublicChannel#2/PublicClip!#1")
+            assertNotNull(WebBrowserOdysee.metadata(item, current))
+            metadata.put("claim_uri", "lbry://@PublicChannel#2/PublicClip#1")
+            assertNull(WebBrowserOdysee.metadata(item, current))
+        }
+    }
     @Test fun escapedPathSyntaxMalformedUtf8AndDoubleEncodingAreNotNames() {
-        for(bad in listOf("%2FOther","%3A1","%23Other","%5COther","%2E%2E-hidden","%E8%FF","%25E8","Title%00"))
+        for(bad in listOf("%2FOther","%3A1","%23Other","%5COther","%2E%2E-hidden","%E8%FF","%25E8","Title%00","Title%2521"))
             assertNull(bad,WebBrowserOdysee.page(page.replace("PublicClip",bad)))
     }
 }

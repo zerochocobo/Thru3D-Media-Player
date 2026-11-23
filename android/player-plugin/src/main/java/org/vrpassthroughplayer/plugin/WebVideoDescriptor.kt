@@ -132,15 +132,22 @@ internal class WebVideoTrack(
     val browserHeaders: WebVideoRequestHeaders? = null,
     val browserManifest: String? = null,
     val browserIqiyi: JSONObject? = null,
+    val browserManifestBase: URI? = null,
 ) {
     val headers: Map<String, String> = java.util.Collections.unmodifiableMap(LinkedHashMap(headers))
     val hasVideo get() = videoCodec.isNotBlank() && videoCodec != "none"
     val hasAudio get() = audioCodec.isNotBlank() && audioCodec != "none"
     init {
         require(transport in setOf("file", "hls", "live_hls"))
+        val manifestLimit = when {
+            browserManifestBase != null -> 2 * 1024 * 1024
+            browserIqiyi != null -> 1024 * 1024
+            else -> 160 * 1024
+        }
         require(browserManifest == null || transport == "hls" && browserHeaders != null &&
-            browserManifest.startsWith("#EXTM3U") && browserManifest.toByteArray(Charsets.UTF_8).size <=
-                (if(browserIqiyi!=null) 1024*1024 else 160*1024)) { "Invalid observed manifest" }
+            browserManifest.startsWith("#EXTM3U") && browserManifest.toByteArray(Charsets.UTF_8).size <= manifestLimit) { "Invalid observed manifest" }
+        require(browserManifestBase == null || browserManifest != null && browserIqiyi == null &&
+            WebBrowserNetworkMedia.address(browserManifestBase.toString()) != null) { "Invalid manifest response address" }
         require(browserIqiyi==null || transport=="hls" && browserManifest!=null && browserHeaders!=null &&
             runCatching { WebVideoIqiyiResources(requireNotNull(browserIqiyi),requireNotNull(browserManifest)).use { } }.isSuccess) { "Invalid selected resource plan" }
         require(url.scheme in setOf("http", "https") && !url.host.isNullOrBlank() && url.rawUserInfo == null && url.fragment == null) { "Invalid media address" }
@@ -228,6 +235,7 @@ internal object WebVideoFormats {
                 when { Regex("\\bmesh\\b").containsMatchIn(note) -> "mesh"; "equirectangular" in note -> "equirectangular"; else -> "" }
             }, if (hls) "hls" else "file", f.optString("web_layout"), f.optDouble("quality", 0.0).takeIf { it.isFinite() } ?: 0.0,
             WebVideoRequestHeaders.parse(f), if (f.isNull("browser_manifest")) null else f.getString("browser_manifest"),
-            f.optJSONObject("browser_iqiyi"))
+            f.optJSONObject("browser_iqiyi"),
+            if (f.isNull("browser_manifest_base")) null else URI(f.getString("browser_manifest_base")))
     }
 }

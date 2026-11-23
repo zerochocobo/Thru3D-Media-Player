@@ -1,6 +1,8 @@
 package org.vrpassthroughplayer.plugin
 
 import java.net.URI
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import org.json.JSONObject
 
 /** Public finite clips, bound to the exact current DOM file and observed request. */
@@ -19,11 +21,27 @@ object WebBrowserTwitch {
         }
     }.getOrNull()
 
+    fun handoffPage(value: String): String {
+        if (page(value) == null) return value
+        val query = URI(value).rawQuery ?: return value
+        val fields = query.split('&').toMutableList()
+        val range = fields.indices.singleOrNull {
+            URLDecoder.decode(fields[it].substringBefore('='), StandardCharsets.UTF_8.name()) == "range"
+        } ?: return value
+        if (fields[range] !in setOf("range=24hr", "range=7d", "range=30d", "range=all")) return value
+        // This is the live document's handoff identity, not a network request URL.
+        fields.removeAt(range)
+        return value.substringBefore('?') + if (fields.isEmpty()) "" else "?" + fields.joinToString("&")
+    }
+
+    fun sameHandoffPage(left: String, right: String): Boolean = left == right || handoffPage(left) == handoffPage(right)
+
     fun metadata(item: JSONObject, currentPage: String): JSONObject? = runCatching {
         val id = page(currentPage) ?: return null
-        require(item.optString("frame") == currentPage && !item.optBoolean("protected") && !item.optBoolean("blob"))
+        val frame = item.optString("frame")
+        require(sameHandoffPage(frame, currentPage) && !item.optBoolean("protected") && !item.optBoolean("blob"))
         val data = item.getJSONObject("twitch")
-        require(data.toString().length <= 24 * 1024 && data.getString("id") == id && data.getString("page") == currentPage)
+        require(data.toString().length <= 24 * 1024 && data.getString("id") == id && data.getString("page") == frame)
         require(data.getString("revision").matches(Regex("[a-f0-9]{1,8}")))
         val source = item.getString("source")
         require(source == data.getString("source") && WebBrowserNetworkMedia.address(source)?.let { it.scheme == "https" && it.path.endsWith(".mp4") } == true)

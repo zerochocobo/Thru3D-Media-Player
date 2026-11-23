@@ -324,7 +324,7 @@ func tick() -> void:
 		windows[id].sync_fullscreen(window_state(id))
 		windows[id].sync_page_beta_visibility()
 	sync_effects()
-	if handoff and (str(data.get("url", "")) != handoff_uri or int(data.get("tab_id", 0)) != handoff_tab or int(data.get("navigation", 0)) != handoff_navigation):
+	if handoff and (str(data.get("handoff_url", data.get("url", ""))) != handoff_uri or int(data.get("tab_id", 0)) != handoff_tab or int(data.get("navigation", 0)) != handoff_navigation):
 		if handoff_context.get("bilibili", false):
 			DiagnosticLog.trail("web_beta.cancelled", "code=browser_page_changed")
 		_cancel_handoff()
@@ -483,12 +483,19 @@ func _record_webpage_playback() -> void:
 	var site := "bilibili" if data.get("bilibili_beta_available", false) else "douyin" if data.get("douyin_beta_available", false) else ""
 	if site.is_empty(): return
 	_next_media_diagnostic = Time.get_ticks_msec() + 30000
-	for item in data.get("videos", []).slice(0, 2):
-		var sample: Dictionary = item.get("playback", {}).duplicate()
-		if sample.is_empty(): continue
-		for key in ["width", "height", "time", "playing", "bilibili_ready", "douyin_ready"]:
+	# Playing elements first: a feed preloads several, and the one on show was past the first two.
+	var videos: Array = data.get("videos", []).filter(func(item): return not item.get("playback", {}).is_empty())
+	videos.sort_custom(func(a, b): return bool(a.get("playing", false)) and not bool(b.get("playing", false)))
+	for index in mini(videos.size(), 4):
+		var item: Dictionary = videos[index]
+		var sample := {"index": index}
+		for key in ["playing", "time", "width", "height", "bilibili_ready", "douyin_ready"]:
 			sample[key] = item.get(key, 0)
-		DiagnosticLog.trail("web_beta.webpage", "site=%s %s" % [site, JSON.stringify(sample)])
+		sample.merge(item.get("playback", {}))
+		# The Beta ring holds 64 steps of about 180 bytes: two elements, their state ahead of the counters,
+		# so clicks and hand-overs stay in it; the event log keeps every field of all four.
+		if index < 2: DiagnosticLog.trail("web_beta.webpage", "site=%s %s" % [site, JSON.stringify(sample, "", false)])
+		DiagnosticLog.record("web_beta_webpage", sample.merged({"site": site, "videos": videos.size()}))
 
 func bilibili_target(current: Dictionary, selection: String = "") -> Dictionary:
 	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("bilibili_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
@@ -603,13 +610,13 @@ func _begin_handoff(beta: bool = false, selection: String = "") -> void:
 	handoff_beta = beta
 	handoff_waiting_pause = false
 	handoff_started_ms = Time.get_ticks_msec(); pause_started = 0
-	handoff_uri = str(data.get("url", ""))
+	handoff_uri = str(data.get("handoff_url", data.get("url", "")))
 	handoff_tab = int(data.get("tab_id", 0)); handoff_navigation = int(data.get("navigation", 0))
 	handoff_context = {"direct": direct, "bilibili": beta and data.get("bilibili_beta_available", false), "tab": handoff_tab, "window": focused_window, "navigation": handoff_navigation,
 		"douyin": data.get("douyin_beta_available", false), "iqiyi": data.get("iqiyi_beta_available", false), "youku": data.get("youku_beta_available", false), "niconico": data.get("niconico_beta_available", false), "twitch": data.get("twitch_beta_available", false), "tiktok": data.get("tiktok_beta_available", false), "instagram": data.get("instagram_beta_available", false), "ted": data.get("ted_beta_available", false), "redbull": data.get("redbull_beta_available", false), "naver": data.get("naver_beta_available", false), "reddit": data.get("reddit_beta_available", false), "streamable": data.get("streamable_beta_available", false), "archive": data.get("archive_beta_available", false), "odysee": data.get("odysee_beta_available", false), "dailymotion": data.get("dailymotion_beta_available", false), "mango": data.get("mango_beta_available", false), "origin": handoff_uri, "request": int(data.get("fullscreen_request", 0)), "selection": selection,
 		"was_playing": data.get("videos", []).any(func(item): return (selection.is_empty() or str(item.get("selection", "")) == selection) and item.get("playing", false))}
 	handoff_context.position_ms = _playhead()
-	menu.web_video.address = handoff_uri
+	menu.web_video.address = str(data.get("url", ""))
 	if beta or direct:
 		# The selected button always uses its current, explicitly selected source.
 		if menu.web_video.pending > 0: menu.web_video.close()
@@ -678,7 +685,7 @@ func _draw_failure_log(host: Node) -> void:
 
 func owns_handoff(host: Node, context: Dictionary) -> bool:
 	var current := window_state(host.window_id)
-	return not context.is_empty() and int(context.get("window", 0)) == host.window_id and int(context.get("tab", 0)) == int(current.get("tab_id", 0)) and int(context.get("navigation", 0)) == int(current.get("navigation", 0)) and str(context.get("origin", "")) == str(current.get("url", ""))
+	return not context.is_empty() and int(context.get("window", 0)) == host.window_id and int(context.get("tab", 0)) == int(current.get("tab_id", 0)) and int(context.get("navigation", 0)) == int(current.get("navigation", 0)) and str(context.get("origin", "")) == str(current.get("handoff_url", current.get("url", "")))
 
 ## Same reasons as WebBrowserLoadError.kt; an HTTP error names its class and code.
 const LOAD_ERRORS := {"dns": "Server not found", "offline": "No network connection", "timeout": "Connection timed out",

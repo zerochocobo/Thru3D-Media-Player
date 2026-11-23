@@ -408,6 +408,10 @@ static func rows(state: Dictionary) -> Array:
 func hides_display() -> bool:
 	return enabled and hide_subtitles and available()
 
+## Speech is being synthesised for the current subtitles: CPU inference that runs ahead of playback.
+func running() -> bool:
+	return enabled and available()
+
 static func status_label(code: String) -> String:
 	if not FEATURE_ENABLED: return ""
 	return {"loading": "Preparing narration…", "verifying": "Checking narration model…", "model_loading": "Loading narration model…", "preparing": "Preparing speech…", "preview_buffering": "Preparing voice preview…", "subtitle_loading": "Reading subtitle timeline…", "ready": "Narration ready", "speaking": "Reading subtitles…", "model_missing": "Narration model not installed", "model_error": "Unable to load narration model", "subtitle_required": "Choose subtitles", "language_required": "Choose language", "unsupported_subtitle": "Text subtitles required", "timeline_error": "Unable to prepare subtitles", "speech_error": "Unable to read subtitle", "line_missing": "Selected line has no text"}.get(code, "")

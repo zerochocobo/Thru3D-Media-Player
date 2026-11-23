@@ -579,18 +579,21 @@ func _redraw_theme() -> void:
 func _draw() -> void:
 	sync_page_beta_visibility()
 	_clear_layout()
+	_picture_nodes.clear()
 	_sync_presentation()
 	_backdrop.visible = not chrome_hidden()
 	if browser and (not page_input_blocked() or on_screen()): browser.draw_window(self)
 	depth_choices.begin("browser_depth_" + str(window_id))
 	if depth_settings and not chrome_hidden(): _draw_depth_settings()
-	elif picture_settings and not chrome_hidden(): _draw_picture_settings()
+	# The footer's picture button stays when the frame is hidden, so its menu shows then too.
+	elif picture_settings: _draw_picture_settings()
 	if browser:
 		_create_feedback()
 		_pointer_panels.append(_feedback.get_node("background"))
 	if page_input_blocked():
-		_feedback.visible = false; _pointer_panels.clear()
-		if not on_screen(): _ray_blockers.clear()
+		_feedback.visible = false
+		_pointer_panels.assign(_pointer_panels.filter(func(panel): return panel in _picture_nodes))
+		if not on_screen(): _ray_blockers.assign(_ray_blockers.filter(func(blocker): return blocker.node in _picture_nodes))
 	# Disabled controls still occlude other windows and the header drag surface.
 	for button in _buttons: button.hover_disabled = true
 	# Above the distant page's alpha hole (25) yet below MenuComposition.POPUP_PRIORITY (30):
@@ -809,7 +812,8 @@ func _activate_hit(hit: Dictionary) -> void:
 func local_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	# Include the whole visible frame before choosing the nearest window. Otherwise
 	# the secondary's empty chrome is invisible to both the ray and trigger routing.
-	var hit := {} if page_input_blocked() and not on_screen() else _pointer_hit_over(origin, direction, super.ray_hit(origin, direction))
+	# A blocked page leaves only the picture menu for the ray.
+	var hit := {} if page_input_blocked() and not on_screen() and not picture_settings else _pointer_hit_over(origin, direction, super.ray_hit(origin, direction))
 	if effect_controls:
 		var footer: Dictionary = effect_controls.ray_hit(origin,direction)
 		if not footer.is_empty() and (hit.is_empty() or footer.distance < hit.distance):
