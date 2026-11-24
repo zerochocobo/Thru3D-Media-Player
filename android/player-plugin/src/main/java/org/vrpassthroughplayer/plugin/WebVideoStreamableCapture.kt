@@ -24,7 +24,7 @@ internal object WebVideoStreamableCapture {
 
     fun resolve(page: WebVideoPage, media: JSONObject, network: WebVideoNetworkCapture): JSONObject? {
         val bound = candidate(page, media) ?: return null
-        val info = network.resolve(page, bound) ?: return null
+        val info = network.resolveExactFile(page, bound) ?: return null
         val formats = info.optJSONArray("formats") ?: return null
         if (formats.length() != 1) return null
         val file = formats.getJSONObject(0)

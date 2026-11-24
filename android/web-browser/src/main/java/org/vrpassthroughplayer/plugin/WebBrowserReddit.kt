@@ -5,14 +5,16 @@ import org.json.JSONObject
 
 /** Rendered native Reddit post, exact packaged file and this document's observed request. */
 object WebBrowserReddit {
+    private val postPath=Regex("/r/[A-Za-z0-9_]{2,32}/comments/([a-z0-9]{3,10})(?:/[A-Za-z0-9_-]{1,200})?/?")
     fun document(value: String): Boolean=runCatching {
         val u=URI(value)
         value.length<=8192 && u.scheme=="https" && u.host in setOf("reddit.com","www.reddit.com") &&
-            u.port in setOf(-1,443) && u.rawUserInfo==null && u.rawFragment==null
+            u.port in setOf(-1,443) && u.rawUserInfo==null &&
+            (u.rawFragment==null || u.rawFragment=="lightbox" && postPath.matches(u.rawPath.orEmpty()))
     }.getOrDefault(false)
     fun page(value: String): String?=runCatching {
         require(document(value))
-        Regex("/r/[A-Za-z0-9_]{2,32}/comments/([a-z0-9]{3,10})(?:/[A-Za-z0-9_-]{1,200})?/?").matchEntire(URI(value).rawPath.orEmpty())?.groupValues?.get(1)
+        postPath.matchEntire(URI(value).rawPath.orEmpty())?.groupValues?.get(1)
     }.getOrNull()
     private fun feed(value: String)=document(value) && Regex("/(?:r/[A-Za-z0-9_]{2,32}/(?:hot|new|top|rising|best)?/?)?").matches(URI(value).rawPath.orEmpty())
     fun observing(value: String)=document(value)
@@ -20,9 +22,10 @@ object WebBrowserReddit {
     fun metadata(item: JSONObject,currentPage: String): JSONObject?=runCatching {
         require(enabled(currentPage) && item.optString("frame")==currentPage && !item.optBoolean("protected") && !item.optBoolean("blob"))
         val data=item.getJSONObject("reddit");val id=data.getString("id")
-        require(data.toString().length<=24*1024 && page(data.getString("page"))==id && data.getString("document")==currentPage)
+        require(data.toString().length<=24*1024 && page(data.getString("page"))==id && URI(data.getString("page")).rawFragment==null && data.getString("document")==currentPage)
         val binding=data.getString("binding")
         require(page(currentPage)?.let { it==id }!=false && binding in setOf("rendered_post","rendered_gif") && data.getString("active_id")==id)
+        require(data.optString("owner_mode","post")==if(URI(currentPage).rawFragment=="lightbox")"lightbox" else "post")
         require(if(binding=="rendered_gif")data.opt("declared_gif")==true else !data.optBoolean("declared_gif"))
         require(data.getString("revision").matches(Regex("[a-f0-9]{1,8}")))
         val source=item.getString("source");val uri=WebBrowserNetworkMedia.address(source)

@@ -1,12 +1,16 @@
 extends RefCounted
 ## Runtimes with simultaneous hands and controllers (PICO enterprise mixed interaction) keep
 ## reporting an optical hand while that hand holds a controller. A controller in use owns its
-## hand; one left lying still hands it back to gestures after IDLE_SECONDS.
+## hand; one left lying still hands it back to gestures after IDLE_SECONDS. A palm at the
+## controller's grip is holding it: the controller keeps that hand however still it is held.
 const Hand := preload("res://scripts/hand_pointer.gd")
 const MOVE_METRES := 0.01
 const TURN_RADIANS := deg_to_rad(3.0)
 const IDLE_SECONDS := 3.0
 const ANALOG := 0.1
+## Palm to grip pose is a few centimetres while held; a hand beside a controller set down is further.
+const HOLD_METRES := 0.12
+const PALM_FLAGS := XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID
 var _anchor := {}
 var _idle := {}
 
@@ -22,7 +26,8 @@ func update(hand: String, delta: float) -> void:
 	if pose == null:
 		_anchor.erase(hand); _idle.erase(hand)
 		return
-	var active := _analog_active(tracker)
+	var active := _analog_active(tracker) \
+		or _holding(tracker, XRServer.get_tracker("/user/hand_tracker/" + hand.trim_suffix("_hand")) as XRHandTracker)
 	var anchor: Variant = _anchor.get(hand)
 	if anchor == null or (anchor as Transform3D).origin.distance_to(pose.origin) > MOVE_METRES \
 		or Quaternion((anchor as Transform3D).basis.orthonormalized()).angle_to(Quaternion(pose.basis.orthonormalized())) > TURN_RADIANS:
@@ -43,6 +48,18 @@ static func _candidate(tracker: XRPositionalTracker) -> Variant:
 	var pose := tracker.get_pose("aim")
 	if not pose.has_tracking_data or pose.tracking_confidence == XRPose.XR_TRACKING_CONFIDENCE_NONE: return null
 	return pose.transform if pose.transform.is_finite() else null
+
+## Both poses are in tracking space. The grip pose is where the hand closes; aim is the fallback.
+static func _holding(tracker: XRPositionalTracker, joints: XRHandTracker) -> bool:
+	if joints == null or not joints.has_tracking_data: return false
+	if joints.get_hand_joint_flags(XRHandTracker.HAND_JOINT_PALM) & PALM_FLAGS != PALM_FLAGS: return false
+	var palm := joints.get_hand_joint_transform(XRHandTracker.HAND_JOINT_PALM).origin
+	for name in ["grip", "aim"]:
+		if not tracker.has_pose(name): continue
+		var pose := tracker.get_pose(name)
+		if not pose.has_tracking_data or pose.tracking_confidence == XRPose.XR_TRACKING_CONFIDENCE_NONE or not pose.transform.is_finite(): continue
+		return palm.is_finite() and palm.distance_to(pose.transform.origin) <= HOLD_METRES
+	return false
 
 static func _analog_active(tracker: XRPositionalTracker) -> bool:
 	for name in ["trigger", "grip"]:

@@ -179,6 +179,11 @@ func _run() -> void:
 	menu.web_browser.next_poll=0;menu.web_browser.tick()
 	check(platform.selected_requests.back()==[platform.browser.url,"tencent:main:manifest1"] and menu.web_browser.handoff_start_ms==43000,
 		"Tencent uses the exact selected main-player timeline")
+	check(menu.web_browser.handoff_context.get("tencent", false), "Tencent keeps its own return route")
+	menu.web_browser.playback_return={"tab":11,"window":1,"navigation":1,"origin":platform.browser.url,"selection":"tencent:main:manifest1","tencent":true}
+	menu.web_browser.restore_playback(false, 87000)
+	check(platform.browser_commands.back().action=="restore_tencent" and platform.browser_commands.back().position_ms==87000,
+		"Tencent dispatches the native progress back to its bound original player")
 	platform.browser.videos[0].selection="tencent:main:manifest2"
 	menu.web_browser.next_poll=0;menu.web_browser.tick()
 	check(not menu.web_browser.handoff,"A changed Tencent playlist cancels the old click")

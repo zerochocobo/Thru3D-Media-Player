@@ -884,7 +884,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val display = slot.display
                             val nav = tab.navigation
                             val generation = slot.generation
-                            if (display != null) douyinLog.observe(items, display, slot.width, slot.height, tab.id, nav) {
+                            if (display != null) douyinLog.observe(items, display, slot.width, slot.height, tab.id, nav,
+                                slot.id, generation, tab.url == DouyinPlaybackLog.CONTROL_URL) {
                                 !closed.get() && active && WebBrowserTrail.hosts && current() === tab && tab.navigation == nav &&
                                     slot.display === display && slot.generation == generation && tab.ports[port] == nav
                             }
@@ -1799,14 +1800,14 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     }
                 }
             }
-            "restore_weibo", "restore_mango", "restore_youku", "restore_iqiyi", "restore_douyin", "restore_niconico", "restore_twitch", "restore_tiktok", "restore_instagram", "restore_ted", "restore_redbull", "restore_naver", "restore_reddit", "restore_streamable", "restore_archive", "restore_odysee", "restore_dailymotion" -> {
+            "restore_weibo", "restore_tencent", "restore_mango", "restore_youku", "restore_iqiyi", "restore_douyin", "restore_niconico", "restore_twitch", "restore_tiktok", "restore_instagram", "restore_ted", "restore_redbull", "restore_naver", "restore_reddit", "restore_streamable", "restore_archive", "restore_odysee", "restore_dailymotion" -> {
                 val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id } ?: return@dispatch
                 val action = request.optString("action")
                 val origin = request.optString("origin")
                 if (!tab.awake || window(id).tab != tab.id || tab.navigation != request.optLong("navigation", -1) ||
                     (if (action == "restore_twitch") !WebBrowserTwitch.sameHandoffPage(tab.url, origin) else tab.url != origin)) return@dispatch
                 val selection = request.optString("selection")
-                val kind=when(action) { "restore_mango" -> "mango"; "restore_youku" -> "youku"; "restore_niconico" -> "niconico"; "restore_twitch" -> "twitch"; "restore_tiktok" -> "tiktok"; "restore_instagram" -> "instagram"; "restore_ted" -> "ted"; "restore_redbull" -> "redbull"; "restore_naver" -> "naver"; "restore_reddit" -> "reddit"; "restore_streamable" -> "streamable"; "restore_archive" -> "archive"; "restore_odysee" -> "odysee"; "restore_dailymotion" -> "dailymotion"; "restore_iqiyi" -> "iqiyi"; "restore_douyin" -> "douyin"; else -> "weibo" }
+                val kind=when(action) { "restore_tencent" -> "tencent"; "restore_mango" -> "mango"; "restore_youku" -> "youku"; "restore_niconico" -> "niconico"; "restore_twitch" -> "twitch"; "restore_tiktok" -> "tiktok"; "restore_instagram" -> "instagram"; "restore_ted" -> "ted"; "restore_redbull" -> "redbull"; "restore_naver" -> "naver"; "restore_reddit" -> "reddit"; "restore_streamable" -> "streamable"; "restore_archive" -> "archive"; "restore_odysee" -> "odysee"; "restore_dailymotion" -> "dailymotion"; "restore_iqiyi" -> "iqiyi"; "restore_douyin" -> "douyin"; else -> "weibo" }
                 if(kind=="naver"){
                     val witness=tab.naverReturns.remove(selection) ?: return@dispatch
                     if(witness.first !in tab.ports)return@dispatch

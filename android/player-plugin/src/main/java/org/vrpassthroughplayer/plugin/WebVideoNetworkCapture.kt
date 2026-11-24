@@ -110,6 +110,12 @@ internal class WebVideoNetworkCapture(
 
     fun resolve(page: WebVideoPage, media: JSONObject): JSONObject? = resolve(page, media, null)
 
+    /** The caller has bound one exact observed file. A failed fetch is not an
+     * absent/unsupported candidate; preserve its HTTP/transport error and cancel.
+     * Generic multi-candidate inspection keeps its existing best-effort behavior. */
+    internal fun resolveExactFile(page: WebVideoPage, media: JSONObject): JSONObject? =
+        resolve(page, media, null, exactFile = true)
+
     /** Explicit site Beta must preserve the decoded representation, including parallel HLS leaves. */
     fun resolveCurrent(page: WebVideoPage, media: JSONObject): JSONObject? = resolve(page, media, null, true, segments = page.site == "mgtv")
 
@@ -317,7 +323,7 @@ internal class WebVideoNetworkCapture(
         if (cookieJar.toString().length > 65536) return null
         return candidates
     }
-    private fun resolve(page: WebVideoPage, media: JSONObject, boundPair: Pair<URI, URI>?, current: Boolean = false, segments: Boolean = false): JSONObject? {
+    private fun resolve(page: WebVideoPage, media: JSONObject, boundPair: Pair<URI, URI>?, current: Boolean = false, segments: Boolean = false, exactFile: Boolean = false): JSONObject? {
         if (media.optBoolean("protected")) return null
         val candidates=loadObserved(media,segments) ?: return null
         var direct = WebBrowserNetworkMedia.address(media.optString("source"))
@@ -325,6 +331,7 @@ internal class WebVideoNetworkCapture(
             val c = candidates.getJSONObject(i)
             if (c.optString("original_url") == direct.toString()) { direct = URI(c.getString("url")); break }
         }
+        if (exactFile && (direct == null || candidates.length() != 1 || resources.size != 1 || resources[direct]?.kind != "file")) return null
         if (direct != null && !resources.containsKey(direct)) {
             val frame = WebBrowserNetworkMedia.address(media.optString("frame").substringBefore('#')) ?: return null
             val kind = when { direct.path.endsWith(".m3u8", true) -> "hls"; direct.path.endsWith(".mpd", true) -> "dash"; else -> "file" }
@@ -341,7 +348,10 @@ internal class WebVideoNetworkCapture(
         val probes = files.mapNotNull { resource ->
             runCatching {
                 probe(resource, media, allowAv1 = page.site == "twitch", allowMultipleMp4aTracks = page.site == "archive")
-            }.getOrNull()
+            }.getOrElse { error ->
+                if (exactFile && (error is MediaServerFailure || error is InterruptedException)) throw error
+                null
+            }
         }
         if (boundPair != null) {
             if (files.size != 2 || files.map { it.uri }.toSet() != setOf(boundPair.first, boundPair.second) || probes.size != 2) return null

@@ -750,6 +750,54 @@ test('Tencent player button selects its exact main stream, survives pause and re
   f.native.onDisconnect.fire();assert(f.playButtons.every(b=>b.disposed));
 });
 
+function tencentReturnFixture(){
+  const page='https://v.qq.com/x/page/q326831cny0.html',source='https://related.test/opaque.mp4';
+  const f=fixture(2,false,{page,tencent:true,playButtons:true,fullscreen:false}),video=f.videos[0];
+  const box={getBoundingClientRect:()=>({left:0,top:0,width:600,height:400})};
+  Object.assign(video,{currentSrc:source,videoWidth:1280,videoHeight:720,duration:216,closest:s=>['#main-player .txp_videos_container','#main-player'].includes(s)?box:null});
+  video.emit('loadstart');
+  const raw={code:0,preview:216,vl:{vi:[{vid:'q326831cny0',enc:'0',drm:0,isprevid:0,vw:1280,vh:720,td:216,fn:'opaque.mp4',ul:{ui:[]}}]}};
+  const publish=()=>{f.network.onMessage.fire({type:'network',page,tencent:[f.tencent.normalize(raw)],candidates:[{url:source,kind:'file',at:f.clock.now}]});f.flush();};
+  publish();f.native.onMessage.fire({action:'network_policy',tencent:true});f.flush();
+  const item=f.report().find(i=>i.tencent_ready);assert(item);
+  const command={action:'restore_tencent',id:String(item.id),epoch:item.network_epoch,page:item.tencent.page,revision:item.tencent.revision,time:87.625,play:false};
+  return {f,video,raw,publish,command};
+}
+
+test('Tencent return writes the native position and holds SDK autoplay until a real gesture',()=>{
+  const {f,video,command}=tencentReturnFixture();
+  f.native.onMessage.fire(command);assert.equal(video.currentTime,87.625);assert(video.paused);
+  video.play();assert(video.paused);
+  video.paused=false;video.emit('seeked');assert(video.paused,'Delayed SDK seek completion stays paused');
+  f.videos[1].play();assert.equal(f.videos[1].paused,false,'An unrelated preview is not held');
+  f.emit('pointerdown',{isTrusted:false});video.play();assert(video.paused);
+  f.emit('pointerdown',{isTrusted:true});video.play();assert.equal(video.paused,false);
+  const playing=tencentReturnFixture();playing.f.native.onMessage.fire({...playing.command,play:true});
+  assert.equal(playing.video.currentTime,87.625);assert.equal(playing.video.paused,false);
+});
+
+test('Tencent return rejects stale documents, sources, epochs, protected media and invalid positions',()=>{
+  const mutations=[
+    ({command})=>{command.id='missing';},({command})=>{command.epoch+=1;},
+    ({command})=>{command.page='https://v.qq.com/x/page/a326831cny0.html';},({command})=>{command.revision='old';},
+    ({f})=>{f.location.href='https://v.qq.com/x/page/a326831cny0.html';},
+    ({video})=>{video.currentSrc='https://related.test/replacement.mp4';},
+    ({video})=>{video.emit('loadstart');},({video})=>{video.isConnected=false;},
+    ({video})=>{video.mediaKeys={};},({video})=>{video.emit('encrypted');},
+    ...[-1,NaN,Infinity].map(time=>({command})=>{command.time=time;})
+  ];
+  for(const mutate of mutations){const x=tencentReturnFixture();mutate(x);x.f.native.onMessage.fire(x.command);assert.equal(x.video.currentTime,3,'Rejected restore cannot seek another timeline');}
+});
+
+test('Tencent paused return expires and never holds replacement or protected media',()=>{
+  for(const mutate of [
+    ({f})=>{f.clock.now+=30001;},({f})=>{f.location.href+='?changed';},
+    ({video})=>{video.currentSrc+='?replacement';},({video})=>{video.emit('loadstart');},
+    ({video})=>{video.mediaKeys={};},({video})=>{video.emit('encrypted');},
+    ({raw,publish})=>{raw.vl.vi[0].td=217;publish();}
+  ]){const x=tencentReturnFixture();x.f.native.onMessage.fire(x.command);mutate(x);x.video.play();assert.equal(x.video.paused,false,'Stale paused intent must yield');}
+});
+
 test('Tencent site-processed metadata needs its observed envelope and a fresh source binding; flow changes retire the click',()=>{
   const page='https://v.qq.com/x/page/q326831cny0.html',id='q326831cny0',source='https://related.test/opaque.mp4';
   const raw={code:0,preview:216,vl:{vi:[{vid:id,enc:'0',drm:0,isprevid:0,vw:1280,vh:720,td:216,fn:'opaque.mp4',ul:{ui:[]}}]}};

@@ -42,6 +42,13 @@ type cloudPlaybackLink struct {
 	header         http.Header
 	expires        time.Time
 	archiveExpires time.Time
+	// Quark serves one connection at ~0.1 MiB/s; its driver's ranged parts reach
+	// ~10 MiB/s on Quest. Dropping them made every leased read single-stream.
+	concurrency, partSize int
+}
+
+func (cached cloudPlaybackLink) link() *model.Link {
+	return &model.Link{URL: cached.url, Header: cached.header.Clone(), Concurrency: cached.concurrency, PartSize: cached.partSize}
 }
 
 var cloudPlaybackLeases = struct {
@@ -104,7 +111,7 @@ func (lease *cloudPlaybackLease) link(ctx context.Context, header http.Header) (
 			expires = cached.archiveExpires
 		}
 		if time.Now().Before(expires) {
-			return &model.Link{URL: cached.url, Header: cached.header.Clone()}, nil
+			return cached.link(), nil
 		}
 	}
 	providerHeader := header.Clone()
@@ -147,8 +154,10 @@ func (lease *cloudPlaybackLease) link(ctx context.Context, header http.Header) (
 	if len(lease.links) >= 4 {
 		clear(lease.links)
 	}
-	lease.links[ua] = cloudPlaybackLink{url: link.URL, header: link.Header.Clone(), expires: expires, archiveExpires: archiveExpires}
-	return &model.Link{URL: link.URL, Header: link.Header.Clone()}, nil
+	cached := cloudPlaybackLink{url: link.URL, header: link.Header.Clone(), expires: expires, archiveExpires: archiveExpires,
+		concurrency: link.Concurrency, partSize: link.PartSize}
+	lease.links[ua] = cached
+	return cached.link(), nil
 }
 
 func playback115Proxy(c *gin.Context) {
@@ -188,11 +197,16 @@ func servePlayback115(c *gin.Context, resolve func(string) (driver.Driver, strin
 	}
 	defer link.Close()
 	selectedURL := link.URL
+	parted := link.Concurrency > 0 || link.PartSize > 0
 	if storage.GetStorage().ProxyRange && !archiveRead {
 		link = common.ProxyRange(c, link, lease.file.GetSize())
 	}
-	writer := &common.WrittenResponseWriter{ResponseWriter: c.Writer}
-	if err := common.Proxy(writer, c.Request, link, lease.file); err != nil && !writer.IsWritten() {
+	writer := &playbackStatusWriter{ResponseWriter: c.Writer}
+	err = common.Proxy(writer, c.Request, link, lease.file)
+	if err == nil && writer.failed != 0 {
+		err = cloudnet.HttpStatusCodeError(writer.failed)
+	}
+	if err != nil && !writer.written {
 		// RequestHttp wraps every upstream HTTP error. Preserve its status so
 		// the existing client can distinguish an expired link from a temporary
 		// gateway failure; never expose the wrapped URL or response body.
@@ -202,13 +216,44 @@ func servePlayback115(c *gin.Context, resolve func(string) (driver.Driver, strin
 			status = int(upstream)
 		}
 		reason, message := readDenial(err)
-		if (status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusGone) && reason != "cdn_connections_limited" && reason != "cdn_rate_limited" {
+		// A failed part surfaces only as a cancelled read, so its upstream status
+		// is unknown: drop the ticket and let the client's retry fetch a fresh one.
+		// A seek that abandons the read is not a ticket failure.
+		if parted && c.Request.Context().Err() == nil || (status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusGone) && reason != "cdn_connections_limited" && reason != "cdn_rate_limited" {
 			lease.invalidate(c.Request.Header, selectedURL)
 		}
+		c.Writer.Header().Del("Content-Length") // Set for the parted body that never came.
+		c.Writer.Header().Del("Content-Range")
 		recordReadDiagnostic(status, reason, message, link.Header.Get("User-Agent") == c.Request.Header.Get("User-Agent"))
 		c.Header("X-Thru3D-Upstream-Reason", reason)
 		c.Status(status)
 	}
+}
+
+// OpenList's multi-part path answers some failures with its own error page instead
+// of returning them. Hold that page back (its text can carry the CDN URL) so the
+// lease reports the status like a direct proxy error.
+type playbackStatusWriter struct {
+	http.ResponseWriter
+	failed  int
+	written bool
+}
+
+func (w *playbackStatusWriter) WriteHeader(code int) {
+	if code >= 400 && !w.written {
+		w.failed = code
+		return
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *playbackStatusWriter) Write(p []byte) (int, error) {
+	if w.failed != 0 {
+		return len(p), nil
+	}
+	n, err := w.ResponseWriter.Write(p)
+	w.written = w.written || n > 0
+	return n, err
 }
 
 func playback115Routes(streams *gin.Engine, capability string) {

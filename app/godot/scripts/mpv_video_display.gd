@@ -111,6 +111,7 @@ var _suppressed_packed_mask := false
 ## Native underlay holes erase the virtual scenery; cutouts over scenery use the existing shader path.
 var alpha_over_scenery := false
 var _cinema_alpha_overlay := false
+const SCENE_VR_CUTOUT_PRIORITY := 1 # scene materials keep 0; menus start at 9
 var _scene_overlay: RefCounted
 var _surface_front_only := false
 ## Optional physical ground for screen-down captions; ordinary media has none.
@@ -3880,6 +3881,9 @@ func _sync_scene_overlay() -> void:
 	if _cinema_alpha_overlay and panel.material_override in [material, portrait.material]:
 		if not _scene_overlay: _scene_overlay = preload("res://scripts/video_scene_overlay.gd").new()
 		_scene_overlay.apply(panel, _binding, panel.material_override == portrait.material)
+		# The far sphere sorts before every blended scene surface (glass, leaves, alpha-blended
+		# fabric) and they would draw over the person. Draw it after them, still below menus.
+		if geometry != Geometry.Geometry.FLAT: _scene_overlay.material.render_priority = SCENE_VR_CUTOUT_PRIORITY
 	elif _scene_overlay:
 		_scene_overlay.clear(panel, _binding)
 	_sync_surface_facing()

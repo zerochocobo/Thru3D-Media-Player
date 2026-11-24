@@ -33,7 +33,7 @@ const Thru3DFixtureMiguObservation = (() => {
     else failure = 'post_error';
   }
 
-  function packet(trace, requests, isProtected) {
+  function packet(trace, requests, isProtected, compare = false) {
     const videos = [];
     for (const video of document.querySelectorAll('video')) {
       if (videos.length === 16) break;
@@ -47,7 +47,7 @@ const Thru3DFixtureMiguObservation = (() => {
         blob: video.currentSrc.startsWith('blob:'),
         fixture_migu_visible: Thru3DPlayButton.visible(video),
         fixture_migu_mse_video_codecs: Thru3DFixtureMiguMse.activeVideoCodecs(video),
-        fixture_migu_player_event: Thru3DFixtureMiguEvents.snapshot(video, requests),
+        fixture_migu_player_event: Thru3DFixtureMiguEvents.snapshot(video, requests, compare),
       });
     }
     return {type: 'fixture_migu_observation', videos, trace, attempts, posted, failure,
@@ -62,7 +62,7 @@ const Thru3DFixtureMiguObservation = (() => {
     if (current()) port.postMessage(packet(trace, requests, isProtected));
   }
 
-  function startProbe(token, read) {
+  function startProbe(token, read, transmit = value => browser.runtime.sendNativeMessage('thru3d_video', value), compare = false) {
     if (!current() || typeof token !== 'string' || !/^[a-f0-9]{32}$/.test(token)) return;
     stopProbe?.();
     const route = location.href;
@@ -74,7 +74,7 @@ const Thru3DFixtureMiguObservation = (() => {
       pending = true;
       Promise.resolve().then(() => {
         const [trace, requests, isProtected] = read();
-        return browser.runtime.sendNativeMessage('thru3d_video', {...packet(trace, requests, isProtected), token});
+        return transmit({...packet(trace, requests, isProtected, compare), token});
       }).catch(() => {}).finally(() => { pending = false; });
     };
     const timer = setInterval(tick, 1500);
@@ -87,5 +87,5 @@ const Thru3DFixtureMiguObservation = (() => {
     tick();
   }
 
-  return {report, sent, receiveSnapshot, sample, startProbe};
+  return {report, sent, receiveSnapshot, sample, startProbe, packet};
 })();

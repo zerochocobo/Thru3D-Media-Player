@@ -118,6 +118,13 @@ func check_imported_scene() -> void:
 	var paint := StandardMaterial3D.new(); paint.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED; paint.albedo_color = Color(.45, .4, .35)
 	wall.material_override = paint
 	scene.add_child(wall)
+	# Blended surfaces (glass, leaves, alpha fabric) between the viewer and the 50 m sphere.
+	var glass := MeshInstance3D.new()
+	glass.mesh = QuadMesh.new(); (glass.mesh as QuadMesh).size = Vector2(30, 30)
+	var tint := StandardMaterial3D.new(); tint.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	tint.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA; tint.albedo_color = Color(.2, .3, .9, .5)
+	glass.material_override = tint
+	scene.add_child(glass)
 	main.add_child(scene)
 	main.scene_import._root = scene
 	main.video.alpha_requested = false; main.video.packed_file = true; main.video.packed_alpha = true; main.video.stereo_sbs = true
@@ -125,15 +132,16 @@ func check_imported_scene() -> void:
 	bind_source(true, false)
 	main.video.reset_view()
 	wall.global_transform = main.xr_camera.global_transform * Transform3D(Basis.IDENTITY, Vector3(0, 0, -3))
+	glass.global_transform = main.xr_camera.global_transform * Transform3D(Basis.IDENTITY, Vector3(0, 0, -1.5))
 	main._update_background()
 	check(main.scene_import.movable() and not main._cinema_scene_active(), "The imported scene shows instead of the hall")
 	check(main.video._scene_overlay != null and main.video.panel.material_override == main.video._scene_overlay.material, "A VR cutout draws over the imported scene")
 	for eye in [1, 2]:
 		main.video.set_viewing_eye(eye); main.video._sync_portrait()
 		var actual := await frame("scene-vr-native-alpha-eye" + str(eye))
-		wall.visible = false
+		wall.visible = false; glass.visible = false
 		var reference := await frame("scene-vr-native-alpha-eye" + str(eye) + "-reference")
-		wall.visible = true
+		wall.visible = true; glass.visible = true
 		var person := 0; var shown := 0
 		for y in range(0, actual.get_height(), 2):
 			for x in range(0, actual.get_width(), 2):
@@ -141,7 +149,7 @@ func check_imported_scene() -> void:
 				if ref.g > .9 and ref.r < .1: # the solid body; the soft contour blends with whatever lies behind
 					person += 1
 					if difference(ref, actual.get_pixel(x, y)) < .025: shown += 1
-		check(person > 100 and shown >= person * .98, "eye %d: the VR cutout is not hidden behind the scene's wall (%d/%d)" % [eye, shown, person])
+		check(person > 100 and shown >= person * .98, "eye %d: the VR cutout is neither behind the wall nor under the glass (%d/%d)" % [eye, shown, person])
 	main.video.set_viewing_eye(0)
 	main.video.packed_file = false; main.video.packed_alpha = false; main.video.stereo_sbs = false
 	main.video.geometry = 0; main.video.alpha_requested = true; main.video.alpha_enabled = true

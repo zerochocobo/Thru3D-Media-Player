@@ -83,6 +83,39 @@ test('GIF markers cannot bypass malformed or protected packaged JSON, another so
  }
 });
 
+function lightboxFixture(){
+ const f=gifFixture(),template={localName:'div',parentElement:null,getAttribute:k=>k==='data-testid'?'lightbox-template':null};
+ const content={localName:'div',parentElement:template,getAttribute:k=>k==='data-testid'?'lightbox-template-content':null};
+ f.player.parentElement=content;f.post.isConnected=true;
+ f.document.location.href=page+'#lightbox';f.document.location.hash='#lightbox';
+ f.document.querySelectorAll=s=>s==='shreddit-post'?[f.post]:[];
+ return {...f,content,template};
+}
+
+test('actual lightbox retains the unique explicit post owner and exact observed GIF file',()=>{
+ const f=lightboxFixture(),b=r.binding(f.video,f.requests,f.document,[f.video]);
+ assert.ok(b);assert.equal(b.id,id);assert.equal(b.page,page);assert.equal(b.document,page+'#lightbox');
+ assert.equal(b.source,url);assert.equal(b.binding,'rendered_gif');
+ assert.equal(r.documentPage(page+'#lightbox'),true);assert.equal(r.page(page+'#lightbox').id,id);
+ assert.equal(r.address(url+'#lightbox'),null);
+});
+
+test('a portal cannot infer its post from the URL, accept duplicate owners or borrow another file',()=>{
+ for(const change of [f=>f.document.querySelectorAll=()=>[],f=>f.document.querySelectorAll=()=>[f.post,{...f.post}],
+  f=>f.post.isConnected=false,f=>f.document.location.href=page.replace(id,'1otherid')+'#lightbox',
+  f=>{const get=f.player.getAttribute;f.player.getAttribute=k=>k==='post-id'?'t3_1otherid':get(k);},
+  f=>f.content.getAttribute=()=>null,f=>f.template.getAttribute=()=>null,
+  f=>f.document.location.hash='',f=>f.values.src=url+'&another=1',
+  f=>{const get=f.post.getAttribute;f.post.getAttribute=k=>k==='is-promoted'?'':get(k);},
+  f=>{const get=f.player.getAttribute;f.player.getAttribute=k=>k==='post-promoted'?'true':get(k);}
+ ]){const f=lightboxFixture();change(f);assert.equal(r.binding(f.video,f.requests,f.document,[f.video]),null);}
+ for(const bad of [page+'#other',page+'#Lightbox',page+'#lightbox/','https://www.reddit.com/r/aww/#lightbox'])assert.equal(r.documentPage(bad),false);
+ const f=lightboxFixture();assert.equal(r.binding(f.video,[],f.document,[f.video]),null);
+ assert.equal(r.binding(f.video,f.requests,f.document,[f.video,{...f.video}]),null);
+ const inline=gifFixture();inline.document.location={href:page+'#lightbox',hash:'#lightbox'};
+ assert.equal(r.binding(inline.video,inline.requests,inline.document,[inline.video]),null);
+});
+
 test('timeline controls keep independent current targets and remove overlays and listeners on disposal',()=>{
  const listeners=new Map(),created=[],selected=[];
  const view={addEventListener:(n,f)=>listeners.set(n,f),removeEventListener:(n,f)=>{assert.equal(listeners.get(n),f);listeners.delete(n);}};

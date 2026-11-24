@@ -9,6 +9,19 @@ object DouyinFrameEvidence {
     private val pair = Regex("""paired side=17 surface=(\d+) generation=([1-9]\d*) timestamp_ns=(\d+) pts_us=(\d+) boot_ns=(\d+) surface_rgb=([0-9a-f]{$GRID}) webrender_rgb=([0-9a-f]{$GRID}) bt709=([01])""")
     private data class Capture(val owner: String, val start: Long, val end: Long, val rgb: String)
     private val captures = ArrayDeque<Capture>()
+    private var nextRequest = 0L
+    private var activeRequest = 0L
+
+    // The native log has a draw timestamp but no application request ID.
+    @Synchronized internal fun beginRequest(): Long? {
+        if (activeRequest != 0L) return null
+        activeRequest = ++nextRequest
+        return activeRequest
+    }
+
+    @Synchronized internal fun finishRequest(request: Long) {
+        if (activeRequest == request) activeRequest = 0L
+    }
 
     @Synchronized fun clear() = captures.clear()
 

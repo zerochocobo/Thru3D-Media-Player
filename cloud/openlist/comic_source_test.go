@@ -241,3 +241,33 @@ func TestComicProxyDoesNotEmulateRangesByDownloadingTheWholeArchive(t *testing.T
 		t.Fatal("archive proxy synthesized Range support or retried whole response", w.Code, requests.Load())
 	}
 }
+
+type comicIDOnlyFixture struct {
+	deletionFixture
+	targets []string
+}
+
+func (d *comicIDOnlyFixture) PlayerArchiveTarget(_ context.Context, remote, id string) (model.Obj, *model.Link, error) {
+	d.targets = append(d.targets, id)
+	if id != "9" {
+		return nil, nil, errors.New("archive location expired; refresh the folder")
+	}
+	return &model.Object{ID: id, Name: "ep.mp4", Path: remote, Size: 12}, &model.Link{URL: "https://fixture.invalid/ep"}, nil
+}
+
+// Quark addresses files only by ID: a history open must find it by walking the path,
+// while archive pages (no resolve_path) still refuse to scan.
+func TestColdPathOpenWalksToTheFileIDOnlyWhenAsked(t *testing.T) {
+	d := &comicIDOnlyFixture{}
+	d.MountPath = "/12345678-1234-1234-1234-123456789ccc"
+	d.files = map[string][]model.Obj{"0": {testObj("5", "Shows", true)}, "5": {testObj("9", "ep.mp4", false)}}
+	target := cloudTarget{Mount: d.MountPath, Path: "/Shows/ep.mp4"}
+	if _, e := comicSourceObject(context.Background(), d, target); e == nil || len(d.reads) != 0 {
+		t.Fatal("archive lookup scanned folders", d.reads, e)
+	}
+	target.ResolvePath = true
+	obj, e := comicSourceObject(context.Background(), d, target)
+	if e != nil || obj.GetID() != "9" || strings.Join(d.targets, ",") != ",,9" {
+		t.Fatal("path walk did not reach the file ID", e, d.targets)
+	}
+}

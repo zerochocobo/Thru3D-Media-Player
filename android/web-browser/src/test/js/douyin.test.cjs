@@ -7,7 +7,8 @@ const api=vm.runInContext('Thru3DDouyin',c);
 const id='6961737553342991651',page=`https://www.douyin.com/video/${id}`;
 const url='https://cdn.test/full.mp4?signature=synthetic&quality=720';
 const raw=()=>({aweme_id:id,video:{duration:19782,play_addr:{width:576,height:1024,url_list:[url]}}});
-const player=()=>({videoWidth:576,videoHeight:1024,duration:19.735,currentSrc:url+'&temp=1&__vid=synthetic'});
+const player=()=>({videoWidth:576,videoHeight:1024,duration:19.735,currentSrc:url+'&temp=1&__vid=synthetic',
+ getBoundingClientRect:()=>({left:0,top:0,right:576,bottom:1024,width:576,height:1024})});
 const request=()=>({kind:'file',url:player().currentSrc});
 test('stable detail and modal identity, conflicting/duplicate/foreign IDs rejected',()=>{
  assert.equal(api.page(page).id,id);assert.equal(api.page('https://www.douyin.com/?modal_id='+id).id,id);
@@ -135,7 +136,7 @@ test('content bridge exports readiness only for the bound video and invalidates 
  const owner={parentElement:null,getAttribute:k=>k==='data-e2e-vid'?id:null,'__reactProps$fixture':{awemeInfo:raw()}};
  const main={...player(),getAttribute:()=>null,parentElement:owner,currentSrc:'blob:https://www.douyin.com/synthetic',isConnected:true,readyState:4,currentTime:3,paused:false,ended:false,addEventListener(){},pause(){this.paused=true},play(){this.paused=false}};
  const splash={...main,duration:2.6,videoWidth:1080,videoHeight:1920,currentSrc:'https://static.test/splash.mp4'};
- const context={URL,location:{href:page},navigator:{userAgent:'fixture'},setTimeout(fn){timers.push(fn)},addEventListener(){},
+ const context={URL,innerWidth:1600,innerHeight:1000,location:{href:page},navigator:{userAgent:'fixture'},setTimeout(fn){timers.push(fn)},addEventListener(){},
   performance:{now(){return 0},getEntriesByType(){return [
    ...Array.from({length:600},()=>({name:'https://static.test/file'})),
    {name:'https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id='+id+'&token=private-timing-secret',workerStart:10,initiatorType:'fetch'},

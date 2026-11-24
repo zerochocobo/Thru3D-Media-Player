@@ -48,8 +48,35 @@ func _initialize() -> void:
 	tracker.profile = "/interaction_profiles/bytedance/pico4_controller"; step.call(1)
 	at.call(Vector3(0.6, 1, 0)); step.call(1)
 	check(presence.engaged("left_hand"), "Back on the controller profile, movement engages")
+
+	var joints := XRHandTracker.new()
+	joints.name = "/user/hand_tracker/left"
+	joints.hand = XRPositionalTracker.TRACKER_HAND_LEFT
+	XRServer.add_tracker(joints)
+	var palm_at := func(origin: Vector3, flags: int = XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID) -> void:
+		joints.has_tracking_data = true
+		joints.set_hand_joint_transform(XRHandTracker.HAND_JOINT_PALM, Transform3D(Basis(), origin))
+		joints.set_hand_joint_flags(XRHandTracker.HAND_JOINT_PALM, flags)
+	tracker.set_pose("grip", Transform3D(Basis(), Vector3(0.6, 0.95, 0.05)), Vector3.ZERO, Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_HIGH)
+	palm_at.call(Vector3(0.62, 0.96, 0.07)); step.call(80)
+	check(presence.engaged("left_hand"), "A palm at the grip keeps a still controller engaged")
+	palm_at.call(Vector3(0.62, 0.96, 0.4)); step.call(1)
+	check(presence.engaged("left_hand"), "A hand leaving the controller still gets the idle window")
+	step.call(40)
+	check(not presence.engaged("left_hand"), "A hand away from a still controller returns to gestures")
+	palm_at.call(Vector3(0.62, 0.96, 0.07), 0); step.call(1)
+	check(not presence.engaged("left_hand"), "A palm without a valid position does not hold")
+	palm_at.call(Vector3(0.62, 0.96, 0.07)); joints.has_tracking_data = false; step.call(1)
+	check(not presence.engaged("left_hand"), "An untracked hand does not hold")
+	tracker.invalidate_pose("grip"); palm_at.call(Vector3(0.6, 1, 0.08)); step.call(1)
+	check(presence.engaged("left_hand"), "Without a grip pose the aim pose locates the controller")
+	palm_at.call(Vector3(0.62, 0.96, 0.07))
+	tracker.profile = "/interaction_profiles/khr/simple_controller"; step.call(1)
+	check(not presence.engaged("left_hand"), "A palm on a simple profile does not hold")
+	tracker.profile = "/interaction_profiles/bytedance/pico4_controller"
 	tracker.invalidate_pose("aim"); step.call(1)
 	check(not presence.engaged("left_hand"), "A lost controller pose releases at once")
+	XRServer.remove_tracker(joints)
 	XRServer.remove_tracker(tracker)
 	print("controller presence checks: %d, failures: %d" % [checks, failures.size()])
 	for failure in failures: push_error(failure)

@@ -81,6 +81,11 @@ const Thru3DDouyinCurrent = (() => {
   const read=(video,value)=>{
     try{
     const selected=owner(video,value);if(!selected||video.mediaKeys||video.seeking||video.ended||video.readyState<2)return null;
+    // Feed slides retain decoded VOD elements above a live/unsupported card.
+    // Use geometry rather than document.hidden: native playback retains this
+    // same element in a background document for the paused return.
+    const box=video.getBoundingClientRect();
+    if(!(box.width>0&&box.height>0&&box.bottom>0&&box.right>0&&box.top<innerHeight&&box.left<innerWidth))return null;
     const data=declarations(video,selected.id);
     if(!data||!Number.isFinite(video.duration)||Math.abs(video.duration-data.duration)>Math.max(.5,data.duration*.01)||
       !data.video.some(t=>t.width===video.videoWidth&&t.height===video.videoHeight))return null;

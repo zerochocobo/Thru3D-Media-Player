@@ -9,9 +9,9 @@ function fixture(page='https://www.douyin.com/'){
  const listeners={},video={parentElement:owner,getAttribute:()=>null,closest:()=>null,currentSrc:'blob:https://www.douyin.com/same',isConnected:true,
    videoWidth:1280,videoHeight:720,duration:25,currentTime:3,readyState:4,paused:false,ended:false,seeking:false,
    addEventListener(n,f){(listeners[n]??=[]).push(f)},pause(){this.paused=true},play(){this.paused=false;for(const f of listeners.play||[])f();return Promise.resolve()},
-   getBoundingClientRect:()=>({left:0,top:0,right:1280,bottom:720,width:1280,height:720})};
+   top:0,getBoundingClientRect(){return {left:0,top:this.top,right:1280,bottom:this.top+720,width:1280,height:720}}};
  const body={append(o){o.parentElement=this}},document={nodeType:9,body,querySelectorAll:s=>s==='video'?[video]:[],createElement:()=>({dataset:{},style:{},remove(){this.removed=true}})};
- const context={URL,document,location:{href:page},navigator:{userAgent:'fixture'},setTimeout(fn){timers.push(fn)},
+ const context={URL,document,innerWidth:1600,innerHeight:1000,location:{href:page},navigator:{userAgent:'fixture'},setTimeout(fn){timers.push(fn)},
    addEventListener(n,f){(events[n]??=[]).push(f)},performance:{now:()=>0,getEntriesByType:()=>[]},MutationObserver:class{observe(){}disconnect(){}},
    Thru3DPlayButton:{visible:()=>true,create(doc,overlay,site,clicked){const host={dataset:{},isConnected:true,hidden:false};buttons.push({host,clicked});return {host,interactive:()=>host.isConnected&&!host.hidden,enabled(){},dispose(){host.isConnected=false}}}},
    browser:{runtime:{connect(){const p={onMessage:signal(),onDisconnect:signal(),postMessage(){}};ports.push(p);return p},
@@ -23,7 +23,7 @@ function fixture(page='https://www.douyin.com/'){
  network.onMessage.emit({type:'network',page:context.location.href,candidates:[{kind:'file',url:first},{kind:'file',url:second}],douyin:[]});flush();
  const latest=()=>native.messages.at(-1).videos[0],snapshot=()=>{native.onMessage.emit({action:'snapshot'});return latest()};
  const click=(host=buttons.at(-1).host,trusted=true)=>{for(const fn of events.click||[])fn({isTrusted:trusted,composedPath:()=>[host],preventDefault(){},stopImmediatePropagation(){}});flush();return latest()};
- return {video,native,latest,snapshot,click,buttons,flush,switchOwner(update=true){ownerId=other;if(update)props.awemeInfo=raw(other,second)}};
+ return {video,document,native,latest,snapshot,click,buttons,flush,switchOwner(update=true){ownerId=other;if(update)props.awemeInfo=raw(other,second)}};
 }
 test('trusted current-card click works, preloaded files and same-Blob owner switches cannot reuse an old action',()=>{
  const f=fixture(),before=f.latest();assert.equal(before.douyin_ready,true);assert.equal(before.douyin_request,0);
@@ -34,6 +34,26 @@ test('trusted current-card click works, preloaded files and same-Blob owner swit
  assert.equal(after.douyin.id,other);assert.notEqual(after.network_epoch,before.network_epoch);assert.equal(after.douyin_request,0);
  assert.equal(f.click(old).douyin_request,0);assert.equal(f.click().douyin_request,2);
  assert.equal(f.latest().douyin.observed_file,second);
+});
+
+test('off-screen VOD readiness and its old click retire when the feed presents an unsupported live card',()=>{
+ const f=fixture('https://www.douyin.com/jingxuan?modal_id='+id);
+ assert.equal(f.click().douyin_request,1);
+ const old=f.buttons.at(-1).host;
+ // Quest 2: the old card remains decoded and retains its valid owner/metadata
+ // above the new live card, which has no supported VOD declaration.
+ f.video.top=-901;
+ assert.equal(f.snapshot().douyin_ready,false);
+ assert.equal(f.latest().douyin_request,0);
+ assert.equal(old.isConnected,false);
+ f.video.top=0;
+ assert.equal(f.snapshot().douyin_ready,true);
+ assert.equal(f.latest().douyin_request,0,'Scrolling back cannot revive the earlier trusted click');
+ assert.equal(f.click().douyin_request,2);
+ f.document.hidden=true;
+ f.native.onMessage.emit({action:'pause_media',token:5});f.flush();
+ f.native.onMessage.emit({action:'suspend',keep_pause:true,pause_token:5});
+ assert.equal(f.snapshot().douyin_ready,true,'Retained background visibility alone must not revoke the original bound video');
 });
 test('personal history and favorites require the same rendered owner and fresh click as the home feed',()=>{
  for(const page of ['https://www.douyin.com/user/self?showTab=record',

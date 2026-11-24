@@ -52,7 +52,45 @@ const Thru3DFixtureMiguEvents = (() => {
     events.set(key, state);
   }
 
-  function snapshot(video, requests) {
+  function relationships(declared, requests, id) {
+    function parse(text) {
+      try {
+        if (typeof text !== 'string' || text.length > 16384) return null;
+        const u = new URL(text);
+        return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password && !u.port && !u.hash &&
+          /\.m3u8$/i.test(u.pathname) && u.searchParams.getAll('ProgramID').length === 1 && u.searchParams.get('ProgramID') === id ? u : null;
+      } catch (_) { return null; }
+    }
+    const reference = parse(declared);
+    if (!reference || !Array.isArray(requests)) return [];
+    function compare(text) {
+      const u = parse(text);if (!u) return null;
+      // Firefox Xray DOM iterators may not expose Symbol.iterator in this world.
+      const keySet = new Set();
+      reference.searchParams.forEach((_value, key) => keySet.add(key));
+      u.searchParams.forEach((_value, key) => keySet.add(key));
+      const keys = [...keySet];
+      const crossdomain = u.searchParams.getAll('crossdomain');
+      return {exact: text === declared, same_scheme: u.protocol === reference.protocol,
+        same_host: u.host === reference.host, same_path: u.pathname === reference.pathname,
+        same_query: u.search === reference.search,
+        scheme_only: reference.protocol === 'http:' && text === declared.replace(/^http:/, 'https:'),
+        query_keys_overflow: keys.length > 48,
+        crossdomain_count: crossdomain.length,
+        crossdomain_is_www_migu: crossdomain.length === 1 && crossdomain[0] === 'www.miguvideo.com',
+        crossdomain_is_one: crossdomain.length === 1 && crossdomain[0] === '1',
+        crossdomain_is_document_origin: crossdomain.length === 1 && crossdomain[0] === location.origin,
+        changed_query_keys: keys.filter(k => JSON.stringify(reference.searchParams.getAll(k)) !== JSON.stringify(u.searchParams.getAll(k)))
+          .filter(k => /^[A-Za-z0-9_:-]{1,64}$/.test(k)).slice(0, 48)};
+    }
+    return requests.filter(r => r?.kind === 'hls' && Number.isFinite(r.at) && Date.now() - r.at >= 0 && Date.now() - r.at <= 90000)
+      .slice(-24).flatMap(r => {
+        const final = compare(r.url);if (!final) return [];
+        return [{final, original: compare(r.original_url), age_ms: Math.round(Date.now() - r.at)}];
+      });
+  }
+
+  function snapshot(video, requests, compare = false) {
     if (!refresh()) return null;
     const owner = video.closest('#www-player-wrap1, #www-player-wrap2, #www-player-wrap3');
     if (!owner || document.getElementById(owner.id) !== owner) return null;
@@ -66,9 +104,10 @@ const Thru3DFixtureMiguEvents = (() => {
     return {status: state.status, program_matches: state.programMatches, playurl_success: state.success,
       declared_program_hls: !!url, declared_hls_scheme: scheme,
       exact_observed_hls: !!url && secureHls.some(r => r.url === url || r.original_url === url),
-      https_scheme_only_match: !!schemeOnly && secureHls.some(r => r.url === schemeOnly)};
+      https_scheme_only_match: !!schemeOnly && secureHls.some(r => r.url === schemeOnly),
+      ...(compare ? {owner_selector: '#' + owner.id, relationships: relationships(url, requests, refresh())} : {})};
   }
 
   if (window.top === window && sample()) window.addEventListener('message', observe);
-  return {snapshot};
+  return {snapshot, relationships};
 })();

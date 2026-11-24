@@ -74,10 +74,14 @@ static func from_name(file_name: String) -> Dictionary:
 ## The marker's lens, snapped to the choices the player offers.
 static func from_metadata(file_name: String, metadata: Dictionary) -> Dictionary:
 	var stated := from_name(file_name)
-	var mode := str(metadata.get("video_3d_format", ""))
-	if mode not in ["HalfSideBySide", "FullSideBySide", "HalfTopAndBottom", "FullTopAndBottom"]: return stated
 	var name := file_name.get_file().get_basename()
 	var explicit_axis := _has(name, _SBS.replace("|3d|", "|")) or _has(name, _RL) or _has(name, _TB) or _has(name, _BT) or _has(name, _MONO)
+	# A webpage title can name a 3D game without describing the video's packing.
+	# Keep explicit layout markers and the actual stream/container metadata.
+	if metadata.get("web_handoff", false) and not explicit_axis:
+		stated.erase("stereo")
+	var mode := str(metadata.get("video_3d_format", ""))
+	if mode not in ["HalfSideBySide", "FullSideBySide", "HalfTopAndBottom", "FullTopAndBottom"]: return stated
 	if not explicit_axis:
 		stated.stereo = true
 		stated.top_bottom = mode.ends_with("TopAndBottom")

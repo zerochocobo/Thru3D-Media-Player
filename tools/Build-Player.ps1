@@ -41,7 +41,9 @@ if ($PicoChinaStore -and $AndroidVersionCode -eq 0) { throw 'PICO China requires
 if ($QuestStore -and ($BuildType -ne 'Release' -or $XrVendor -ne 'Quest')) { throw 'QuestStore is limited to QUEST Release builds.' }
 $distributionChannel = if ($PicoChinaStore) { 'pico_cn_store' } elseif ($QuestStore) { 'quest_store' } else { 'standard' }
 if ($UncompressedNativeLibraries -and ($BuildType -ne 'Release' -or $XrVendor -ne 'Quest')) { throw 'UncompressedNativeLibraries is limited to QUEST Release comparison builds.' }
-if ($DouyinPlaybackLog -and -not $QuestStore) { throw 'DouyinPlaybackLog is limited to the dedicated QUEST store diagnostic package.' }
+if ($DouyinPlaybackLog -and -not ($QuestStore -or ($XrVendor -eq 'Pico' -and $BuildType -eq 'Release'))) {
+    throw 'DouyinPlaybackLog requires a dedicated QUEST store or PICO Release diagnostic package.'
+}
 if ($DouyinPlaybackLog -and (-not $GeckoProbeAar -or -not (Test-Path -LiteralPath $GeckoProbeAar -PathType Leaf))) { throw 'The diagnostic build requires the patched ARM64 GeckoProbeAar.' }
 if ($GeckoProbeAar -and -not $DouyinPlaybackLog) { throw 'GeckoProbeAar is only for the diagnostic build.' }
 if ($env:THRU3D_PROBE_MAVEN -or $env:THRU3D_PROBE_COORDINATE) { throw 'Unexpected inherited diagnostic engine override.' }
@@ -174,7 +176,12 @@ if ($DebugApplicationId -or $QuestStore) {
     [IO.File]::WriteAllText($exportPresetsPath, $packagePresets, [Text.UTF8Encoding]::new($false))
 }
 if ($DouyinPlaybackLog) {
-    $ApkName = "Thru3D-QUEST-META-STORE-$appVersion-DOUYIN-FRAME-$releaseStamp.apk"
+    if ($QuestStore) {
+        $ApkName = "Thru3D-QUEST-META-STORE-$appVersion-DOUYIN-FRAME-$releaseStamp.apk"
+    } else {
+        $probePlatform = if ($PicoChinaStore) { 'PICO-CN-STORE' } else { 'PICO' }
+        $ApkName = "Thru3D-$probePlatform-$appVersion-vc$expectedVersionCode-DOUYIN-FRAME-$releaseStamp.apk"
+    }
 }
 if ($IncludeDiagnostics) {
     if ($null -eq $originalExportPresets) { $originalExportPresets = [IO.File]::ReadAllBytes($exportPresetsPath) }

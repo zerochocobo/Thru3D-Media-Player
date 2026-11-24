@@ -37,6 +37,8 @@ type cloudTarget struct {
 	Size     int64  `json:"size"`
 	Modified int64  `json:"modified"`
 	FolderID string `json:"folder_id"`
+	// Archive-stream only: a path-only video or photo open may walk the path once.
+	ResolvePath bool `json:"resolve_path"`
 }
 
 func targetStorage(t cloudTarget, deleting bool) (driver.Driver, string, error) {

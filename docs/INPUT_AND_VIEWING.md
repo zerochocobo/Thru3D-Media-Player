@@ -63,3 +63,7 @@ Steady Edges is enabled by default for Stretch Edges in real-time video 3D; it f
 ## 0.18.8 viewing and library changes
 
 The library folder tree navigates deep paths without changing account binding. Recent items and favorites identify their source account. The image toolbar again offers puzzles. VR cutout subjects are no longer occluded by imported-scene objects in that display mode. PICO USB failure panels offer direct open where supported. QIYU applies display brightness correction to video, photos, browser pages and AirPlay; this runtime-specific correction is not applied to every headset.
+
+## 0.18.8.1 safeguards
+
+A held controller retains priority over nearby optical hand tracking. VR Alpha cutout subjects appear in front of imported-scene blended materials such as glass and foliage in that display mode. Quark cloud startup, seek recovery and image reads address recent regressions; direct opens can recover their location without first browsing the folder, with extra time possible for a first open in a deep path. A bare 3D in a webpage video title no longer determines stereo packing. These fixes do not establish universal provider or headset acceptance.

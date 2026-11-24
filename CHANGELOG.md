@@ -4,6 +4,14 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.18.8.1 — 2026-11-24
+
+- Add a safeguard against unintended controller input loss: prioritize a held controller to reduce hand-tracking misclassification taking over controller input.
+- Fix VR video Alpha cutout subjects being incorrectly hidden by glass, foliage and other blended materials in imported scenes. In this display mode, subjects appear in front of scene objects.
+- Fix a significant Quark cloud read-speed regression in recent versions, improving video startup, recovery after seeking and image loading.
+- Fix misleading expired-cloud-location errors when opening Quark videos or images directly from recent items and similar entries, without first browsing their folder. The first open from a deep folder may take a few extra seconds.
+- A bare “3D” in a web video title no longer determines stereo packing, reducing incorrect playback format selection.
+
 ## 0.18.8 — 2026-11-23
 
 - Add a folder tree to the media library for navigating deep directory paths.

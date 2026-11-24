@@ -22,6 +22,14 @@ func _initialize() -> void:
 	check(Naming.from_name("clip_LR_180_SBS_passthrough_live.mp4") == {"geometry": half, "stereo": true, "alpha": true, "packed": false},
 		"Green passthrough asks for live Alpha")
 	check(Naming.from_name("clip_3D_LR_Screen.mp4") == {"geometry": flat, "stereo": true}, "2D->3D output is a flat SBS screen")
+	var game_title := "A Tale of Two Sonics: How 3D Blast for Sega Genesis Saved the Saturn from Sonic X-treme in 1996"
+	check(not Naming.complete(Naming.from_metadata(game_title, {"web_handoff": true}), 1280, 720, {}, game_title).stereo,
+		"A web game title's bare 3D does not split a normal video between eyes")
+	check(Naming.from_metadata("movie_3D.mp4", {}).stereo, "Existing bare 3D file naming remains supported")
+	check(Naming.from_metadata("movie_3DH.mp4", {"web_handoff": true}).stereo,
+		"An explicit web half-SBS layout remains supported")
+	check(Naming.from_metadata(game_title, {"web_handoff": true, "video_3d_format": "HalfTopAndBottom"}).top_bottom,
+		"Actual web stereo metadata wins over an ordinary title")
 	check(Naming.from_name("clip_alpha.mp4") == {"alpha": true, "packed": false}, "Bare alpha marker: live Alpha")
 	# Player conventions, any case and order.
 	check(Naming.from_name("Movie.VR180.SBS.mkv") == {"geometry": half, "stereo": true}, "Dots separate markers")

@@ -221,14 +221,17 @@ class WebVideoNetworkCaptureTest {
         assertNull(WebVideoArchiveCapture.resolve(p,JSONObject(m.toString()).put("protected",true),resolver(mapOf(file to mp4()))))
         assertNull(WebVideoArchiveCapture.resolve(p,m,resolver(mapOf(file to mp4(protected=true)))))
     }
-    @Test fun streamableUsesOnlyTheSelectedDeclaredClipAndItsOwnRequestHeaders() {
-        val document="https://streamable.com/abc123";val file="https://related.test:8443/abc123.mp4?selection=exact"
-        val other="https://other.test/abc123.mp4?selection=other"
-        val m=media(candidate(file,headers=JSONObject().put("Authorization","file-only")),candidate(other),direct=file)
+    private fun streamableMedia(file: String, other: String="https://other.test/abc123.mp4?selection=other"): JSONObject {
+        val document="https://streamable.com/abc123"
+        return media(candidate(file,headers=JSONObject().put("Authorization","file-only")),candidate(other),direct=file)
             .put("frame",document).put("streamable_source",file).put("streamable_enabled",true)
             .put("streamable_ready",true).put("capture_identity","selected")
             .put("streamable",JSONObject().put("id","abc123").put("page",document).put("source",file).put("revision","a1")
                 .put("width",1920).put("height",1080).put("duration",10).put("expected_duration",10))
+    }
+    @Test fun streamableUsesOnlyTheSelectedDeclaredClipAndItsOwnRequestHeaders() {
+        val document="https://streamable.com/abc123";val file="https://related.test:8443/abc123.mp4?selection=exact"
+        val other="https://other.test/abc123.mp4?selection=other";val m=streamableMedia(file,other)
         val p=WebVideoStreamableCapture.page(document,m)!!;val reads=mutableListOf<Pair<URI,Map<String,String>>>()
         val info=WebVideoStreamableCapture.resolve(p,m,resolver(mapOf(file to mp4()),reads))!!
         val selected=WebVideoFormats.select(p,info){true}
@@ -244,6 +247,43 @@ class WebVideoNetworkCaptureTest {
         }
         assertNull(WebVideoStreamableCapture.resolve(p,m,resolver(mapOf(file to mp4(protected=true)))))
         assertNull(WebVideoStreamableCapture.resolve(p,m,resolver(mapOf(file to mp4(width=1280,height=720)))))
+    }
+    @Test fun streamablePreservesItsExactFileTransportFailureAndCancellation() {
+        val file="https://related.test:8443/abc123.mp4?selection=exact";val m=streamableMedia(file)
+        val p=WebVideoStreamableCapture.page(m.getString("frame"),m)!!
+        val denied=MediaServerFailure("Remote media access denied",403)
+        val missing=MediaServerFailure("Remote media unavailable",404)
+        val timeout=MediaServerFailure("Network read timed out",transportError="SocketTimeoutException")
+        for(error in listOf(denied,missing,timeout,InterruptedException("cancelled"))) {
+            var reads=0
+            val capture=WebVideoNetworkCapture({uri,headers,prefix ->
+                reads++;assertEquals(URI(file),uri);assertEquals("file-only",headers["authorization"]);assertTrue(prefix)
+                throw error
+            },{true})
+            var fallbacks=0
+            assertSame(error,assertThrows(error.javaClass) {
+                WebVideoResolution.select(p,{ WebVideoStreamableCapture.resolve(p,m,capture) },
+                    { fallbacks++;error("A file transport error is not a missing capture") },{true},preserveTransportFailure=true)
+            })
+            assertEquals(1,reads)
+            assertEquals(0,fallbacks)
+        }
+        assertEquals("site_rejected",WebVideoResolver.failureCode(denied,"browser_capture"))
+        assertEquals("video_unavailable",WebVideoResolver.failureCode(missing,"browser_capture"))
+        assertEquals("network_failed",WebVideoResolver.failureCode(timeout,"browser_capture"))
+        assertNull(WebVideoStreamableCapture.resolve(p,m,resolver(mapOf(file to byteArrayOf(1,2,3)))))
+    }
+    @Test fun exactFileInspectionCannotInventOrChooseAnotherObservedResource() {
+        val file="https://related.test/clip.mp4";val other="https://other.test/clip.mp4"
+        for(m in listOf(media(direct=file),media(candidate(other),direct=file),
+            media(candidate(file),candidate(other),direct=file),media(candidate(file,"hls"),direct=file),
+            media(candidate(file),direct=file).put("protected",true))) {
+            var reads=0
+            val capture=WebVideoNetworkCapture({_,_,_ -> reads++;error("No accepted file")},{true})
+            assertNull(capture.resolveExactFile(page,m));assertEquals(0,reads)
+        }
+        val denied=MediaServerFailure("Denied",403)
+        assertNull(WebVideoNetworkCapture({_,_,_ -> throw denied},{true}).resolve(page,media(candidate(file),direct=file)))
     }
     @Test fun declaredInstagramFileUsesItsOriginalMpdUrlAndNeverBorrowsRangeAuthorization() {
         val document="https://www.instagram.com/reel/Chunk8-jurw/";val p=WebVideoPage.parse(document)

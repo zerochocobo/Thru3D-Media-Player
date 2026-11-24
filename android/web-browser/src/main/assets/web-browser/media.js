@@ -132,6 +132,18 @@
     if(age<0||age>30000||saved.page!==location.href||!saved.video.isConnected||saved.video.currentSrc!==saved.source||mediaEpoch.get(saved.video)?.id!==saved.epoch||Thru3DNiconico.page(location.href)!==saved.owner){niconicoReturnPause=null;return false;}
     return video===saved.video;
   };
+  let tencentReturnPause = null;
+  const keepTencentReturnPaused=video=>{
+    const saved=tencentReturnPause;if(!saved)return false;
+    const age=Date.now()-saved.at;
+    if(age<0||age>30000||closed||!tencentEnabled||saved.page!==location.href||!saved.video.isConnected||
+      saved.video.currentSrc!==saved.source||mediaEpoch.get(saved.video)?.id!==saved.epoch||
+      encrypted.has(saved.video)||saved.video.mediaKeys){tencentReturnPause=null;return false;}
+    const state=Thru3DTencent.pageState(document.defaultView?.wrappedJSObject,tencentEnvelopes,location.href);
+    const target=Thru3DTencent.currentBinding(saved.video,state,tencentData,network.filter(c=>c.at>=mediaEpoch.get(saved.video).since),location.href);
+    if(!target||target.id!==saved.owner||target.revision!==saved.revision){tencentReturnPause=null;return false;}
+    return video===saved.video;
+  };
   let douyinReturnPause = null;
   const keepDouyinReturnPaused = video => {
     const saved=douyinReturnPause;if(!saved)return false;
@@ -150,7 +162,7 @@
   // position. Preserve that return intent through buffering, until a real gesture.
   for(const name of ['pointerdown','mousedown','touchstart','keydown'])addEventListener(name,event=>{
     directReturn.gesture(event);
-    if(event.isTrusted){bilibiliReturnPause=null;iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;tiktokReturnPause=null;instagramReturnPause=null;instagramRestore=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;redditReturnPause=null;naverReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;}
+    if(event.isTrusted){bilibiliReturnPause=null;iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;tencentReturnPause=null;tiktokReturnPause=null;instagramReturnPause=null;instagramRestore=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;redditReturnPause=null;naverReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;}
   },true);
   const sameHeldPage = (left, right) => left === right || typeof Thru3DTwitch !== 'undefined' &&
     Thru3DTwitch.handoffPage(left) === Thru3DTwitch.handoffPage(right);
@@ -1283,6 +1295,7 @@
         bilibiliChoice.key === biliLive.key && bilibiliChoice.source === currentSource &&
         bilibiliChoice.epoch === epoch.id && Date.now() - bilibiliChoice.at < 15000;
       const douyin=douyinEnabled&&!protectedMedia&&typeof Thru3DDouyinCurrent!=='undefined'?Thru3DDouyinCurrent.capture(video,location.href,requests):null;
+      if(douyinChoice?.video===video&&!douyin)douyinChoice=null;
       const douyinReady=!!douyin;
       if(douyin)douyinTargets.push({video,source:currentSource,epoch:epoch.id,key:douyin.id+':'+douyin.revision,page:douyin.page,owner:douyin.id,active:douyinOwner?.active===true});
       const douyinClicked=!!douyin&&douyinChoice?.video===video&&douyinChoice.source===currentSource&&douyinChoice.epoch===epoch.id&&douyinChoice.key===douyin.id+':'+douyin.revision&&Date.now()-douyinChoice.at<15000;
@@ -1549,8 +1562,8 @@
           if (odyseeReturnPause?.video === video && odyseeReturnPause.loading) odyseeReturnPause = null;
         });
       }
-      video.addEventListener("play", () => { if (suspended||keepDirectReturnPaused(video)||keepBilibiliReturnPaused(video)||keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)||keepTikTokReturnPaused(video)||keepInstagramReturnPaused(video)||keepTedReturnPaused(video)||keepRedBullReturnPaused(video)||keepStreamableReturnPaused(video)||keepRedditReturnPaused(video)||keepNaverReturnPaused(video)||keepArchiveReturnPaused(video)||keepOdyseeReturnPaused(video)||keepDailymotionReturnPaused(video)) video.pause(); else holdPaused(video); });
-      for(const event of ['loadeddata','playing','seeked'])video.addEventListener(event,()=>{if(keepDirectReturnPaused(video)||keepBilibiliReturnPaused(video)||keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)||keepTikTokReturnPaused(video)||keepInstagramReturnPaused(video)||keepTedReturnPaused(video)||keepRedBullReturnPaused(video)||keepStreamableReturnPaused(video)||keepRedditReturnPaused(video)||keepNaverReturnPaused(video)||keepArchiveReturnPaused(video)||keepOdyseeReturnPaused(video)||keepDailymotionReturnPaused(video))video.pause();});
+      video.addEventListener("play", () => { if (suspended||keepDirectReturnPaused(video)||keepBilibiliReturnPaused(video)||keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)||keepTencentReturnPaused(video)||keepTikTokReturnPaused(video)||keepInstagramReturnPaused(video)||keepTedReturnPaused(video)||keepRedBullReturnPaused(video)||keepStreamableReturnPaused(video)||keepRedditReturnPaused(video)||keepNaverReturnPaused(video)||keepArchiveReturnPaused(video)||keepOdyseeReturnPaused(video)||keepDailymotionReturnPaused(video)) video.pause(); else holdPaused(video); });
+      for(const event of ['loadeddata','playing','seeked'])video.addEventListener(event,()=>{if(keepDirectReturnPaused(video)||keepBilibiliReturnPaused(video)||keepIqiyiReturnPaused(video)||keepDouyinReturnPaused(video)||keepNiconicoReturnPaused(video)||keepTencentReturnPaused(video)||keepTikTokReturnPaused(video)||keepInstagramReturnPaused(video)||keepTedReturnPaused(video)||keepRedBullReturnPaused(video)||keepStreamableReturnPaused(video)||keepRedditReturnPaused(video)||keepNaverReturnPaused(video)||keepArchiveReturnPaused(video)||keepOdyseeReturnPaused(video)||keepDailymotionReturnPaused(video))video.pause();});
       holdPaused(video);
     }
     // Feeds and comments mutate constantly; only a new <video> changes the report.
@@ -1754,7 +1767,7 @@
       send();
     } else if (message?.action === "suspend") {
       instagramRestore=null;
-      bilibiliReturnPause=null;iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;tiktokReturnPause=null;instagramReturnPause=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;redditReturnPause=null;naverReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;
+      bilibiliReturnPause=null;iqiyiReturnPause=null;douyinReturnPause=null;niconicoReturnPause=null;tencentReturnPause=null;tiktokReturnPause=null;instagramReturnPause=null;tedReturnPause=null;redbullReturnPause=null;streamableReturnPause=null;redditReturnPause=null;naverReturnPause=null;archiveReturnPause=null;odyseeReturnPause=null;dailymotionReturnPause=null;
       // A retained native handoff keeps the exact original playing-state lease.
       // Ordinary tab/background suspension still releases its temporary hold.
       if(message.keep_pause!==true||message.pause_token!==pauseLease?.token)pauseLease = null;
@@ -1798,6 +1811,17 @@
         const complete = (retry = false) => { if (server) { server.intent = false; server.restoring = false; } send(); restored(retry); };
         try { Promise.resolve(video.play()).then(() => complete(), () => complete(true)); } catch (_) { complete(true); }
       } else { video.pause(); restored(); }
+      send();
+    } else if (message?.action === "restore_tencent") {
+      const video=[...videos].find(([,id])=>String(id)===message.id)?.[0],epoch=video&&mediaEpoch.get(video);
+      if(!tencentEnabled||!video?.isConnected||epoch?.id!==message.epoch||encrypted.has(video)||video.mediaKeys)return;
+      const state=Thru3DTencent.pageState(document.defaultView?.wrappedJSObject,tencentEnvelopes,location.href);
+      const target=Thru3DTencent.currentBinding(video,state,tencentData,network.filter(c=>c.at>=epoch.since),location.href);
+      if(!target||target.page!==message.page||target.revision!==message.revision||!Number.isFinite(message.time)||message.time<0)return;
+      suspended=false;
+      tencentReturnPause=message.play===true?null:{video,source:video.currentSrc,epoch:epoch.id,page:location.href,owner:target.id,revision:target.revision,at:Date.now()};
+      try{video.currentTime=Math.min(message.time,video.duration);}catch(_){tencentReturnPause=null;return;}
+      if(message.play===true){try{Promise.resolve(video.play()).catch(()=>{});}catch(_){}}else video.pause();
       send();
     } else if (message?.action === "restore_youku") {
       const video=[...videos].find(([,id])=>String(id)===message.id)?.[0],epoch=video&&mediaEpoch.get(video);
@@ -2015,7 +2039,7 @@
       iqiyiReturnPause=null;
       douyinReturnPause=null;douyinChoice=null;for(const b of douyinButtons.values())b.dispose();douyinButtons.clear();
       bilibiliButton?.dispose();bilibiliButton=null;
-      tencentButton?.dispose();tencentButton=null;tencentChoice=null;
+      tencentButton?.dispose();tencentButton=null;tencentChoice=null;tencentReturnPause=null;
     } });
     changed();
   };

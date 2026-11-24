@@ -353,7 +353,7 @@ internal object CloudLibrary {
      * fallback when a path-only open (history, no browsed page) has no provider lookup. */
     private fun locate(client: CloudClient, remote: String, selected: CloudFile?, listFallback: Boolean = true): CloudFile {
         if (client is OpenListBackend.Client) {
-            try { return client.findArchiveForPlayback(remote, selected) }
+            try { return client.findArchiveForPlayback(remote, selected, resolvePath = listFallback) }
             catch (error: CloudFailure) { if (!listFallback || error.reason != "cloud_location_expired") throw error }
         }
         return client.findForPlayback(remote, selected)

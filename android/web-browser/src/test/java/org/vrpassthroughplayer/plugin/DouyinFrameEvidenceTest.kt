@@ -2,6 +2,7 @@ package org.vrpassthroughplayer.plugin
 
 import org.junit.After
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -12,6 +13,22 @@ class DouyinFrameEvidenceTest {
         "I Thru3DGeckoFrame: paired side=17 surface=7 generation=1 timestamp_ns=0 pts_us=$pts boot_ns=$at surface_rgb=$grid webrender_rgb=$rendered bt709=$bt709"
 
     @After fun reset() = DouyinFrameEvidence.clear()
+
+    @Test fun waitsForPreviousCaptureToFinishAcrossDisplayBindings() {
+        val first = requireNotNull(DouyinFrameEvidence.beginRequest())
+        try {
+            assertNull(DouyinFrameEvidence.beginRequest())
+        } finally {
+            DouyinFrameEvidence.finishRequest(first)
+        }
+        val second = requireNotNull(DouyinFrameEvidence.beginRequest())
+        try {
+            DouyinFrameEvidence.finishRequest(first)
+            assertNull(DouyinFrameEvidence.beginRequest())
+        } finally {
+            DouyinFrameEvidence.finishRequest(second)
+        }
+    }
 
     @Test fun acceptsFirstFrameWithZeroPts() {
         DouyinFrameEvidence.record("video=2", 40, 44, pixels)

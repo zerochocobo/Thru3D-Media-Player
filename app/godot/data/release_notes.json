@@ -2,6 +2,63 @@
   "schema": 1,
   "entries": [
     {
+      "version": "0.18.8.1",
+      "date": "2026-11-24",
+      "title": {
+        "zh": "手柄防护、Alpha透视与夸克读取修正",
+        "zh_Hant": "控制器防護、Alpha透視與夸克讀取修正",
+        "en": "Controller safeguards, Alpha cutout and Quark loading fixes",
+        "ja": "コントローラー防護・Alpha切り抜き・Quark読み込みの修正"
+      },
+      "items": [
+        {
+          "id": "held-controller-priority",
+          "text": {
+            "zh": "新增手柄丢失防护：握持手柄时优先保留手柄输入，减少系统手势误判导致手柄操作被抢占的情况。",
+            "zh_Hant": "新增控制器失去輸入的防護：握持控制器時優先保留控制器輸入，減少系統手勢誤判導致控制器操作被搶占的情況。",
+            "en": "Add a safeguard against unintended controller input loss: prioritize a held controller to reduce hand-tracking misclassification taking over controller input.",
+            "ja": "コントローラー入力が意図せず失われることへの防護を追加しました。手に持っているコントローラーを優先し、ハンドトラッキングの誤判定による入力の切り替わりを抑えます。"
+          }
+        },
+        {
+          "id": "vr-alpha-blended-scene-occlusion",
+          "text": {
+            "zh": "修复VR视频的Alpha透视人物在导入场景中被玻璃、树叶等半透明材质错误遮住的问题；此显示方式下，人物优先显示在场景物体前方。",
+            "zh_Hant": "修復VR影片的Alpha透視人物在匯入場景中被玻璃、樹葉等半透明材質錯誤遮住的問題；此顯示方式下，人物優先顯示在場景物件前方。",
+            "en": "Fix VR video Alpha cutout subjects being incorrectly hidden by glass, foliage and other blended materials in imported scenes. In this display mode, subjects appear in front of scene objects.",
+            "ja": "VR動画のAlpha切り抜き人物が、インポートしたシーンのガラスや葉などの半透明マテリアルに誤って隠れる問題を修正しました。この表示方式では、人物をシーン内の物体より手前に表示します。"
+          }
+        },
+        {
+          "id": "quark-media-loading-speed",
+          "text": {
+            "zh": "修复近期版本中夸克网盘读取速度明显下降的问题，改善视频起播、跳转后的恢复和图片加载速度。",
+            "zh_Hant": "修復近期版本中夸克網盤讀取速度明顯下降的問題，改善影片開始播放、跳轉後恢復及圖片載入速度。",
+            "en": "Fix a significant Quark cloud read-speed regression in recent versions, improving video startup, recovery after seeking and image loading.",
+            "ja": "最近のバージョンでQuarkクラウドからの読み込みが大幅に遅くなる問題を修正し、動画の再生開始、シーク後の復帰、画像の読み込みを改善しました。"
+          }
+        },
+        {
+          "id": "quark-direct-history-open",
+          "text": {
+            "zh": "修复从最近播放等入口直接打开夸克视频或图片时，可能误报「云盘位置已过期」的问题，无需先浏览文件所在目录；层级较深的目录首次打开可能需要多等几秒。",
+            "zh_Hant": "修復從最近播放等入口直接開啟夸克影片或圖片時，可能誤報「網盤位置已過期」的問題，無需先瀏覽檔案所在目錄；層級較深的目錄首次開啟可能需要多等幾秒。",
+            "en": "Fix misleading expired-cloud-location errors when opening Quark videos or images directly from recent items and similar entries, without first browsing their folder. The first open from a deep folder may take a few extra seconds.",
+            "ja": "最近の再生などからQuarkの動画や画像を直接開く際、クラウドの場所が期限切れと誤表示される問題を修正しました。先に保存先フォルダーを開く必要はありません。深い階層のフォルダーでは初回に数秒多くかかる場合があります。"
+          }
+        },
+        {
+          "id": "browser-bare-3d-title",
+          "text": {
+            "zh": "网页视频标题中仅出现“3D”时，不再据此自动判断立体排版，减少误选播放格式。",
+            "zh_Hant": "網頁影片標題僅出現「3D」時，不再據此自動判斷立體排列方式，減少誤選播放格式。",
+            "en": "A bare “3D” in a web video title no longer determines stereo packing, reducing incorrect playback format selection.",
+            "ja": "ウェブ動画のタイトルに「3D」とだけある場合、それだけで立体映像の配置を判定しなくなり、再生形式の誤選択を減らしました。"
+          }
+        }
+      ]
+    },
+    {
       "version": "0.18.8",
       "date": "2026-11-23",
       "title": {

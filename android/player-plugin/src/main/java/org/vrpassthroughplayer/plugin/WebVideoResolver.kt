@@ -236,7 +236,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                         val fallback = media?.let { WebVideoBrowserCapture.formats(it, savedCookies) } ?: throw error
                         route = "browser_direct"; fallback
                     }
-                }, capabilities, attempt::check, {
+                }, capabilities, attempt::check, preserveTransportFailure = streamableEnabled, legacyFallback = {
                     if (browserQuality) null else legacy?.also { route = "browser_direct" }
                 })
                 if (browserQuality && !WebVideoNetworkCapture.keepsQuality(initial.video, media))

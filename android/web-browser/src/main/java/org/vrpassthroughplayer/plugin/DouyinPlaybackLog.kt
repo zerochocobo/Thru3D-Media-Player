@@ -11,28 +11,32 @@ import org.vrpassthroughplayer.browser.BuildConfig
 /** Temporary reporter build. Each request describes one visible video in the active tab. */
 class DouyinPlaybackLog {
     companion object {
+        const val CONTROL_URL = "http://127.0.0.1:18769/thru3d-frame-control.html"
         val enabled: Boolean get() = BuildConfig.DOUYIN_PLAYBACK_LOG
-        fun document(url: String) = enabled && (WebBrowserDouyin.document(url) ||
-            url == "http://127.0.0.1:18769/thru3d-frame-control.html")
+        fun document(url: String) = enabled && (WebBrowserDouyin.document(url) || url == CONTROL_URL)
     }
 
     private var lastRequest = -10_000L
-    private var pending = false
-    private var sequence = 0L
+    private var validRequest = 0L
     private var currentOwner = ""
+        set(value) {
+            if (field != value) validRequest = 0L
+            field = value
+        }
     private val attempts = mutableMapOf<String, Int>()
     private var requests = 0
     private val reportedErrors = mutableSetOf<String>()
 
     fun observe(items: JSONArray, display: GeckoDisplay, width: Int, height: Int, tab: Int, nav: Long,
-                stillVisible: () -> Boolean) {
+                window: Int, displayGeneration: Long, control: Boolean, stillVisible: () -> Boolean) {
+        val binding = "tab=$tab nav=$nav window=$window display_gen=$displayGeneration"
         val videos = (0 until minOf(items.length(), 16)).mapNotNull { items.optJSONObject(it) }
         for (item in videos) {
             if (item.optBoolean("protected")) continue
             val state = WebBrowserCaptureDiagnostics.playback(item)
             val code = state.optInt("error_code", 0)
             if (code !in 1..4) continue
-            val key = "tab=$tab nav=$nav video=${item.optLong("id")} epoch=${item.optLong("network_epoch")} html_media_error=$code"
+            val key = "$binding video=${item.optLong("id")} epoch=${item.optLong("network_epoch")} html_media_error=$code"
             if (reportedErrors.size < 16 && reportedErrors.add(key)) {
                 WebBrowserTrail.mark("web.douyin_error", "$key ready=${state.optInt("ready_state", -1)} network=${state.optInt("network_state", -1)}", force = true)
             }
@@ -51,43 +55,43 @@ class DouyinPlaybackLog {
         val video = item.optLong("id", -1)
         val epoch = item.optLong("network_epoch", -1)
         if (video <= 0 || epoch <= 0) { currentOwner = ""; return }
-        val owner = "tab=$tab nav=$nav video=$video epoch=$epoch"
+        val owner = "$binding video=$video epoch=$epoch"
         val ownerChanged = currentOwner != owner
         currentOwner = owner
         val now = SystemClock.uptimeMillis()
         val count = attempts[owner] ?: 0
         if (requests >= 24 || count >= 3) return
-        if (!ownerChanged && now - lastRequest < (if (pending) 5000L else 1000L)) return
+        if (!ownerChanged && now - lastRequest < 1000L) return
+        val request = DouyinFrameEvidence.beginRequest() ?: return
         attempts[owner] = count + 1
         requests++
-        val request = ++sequence
+        validRequest = request
         lastRequest = now
-        pending = true
         val stats = WebBrowserCaptureDiagnostics.playback(item)
         val track = item.optJSONObject("douyin")
         val clipId = track?.optString("active_id")?.takeIf { it.matches(Regex("[0-9]{15,20}")) }
         val revision = track?.optString("revision")?.takeIf { it.matches(Regex("[a-f0-9]{8}")) }
         val selection = if (clipId != null && revision != null) "clip=$clipId track=$revision" else "track=unbound"
-        val detail = "$owner request=$request time_ms=${(item.optDouble("time", 0.0) * 1000).toLong()} " +
+        val detail = "$owner request=$request control=${if (control) 1 else 0} display_size=${width}x$height " +
+            "crop=${rect.left},${rect.top},${rect.right},${rect.bottom} time_ms=${(item.optDouble("time", 0.0) * 1000).toLong()} " +
             "$selection video_size=${item.optInt("width")}x${item.optInt("height")} ready=${stats.optInt("ready_state",-1)} " +
             "decoded=${stats.optLong("decoded_frames",-1)} shown=${stats.optLong("presented_frames",-1)} " +
             "dropped=${stats.optLong("dropped_frames",-1)}"
         fun record(result: String) {
-            if (sequence != request) return
-            pending = false
-            if (stillVisible() && currentOwner == owner) {
+            DouyinFrameEvidence.finishRequest(request)
+            if (validRequest == request && stillVisible() && currentOwner == owner) {
                 WebBrowserTrail.mark("web.douyin_video", "$detail capture_ms=${SystemClock.uptimeMillis()-now} $result", force = true)
             }
         }
         val side = DouyinFrameEvidence.SIDE
         val start = SystemClock.elapsedRealtimeNanos()
-        runCatching { display.screenshot().source(rect).size(side, side).capture() }
-            .onSuccess { result -> result.accept({ bitmap ->
+        runCatching {
+            display.screenshot().source(rect).size(side, side).capture().accept({ bitmap ->
                 if (bitmap == null) record("gecko=empty") else try {
                     val end = SystemClock.elapsedRealtimeNanos()
                     val pixels = IntArray(side * side)
                     bitmap.getPixels(pixels, 0, side, 0, 0, side, side)
-                    if (sequence == request && currentOwner == owner && stillVisible()) {
+                    if (validRequest == request && currentOwner == owner && stillVisible()) {
                         DouyinFrameEvidence.record(detail, start, end, pixels)
                     }
                     val purple = pixels.count { pixel ->
@@ -98,8 +102,8 @@ class DouyinPlaybackLog {
                 } catch (error: RuntimeException) {
                     record("gecko_read_error=${error.javaClass.simpleName}")
                 } finally { bitmap.recycle() }
-            }, { error -> record("gecko_error=${error?.javaClass?.simpleName ?: "unknown"}") }) }
-            .onFailure { record("gecko_error=${it.javaClass.simpleName}") }
+            }, { error -> record("gecko_error=${error?.javaClass?.simpleName ?: "unknown"}") })
+        }.onFailure { record("gecko_error=${it.javaClass.simpleName}") }
     }
 
     private fun centralCrop(item: JSONObject, width: Int, height: Int): Rect? {

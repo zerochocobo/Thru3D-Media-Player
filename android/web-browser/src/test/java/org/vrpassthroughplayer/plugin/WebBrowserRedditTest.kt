@@ -12,12 +12,13 @@ class WebBrowserRedditTest {
         .put("width",480).put("height",854).put("duration",10.942).put("capture_identity","selected")
         .put("reddit_enabled",true).put("reddit_ready",true)
         .put("reddit",JSONObject().put("id","1u8wxnn").put("active_id","1u8wxnn").put("page",page).put("document",frame)
+            .put("owner_mode",if(frame.endsWith("#lightbox"))"lightbox" else "post")
             .put("binding","rendered_post").put("source",source).put("revision","a1")
             .put("width",480).put("height",854).put("duration",10.942).put("expected_duration",10))
         .put("network",JSONArray().put(JSONObject().put("kind","file").put("url",source)))
 
     @Test fun selectedPostCanRemainPausedInDetailOrFeed() {
-        for(frame in listOf(page,"https://www.reddit.com/","https://www.reddit.com/r/aww/")){
+        for(frame in listOf(page,page+"#lightbox","https://www.reddit.com/","https://www.reddit.com/r/aww/")){
             val item=media(frame).put("playing",false)
             assertNotNull(WebBrowserReddit.metadata(item,frame))
             assertSame(item,WebBrowserMediaPolicy.selectedCandidate(listOf(item),"selected"))
@@ -40,8 +41,17 @@ class WebBrowserRedditTest {
     @Test fun supportedDocumentsDoNotIncludeLoginOrLookalikeHosts() {
         assertEquals("1u8wxnn",WebBrowserReddit.page(page))
         for(bad in listOf(page.replace("https:","http:"),page.replace("reddit.com","reddit.com.evil"),
-            page.replace("https://","https://user@"),page+"#other","https://www.reddit.com/login/"))assertFalse(WebBrowserReddit.enabled(bad))
+            page.replace("https://","https://user@"),page+"#other",page+"#Lightbox",page+"#%6cightbox",page+"#lightbox/",
+            "https://www.reddit.com/r/aww/#lightbox","https://www.reddit.com/login/"))assertFalse(WebBrowserReddit.enabled(bad))
         assertTrue(WebBrowserReddit.enabled("https://www.reddit.com/r/aww/new/"))
+        assertEquals("1u8wxnn",WebBrowserReddit.page(page+"#lightbox"))
+        val viewer=media(page+"#lightbox")
+        assertNull(WebBrowserReddit.metadata(viewer,page))
+        viewer.getJSONObject("reddit").put("owner_mode","post")
+        assertNull(WebBrowserReddit.metadata(viewer,page+"#lightbox"))
+        viewer.getJSONObject("reddit").put("owner_mode","lightbox")
+        viewer.getJSONObject("reddit").put("page",page+"#lightbox")
+        assertNull(WebBrowserReddit.metadata(viewer,page+"#lightbox"))
     }
     @Test fun gifDeclarationHasItsOwnExplicitModeAndDecodedDurationWitness() {
         val item=media();val data=item.getJSONObject("reddit")

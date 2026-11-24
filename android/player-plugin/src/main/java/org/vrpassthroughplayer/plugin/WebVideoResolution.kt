@@ -5,10 +5,14 @@ import org.json.JSONObject
 /** Keep fallback lazy: a verified browser representation never initializes the extractor. */
 internal object WebVideoResolution {
     fun select(page: WebVideoPage, capture: () -> JSONObject?, extract: () -> JSONObject,
-        accepts: (WebVideoTrack) -> Boolean, check: () -> Unit = {}, legacyFallback: () -> JSONObject? = { null }): Pair<JSONObject, WebVideoDescriptor> {
+        accepts: (WebVideoTrack) -> Boolean, check: () -> Unit = {}, preserveTransportFailure: Boolean = false,
+        legacyFallback: () -> JSONObject? = { null }): Pair<JSONObject, WebVideoDescriptor> {
         val captured = try {
             capture()?.let { it to WebVideoFormats.select(page, it, accepts) }
-        } catch (_: Exception) { null }
+        } catch (error: Exception) {
+            if (preserveTransportFailure && (error is MediaServerFailure || error is InterruptedException)) throw error
+            null
+        }
         check()
         if (captured != null) return captured
         val info = extract()

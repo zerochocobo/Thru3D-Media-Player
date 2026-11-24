@@ -44,6 +44,7 @@ $inputs = @(
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoDirectFile.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/MpvInputUri.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoResolver.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoResolution.kt',
     'android/player-plugin/src/test/java/org/vrpassthroughplayer/plugin/WebVideoDirectFileDesktopProbe.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoBrowserResourceReader.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoDouyinCapture.kt',

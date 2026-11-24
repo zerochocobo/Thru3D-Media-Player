@@ -286,12 +286,15 @@ internal object OpenListBackend {
             require(origin.host=="127.0.0.1" && origin.scheme=="http")
             return CloudLink(location){emptyMap()}
         }
-        fun findArchiveForPlayback(path: String, selected: CloudFile?): CloudFile {
+        /** [resolvePath]: with no known object, let the core walk the path once (cold video/photo
+         * opens on ID-addressed drives such as Quark); archive pages keep their no-scan lookup. */
+        fun findArchiveForPlayback(path: String, selected: CloudFile?, resolvePath: Boolean = false): CloudFile {
             if (canDelete) return findForPlayback(path,selected)
             absolutePath(path)
             val known=selected?.takeIf {it.id==path && !it.folder}
             val data=call("POST","/archive-stream",JSONObject().put("mount",mount).put("path",path)
-                .put("id",known?.objectId.orEmpty()).put("size",known?.size ?: 0).put("modified",known?.modified ?: -1)).getJSONObject("data")
+                .put("id",known?.objectId.orEmpty()).put("size",known?.size ?: 0).put("modified",known?.modified ?: -1)
+                .put("resolve_path",resolvePath && known==null)).getJSONObject("data")
             val file=CloudFile(data.getString("name"),false,data.getLong("size"),path,
                 objectId=data.getString("id"),modified=data.optLong("modified",-1))
             val stream=data.getString("stream");val origin=URI(stream)

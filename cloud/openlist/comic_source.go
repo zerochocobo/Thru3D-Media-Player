@@ -139,6 +139,14 @@ func comicSourceObject(ctx context.Context, storage driver.Driver, q cloudTarget
 			id = ""
 		}
 		obj, link, err := reader.PlayerArchiveTarget(ctx, q.Path, id)
+		if err != nil && id == "" && q.ResolvePath {
+			// A cold video/photo open (history, nothing browsed) has only the path, and
+			// ID-addressed drivers such as Quark cannot use it. Walk it from the root
+			// once, as the generic proxy did. Archive pages never ask for this scan.
+			if found, e := op.GetUnwrap(ctx, storage, q.Path); e == nil && !found.IsDir() && found.GetID() != "" {
+				obj, link, err = reader.PlayerArchiveTarget(ctx, q.Path, found.GetID())
+			}
+		}
 		if err != nil {
 			return nil, err
 		}

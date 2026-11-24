@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
+	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
 	"github.com/go-resty/resty/v2"
 	"net/http"
 	"strings"
@@ -25,5 +26,7 @@ func (d *QuarkOpen) PlayerArchiveTarget(ctx context.Context, remote, id string) 
 		return nil, nil, errors.New("archive file missing")
 	}
 	obj := &model.Object{ID: id, Path: remote, Name: resp.Data.FileName, Size: int64(resp.Data.Size)}
-	return obj, &model.Link{URL: resp.Data.DownloadURL, Header: http.Header{"Cookie": []string{d.generateAuthCookie()}}}, nil
+	// Same ranged parts as Link: a single Quark connection is throttled to ~0.1 MiB/s.
+	return obj, &model.Link{URL: resp.Data.DownloadURL, Header: http.Header{"Cookie": []string{d.generateAuthCookie()}},
+		Concurrency: 3, PartSize: 10 * utils.MB}, nil
 }

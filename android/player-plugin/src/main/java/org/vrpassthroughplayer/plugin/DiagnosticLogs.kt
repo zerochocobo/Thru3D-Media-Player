@@ -115,7 +115,7 @@ internal object DiagnosticLogs {
             val formatRow = Regex("""(surface=\d+ codec=[A-Za-z0-9_.-]{1,100} stage=(?:input|output)(?: $formatField=-?\d+){0,9}) boot_ms=(\d+)""")
             val formats = logcat(null, "-t", "256", "Thru3DCodecFormat:I", "*:S").lineSequence().mapNotNull { line ->
                 val row = formatRow.matchEntire(line.substringAfter("Thru3DCodecFormat:", "").trim())
-                row?.groupValues?.takeIf { (it[2].toLongOrNull() ?: -1L) >= sessionStart }?.get(1)
+                row?.takeIf { (it.groupValues[2].toLongOrNull() ?: -1L) >= sessionStart }?.value
             }.distinct().toList().takeLast(24)
             append(formats.joinToString("\n").ifEmpty { "(no codec format in buffer)" }).append('\n')
         }

@@ -27,6 +27,7 @@ type playbackProxyFixture struct {
 	links      atomic.Int32
 	rotating   bool
 	expiration *time.Duration
+	partSize   int
 }
 
 func (d *playbackProxyFixture) Get(context.Context, string) (model.Obj, error) {
@@ -47,7 +48,11 @@ func (d *playbackProxyFixture) Link(_ context.Context, obj model.Obj, args model
 	if d.rotating {
 		origin += "?ticket=" + strconv.Itoa(int(ticket))
 	}
-	return &model.Link{URL: origin, Header: http.Header{"User-Agent": []string{"provider-agent"}}, Expiration: d.expiration}, nil
+	link := &model.Link{URL: origin, Header: http.Header{"User-Agent": []string{"provider-agent"}}, Expiration: d.expiration}
+	if d.partSize > 0 {
+		link.Concurrency, link.PartSize = 3, d.partSize
+	}
+	return link, nil
 }
 
 func TestBoundPlaybackProxyColdRangesUseOnlySelectedIdentityEvenWithoutTimestamp(t *testing.T) {
@@ -183,6 +188,61 @@ func TestPlaybackExpiredLinkStatusReachesClientAndNextReadGetsFreshLink(t *testi
 				t.Fatal("fresh link did not recover exact range", recovered.Code, d.links.Load())
 			}
 		})
+	}
+}
+
+// Quark: one connection is throttled; its driver asks for parallel ranged parts.
+func TestPlaybackLeaseKeepsProviderRangedPartsAcrossCachedReads(t *testing.T) {
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 32)
+	var requests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("User-Agent") != "provider-agent" {
+			t.Error("provider header lost")
+		}
+		requests.Add(1)
+		http.ServeContent(w, r, "film.mp4", time.Unix(0, 0), bytes.NewReader(payload))
+	}))
+	defer upstream.Close()
+	d := &playbackProxyFixture{origin: upstream.URL, partSize: 16}
+	file := &model.Object{ID: "9", Name: "film.mp4", Size: int64(len(payload)), Modified: time.Unix(0, 0)}
+	handler, uri, _ := playbackRecoveryHandler(t, d, file)
+	for read := 1; read <= 2; read++ {
+		before := requests.Load()
+		w := playbackRecoveryRequest(handler, uri)
+		if w.Code != 206 || !bytes.Equal(w.Body.Bytes(), payload[42:104]) {
+			t.Fatal("parted read lost the exact range", read, w.Code)
+		}
+		if requests.Load()-before != 4 {
+			t.Fatal("62 bytes in 16-byte parts must take four upstream ranges", read, requests.Load()-before)
+		}
+	}
+	if d.links.Load() != 1 {
+		t.Fatal("second read did not reuse the cached ticket", d.links.Load())
+	}
+}
+
+func TestPlaybackPartedFailureDropsTicketSoTheRetryRecovers(t *testing.T) {
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 32)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/expired" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("private error body"))
+			return
+		}
+		http.ServeContent(w, r, "film.mp4", time.Unix(0, 0), bytes.NewReader(payload))
+	}))
+	defer upstream.Close()
+	d := &playbackProxyFixture{origin: upstream.URL + "/expired", partSize: 16}
+	file := &model.Object{ID: "9", Name: "film.mp4", Size: int64(len(payload)), Modified: time.Unix(0, 0)}
+	handler, uri, lease := playbackRecoveryHandler(t, d, file)
+	w := playbackRecoveryRequest(handler, uri)
+	if w.Code < 400 || w.Body.Len() != 0 || w.Header().Get("Content-Length") != "" || len(lease.links) != 0 {
+		t.Fatal("parted failure leaked a body or kept the ticket", w.Code, w.Body.Len(), len(lease.links))
+	}
+	d.origin = upstream.URL + "/valid"
+	recovered := playbackRecoveryRequest(handler, uri)
+	if recovered.Code != 206 || !bytes.Equal(recovered.Body.Bytes(), payload[42:104]) || d.links.Load() != 2 {
+		t.Fatal("retry did not recover with a fresh ticket", recovered.Code, d.links.Load())
 	}
 }
 

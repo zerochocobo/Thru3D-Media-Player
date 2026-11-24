@@ -17,7 +17,7 @@ def engine_hash(archive, prefix):
     with archive.open(prefix + "/" + LIBRARY) as lib:
         digest = hashlib.sha256()
         tail = b""
-        markers = {b"Thru3DGeckoFrame", b"webrender_rgb=%s", b"pts_us=%"}
+        markers = {b"Thru3DGeckoFrame", b"webrender_rgb=%s bt709=%d", b"pts_us=%"}
         while chunk := lib.read(1024 * 1024):
             digest.update(chunk)
             window = tail + chunk
