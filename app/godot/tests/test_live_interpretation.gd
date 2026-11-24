@@ -103,6 +103,27 @@ func run() -> void:
 	var key: String = item.Protocol.cache_key("Hello", "en", "zh-Hans")
 	item.translator.cache[key] = {"text": "你好"}
 	check(item.text_at(6) == "你好\nHello", "Translation above original")
+	item.report.position = 6.0; item.report.playing = false; item.report.age = 0.0; item._received_at = Time.get_ticks_msec()
+	item._observe_shown(item.report.cues); item._observe_shown(item.report.cues)
+	check(item.translator.stats.due.size() == 1 and item.translator.stats.due[0][0] == 1, "A line shown translated is counted once")
+	var later := {"start": 6.5, "end": 8.0, "text": "Bye"}
+	item.report.cues = [cue, later]; item.report.position = 7.0; item._observe_shown(item.report.cues)
+	check(item.translator.stats.due.back()[0] == 0 and item._missed.size() == 1, "A line shown untranslated is remembered")
+	item.translator.cache[item.Protocol.cache_key("Bye", "en", "zh-Hans")] = {"text": "再见"}; item._observe_shown(item.report.cues)
+	check(item._missed.is_empty() and item.translator.stats.miss_wait_ms.size() == 1, "Its late translation time is recorded")
+	var soon := {"start": 9.5, "end": 11.0, "text": "Soon"}
+	item.report.position = 6.0; item.report.cues = [cue, soon]
+	var due: Dictionary = item._due_untranslated(item.report.cues)
+	check(due.size() == 1 and due.has(item.Protocol.cache_key("Soon", "en", "zh-Hans")), "An untranslated line within 4 s is due")
+	item.report.position = 4.0
+	check(item._due_untranslated(item.report.cues).is_empty(), "Translated current lines and later lines are not due")
+	item.translator._session = {"ig": "kept"}
+	video.media.session_id += 1; item._poll_at = Time.get_ticks_msec() + 60000; item.tick()
+	check(item.translator.cache.has(key) and item.translator._session.get("ig") == "kept", "A seek's new player session keeps translations and the Bing session")
+	item.WorkGate.legacy = true; video.media.session_id += 1; item.tick(); item.WorkGate.legacy = false
+	check(item.translator.cache.is_empty(), "Legacy scheduling cleared them on every player session")
+	item.translator.cache[key] = {"text": "\u4f60\u597d"}
+	item.report.cues = [cue]
 	check(Style.display_text(item.text_at(6), 1) == "你好" and Style.display_text(item.text_at(6), 2) == "Hello", "Shared line selection chooses translation or original")
 	item.report.state = "preparing"; item.report.phase = "models"; item.report.model_progress = 25
 	check(item.preparation_caption().ends_with("25%"), "Model verification shows measured progress")

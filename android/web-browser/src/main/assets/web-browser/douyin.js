@@ -1,5 +1,6 @@
 /* Passive Douyin adapter: public video metadata plus this document's observed
- * requests. No API replay, page-world execution or account-storage access. */
+ * requests. No API replay or account-storage access; the one page-visible change is
+ * installVideoCanvasBypass below. */
 const Thru3DDouyin = (() => {
   'use strict';
   // Firefox 135+ exposes the original numeric token to JSON revivers. Never
@@ -181,5 +182,35 @@ const Thru3DDouyin = (() => {
       object_request_matches:files.filter(r=>{try{const key=objectPath(new URL(r.url));return !!key&&tracks.some(({t})=>t.urls.some(u=>objectPath(new URL(u))===key));}catch(_){return false;}}).length,
       request_id_matches:files.filter(r=>p&&sourceId(r.url)===p.id).length};
   };
-  return {parse,page,documentPage,address,matches,sourceId,normalize,binding,owner,merge,direct,diagnostics};
+  // GeckoView cannot hand WebGL a hardware-decoded video frame: its SurfaceTexture stays attached to the
+  // compositor, the upload fails and Gecko fills the texture with its failure colour (51, 0, 51). Douyin's
+  // enhancement canvas over low-resolution clips then covers the video in dark purple. Uploads of a video
+  // are skipped here and their canvas hidden, so the video beneath shows. Re-check when GeckoView changes:
+  // research/gecko_frame_diagnostics/webgl_video_upload_check.py.
+  const installVideoCanvasBypass = scope => {
+    if (typeof exportFunction !== 'function' || !documentPage(scope.location.href)) return false;
+    try {
+      let installed = false;
+      for (const name of ['WebGLRenderingContext', 'WebGL2RenderingContext']) {
+        const target = scope.wrappedJSObject?.[name]?.prototype, own = scope[name]?.prototype;
+        if (!target || !own) continue;
+        for (const method of ['texImage2D', 'texSubImage2D']) {
+          const original = own[method];
+          if (typeof original !== 'function') continue;
+          target[method] = exportFunction(function () {
+            let video = false;
+            for (const value of arguments) {
+              if (value && typeof value === 'object' && value.nodeType === 1 && value.localName === 'video') video = true;
+            }
+            if (!video || !documentPage(scope.location.href)) return Reflect.apply(original, this, arguments);
+            const style = this.canvas?.style;
+            if (style && style.getPropertyValue('visibility') !== 'hidden') style.setProperty('visibility', 'hidden', 'important');
+          }, scope);
+          installed = true;
+        }
+      }
+      return installed;
+    } catch (_) { return false; }
+  };
+  return {parse,page,documentPage,address,matches,sourceId,normalize,binding,owner,merge,direct,diagnostics,installVideoCanvasBypass};
 })();

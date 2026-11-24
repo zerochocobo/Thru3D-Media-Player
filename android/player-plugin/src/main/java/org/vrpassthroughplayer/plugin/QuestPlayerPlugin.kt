@@ -588,6 +588,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
 
     @UsedByGodot fun clear_media_server_cache(): Boolean {
         val app = activity?.applicationContext ?: return false
+        artworkPlayer.stop()
         return !closed.get() && runCatching { MediaServerPosterCache.clear(app.cacheDir) }.getOrDefault(false)
     }
     /** [leftovers]: only what a previous process left behind, at start; kept depth maps stay. */
@@ -812,6 +813,16 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun account_web_frame(id: Int): ByteArray = if (closed.get()) ByteArray(0) else accounts.webFrame(id)
     @UsedByGodot fun account_web_action(id: Int, action: String, x: Float, y: Float, text: String) { if (!closed.get()) accounts.webAction(id, action, x, y, text) }
     @UsedByGodot fun media_cloud_remove(id: String): Int = if (closed.get()) -1 else sources.cloudRemove(id)
+    private val artworkPlayer = MediaArtworkPlayer()
+    @UsedByGodot fun media_artwork_start(path: String, edge: Int): Int {
+        val app = activity?.applicationContext ?: return 0
+        PhotoMemory.attach(app)
+        return artworkPlayer.start(app.cacheDir, path, edge)
+    }
+    @UsedByGodot fun media_artwork_frame(id: Int): String = artworkPlayer.poll(id)
+    @UsedByGodot fun media_artwork_pixels(id: Int, token: Long): ByteArray = artworkPlayer.pixels(id, token)
+    @UsedByGodot fun media_artwork_upload(id: Int, token: Long, texture: Int): Boolean = artworkPlayer.upload(id, token, texture)
+    @UsedByGodot fun media_artwork_stop(id: Int) = artworkPlayer.stop(id)
     @UsedByGodot fun media_server_request(json: String): Int = if (closed.get()) -1 else sources.serverRequest(json)
     @UsedByGodot fun media_server_cancel(id: Int) { sources.serverCancel(id) }
     @UsedByGodot fun media_server_playback(json: String) { if (!closed.get()) sources.serverPlayback(json) }
@@ -852,6 +863,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
     /** Video 2D->3D steady edges (with edge stretching): depth contours follow the picture's own. */
     @UsedByGodot fun set_depth_edge_steady(enabled: Boolean) { mpv.setDepthSteady(enabled); WebBrowserDepthBridge.steadyChanged() }
+    @UsedByGodot fun set_depth_edge_fade(enabled: Boolean) { mpv.setDepthFade(enabled); WebBrowserDepthBridge.steadyChanged() }
     @UsedByGodot fun set_depth_text_protection(enabled: Boolean) { mpv.setTextProtection(enabled) }
     @Volatile private var rvmModel = "fast"
     /** "fast" (default) or "quality"; Alpha sessions opened afterwards use it. */
@@ -1235,12 +1247,13 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
 
     // Android can resume before Godot registers the plugin's native signals.
     override fun onGodotSetupCompleted() { activity?.let { CrashRecords.start(it); WebBrowserDepthBridge.install(it); ExternalInputProbe.install(it) { payload -> if (signalsReady && !closed.get()) emitSignal("external_input", payload) } }; WebBrowserTextureBridge.install { runOnRenderThread(it) }; signalsReady = true; clearPhotoCache(true); runCatching { panoramaOriginals.prepare() } }
-    override fun onMainPause() { CrashRecords.foreground(false); if (!closed.get()) { sources.serverPlaybackPaused(); webBrowser.action("pause"); listeningTasks.foreground(false); readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
+    override fun onMainPause() { artworkPlayer.stop(); CrashRecords.foreground(false); if (!closed.get()) { sources.serverPlaybackPaused(); webBrowser.action("pause"); listeningTasks.foreground(false); readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
     override fun onMainResume() { CrashRecords.foreground(true); if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; listeningTasks.foreground(true); readingPages.foreground(true); dlnaForeground(true); systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
     override fun onMainDestroy() { close() }
     override fun onGodotTerminating() { close() }
 
     private fun close() {
+        artworkPlayer.close()
         CrashRecords.cleanExit()
         webVideoResolver.close()
         bilibiliDanmaku.close()

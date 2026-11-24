@@ -10,7 +10,8 @@ class Platform extends RefCounted:
 	var writes := []
 	func subtitle_tasks_request(json: String) -> bool: commands.append(JSON.parse_string(json)); return true
 	func subtitle_tasks_status() -> String: return '{"jobs":[],"loaded":true}'
-	func subtitle_translation_work() -> String: return '{}'
+	var work := '{}'
+	func subtitle_translation_work() -> String: return work
 	func subtitle_translation_store(json: String) -> bool: writes.append(JSON.parse_string(json)); return true
 	func set_mpv_listening(_id: int, _json: String) -> bool: return true
 class Video extends Node3D:
@@ -66,6 +67,18 @@ func run() -> void:
 	check(not Gate.acquire(a, 2), "Foreground never overlaps an active HTTP batch")
 	Gate.release(b); check(not Gate.acquire(b, 0) and Gate.acquire(a, 2), "Waiting foreground work takes priority")
 	Gate.release(a)
+	video.platform.work = JSON.stringify({"id": "film", "cache_key": "film-key", "cache_instance": 3, "language": "ja", "target": "zh-Hans", "cues": [{"text": "台詞"}]})
+	tasks._translate(); tasks.translator.failed[tasks.translator.entries[0].key] = Time.get_ticks_msec(); tasks.translator.consecutive_failures = 4
+	var before: int = video.platform.commands.size()
+	tasks._translate()
+	check(video.platform.commands.size() == before, "A few failed film batches wait for the provider instead of stopping the task")
+	tasks.translator.consecutive_failures = 5; tasks._translate()
+	check(video.platform.commands.back().operation == "translation_error" and tasks.translator.consecutive_failures == 0, "A lasting outage asks for a manual retry")
+	Gate.legacy = true; tasks.translator.observe_sentences([{"text": "台詞"}], "ja", "zh-Hans")
+	tasks.translator.failed[tasks.translator.entries[0].key] = Time.get_ticks_msec(); before = video.platform.commands.size(); tasks._translate()
+	check(video.platform.commands.size() == before + 1, "Legacy scheduling stops the film at the first failure")
+	Gate.legacy = false; video.platform.work = '{}'; tasks._translate(); Gate.owner = null; Gate.next_at = 0; Gate.demand.clear()
+	check(video.listening.translator.request_timeout == 4.0 and tasks.translator.request_timeout == 12.0, "Live subtitles time out sooner than film tasks")
 	var cues := [{"text": "hello", "translation": "你好"}]
 	var client: RefCounted = video.listening.translator
 	Tasks.seed(cues, client, "en", "zh-Hans")

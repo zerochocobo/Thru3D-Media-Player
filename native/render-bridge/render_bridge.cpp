@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include "../rvm/near_edge_fade.h"
 #include "../rvm/photo_depth.h"
 #include "../rvm/photo_rotation.h"
 #include <unordered_map>
@@ -1141,6 +1142,9 @@ struct Bridge final {
     // fold back, and the warp's hole fill reach across the silhouette (fill); both repeat the
     // subject's contour beside it. slot.near keeps the model's map.
     float near_limit_shift = 0.f;
+    // Flat frame edges (near_edge_fade.h), optional: with the limit, the map is held near the screen plane
+    // (edge_plane, the convergence) at the picture's left and right edges.
+    bool edge_fade = false; float edge_plane = 0.35f;
     std::vector<unsigned char> limited_near(const std::vector<unsigned char>& packed) const {
         const float half = near_limit_shift * 0.5f * content_rect[2] * input_width;
         if (half <= 0.f) return packed;
@@ -1152,6 +1156,7 @@ struct Bridge final {
         const int cy = std::clamp(static_cast<int>(std::lround(content_rect[1] * h)), 0, h - 1);
         const int cw = std::clamp(static_cast<int>(std::lround(content_rect[2] * w)), 1, w - cx);
         const int ch = std::clamp(static_cast<int>(std::lround(content_rect[3] * h)), 1, h - cy);
+        if (edge_fade) quest::near_edge_fade(plane.data(), w, cx, cy, cw, ch, near_limit_shift, edge_plane);
         quest::photo_limit_gradient(plane.data(), w, h, cx, cy, cw, ch, half);
         std::vector<unsigned char> result(packed);
         for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
@@ -2934,6 +2939,14 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_steadyEdges(JNIEnv* env, jclass, jlong id, jboolean enabled) {
     try {
         std::lock_guard<std::mutex> guard(registry_mutex); find(id).steady = enabled == JNI_TRUE; return JNI_TRUE;
+    } catch (const std::exception& e) { error(env, e.what()); return JNI_FALSE; }
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_edgeFade(JNIEnv* env, jclass, jlong id, jboolean enabled, jfloat plane) {
+    try {
+        if (!std::isfinite(plane) || plane < 0.f || plane > 1.f) throw std::runtime_error("Invalid edge fade plane");
+        std::lock_guard<std::mutex> guard(registry_mutex); auto& bridge = find(id);
+        bridge.edge_fade = enabled == JNI_TRUE; bridge.edge_plane = plane; return JNI_TRUE;
     } catch (const std::exception& e) { error(env, e.what()); return JNI_FALSE; }
 }
 extern "C" JNIEXPORT jint JNICALL

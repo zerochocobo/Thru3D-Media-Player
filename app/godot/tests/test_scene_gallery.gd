@@ -46,7 +46,9 @@ func _run() -> void:
 	_check(not gallery.request("whole", "high") and gallery.states.get("whole", {}).get("state") == Gallery.FAILED, "Unconfigured downloads fail before creating a job")
 	gallery.settle("whole")
 	gallery.sites = configured
-	_check(gallery.snapshot({"whole": "abc"})[0].id == "abc" and gallery.snapshot({})[0].state == "", "A card knows the library entry holding its scene")
+	var cards := gallery.snapshot({"whole": "abc"})
+	_check(cards.map(func(card): return card.slug) == ["gone", "slow", "spoiled", "resumed", "whole"], "Gallery cards show the last scene added first")
+	_check(cards.back().id == "abc" and cards.back().state == "", "A card knows the library entry holding its scene")
 	DirAccess.make_dir_recursive_absolute(gallery.directory)
 
 	_check(gallery.request("whole", "high") and not gallery.request("whole", "high"), "A scene is asked for once")

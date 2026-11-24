@@ -288,3 +288,40 @@ test('oversize, invalid JSON, HTTP errors and disconnect release all response fi
   assert.equal(f.timers.size,0);assert.equal(f.last().douyin.length,0);
  }
 });
+test('WebGL uploads of a video are skipped and their canvas hidden only on the official document',()=>{
+ const calls=[];
+ const style=()=>{const values={};return {values,getPropertyValue:k=>values[k]?.[0]||'',setProperty:(k,v,p)=>{values[k]=[v,p];}};};
+ const make=()=>{
+  const own={prototype:{texImage2D(...a){calls.push(['image',this,a]);return 'done';},texSubImage2D(...a){calls.push(['sub',this,a]);}}};
+  return {own,page:{prototype:{texImage2D:own.prototype.texImage2D,texSubImage2D:own.prototype.texSubImage2D}}};
+ };
+ const gl1=make(),gl2=make();
+ const scope={location:{href:'https://www.douyin.com/?recommend=1'},WebGLRenderingContext:gl1.own,WebGL2RenderingContext:gl2.own,
+  wrappedJSObject:{WebGLRenderingContext:gl1.page,WebGL2RenderingContext:gl2.page}};
+ const guarded=vm.createContext({URL,exportFunction:fn=>fn});
+ vm.runInContext(fs.readFileSync(path.join(root,'douyin.js'),'utf8'),guarded);
+ const install=vm.runInContext('Thru3DDouyin',guarded).installVideoCanvasBypass;
+ assert.equal(api.installVideoCanvasBypass(scope),false,'without exportFunction nothing is replaced');
+ assert.equal(install({...scope,location:{href:'https://www.douyin.com.evil/'}}),false);
+ assert.equal(gl1.page.prototype.texImage2D,gl1.own.prototype.texImage2D);
+ assert.equal(install(scope),true);
+ const video={nodeType:1,localName:'video'},image={nodeType:1,localName:'img'},pixels=new Uint8Array(4);
+ const context={canvas:{style:style()}};
+ // Other sources reach the engine unchanged, with the caller's context and arguments.
+ assert.equal(gl1.page.prototype.texImage2D.call(context,3553,0,6408,6408,5121,image),'done');
+ gl2.page.prototype.texSubImage2D.call(context,3553,0,0,0,1,1,6408,5121,pixels);
+ assert.deepEqual(calls.map(c=>[c[0],c[1]===context,c[2].length]),[['image',true,6],['sub',true,9]]);
+ assert.deepEqual(context.canvas.style.values,{});
+ // A video source is not uploaded, and the canvas it would have painted is hidden once.
+ for(const target of [gl1.page.prototype,gl2.page.prototype]){
+  assert.equal(target.texImage2D.call(context,3553,0,6408,6408,5121,video),undefined);
+  assert.equal(target.texSubImage2D.call(context,3553,0,0,0,6408,5121,video),undefined);
+ }
+ assert.equal(calls.length,2);
+ assert.deepEqual(context.canvas.style.values,{visibility:['hidden','important']});
+ // An offscreen context has no element to hide; a navigation away from the site restores the upload.
+ assert.equal(gl1.page.prototype.texImage2D.call({canvas:{}},3553,0,6408,6408,5121,video),undefined);
+ scope.location.href='https://example.com/';
+ assert.equal(gl1.page.prototype.texImage2D.call(context,3553,0,6408,6408,5121,video),'done');
+ assert.equal(calls.length,3);
+});

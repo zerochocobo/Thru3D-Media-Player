@@ -290,5 +290,102 @@ func run() -> void:
 	menu._activate(Menu.PHOTO_COMIC_VOICE)
 	check(not menu.choices.targets.values().any(func(field): return field.get("key") == "comic_language"), "Translated speech panel follows target instead of exposing conflicting language picker")
 	menu.free()
+	scheduling()
 	print("Comic translation: %d checks, %d failures" % [checks,failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+## 2026-11-24 scheduling fixes; Gate.legacy restores the previous behaviour.
+func bing_ready(client: FakeTranslator) -> void:
+	client.enabled = true; client._active = true
+	client._session = {"ig": "a", "iid": "b", "key": "1", "token": "t"}; client._expires = Time.get_ticks_msec() + 600000
+	client._cooldown.Bing = 0; client._cooldown.Edge = 0
+func sentences(count: int, offset: int = 0) -> Array:
+	var rows := []
+	for i in count: rows.append({"text": "台詞%d" % (i + offset)})
+	return rows
+func scheduling() -> void:
+	var Gate = Translator.WorkGate
+	var owner := Node3D.new(); root.add_child(owner)
+	var live := FakeTranslator.new(owner, false); live.priority = 2; live.request_spacing_ms = 2000
+	Gate.owner = null; Gate.next_at = 0; Gate.demand.clear(); Gate.legacy = false
+	bing_ready(live); live.observe_sentences(sentences(4), "ja", "zh-Hans"); live._next_at = 0; live.tick(true)
+	check(live.sent.back().stage == "bing" and live.current.size() == 4, "Four live lines go to Bing in one marked request")
+	live._reply(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), response([{"translations":[{"text":"changed markers","to":"zh-Hans"}]}]), live.generation, "bing")
+	check(live.jobs.size() == 2 and live.jobs[0].size() == 2 and live.jobs[1].size() == 2 and live.current.is_empty(), "Marker mismatch halves the batch for Bing")
+	check(int(live._cooldown.Bing) <= Time.get_ticks_msec() and live.stats.mismatch == 1 and live.stats.split == 1, "Marker mismatch does not cool Bing down")
+	live._next_at = 0; Gate.next_at = 0; live.tick(true)
+	check(live.sent.back().stage == "bing" and live.current.size() == 2, "Halves are asked from Bing again")
+	var half := ""
+	for i in 2: half += Protocol.marker(i) + "
+译%d
+
+" % i
+	live._reply(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), response([{"translations":[{"text":half + "⟦T3DEND⟧","to":"zh-Hans"}]}]), live.generation, "bing")
+	check(live.cache.size() == 2 and live._mismatches == 0 and live.stats.ok.bing == 1, "A matching half is cached and clears the mismatch count")
+	check(live.stats.line_ms.size() == 2 and live.stats.gate_wait_ms.size() == 2 and live.stats.batch_ms.bing.size() == 1, "Line, slot and batch timings are recorded without text")
+	check(Gate.next_at - Time.get_ticks_msec() <= 500 and live._next_at - Time.get_ticks_msec() > 1500, "Shared slot separates requests by 0.5 s; the client keeps its own spacing")
+	var lone: Array = [live.jobs[0][0]]
+	live.jobs = [lone]; live._next_at = 0; Gate.next_at = 0; live.tick(true)
+	check(not "T3D" in live.sent.back().body and "text=" + str(lone[0].text).uri_encode() in live.sent.back().body, "A lone line goes to Bing without markers")
+	live._reply(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), response([{"translations":[{"text":"x","to":"zh-Hans"}]}]), live.generation, "bing")
+	check(live.cache.has(lone[0].key) and live.cache[lone[0].key].text == "x", "A lone line's reply is its translation")
+	live.cache.erase(lone[0].key); live.jobs = [lone]; live._next_at = 0; Gate.next_at = 0; live.tick(true)
+	live._reply(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), response([{"translations":[]}]), live.generation, "bing")
+	check(live.sent.back().stage == "edge" and int(live._cooldown.Bing) <= Time.get_ticks_msec(), "An unusable lone reply goes to Edge without cooling Bing")
+	live._reply(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), response([{"translations":[{"text":"y","to":"zh-Hans"}]}]), live.generation, "edge")
+	live.jobs = [live.jobs[0]] if not live.jobs.is_empty() else [[{"text": "next", "source": "ja", "target": "zh-Hans", "key": "next"}]]
+	Gate.next_at = 0; live.tick(true)
+	check(live.current.is_empty() and live._next_at - Time.get_ticks_msec() > 1500, "Without a due line the client keeps its 2 s spacing")
+	live.urgent = true; live._finished_at = Time.get_ticks_msec() - 600; live.tick(true)
+	check(not live.current.is_empty(), "A due untranslated line only waits for the 0.5 s request gap")
+	live.urgent = false; live.reset(true)
+	bing_ready(live); live._mismatches = 2
+	live.observe_sentences(sentences(4, 10), "ja", "zh-Hans"); live._next_at = 0; Gate.owner = null; Gate.next_at = 0; live.tick(true)
+	live._reply(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), response([{"translations":[{"text":"again","to":"zh-Hans"}]}]), live.generation, "bing")
+	check(int(live._cooldown.Bing) > Time.get_ticks_msec() and live.sent.back().stage == "edge", "A third mismatched batch in a row cools Bing down")
+	live._reply(HTTPRequest.RESULT_SUCCESS, 503, PackedStringArray(), PackedByteArray(), live.generation, "edge")
+	check(live.consecutive_failures == 1 and live.stats.failures.edge_503 == 1, "Failed batches are counted per provider and status")
+	live.reset(true)
+	check(live.consecutive_failures == 0, "Reset clears the failure run")
+	var background := FakeTranslator.new(owner, false); background.priority = 0; background.request_spacing_ms = 2000
+	Gate.owner = null; Gate.next_at = 0; Gate.demand.clear()
+	bing_ready(background); background.observe_sentences(sentences(3, 20), "ja", "zh-Hans"); background._next_at = 0; background.tick(true)
+	check(background.current.size() == 3 and Gate.owner.get_ref() == background, "Background batch holds the slot")
+	bing_ready(live); live.observe_sentences(sentences(1, 30), "ja", "zh-Hans"); live._next_at = 0; live.tick(true)
+	check(live.current.is_empty() and background.current.size() == 3, "Live waits briefly behind an in-flight background batch")
+	Gate.demand[live.get_instance_id()].since = Time.get_ticks_msec() - 2000
+	var stale: int = background.generation
+	live.tick(true)
+	check(live.current.size() == 1 and Gate.owner.get_ref() == live, "Live takes the slot after waiting 1.5 s")
+	check(background.current.is_empty() and background.jobs[0].size() == 3 and background.generation != stale and background.stats.preempted == 1, "The background batch is put back for later")
+	background._reply(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), response([]), stale, "bing")
+	check(background.jobs[0].size() == 3 and background.cache.is_empty(), "The cancelled background reply is ignored")
+	Gate.release(live); live.reset(true); background.reset(true)
+	Gate.legacy = true; Gate.owner = null; Gate.next_at = 0; Gate.demand.clear()
+	bing_ready(background); background.observe_sentences(sentences(3, 40), "ja", "zh-Hans"); background._next_at = 0; background.tick(true)
+	bing_ready(live); live.observe_sentences(sentences(1, 50), "ja", "zh-Hans"); live._next_at = 0; live.tick(true)
+	Gate.demand[live.get_instance_id()].since = Time.get_ticks_msec() - 5000; live.tick(true)
+	check(live.current.is_empty() and background.current.size() == 3, "Legacy scheduling never preempts")
+	background._reply(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), response([{"translations":[{"text":"broken","to":"zh-Hans"}]}]), background.generation, "bing")
+	check(int(background._cooldown.Bing) > Time.get_ticks_msec(), "Legacy scheduling cools Bing on the first mismatch")
+	var outputs := []
+	for i in 3: outputs.append({"translations":[{"text":"译%d" % i,"to":"zh-Hans"}]})
+	background._reply(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), response(outputs), background.generation, "edge")
+	check(background.cache.size() == 3 and Gate.next_at - Time.get_ticks_msec() > 1500, "Legacy scheduling shares each client's spacing")
+	Gate.legacy = false; Gate.owner = null; Gate.next_at = 0; Gate.demand.clear()
+	live.reset(true); bing_ready(live); live.observe_sentences(sentences(5, 60), "ja", "zh-Hans")
+	var due_keys := {live.entries[1].key: true, live.entries[3].key: true}
+	live.urgent_keys = due_keys; live.urgent = true; live._next_at = 0; live.tick(true)
+	check(live.sent.back().stage == "edge" and live.current.size() == 2 and live.current.all(func(entry): return due_keys.has(entry.key)), "Due lines go to Edge as one batch")
+	check(live.jobs.size() == 1 and live.jobs[0].size() == 3 and live.stats.urgent_edge == 1, "Lines translated ahead stay queued for Bing")
+	live._reply(HTTPRequest.RESULT_SUCCESS, 200, PackedStringArray(), response([{"translations":[{"text":"甲","to":"zh-Hans"}]},{"translations":[{"text":"乙","to":"zh-Hans"}]}]), live.generation, "edge")
+	live.urgent_keys = {}; live.urgent = false; live._next_at = 0; Gate.next_at = 0; live.tick(true)
+	check(live.sent.back().stage == "bing" and live.current.size() == 3, "The remaining lines then go to Bing")
+	live.reset(true); bing_ready(live); live.observe_sentences(sentences(2, 70), "ja", "zh-Hans")
+	live.urgent_keys = {live.entries[0].key: true}; live._cooldown.Edge = Time.get_ticks_msec() + 60000; live._next_at = 0; Gate.owner = null; Gate.next_at = 0; live.tick(true)
+	check(live.sent.back().stage == "bing", "A cooling Edge leaves due lines on Bing")
+	live.reset(true); bing_ready(live); live.observe_sentences(sentences(2, 80), "ja", "zh-Hans"); Gate.legacy = true
+	live.urgent_keys = {live.entries[0].key: true}; live._next_at = 0; Gate.owner = null; Gate.next_at = 0; live.tick(true)
+	check(live.sent.back().stage == "bing", "Legacy scheduling sends due lines to Bing too")
+	Gate.legacy = false; Gate.owner = null; Gate.next_at = 0; Gate.demand.clear(); live.urgent_keys = {}
+	live.close(); background.close(); owner.free()

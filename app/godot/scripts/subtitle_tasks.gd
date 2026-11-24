@@ -4,6 +4,7 @@ const Privacy := preload("res://scripts/media_privacy.gd")
 const Memory := preload("res://scripts/file_listening_memory.gd")
 const Protocol := preload("res://scripts/comic_translation_protocol.gd")
 const Client := preload("res://scripts/comic_translation.gd")
+const WorkGate := preload("res://scripts/translation_work_gate.gd")
 const I18n := preload("res://scripts/i18n.gd")
 var video: Node3D
 var translator: RefCounted
@@ -94,7 +95,9 @@ func _translate() -> void:
 	if rows.any(func(row): return Protocol.normalize(str(row.text), source).length() > 1000):
 		command({"operation": "translation_error", "id": _work.id}); translator.reset(); return
 	translator.observe_sentences(rows, source, target)
-	if translator.failing():
+	# Failed lines retry once their provider cools down; only a lasting outage
+	# stops the film for a manual retry.
+	if (WorkGate.legacy and translator.failing()) or translator.consecutive_failures >= 5:
 		command({"operation": "translation_error", "id": _work.id}); translator.reset(); return
 	translator.tick(true)
 	store(video.platform, _work, rows, translator, _sent)

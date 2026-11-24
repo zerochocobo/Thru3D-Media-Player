@@ -29,7 +29,10 @@ func _run() -> void:
 	var movie := {"id": "movie", "uri": "medialib://display-test/scene/movie", "title": "ABC-501 A complete server title", "basename": "abc-501_180-cd1.mp4", "has_cover": false}
 	b.entries = [movie]; b.total = 1; b.set_display("list", 1)
 	check(button(menu, Menu.ROW_BASE).get_children().any(func(node): return node is Label3D and node.text == movie.title), "List renders the complete Emby title rather than its basename")
-	check(menu._tips[Menu.ROW_BASE] == movie.title + "\n" + movie.basename, "Tooltip retains both server title and original filename")
+	check(not menu._tips.has(Menu.ROW_BASE), "A fully visible title needs no tooltip")
+	var long_title: String = movie.title.repeat(12)
+	b.entries = [movie.merged({"title": long_title}, true)]; menu.refresh()
+	check(menu._tips.get(Menu.ROW_BASE) == long_title + "\n" + movie.basename, "A truncated title retains both server title and original filename in its tooltip")
 	b.entries = [movie.merged({"title": "  "}, true)]; menu.refresh()
 	check(button(menu, Menu.ROW_BASE).get_children().any(func(node): return node is Label3D and node.text == movie.basename), "Blank title falls back to the filename")
 	b.query = {"mode": "folders", "collection_type": "movies", "parent_id": "parent", "tags": ["keep"]}

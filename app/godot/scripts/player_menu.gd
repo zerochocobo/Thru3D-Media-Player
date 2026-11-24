@@ -231,8 +231,9 @@ var _picture_panel_bounds := Rect2()
 var _picture_drawn: Array = []
 ## The 2D to 3D settings fold under one header above Alpha's, closed each time like it.
 const DEPTH_GROUP := 462
-const DEPTH_GROUP_SETTINGS := ["video_auto_3d", "depth_render", "depth_edge_steady"]
+const DEPTH_GROUP_SETTINGS := ["video_auto_3d", "depth_render", "depth_edge_steady", "depth_edge_fade"]
 const DepthEdgeSteady := preload("res://scripts/depth_edge_steady.gd")
+const DepthEdgeFade := preload("res://scripts/depth_edge_fade.gd")
 const PICTURE_QUALITY_HINT := "Sharper picture, with gamma and saturation adjustable. Uses more battery and the headset runs warmer. Turn off 2D to 3D first. The picture pauses briefly when switching."
 const PICTURE_QUALITY_BLOCKERS := {"alpha": "Unavailable while AI portrait passthrough is on", "3d": "Unavailable while 2D to 3D is on",
 	"alpha_background": "Unavailable for AI portrait passthrough while Keep background during passthrough is on", "alpha_flat": "Unavailable for AI portrait passthrough on flat video", "alpha_memory": "Unavailable for AI portrait passthrough while Memory is set to Saver",
@@ -261,12 +262,12 @@ const TABS := ["Playback", "Settings", "Info"]
 const OPERATIONS := [
 	["recent", "previous_video", "play", "next_video", "alpha", "projection", "stereo", "stop", "recenter", "mute", "subtitles",
 		"audio", "depth"],
-	["color_grade", "loop", "seek_mode", "hdr_to_sdr", "stereo_view", "video_auto_3d", "depth_render", "depth_edge_steady",
+	["color_grade", "loop", "seek_mode", "hdr_to_sdr", "stereo_view", "video_auto_3d", "depth_render", "depth_edge_steady", "depth_edge_fade",
 		"alpha_keep_background", "show_status_info", "show_fps"],
 	["capabilities"]]
-const HEADINGS := ["Picture quality & color", "Playback mode", "Video time positioning", HdrToSdr.TITLE, "Stereo viewing", VideoAuto3D.TITLE, "2D to 3D effect", DepthEdgeSteady.TITLE,
+const HEADINGS := ["Picture quality & color", "Playback mode", "Video time positioning", HdrToSdr.TITLE, "Stereo viewing", VideoAuto3D.TITLE, "2D to 3D effect", DepthEdgeSteady.TITLE, DepthEdgeFade.TITLE,
 	"Keep background during passthrough", "Show status information", "Show FPS"]
-const SETTING_ICONS := ["adjust", "loop", "history", "quality", "eyes", "depth", "depth", "depth", "keep_background", "status_info", "frame_rate"]
+const SETTING_ICONS := ["adjust", "loop", "history", "quality", "eyes", "depth", "depth", "depth", "depth", "keep_background", "status_info", "frame_rate"]
 ## Plain on/off tiles: display choices of the player itself, on offer whatever is playing or cast.
 const SWITCH_SETTINGS := ["alpha_keep_background", "show_status_info", "show_fps"]
 const PLAYBACK_MODE_ICONS := {"single": "play", "repeat_one": "repeat_one", "sequence": "sequence", "repeat_all": "repeat_all", "shuffle": "shuffle"}
@@ -2701,7 +2702,7 @@ func _choice_tile(target: int) -> bool:
 func _settings_key() -> String:
 	return str([_state.get("cast", {})]) + str([_state.get("source_uri", ""), _state.get("has_video", false),
 		_state.get("portrait_requested", false), _state.get("flat_passthrough_requested", false), _state.get("portrait_auto", true), _state.get("portrait_enhanced", false),
-		_state.get("playback_mode", "single"), _state.get("seek_mode", "speed"), _state.get("hdr_to_sdr", HdrToSdr.ON), _state.get("depth_render", "stretch"), _state.get("depth_edge_steady", DepthEdgeSteady.DEFAULT), _state.get("depth_text_protection", true), _state.get("stereo", false), _state.get("geometry", 0),
+		_state.get("playback_mode", "single"), _state.get("seek_mode", "speed"), _state.get("hdr_to_sdr", HdrToSdr.ON), _state.get("depth_render", "stretch"), _state.get("depth_edge_steady", DepthEdgeSteady.DEFAULT), _state.get("depth_edge_fade", DepthEdgeFade.DEFAULT), _state.get("depth_text_protection", true), _state.get("stereo", false), _state.get("geometry", 0),
 		_state.get("show_status_info", true), _state.get("show_fps", false), _state.get("alpha_keep_background", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false), _state.get("stereo_focus_mode", 0), _state.get("subtitle_follow_view", false),
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
 		_state.get("immersive_adjustment_gauges", true), _state.get("video_auto_3d", false),
@@ -2745,6 +2746,10 @@ func _setting_choices(operation: String) -> Dictionary:
 			# With Fill gaps the snapped steps follow picture texture and shred (photo_fill_sheet.py): stretch only.
 			if _state.get("depth_render", "stretch") != "stretch": return {}
 			return DepthEdgeSteady.choice(bool(_state.get("depth_edge_steady", DepthEdgeSteady.DEFAULT)))
+		"depth_edge_fade":
+			# Set with the stretch limit of the near map, like steady edges: stretch only.
+			if _state.get("depth_render", "stretch") != "stretch": return {}
+			return DepthEdgeFade.choice(bool(_state.get("depth_edge_fade", DepthEdgeFade.DEFAULT)))
 		"depth_render":
 			return {"key": "depth_render", "value": _state.get("depth_render", "stretch"), "choices": [
 				{"value": "fill", "label": "Fill gaps", "hint": "Fills the background behind moving edges"},
@@ -3254,7 +3259,7 @@ func _enabled(operation: String) -> bool:
 		"depth": return has_video and not _state.get("spatial_video", false) and int(_state.get("geometry", 0)) == 0 and not _state.get("stereo", false)
 		"depth_strength": return _can_depth()
 		"depth_render": return has_video
-		"depth_edge_steady": return has_video and _state.get("depth_render", "stretch") == "stretch"
+		"depth_edge_steady", "depth_edge_fade": return has_video and _state.get("depth_render", "stretch") == "stretch"
 		"depth_text_protection": return false
 		"subtitles": return has_video
 		"capabilities": return _state.get("capabilities_available", false)
@@ -3283,6 +3288,7 @@ func _caption_text(operation: String) -> String:
 		"depth_text_protection": return "On" if _state.get("depth_text_protection", true) else "Off"
 		"video_auto_3d": return "On" if _state.get("video_auto_3d", false) else "Off"
 		"depth_edge_steady": return "On" if _state.get("depth_edge_steady", DepthEdgeSteady.DEFAULT) else "Off"
+		"depth_edge_fade": return "On" if _state.get("depth_edge_fade", DepthEdgeFade.DEFAULT) else "Off"
 		"hdr_to_sdr": return "Off" if _state.get("hdr_to_sdr", HdrToSdr.ON) == HdrToSdr.OFF else "On"
 		"depth_render": return "Fill gaps" if _state.get("depth_render", "stretch") == "fill" else "Stretch edges"
 		"stop": return "Close video"
@@ -3384,7 +3390,7 @@ var _adjust_cleared_generation := -1
 const HOLD_CHOICE_KEYS := ["picture_upscale", "picture_denoise",
 	# Subtitle options that change how the captions look or sit on the picture.
 	"subtitle_follow_view", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line", "subtitle_below_screen",
-	"depth_edge_steady"]
+	"depth_edge_steady", "depth_edge_fade"]
 ## Subtitle sliders that move or restyle the captions on the picture clear the menu the same way.
 const HOLD_SUBTITLE_KEYS := ["subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_position", "subtitle_distance",
 	"subtitle_flat_position", "subtitle_size", "subtitle_transparency"]

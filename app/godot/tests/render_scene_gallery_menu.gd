@@ -50,10 +50,13 @@ func _run() -> void:
 	library.directory = output.path_join("library-" + str(Time.get_ticks_usec()))
 	viewport.add_child(library)
 	var pictures := Pictures.new()
+	pictures.add_child(pictures.gallery)
 	pictures.gallery.load_catalog()
 	viewport.add_child(pictures)
 	var gallery: Node = pictures.gallery
 	_check(gallery.rows.size() >= 9, "The catalogue that ships with the app loads")
+	var newest_first: Array = gallery.rows.duplicate()
+	newest_first.reverse()
 	var installed := {}
 	var scenes := {"rows": [], "active": "", "pending": "", "busy": false, "error": "", "tier": "high", "baked": false, "screen_light": 0.7,
 		"movement": "fixed", "floor_ready": true, "stage": "", "stage_progress": -1.0, "own_sky": false, "backdrop": "", "play_dim": 1.0}
@@ -75,14 +78,14 @@ func _run() -> void:
 	_check(menu._buttons.any(func(button): return button.target == menu.GALLERY), "The scene page offers the gallery")
 	menu._activate(menu.GALLERY)
 	_check(menu.view == "gallery" and menu._cards.size() == GalleryView.PER_PAGE, "The gallery shows eight scenes a page")
-	_check(commands.back() == ["gallery_anchor", str(gallery.rows[0].slug)], "Where the viewer is in the gallery is noted by its first scene")
+	_check(commands.back() == ["gallery_anchor", str(newest_first[0].slug)], "Where the viewer is in the gallery is noted by its first scene")
 	await save_frame(viewport, camera, menu, output.path_join("gallery.png"))
 
-	var first := str(gallery.rows[0].slug)
-	var second := str(gallery.rows[1].slug)
-	var third := str(gallery.rows[2].slug)
-	var fourth := str(gallery.rows[3].slug)
-	var fifth := str(gallery.rows[4].slug)
+	var first := str(newest_first[0].slug)
+	var second := str(newest_first[1].slug)
+	var third := str(newest_first[2].slug)
+	var fourth := str(newest_first[3].slug)
+	var fifth := str(newest_first[4].slug)
 	_press(menu, first)
 	_check(commands.back() == ["gallery_get", first], "Pressing a scene asks for it")
 	# One on show, one here, one coming down, one waiting, one that failed, one withdrawn.
@@ -104,11 +107,11 @@ func _run() -> void:
 	var sent := commands.size()
 	_press(menu, fifth)
 	_check(commands.size() == sent and menu._tips[menu.CARD + 4] == I18n.t("Withdrawn for copyright or other reasons"), "A withdrawn scene says so and does nothing")
-	_check(menu._tips[menu.CARD + 1].contains(str(gallery.rows[1].author)) and menu._tips[menu.CARD + 1].contains(str(gallery.rows[1].license)), "Each card credits the work, its author and the licence")
+	_check(menu._tips[menu.CARD + 1].contains(str(newest_first[1].author)) and menu._tips[menu.CARD + 1].contains(str(newest_first[1].license)), "Each card credits the work, its author and the licence")
 
 	# The page is kept: across leaving the gallery, closing the menu, and restarting the app.
 	menu._activate(menu.NEXT)
-	_check(menu.page == 1 and commands.back() == ["gallery_anchor", str(gallery.rows[GalleryView.PER_PAGE].slug)], "Turning the page moves the noted place")
+	_check(menu.page == 1 and commands.back() == ["gallery_anchor", str(newest_first[GalleryView.PER_PAGE].slug)], "Turning the page moves the noted place")
 	await save_frame(viewport, camera, menu, output.path_join("gallery-page-2.png"))
 	menu.navigate_back()
 	_check(menu.view == "scene", "Back returns to the scene page")
@@ -121,7 +124,7 @@ func _run() -> void:
 	var later := Menu.new()
 	later.library = library
 	later.scene_import = pictures
-	anchor[0] = str(gallery.rows[GalleryView.PER_PAGE * 2 + 1].slug)
+	anchor[0] = str(newest_first[GalleryView.PER_PAGE * 2 + 1].slug)
 	later.state_provider = menu.state_provider
 	viewport.add_child(later)
 	later.open("global")
@@ -136,7 +139,7 @@ func _run() -> void:
 		menu.refresh()
 		await save_frame(viewport, camera, menu, output.path_join("gallery-%s.png" % language))
 		var named: Array = gallery.snapshot({}).map(func(card): return GalleryView.title(card))
-		_check(not named.has("") and (language == "en" or named != gallery.rows.map(func(row): return row.title)), "Scenes have names in " + language)
+		_check(not named.has("") and (language == "en" or named != newest_first.map(func(row): return row.title)), "Scenes have names in " + language)
 	I18n.use("zh")
 	_check(gallery.rows.all(func(row): return not str(row.title_zh).is_empty() and not str(row.title_zh_hant).is_empty() and not str(row.title_ja).is_empty()), "No scene is missing a name in any language")
 

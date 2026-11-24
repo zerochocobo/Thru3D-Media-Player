@@ -140,6 +140,8 @@ func snapshot(installed: Dictionary) -> Array:
 		cards.append({"slug": item.slug, "title": item.title, "title_zh": item.title_zh, "title_zh_hant": item.title_zh_hant, "title_ja": item.title_ja, "work": item.work, "author": item.author, "license": item.license, "bytes": bytes,
 			"id": str(installed.get(item.slug, "")), "state": kind, "error": str(state.get("error", "")),
 			"progress": snappedf(progress(item.slug), 0.01) if kind == LOADING else 0.0})
+	# New scenes are appended to the catalogue. Show them first across all pages.
+	cards.reverse()
 	return cards
 
 func _process(_delta: float) -> void:

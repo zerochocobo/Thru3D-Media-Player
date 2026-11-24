@@ -18,6 +18,7 @@ const FILTER_NAMES := {"genres": "Genres", "tags": "Tags", "performers": "Perfor
 const Gallery := preload("res://scripts/media_server_gallery.gd")
 var gallery: RefCounted = Gallery.new(self)
 var backdrop := preload("res://scripts/media_server_backdrop.gd").new(self)
+var artwork := preload("res://scripts/media_server_animation.gd").new(self)
 var actor_name := ""
 var menu: Node
 var view := "servers"
@@ -126,6 +127,7 @@ func _init(owner: Node) -> void:
 			if value is Array: favorites[id] = value.filter(func(item): return item is Dictionary and str(item.get("uri", "")).begins_with("medialib://" + str(id) + "/scene/")).slice(0, 1000)
 
 func cancel() -> void:
+	artwork.clear()
 	settings_open = false
 	detail_actions = ""
 	menu.system_text_input.cancel("media_server_search")
@@ -141,6 +143,7 @@ func cancel() -> void:
 	busy = false
 
 func clear_poster_memory() -> void:
+	artwork.clear_cache()
 	for id in pending.keys():
 		if pending[id].action != "cover": continue
 		if menu.platform: menu.platform.media_server_cancel(id)
@@ -204,6 +207,7 @@ func _append_unique(target: Array, incoming: Array) -> int:
 	return added
 
 func receive(id: int, payload: String) -> bool:
+	if artwork.receive(id, payload): return true
 	if not pending.has(id): return false
 	var expected: Dictionary = pending[id]; pending.erase(id)
 	var data: Variant = JSON.parse_string(payload)
@@ -953,10 +957,12 @@ func _keyboard_action(target: int) -> bool:
 func _navigation() -> Array:
 	return ["home", "all"] + capabilities.get("navigation", []).slice(0, 3)
 
-func cover(row: Dictionary) -> Texture2D:
+func cover_node(row: Dictionary) -> Dictionary:
 	var node: Dictionary = row.get("scene", row.get("container_node", {}))
-	if media_content(): node = display_node(node)
-	return image_texture(node)
+	return display_node(node) if media_content() else node
+
+func cover(row: Dictionary) -> Texture2D:
+	return image_texture(cover_node(row))
 
 func _image_request(node: Dictionary) -> Dictionary:
 	var image: Dictionary = node.get("cover_image", {})
@@ -1017,10 +1023,11 @@ func tile(target: int, row: Dictionary, center: Vector2) -> void:
 	menu._button(target, "", center, Vector2(0.30, 0.27), true, "", false, menu._list)
 	var node: MeshInstance3D = menu._buttons.back().node
 	var picture: MeshInstance3D = menu._quad(Vector2(0.278, 0.192), Vector3(0, 0.026, 0.003), menu.TILE, 12); node.add_child(picture)
-	var texture := cover(row)
+	var artwork_node := cover_node(row)
+	var texture := image_texture(artwork_node)
 	if texture:
 		var material = menu._material(Color.WHITE, 12); material.albedo_texture = texture; picture.material_override = material; _fit_picture(picture, texture, Vector2(0.278, 0.192))
-		gallery.style_hover_picture(picture)
+		gallery.style_hover_picture(picture, artwork_node)
 	else:
 		var glyph: MeshInstance3D = menu._icon(str(row.get("icon", "video")), Vector3(0, 0.026, 0.006), 0.14 if row.has("server_account") else 0.064, menu.MUTED, node)
 		# Keep the mark above the picture panel in the ordered transparent UI pass.
@@ -1040,10 +1047,11 @@ func _media_tile(target: int, row: Dictionary, center: Vector2) -> void:
 	var card: MeshInstance3D = menu._buttons.back().node
 	var area := size - Vector2(0.016, 0.065)
 	var picture: MeshInstance3D = menu._quad(area, Vector3(0, 0.026, 0.004), menu.TILE, 12); card.add_child(picture)
-	var texture := cover(row)
+	var artwork_node := cover_node(row)
+	var texture := image_texture(artwork_node)
 	if texture:
 		var material = menu._material(Color.WHITE, 12); material.albedo_texture = texture; picture.material_override = material; _fit_picture(picture, texture, area)
-		gallery.style_hover_picture(picture)
+		gallery.style_hover_picture(picture, artwork_node)
 	else: menu._icon(str(row.get("icon", "video")), Vector3(0, 0.026, 0.006), 0.055, menu.MUTED, card)
 	var title: Label3D = menu._label(menu._fit_title(str(row.title), "", size.x - 0.025, 20), Vector3(0, -size.y / 2 + 0.034, 0.006), 20, card)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1274,7 +1282,9 @@ func _draw_home() -> void:
 		var node: MeshInstance3D = menu._buttons.back().node
 		var frame: MeshInstance3D = menu._quad(Vector2(0.18, 0.14), Vector3(-0.50, 0, 0.004), menu.TILE, 12); node.add_child(frame)
 		var texture := cover(row)
-		if texture: var material = menu._material(Color.WHITE, 12); material.albedo_texture = texture; frame.material_override = material; _fit_picture(frame, texture, Vector2(0.18, 0.14))
+		if texture:
+			var material = menu._material(Color.WHITE, 12); material.albedo_texture = texture; frame.material_override = material; _fit_picture(frame, texture, Vector2(0.18, 0.14))
+			menu._buttons.back()["artwork"] = artwork.binding(cover_node(row), frame, texture)
 		else: menu._icon("video", Vector3(-0.5, 0, 0.005), 0.055, menu.MUTED, node)
 		var title: Label3D = menu._label(menu._fit_title(str(item.get("title", "Video")), "", 0.70, 23), Vector3(-0.37, 0.041, 0.005), 23, node); title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		var duration := int(item.get("duration_ms", 0)); var position := int(item.get("position_ms", 0))
@@ -1303,9 +1313,13 @@ func _draw_filters() -> void:
 	_draw_bar(); menu._place_list()
 
 func _draw_detail() -> void:
-	var texture := cover({"scene": detail})
+	var artwork_node := cover_node({"scene": detail})
+	var texture := image_texture(artwork_node)
 	var panel: MeshInstance3D = menu._decoration(Vector2(0.32, 0.38), Vector2(-0.30, -0.035), menu.TILE)
-	if texture: var material = menu._material(Color.WHITE, 12); material.albedo_texture = texture; panel.material_override = material; _fit_picture(panel, texture, Vector2(0.32, 0.38))
+	if texture:
+		var material = menu._material(Color.WHITE, 12); material.albedo_texture = texture; panel.material_override = material
+		_fit_picture(panel, texture, Vector2(0.32, 0.38))
+		gallery.bind_poster(artwork_node, panel, texture)
 	var description: Label3D = menu._label(str(detail.get("description", "")).left(100), Vector3(-0.3, -0.265, 0.004), 14)
 	description.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY; description.width = 0.33 / description.pixel_size; description.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	menu._list = Node3D.new(); menu.add_child(menu._list); menu._decorations.append(menu._list); menu._bar_thumb = null

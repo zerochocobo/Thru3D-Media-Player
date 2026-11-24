@@ -164,7 +164,7 @@ internal class AccountManager(private val host: () -> Activity?) {
         val data = runCatching { if (raw.isEmpty()) JSONObject() else JSONObject(raw) }.getOrNull() ?: return
         if (action == "web") {
             synchronized(s) {
-                if (s.busy || s.kind != "cloud" || (s.provider != CloudDrive.P115 && !OpenListAuth.supported(s.provider))) return
+                if (s.busy || s.kind != "cloud" || (s.provider != CloudDrive.P115 && s.provider != CloudDrive.GUANGYA && !OpenListAuth.supported(s.provider))) return
                 s.error = ""; s.errorCode = ""; s.state = "web"; s.revision++
                 if (s.web == null) {
                     val authorized: (OpenListAuth.Credential) -> Boolean = { credential ->
@@ -175,7 +175,15 @@ internal class AccountManager(private val host: () -> Activity?) {
                             s.web?.close()
                         }
                     }
-                    s.web = if (OpenListAuth.supported(s.provider)) CloudWebLogin(host, s.provider, authorized)
+                    s.web = if (s.provider == CloudDrive.GUANGYA) GuangyaWebLogin(host, { credential ->
+                        task(s) {
+                            CloudLibrary.connectGuangya(credential, s.value("name").ifBlank { CloudDrive.providerName(s.provider) },
+                                s.accountId.ifEmpty { null }, { block -> commit(s, block) })
+                            commit(s) { s.state = "done"; s.inputs.values.forEach { it.clear() } }
+                            s.web?.close()
+                        }
+                    })
+                    else if (OpenListAuth.supported(s.provider)) CloudWebLogin(host, s.provider, authorized)
                         else InAppWebLogin(host, s.provider, { cookie -> task(s) { connect(s, cookie) } }, authorized)
                 }
                 s.web!!.open()

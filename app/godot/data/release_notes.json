@@ -2,6 +2,117 @@
   "schema": 1,
   "entries": [
     {
+      "version": "0.18.9",
+      "date": "2026-11-24",
+      "title": {
+        "zh": "光鸭云盘、动态图片与3D显示改进",
+        "zh_Hant": "光鴨雲盤、動態圖片與3D顯示改進",
+        "en": "GuangYaPan, animated artwork and 3D display improvements",
+        "ja": "光鴨クラウド・画像アニメーション・3D表示の改善"
+      },
+      "items": [
+        {
+          "id": "guangyapan-cloud-drive",
+          "text": {
+            "zh": "新增光鸭云盘：支持在头显内完成登录、浏览文件并播放兼容媒体。",
+            "zh_Hant": "新增光鴨雲盤：支援在頭戴裝置內完成登入、瀏覽檔案並播放相容媒體。",
+            "en": "Add GuangYaPan: sign in, browse files and play compatible media directly on the headset.",
+            "ja": "光鴨クラウド（GuangYaPan）を追加しました。ヘッドセット内でログインし、ファイルを閲覧して対応メディアを再生できます。"
+          }
+        },
+        {
+          "id": "media-server-animated-artwork",
+          "text": {
+            "zh": "媒体服务器支持兼容的APNG和动态WebP封面、海报、演员头像、分集图及剧照；指向图片后播放，打开大图时自动播放，详情背景也可动态展示。",
+            "zh_Hant": "媒體伺服器支援相容的APNG和動態WebP封面、海報、演員頭像、分集圖片及劇照；指向圖片後播放，開啟大圖時自動播放，詳細資料背景也可動態展示。",
+            "en": "Support compatible APNG and animated WebP covers, posters, actor portraits, episode images and stills from media servers. Point at an image to animate it, open a full-size preview for automatic playback, or use animated detail backgrounds.",
+            "ja": "メディアサーバーの対応するAPNG・アニメーションWebPのカバー、ポスター、俳優画像、エピソード画像、スチルに対応しました。画像にポインターを合わせると動き、拡大表示では自動再生します。詳細画面の背景にもアニメーションを表示できます。"
+          }
+        },
+        {
+          "id": "video-web-flat-frame-edges",
+          "text": {
+            "zh": "视频和网页2D转3D新增「画框边缘平整」开关，让左右边缘的立体深度逐渐回到屏幕平面；默认关闭，仅在「边缘拉伸」模式生效，图片不受影响。",
+            "zh_Hant": "影片和網頁2D轉3D新增「畫框邊緣平整」開關，讓左右邊緣的立體深度逐漸回到螢幕平面；預設關閉，僅在「邊緣拉伸」模式生效，圖片不受影響。",
+            "en": "Add Flat frame edges for video and webpage 2D-to-3D, easing depth back to the screen plane at the left and right picture edges. Off by default; works only with Stretch edges and does not affect photos.",
+            "ja": "動画とウェブページの2D→3Dに「画面端を平坦に」を追加しました。左右端の奥行きを画面平面へ徐々に戻します。初期設定はオフで、「エッジ伸長」でのみ有効です。写真には影響しません。"
+          }
+        },
+        {
+          "id": "cloud-provider-icon-grid",
+          "text": {
+            "zh": "网盘服务选择界面改为图标网格，集中展示服务图标和名称，选择网盘更直观。",
+            "zh_Hant": "網盤服務選擇介面改為圖示格狀排列，集中顯示服務圖示和名稱，選擇網盤更直覺。",
+            "en": "Choose cloud services from a new icon grid that displays service icons and names together.",
+            "ja": "クラウドサービスの選択画面をアイコングリッドに変更し、サービスのアイコンと名前を見ながら選びやすくしました。"
+          }
+        },
+        {
+          "id": "translation-urgent-lines-and-connections",
+          "text": {
+            "zh": "优化听译与整片字幕翻译：优先处理即将显示的字幕，减少翻译等待；快进或后退后保留已完成的译文，减少重复翻译。",
+            "zh_Hant": "改善聽譯與整部影片字幕翻譯：優先處理即將顯示的字幕，減少翻譯等待；快轉或倒轉後保留已完成的譯文，減少重複翻譯。",
+            "en": "Improve live and whole-film subtitle translation: prioritize captions that are about to appear to reduce waiting, and retain completed translations after seeking to avoid repeated translation.",
+            "ja": "リアルタイム字幕と動画全体の字幕翻訳を改善しました。まもなく表示される字幕を優先して待ち時間を減らし、シーク後も翻訳済みの内容を保持して再翻訳を減らします。"
+          }
+        },
+        {
+          "id": "video-web-black-bar-detection",
+          "text": {
+            "zh": "加快视频和网页中画面自带黑边的识别，减少黑边对2D转3D景深判断的干扰。",
+            "zh_Hant": "加快影片和網頁中畫面自帶黑邊的辨識，減少黑邊對2D轉3D景深判斷的干擾。",
+            "en": "Detect baked-in black bars faster in videos and webpages to reduce their interference with 2D-to-3D depth estimation.",
+            "ja": "動画やウェブページの映像に含まれる黒帯をより早く検出し、2D→3Dの奥行き判定への影響を抑えます。"
+          }
+        },
+        {
+          "id": "browser-3d-frame-flicker",
+          "text": {
+            "zh": "修复网页2D转3D在画面更新时短暂闪回平面的问题，改善立体显示的连续性。",
+            "zh_Hant": "修復網頁2D轉3D在畫面更新時短暫閃回平面的問題，改善立體顯示的連續性。",
+            "en": "Fix webpage 2D-to-3D briefly flashing flat when the page updates, improving continuity of the stereo display.",
+            "ja": "ウェブページの2D→3Dで画面更新時に一瞬平面表示へ戻る問題を修正し、立体表示の連続性を改善しました。"
+          }
+        },
+        {
+          "id": "scene-gallery-newest-first",
+          "text": {
+            "zh": "场景馆按收录顺序由新到旧排列，新增场景更容易找到。",
+            "zh_Hant": "場景館按收錄順序由新到舊排列，新增場景更容易找到。",
+            "en": "Show the most recently added scenes first in Scene Gallery so new entries are easier to find.",
+            "ja": "シーンギャラリーを追加順の新しいものから並べ、新しいシーンを見つけやすくしました。"
+          }
+        },
+        {
+          "id": "douyin-webgl-purple-canvas",
+          "text": {
+            "zh": "修复抖音网页部分视频变成紫色画面的问题，恢复原视频显示，已在Quest 3实测。",
+            "zh_Hant": "修復抖音網頁部分影片變成紫色畫面的問題，恢復原影片顯示，已在Quest 3實測。",
+            "en": "Fix purple output in some Douyin webpage videos and restore the original video display. Verified on Quest 3.",
+            "ja": "抖音のウェブページで一部の動画が紫色になる問題を修正し、元の動画を表示するようにしました。Quest 3で確認済みです。"
+          }
+        },
+        {
+          "id": "usb-card-reader-command-recovery",
+          "text": {
+            "zh": "改善USB读卡器的兼容性和异常恢复，空卡槽会明确提示未插入存储介质。",
+            "zh_Hant": "改善USB讀卡機的相容性及異常復原，空卡槽會明確提示未插入儲存媒體。",
+            "en": "Improve USB card-reader compatibility and error recovery, with a clear no-media message for empty slots.",
+            "ja": "USBカードリーダーの互換性とエラーからの復旧を改善し、空のスロットには記録メディアが未挿入であることを表示します。"
+          }
+        },
+        {
+          "id": "thunder-saved-location-pagination",
+          "text": {
+            "zh": "修复从最近播放、收藏的「打开所在位置」等入口返回迅雷网盘目录时的加载报错。",
+            "zh_Hant": "修復從最近播放、收藏的「開啟所在位置」等入口返回迅雷雲盤目錄時的載入錯誤。",
+            "en": "Fix folder-loading errors when returning to Thunder Cloud Drive through recent items, Open containing folder from favorites and similar entries.",
+            "ja": "最近の再生やお気に入りの保存先を開く操作などから迅雷クラウドのフォルダーに戻る際の読み込みエラーを修正しました。"
+          }
+        }
+      ]
+    },
+    {
       "version": "0.18.8.1",
       "date": "2026-11-24",
       "title": {

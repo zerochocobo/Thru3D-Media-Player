@@ -1783,6 +1783,7 @@ internal class MpvVideoBridge(
         if (session.depth) {
             check(RenderBridgeNative.limitNear(session.renderer, 0L, session.depthShift))
             check(RenderBridgeNative.steadyEdges(session.renderer, depthSteady && depthStretch))
+            check(RenderBridgeNative.edgeFade(session.renderer, depthFade && depthStretch, session.depthConvergence))
         }
         if (pair.optString("alpha_transport") == "zero_copy") check(RenderBridgeNative.commitZeroCopyAlpha(session.renderer, token))
         else check(RenderBridgeNative.uploadAlpha(session.renderer, token, left, right))
@@ -1929,6 +1930,11 @@ internal class MpvVideoBridge(
         depthSteady = enabled
         sessions.forEach { (id, session) -> if (session.depth) setDepthView(id, session.depthShift.toDouble(), session.depthConvergence.toDouble()) }
     }
+    /** Flat frame edges on or off; a held (paused) 2D->3D frame is redrawn with the choice. */
+    fun setDepthFade(enabled: Boolean) {
+        depthFade = enabled
+        sessions.forEach { (id, session) -> if (session.depth) setDepthView(id, session.depthShift.toDouble(), session.depthConvergence.toDouble()) }
+    }
     fun setDepthView(id: Int, shift: Double, convergence: Double): Boolean {
         val session = sessions[id] ?: return false
         if (!session.depth || shift !in 0.0..0.2 || convergence !in 0.0..1.0) return false
@@ -1943,6 +1949,7 @@ internal class MpvVideoBridge(
                 if (pair != null && session.display.owns(token)) runCatching {
                     // Both views read the limited near texture: re-limit it before any rewarp.
                     RenderBridgeNative.steadyEdges(session.renderer, depthSteady && depthStretch)
+                    RenderBridgeNative.edgeFade(session.renderer, depthFade && depthStretch, session.depthConvergence)
                     RenderBridgeNative.limitNear(session.renderer, token, session.depthShift)
                     if (pair.optInt("warp_texture_id") > 0)
                         stereoPair(session, token)
@@ -2269,6 +2276,7 @@ internal class MpvVideoBridge(
         /** 2D->3D steady edges (edge stretching only: with Fill gaps the snapped steps shred): the near map is
          * refitted to the picture's contours. */
         @Volatile var depthSteady = true
+        @Volatile var depthFade = false
         /** Alpha plan B: masks shown so far in this Alpha layer session and the mask swapchain size, "count w h". */
         @Volatile var layerMask = "0 0 0"
         const val MASK_SLOT = 2 // the picture swapchain slot Godot shows as the mask layer

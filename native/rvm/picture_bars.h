@@ -8,27 +8,29 @@
 
 namespace quest {
 
-/** Black bars burned into the video frame (a 2.39:1 film in a 16:9 HDR WEB-DL), found in the depth
- * model input. ZipDepth reads a black band as a near object: the bar takes the top of the near band,
- * leaves a false near strip along the picture edge and compresses the picture's relief. The render
- * bridge already repeats the edge for its own aspect letterbox; this does the same for bars inside
- * the frame, and gives the picture rectangle to the stabilizer's band.
+/** Black bars burned into the video frame (a 2.39:1 film in a 16:9 HDR WEB-DL, a portrait video
+ * pillarboxed in a fullscreen web page), found in the depth model input. ZipDepth reads a black band
+ * as a near object: the bar takes the top of the near band, leaves a false near strip along the
+ * picture edge and compresses the picture's relief. The render bridge already repeats the edge for
+ * its own aspect letterbox; this does the same for bars inside the frame, and gives the picture
+ * rectangle to the stabilizer's band.
  *
- * Burned-in bars are digital black in every frame, but a dark film can hold black sides or a black
- * opening for many seconds, so darkness alone does not make a bar: a line is a bar when it has not
- * been lit since playback began (after kWarm frames) or for the last kSettle frames. Bars must face
- * each other with about the same size, and the picture keeps at least kMinPicture of the input;
- * otherwise nothing is cropped. Frames are model inputs (~30/s). Not thread-safe. */
+ * A line with no pixel above kBlack in a frame is dark. Bars apply once they have faced each other
+ * for kHold frames in a row (about a quarter of a second: shadows that flicker at both sides of a
+ * dark scene never get there), and stop as soon as a pixel of them lights. An all-black line holds
+ * no picture to lose, so a dark scene that is taken for bars only gets its black edge repeated;
+ * once found, the bars do not widen with a darker scene, which would move the band's area from
+ * frame to frame. Bars must face each other (a one-sided dark band is sky or shadow), and the
+ * picture keeps at least kMinPicture of the input; otherwise nothing is cropped. Not thread-safe. */
 class PictureBars {
 public:
     static constexpr float kBlack = 0.02f;      // model input luma, 0-1 (~5/255); bars measure 0
-    static constexpr int kWarm = 300, kSettle = 1800; // ~10 s before any crop; ~60 s dark to become a bar again
     static constexpr float kMinPicture = 0.35f;
     static constexpr int kMinBar = 2;
+    static constexpr int kHold = 8;             // model inputs (~30/s video, ~15/s web)
 
     /** rgb: float CHW in [0, 1], w x h; filled in place. Returns the picture {x, y, width, height}. */
     std::array<int, 4> apply(float* rgb, int w, int h) {
-        if (w != w_ || h != h_) { w_ = w; h_ = h; rows_.assign(h, 0); cols_.assign(w, 0); seen_ = 0; }
         const size_t n = static_cast<size_t>(w) * h;
         std::vector<float> row(h, 0.f), col(w, 0.f);
         for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
@@ -36,44 +38,48 @@ public:
             const float luma = 0.299f * rgb[p] + 0.587f * rgb[n + p] + 0.114f * rgb[2 * n + p];
             row[y] = std::max(row[y], luma); col[x] = std::max(col[x], luma);
         }
-        for (int y = 0; y < h; ++y) rows_[y] = row[y] < kBlack ? rows_[y] + 1 : 0;
-        for (int x = 0; x < w; ++x) cols_[x] = col[x] < kBlack ? cols_[x] + 1 : 0;
-        ++seen_;
-        int top = 0, left = 0, bottom = 0, right = 0;
-        if (seen_ >= kWarm) { bottom = edges(rows_, &top); right = edges(cols_, &left); }
-        if (!bars(top, bottom, h)) { top = 0; bottom = h; }
-        if (!bars(left, right, w)) { left = 0; right = w; }
-        rect_ = {left, top, right - left, bottom - top};
-        if (top > 0 || bottom < h || left > 0 || right < w) fill(rgb, w, h);
+        if (w != w_ || h != h_) { w_ = w; h_ = h; rows_ = cols_ = Side(); }
+        int y0 = 0, y1 = h, x0 = 0, x1 = w;
+        side(row, rows_, &y0, &y1);
+        side(col, cols_, &x0, &x1);
+        rect_ = {x0, y0, x1 - x0, y1 - y0};
+        if (y0 > 0 || y1 < h || x0 > 0 || x1 < w) fill(rgb, w, h);
         return rect_;
     }
     const std::array<int, 4>& picture() const { return rect_; }
-    void reset() { w_ = h_ = 0; }
 
 private:
     int w_ = 0, h_ = 0;
-    std::vector<long> rows_, cols_; // consecutive dark frames per line
-    long seen_ = 0;
     std::array<int, 4> rect_{{0, 0, 0, 0}};
+    struct Side { int before = 0, after = 0, age = 0; }; // bars of one axis (0: none), frames they have lasted
+    Side rows_, cols_;
 
-    /** First and one-past-last lit line; the outermost lit line is a bar/picture blend, so one more
-     * line goes to each bar. */
-    int edges(const std::vector<long>& dark, int* first) const {
-        const int n = static_cast<int>(dark.size());
-        const long bar = std::min<long>(seen_, kSettle);
+    /** One axis: [*first, *last) is the picture. A dark scene widens the dark band into the picture
+     * (fades, night shots): the bars only ever narrow while they last, at once when a line lights, and
+     * an all-dark frame keeps them. A frame without bars forgets them. */
+    static void side(const std::vector<float>& peak, Side& held, int* first, int* last) {
+        const int n = static_cast<int>(peak.size());
         int a = 0, b = n;
-        while (a < n && dark[a] >= bar) ++a;
-        while (b > a && dark[b - 1] >= bar) --b;
-        if (a == n) { *first = 0; return 0; } // all dark: no picture to keep
-        if (a > 0) ++a;
-        if (b < n) --b;
-        *first = a;
-        return std::max(a, b);
-    }
-    static bool bars(int a, int b, int n) {
-        const int lo = a, hi = n - b, big = std::max(lo, hi);
-        return lo >= kMinBar && hi >= kMinBar && b - a >= kMinPicture * n &&
-               std::abs(lo - hi) <= 2 + big / 5;
+        while (a < n && peak[a] < kBlack) ++a;
+        while (b > a && peak[b - 1] < kBlack) --b;
+        if (a < n) {
+            // The outermost lit line is a bar/picture blend, so one more line goes to each bar.
+            if (a > 0) ++a;
+            if (b < n) --b;
+            const int before = a, after = n - std::max(a, b);
+            if (before < kMinBar || after < kMinBar) { held = Side(); return; }
+            // Each bar keeps its own narrowest size: the two need not match to the line.
+            held.before = held.before > 0 ? std::min(held.before, before) : before;
+            held.after = held.after > 0 ? std::min(held.after, after) : after;
+        }
+        if (held.before == 0) return;
+        // Bars face each other. While a dark scene still darkens the picture's own lines next to one
+        // bar, those lines are picture: both sides use the narrower size (nothing of the picture is lost).
+        int lo = held.before, hi = held.after;
+        if (std::abs(lo - hi) > 2 + std::max(lo, hi) / 5) lo = hi = std::min(lo, hi);
+        if (n - lo - hi < kMinPicture * n) { held = Side(); return; }
+        if (held.age < kHold && ++held.age < kHold) return;
+        *first = lo; *last = n - hi;
     }
     void fill(float* rgb, int w, int h) const {
         const size_t n = static_cast<size_t>(w) * h;

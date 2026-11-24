@@ -18,3 +18,7 @@ SMB、媒体服务器及网盘代理按照上游实际读到的媒体字节计�
 ## 0.17.4 transfer and recovery
 
 Internal photos/reading/previews use bounded versioned lossless RGBA transfers rather than repeated PNG handoffs, with validation before publishing data; original input formats and explicit exports remain independent. SMB failed connection contexts are retired and eligible reads retried within cancellation/ownership boundaries. Current committed source also waits off the frame thread for closing MPV handles within the existing surface-release deadline before another open; this later source fix is not present in all earlier0.17.4 packages. Network/seek and scene-switch acceptance remains scoped.
+
+## 0.18.9 cloud selection
+
+GuangYaPan supports in-headset Web OAuth with PKCE, browsing and compatible media playback. Registered client identifiers are public identifiers; verifier/state are generated for each login and access/refresh tokens stay in app-private account storage. The service picker uses an icon grid. Service availability, account permissions and supported media still apply; no account data is supplied with this source.

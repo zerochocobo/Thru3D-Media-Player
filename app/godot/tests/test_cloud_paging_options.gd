@@ -12,6 +12,8 @@ class Platform extends Object:
 		calls.append({"path": path, "offset": offset, "force": force, "order": order, "folder": folder, "page_size": size, "subtitles": subtitles})
 		return calls.size()
 	func media_cloud_cancel(id: int) -> void: cancelled.append(id)
+	func account_list(kind: String) -> String:
+		return JSON.stringify([{"id": "thunder", "provider": "thunder", "name": "Thunder"}] if kind == "cloud" else [])
 	func respond(values: Dictionary = {}, id: int = -1) -> void:
 		if id < 0: id = calls.size()
 		var r: Dictionary = calls[id - 1]
@@ -225,5 +227,16 @@ func thunder_browse_cases() -> void:
 		menu.settings_provider = func(): return {"cloud_page_sizes": {"thunder": 48}}
 		menu._load_cloud()
 		check(platform.calls.back().page_size == 48, "Thunder still supports an explicit 48-row override")
+		platform.respond({"next_offset": -1})
+		# Recent/favorite/picker locations are cleaned to folder ids and drop the provider.
+		menu.settings_provider = Callable()
+		menu.collections.source_accounts.clear()
+		menu._cloud_stack = [{"id": "/thunder", "title": "Thunder"}, {"id": "/thunder/Folder", "title": "Folder", "cloud_id": "folder"}]
+		menu._load_cloud()
+		check(platform.calls.back().page_size == 100 and menu._cloud_stack[0].get("provider") == "thunder", "A saved Thunder location without its provider resolves the account and keeps 100 rows")
+		platform.respond({"next_offset": -1})
+		menu._cloud_stack = [{"id": "/missing", "title": "Gone"}]
+		menu._load_cloud()
+		check(platform.calls.back().page_size == 48, "An unresolved account uses the legacy 48-row size every provider accepts")
 		platform.respond({"next_offset": -1})
 	menu.queue_free(); await process_frame; platform.free()

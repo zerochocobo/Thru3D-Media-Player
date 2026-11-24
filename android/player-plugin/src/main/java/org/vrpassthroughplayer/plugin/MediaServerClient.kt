@@ -78,7 +78,7 @@ internal class MediaServerHttp(private val account: MediaServerAccount,
     private val live = ConcurrentHashMap.newKeySet<HttpURLConnection>()
     @Volatile private var closed = false
     fun open(uri: URI, range: String? = null, json: JSONObject? = null,
-        method: String = if (json == null) "GET" else "POST"): HttpURLConnection {
+        method: String = if (json == null) "GET" else "POST", accept: String? = null): HttpURLConnection {
         mediaRequire(method in setOf("GET", "POST", "DELETE"), "Invalid server request")
         var target = uri
         repeat(6) { redirects ->
@@ -117,6 +117,7 @@ internal class MediaServerHttp(private val account: MediaServerAccount,
                         java.util.Base64.getEncoder().encodeToString("${account.username}:${account.key}".toByteArray(Charsets.UTF_8)))
                     else -> throw MediaServerFailure("Unsupported server")
                 }
+                if (accept != null) c.setRequestProperty("Accept", accept)
                 if (range != null) c.setRequestProperty("Range", range)
                 c.requestMethod = method
                 if (json != null) {
@@ -178,7 +179,7 @@ internal interface MediaLibraryClient {
     fun candidates(request: JSONObject): JSONObject
     fun detail(id: String): JSONObject
     fun cover(id: String): URI
-    fun image(id: String, type: String, index: Int, tag: String, width: Int): URI {
+    fun image(id: String, type: String, index: Int, tag: String, width: Int, original: Boolean = false): URI {
         mediaRequire(type == "Primary" && index == 0, "Cover unavailable")
         mediaRequire(tag.length <= 256 && width in 64..1024, "Invalid server request")
         return cover(id)

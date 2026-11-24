@@ -21,7 +21,8 @@ internal class UsbBulkDevice(private val connection: UsbDeviceConnection, privat
     override var sectorCount=0L; private set
     init {
         var failure: Exception?=null
-        for(attempt in 0..3) {
+        val deadline=System.nanoTime()+3_000_000_000L
+        for(attempt in 0..7) {
             try {
                 command(byteArrayOf(0x00,0,0,0,0,0),0)
                 val cap=command(byteArrayOf(0x25,0,0,0,0,0,0,0,0,0),8)
@@ -33,13 +34,17 @@ internal class UsbBulkDevice(private val connection: UsbDeviceConnection, privat
             } catch(e: IOException) {
                 if(!alive()) throw e
                 failure=e
-                runCatching { command(byteArrayOf(3,0,0,0,18,0),18) }
-                if(attempt<3) Thread.sleep(150)
+                // Card readers report an empty slot, and a unit attention right after takeover,
+                // as CHECK CONDITION; the sense data says whether waiting can help.
+                val sense=runCatching { command(byteArrayOf(3,0,0,0,18,0),18,true) }.getOrNull()
+                if(UsbScsi.noMedium(sense)) throw IOException(UsbScsi.NO_MEDIUM)
+                if(System.nanoTime()>deadline) break
+                Thread.sleep(150)
             }
         }
         if(failure!=null) throw failure
     }
-    private fun transfer(endpoint: UsbEndpoint, bytes: ByteArray, count: Int) {
+    private fun transfer(endpoint: UsbEndpoint, bytes: ByteArray, count: Int, short: Boolean=false): Int {
         var at=0
         while(at<count) {
             if(closed || !alive() || Thread.currentThread().isInterrupted) throw IOException("USB storage unavailable")
@@ -47,9 +52,12 @@ internal class UsbBulkDevice(private val connection: UsbDeviceConnection, privat
             val got=connection.bulkTransfer(endpoint,bytes,at,chunk,2000)
             if(got<=0) throw IOException("USB transfer failed")
             at+=got
+            // A short packet ends the data phase; reading on would consume the status wrapper.
+            if(short && got<chunk) break
         }
+        return at
     }
-    private fun command(cdb: ByteArray, bytes: Int): ByteArray = synchronized(connection) {
+    private fun command(cdb: ByteArray, bytes: Int, short: Boolean=false): ByteArray = synchronized(connection) {
         if(closed || !alive()) throw IOException("USB access stopped")
         // All supported opcodes are either data-in or non-mutating readiness queries.
         require((cdb[0].toInt() and 255) in listOf(0x00,0x03,0x25,0x28,0x88,0x9e))
@@ -58,18 +66,25 @@ internal class UsbBulkDevice(private val connection: UsbDeviceConnection, privat
         cbw.putInt(0x43425355).putInt(tag).putInt(bytes).put(if(bytes>0) 0x80.toByte() else 0).put(lun.toByte()).put(cdb.size.toByte()).put(cdb)
         try {
             transfer(output,cbw.array(),31)
-            val data=ByteArray(bytes); if(bytes>0) transfer(input,data,bytes)
+            val data=ByteArray(bytes); val got=if(bytes>0) transfer(input,data,bytes,short) else 0
             val status=ByteArray(13); transfer(input,status,13)
             val csw=ByteBuffer.wrap(status).order(ByteOrder.LITTLE_ENDIAN)
-            if(csw.int!=0x53425355 || csw.int!=tag || csw.int!=0 || csw.get().toInt()!=0) throw IOException("USB command failed")
-            data
+            if(csw.int!=0x53425355 || csw.int!=tag) throw IOException("USB transfer failed")
+            val residue=csw.int; val code=csw.get().toInt()
+            if(code==0 && (residue==0 || short)) return@synchronized data.copyOf(got)
+            if(code!=1) throw IOException("USB command failed")
         } catch(e: Exception) {
             if(closed || !alive()) throw e
             // Discard a broken command; never retry a partially consumed data phase as a new read.
             connection.controlTransfer(0x21,0xff,0,face.id,null,0,1000)
             for(endpoint in listOf(input,output)) connection.controlTransfer(2,1,0,endpoint.address,null,0,1000)
+            // A raw CLEAR_FEATURE resets only the device's data toggle; SET_INTERFACE resets
+            // both sides, otherwise every later transfer is dropped as a duplicate.
+            connection.setInterface(face)
             throw e
         }
+        // CHECK CONDITION leaves the transport intact: the caller asks for sense, no reset.
+        throw IOException("USB command rejected")
     }
     @Synchronized override fun readBlocks(lba: Long,data: ByteArray) {
         require(lba>=0 && data.size%sectorSize==0 && lba<=sectorCount && data.size/sectorSize<=sectorCount-lba)

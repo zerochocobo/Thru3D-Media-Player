@@ -8,6 +8,24 @@ const Thru3DFixtureMiguEvents = (() => {
   const events = new Map();
   let page = location.href;
 
+  function urlInfoDeclarations(body,id) {
+    const rows=[],seen=new Set(),number=v=>Number.isFinite(Number(v))&&Number(v)>=0&&Number(v)<=1000000000?Number(v):null;
+    const tag=v=>typeof v==='string'&&/^[A-Za-z0-9_.-]{1,32}$/.test(v)?v:typeof v==='number'&&Number.isFinite(v)?v:null;
+    const add=(info,slot)=>{
+      if(!info||typeof info!=='object'||typeof info.url!=='string'||info.url.length>16384||seen.has(info.url)||rows.length>=32)return;
+      try{const u=new URL(info.url),ids=u.searchParams.getAll('ProgramID');
+        if(!['http:','https:'].includes(u.protocol)||u.username||u.password||u.port||u.hash||!/\.m3u8$/i.test(u.pathname)||ids.length!==1||ids[0]!==id)return;
+      }catch(_){return;}
+      seen.add(info.url);rows.push({slot,url:info.url,width:number(info.mediaWidth),height:number(info.mediaHeight),coding:tag(info.videoCoding),quality:tag(info.rateType)});
+    };
+    add(body?.urlInfo,'urlInfo');
+    for(const key of ['urlInfos','mediaFiles','urlInfosAI']){
+      const list=body?.[key];if(!list||typeof list!=='object')continue;
+      for(const child of Object.keys(list).slice(0,32))add(list[child],key+'.'+(/^[A-Za-z0-9_]{1,40}$/.test(child)?child:'other'));
+    }
+    return rows;
+  }
+
   function refresh() {
     if (page !== location.href) {
       events.clear();
@@ -32,7 +50,10 @@ const Thru3DFixtureMiguEvents = (() => {
     if (message.type === 'video_status' && statuses.has(message.data)) state.status = message.data;
     if (message.type === 'video_type') state.programMatches = String(message.data?.contId) === id;
     if (message.type === 'video_playurl_code') {
+      state.bodyKeys=Object.keys(message.data?.body||{}).filter(k=>/^[A-Za-z0-9_]{1,64}$/.test(k)).slice(0,32);
+      state.urlInfoKeys=Object.keys(message.data?.body?.urlInfo||{}).filter(k=>/^[A-Za-z0-9_]{1,64}$/.test(k)).slice(0,32);
       state.success = successCode(message.data?.code) && successCode(message.data?.playurlCode);
+      state.variants=state.success?urlInfoDeclarations(message.data?.body,id):[];
       state.url = '';
       state.scheme = '';
       state.at = Date.now();
@@ -72,6 +93,7 @@ const Thru3DFixtureMiguEvents = (() => {
       const keys = [...keySet];
       const crossdomain = u.searchParams.getAll('crossdomain');
       return {exact: text === declared, same_scheme: u.protocol === reference.protocol,
+        serialized_equal: u.href === reference.href,
         same_host: u.host === reference.host, same_path: u.pathname === reference.pathname,
         same_query: u.search === reference.search,
         scheme_only: reference.protocol === 'http:' && text === declared.replace(/^http:/, 'https:'),
@@ -79,6 +101,7 @@ const Thru3DFixtureMiguEvents = (() => {
         crossdomain_count: crossdomain.length,
         crossdomain_is_www_migu: crossdomain.length === 1 && crossdomain[0] === 'www.miguvideo.com',
         crossdomain_is_one: crossdomain.length === 1 && crossdomain[0] === '1',
+        crossdomain_is_zero: crossdomain.length === 1 && crossdomain[0] === '0',
         crossdomain_is_document_origin: crossdomain.length === 1 && crossdomain[0] === location.origin,
         changed_query_keys: keys.filter(k => JSON.stringify(reference.searchParams.getAll(k)) !== JSON.stringify(u.searchParams.getAll(k)))
           .filter(k => /^[A-Za-z0-9_:-]{1,64}$/.test(k)).slice(0, 48)};
@@ -86,7 +109,7 @@ const Thru3DFixtureMiguEvents = (() => {
     return requests.filter(r => r?.kind === 'hls' && Number.isFinite(r.at) && Date.now() - r.at >= 0 && Date.now() - r.at <= 90000)
       .slice(-24).flatMap(r => {
         const final = compare(r.url);if (!final) return [];
-        return [{final, original: compare(r.original_url), age_ms: Math.round(Date.now() - r.at)}];
+        return [{candidate_index:requests.indexOf(r),final, original: compare(r.original_url), age_ms: Math.round(Date.now() - r.at)}];
       });
   }
 
@@ -105,7 +128,8 @@ const Thru3DFixtureMiguEvents = (() => {
       declared_program_hls: !!url, declared_hls_scheme: scheme,
       exact_observed_hls: !!url && secureHls.some(r => r.url === url || r.original_url === url),
       https_scheme_only_match: !!schemeOnly && secureHls.some(r => r.url === schemeOnly),
-      ...(compare ? {owner_selector: '#' + owner.id, relationships: relationships(url, requests, refresh())} : {})};
+      ...(compare ? {owner_selector: '#' + owner.id,body_keys:state.bodyKeys||[],url_info_keys:state.urlInfoKeys||[],relationships: relationships(url, requests, refresh()),
+        declared_variants:(url?(state.variants||[]):[]).map(v=>({slot:v.slot,width:v.width,height:v.height,coding:v.coding,quality:v.quality,relationships:relationships(v.url,requests,refresh())}))} : {})};
   }
 
   if (window.top === window && sample()) window.addEventListener('message', observe);

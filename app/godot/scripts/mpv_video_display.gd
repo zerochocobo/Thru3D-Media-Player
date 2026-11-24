@@ -3503,10 +3503,16 @@ func _on_debug_command(id: int, payload: String) -> void:
 		# User-media diagnostics require explicit shell opt-in; never save preferences.
 		command["accepted"] = local_uri.get_base_dir().ends_with("/files/fixtures") or bool(command.get("allow_user_media", false))
 		if command.accepted:
+			var tasks: RefCounted = get_tree().current_scene.get("subtitle_tasks") if get_tree().current_scene else null
 			for key in command.get("options", {}):
-				if not listening.set_option("listening_" + str(key), command.options[key]): command.accepted = false
+				var value: Variant = command.options[key]
+				if key == "translation_legacy": preload("res://scripts/translation_work_gate.gd").legacy = bool(value)
+				elif key == "subtitle_task": command.accepted = tasks != null and _debug_subtitle_task(tasks, bool(value)) and command.accepted
+				elif not listening.set_option("listening_" + str(key), value): command.accepted = false
 			command["listening"] = listening.report.duplicate(true)
 			command["caption"] = caption.text
+			command["translation"] = {"live": listening.translator.stats.duplicate(true), "legacy": preload("res://scripts/translation_work_gate.gd").legacy,
+				"task": tasks.translator.stats.duplicate(true) if tasks else {}}
 	elif command.operation == "subtitle":
 		command["accepted"] = set_subtitle_track(int(command.track_id))
 	elif command.operation == "playing":
@@ -3581,6 +3587,18 @@ func _on_pixel_mask(id: int, payload: String) -> void:
 	_debug_pixels["native_pin_released"] = platform.release_mpv_pixel_pin(int(pair.session_id), int(pair.slot_token))
 	_pixel_busy = false
 	_write_debug_report()
+
+## Fixture diagnostics: queue (or remove) a translated pre-generation task for
+## this film, so background translation competes with live subtitles.
+func _debug_subtitle_task(tasks: RefCounted, wanted: bool) -> bool:
+	if wanted:
+		tasks.mode = "translated"; tasks.translator.stats = {}
+		return tasks.enqueue()
+	var media := preload("res://scripts/file_listening_memory.gd").key_for(local_uri)
+	var removed := true
+	for job: Dictionary in tasks.report.get("jobs", []):
+		if job.get("media") == media: removed = tasks.command({"operation": "remove", "id": job.id}) and removed
+	return removed
 
 func _write_debug_report() -> void:
 	if ModeMemory.Privacy.mode != ModeMemory.Privacy.ALL or (ModeMemory.Privacy.vault != null and ModeMemory.Privacy.vault.protected): return

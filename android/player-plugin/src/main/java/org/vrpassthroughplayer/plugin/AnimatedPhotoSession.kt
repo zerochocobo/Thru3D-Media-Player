@@ -10,10 +10,11 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ExecutorService
 
 /** A single decoder, two ready frames and one displayed frame. IO/decode never runs in poll(). */
-internal class AnimatedPhotoSession(private val source: PhotoSource,
+internal class AnimatedPhotoSession(private val source: PhotoSource?,
     private val backend: PhotoAnimationBackend=NativePhotoAnimationBackend,
     private val worker: ExecutorService=Executors.newSingleThreadExecutor {Thread(it,"PhotoAnimation")},
     private val ownsWorker: Boolean=true,
+    private val file: File = requireNotNull(source).file,
     private val clock: ()->Long={System.nanoTime()/1000}) : Closeable {
     private val lock=Any()
     private val ready=ArrayDeque<LongArray>()
@@ -33,7 +34,7 @@ internal class AnimatedPhotoSession(private val source: PhotoSource,
     private var frameId=0L // worker only; monotonic across loops, including skipped frames
     private var ptsUs=0L
     private var loop=0L
-    init {source.retain();pump()}
+    init {source?.retain();pump()}
     private fun now()=clock()
     private fun checkCurrent(){if(closed)throw InterruptedException()}
     private fun pump() {
@@ -43,7 +44,7 @@ internal class AnimatedPhotoSession(private val source: PhotoSource,
         }
         worker.execute {
             try {
-                if(decoder==0L){checkCurrent();decoder=backend.open(source.file.path);require(decoder>0)
+                if(decoder==0L){checkCurrent();decoder=backend.open(file.path);require(decoder>0)
                     val info=backend.info(decoder) ?: error("PHOTO_DECODE_FAILED");plays=info[4]}
                 while(true) {
                     synchronized(lock){if(closed||paused||ready.size>=2)return@execute}
@@ -117,17 +118,17 @@ internal class AnimatedPhotoSession(private val source: PhotoSource,
             val data=if(frame!=null)backend.pixels(frame[0]) else null
             if(frame!=null&&data!=null)Triple(frame[1].toInt(),frame[2].toInt(),data) else null
         }
-        if(captured==null)return ExtendedPhoto.posterSnapshot(source.file,check)
+        if(captured==null)return ExtendedPhoto.posterSnapshot(file,check)
         check()
-        val file=File.createTempFile("animation-effect-",".t3di",source.file.parentFile)
-        try { RawPhoto.writeRgba(file,captured.first,captured.second,captured.third,check); return file }
-        catch(failure: Throwable) { file.delete(); throw failure }
+        val snapshot=File.createTempFile("animation-effect-",".t3di",file.parentFile)
+        try { RawPhoto.writeRgba(snapshot,captured.first,captured.second,captured.third,check); return snapshot }
+        catch(failure: Throwable) { snapshot.delete(); throw failure }
     }
     override fun close() {
         synchronized(lock){if(closed)return;closed=true
             ready.forEach {backend.releaseFrame(it[0])};ready.clear()
             displayed?.let {backend.releaseFrame(it[0])};displayed=null}
-        worker.execute {try{if(decoder>0)backend.close(decoder)}finally {source.release()}}
+        worker.execute {try{if(decoder>0)backend.close(decoder)}finally {source?.release()}}
         if(ownsWorker)worker.shutdown()
     }
 }

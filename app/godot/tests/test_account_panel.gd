@@ -31,8 +31,9 @@ func _run() -> void:
 	java.free()
 	menu._activate(Menu.CLOUD_ACCOUNTS)
 	check(panel.view == "choose" and not menu._grid(), "cloud plus opens provider list in the VR menu")
-	check(menu.rows.size() == 8 and menu.rows[0].account_provider == "115_open" and menu.rows[0].title == "115" and menu.rows.any(func(row): return row.get("account_provider", "") == "123_open") and not menu.rows.any(func(row): return row.get("account_provider", "") == "115" or row.has("account_dav")), "Public cloud entries include Thunder beta in every build")
-	check(menu.rows[6].account_provider == "thunder" and menu.rows[7].account_provider == "webdav" and is_zero_approx(menu.scroll) and menu._buttons.any(func(b): return b.target == Menu.ROW_BASE + 6 and b.node.is_visible_in_tree()), "Thunder is above WebDAV and visible without scrolling")
+	check(menu.rows.size() == 9 and menu.rows[7].account_provider == "guangya" and menu.rows[0].account_provider == "115_open" and menu.rows[0].title == "115" and menu.rows.any(func(row): return row.get("account_provider", "") == "123_open") and not menu.rows.any(func(row): return row.get("account_provider", "") == "115" or row.has("account_dav")), "Public cloud entries include Thunder beta and GuangYaPan in every build")
+	check(menu.rows[6].account_provider == "thunder" and menu.rows[8].account_provider == "webdav" and is_zero_approx(menu.scroll) and menu._buttons.any(func(b): return b.target == Menu.ROW_BASE + 6 and b.node.is_visible_in_tree()), "Thunder is above WebDAV and visible without scrolling")
+	check(range(menu.rows.size()).all(func(i): return menu._buttons.any(func(b): return b.target == Menu.ROW_BASE + i and b.node.is_visible_in_tree())), "Every cloud provider is visible on one page as an icon card")
 	check(menu._tips.get(Menu.ROW_BASE + 6, "") == menu.I18n.t("Beta. Unofficial integration; may be unstable."), "Visible Thunder entry retains its beta tooltip")
 	panel.choose(menu.rows.filter(func(row): return row.get("account_provider", "") == "webdav")[0])
 	check(panel.view == "form" and panel.provider == "webdav" and panel.fields == ["name", "base", "username", "password"] and panel.field == "base", "WebDAV is a remote connection form inside the cloud library")
@@ -175,7 +176,7 @@ func _run() -> void:
 	menu.dismiss(); check(not panel.active() and panel.session == 0, "close explicitly cancels form")
 	panel.open("cloud")
 	for row in menu.rows.duplicate():
-		if row.get("account_provider", "") in ["115_open", "baidu", "aliyun_open", "quark_open", "onedrive"]:
+		if row.get("account_provider", "") in ["115_open", "baidu", "aliyun_open", "quark_open", "onedrive", "guangya"]:
 			panel.choose(row)
 			check(panel.fields == ["name"], "OAuth form requests a name without cookie, password or QR fields")
 			check(menu.text_snapshot().contains(menu.I18n.t("Authorize")) and not menu.text_snapshot().contains(menu.I18n.t("Sign in on website")), "OAuth providers use the authorization entry")

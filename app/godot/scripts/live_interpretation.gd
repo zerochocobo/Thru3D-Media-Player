@@ -7,6 +7,7 @@ const Privacy := preload("res://scripts/media_privacy.gd")
 const I18n := preload("res://scripts/i18n.gd")
 const Tasks := preload("res://scripts/subtitle_tasks.gd")
 const CastCapabilities := preload("res://scripts/cast_capabilities.gd")
+const WorkGate := preload("res://scripts/translation_work_gate.gd")
 const SECTION := "live_interpretation"
 const FAILURES := ["listening_error", "unsupported_audio", "source_busy", "source_error", "audio_error"]
 var video: Node3D
@@ -35,6 +36,10 @@ var _caption_epoch := -1
 var _caption_position := -1.0
 var _mirror_sequence := -1
 var _mirror_cues: Array = []
+# Diagnostics only (keys, never text): whether a line was translated when it first showed.
+var _shown := {}
+var _missed := {}
+var _stats_logged_at := 0
 
 func is_mirror() -> bool:
 	return _source.begins_with("airplayvideo://")
@@ -44,6 +49,7 @@ func _init(owner: Node3D) -> void:
 	translator = TranslationClient.new(owner, false)
 	translator.priority = 2
 	translator.request_spacing_ms = 2000
+	translator.request_timeout = 4.0 # Bing then Edge stays inside the shortest lookahead
 	translator.cache_limit = 2000
 
 func load_settings(settings: ConfigFile) -> void:
@@ -74,6 +80,7 @@ func reset_source(uri: String = "") -> void:
 	_cast_token = token; _source_session = session
 	_failure_state = ""; _failure_until = 0; _poll_at = 0; _received_at = 0; _cache_instance = -1
 	translator.reset(true)
+	translator.stats = {}; translator.stats_mark = Time.get_ticks_msec(); _shown.clear(); _missed.clear()
 	_stored.clear()
 	_mirror_sequence = -1; _mirror_cues.clear()
 	if not same: enabled = not is_cast_source() and bool(memory.lookup(uri).get("enabled", false))
@@ -134,7 +141,9 @@ func _configure(wanted: bool) -> bool:
 	var payload := JSON.stringify({"enabled": wanted, "language": source, "lead": lead, "target": target,
 		"media": media, "persist": not media.is_empty() and Privacy.persist_allowed(_source), "network": is_cast_source() or not Privacy.is_local(_source)})
 	if payload != _payload or _session != video.media.session_id:
-		if _session != video.media.session_id: report = {}; translator.reset(true)
+		# A seek starts a new player session over the same video: keep its
+		# translations and the anonymous Bing session (reset_source clears both).
+		if _session != video.media.session_id: report = {}; translator.reset(WorkGate.legacy)
 		if video.platform.set_mpv_listening(video.media.session_id, payload):
 			_payload = payload; _session = video.media.session_id
 		else: return false
@@ -177,14 +186,20 @@ func tick() -> void:
 	var epoch := int(report.get("epoch", -1))
 	if epoch != _epoch:
 		_epoch = epoch; translator.reset() # Retain bounded translations when seeking within this video.
+		translator.stats_mark = Time.get_ticks_msec()
 	var translate := not target.is_empty() and Protocol.language(source) != target
 	translator.enabled = translate
 	var cues: Array = report.get("cues", [])
 	if translate:
+		var began := Time.get_ticks_usec()
 		Tasks.seed(cues, translator, Protocol.language(source), target)
 		translator.observe_sentences(cues, Protocol.language(source), target)
+		translator.urgent_keys = _due_untranslated(cues)
+		translator.urgent = not translator.urgent_keys.is_empty()
 		translator.tick(true)
 		Tasks.store(video.platform, report, cues, translator, _stored)
+		_cost("tick_us", Time.get_ticks_usec() - began)
+		_observe_shown(cues)
 	# Readiness controls subtitle availability only; the video keeps playing.
 	# A failed provider falls back to original text.
 	var pending: bool = not translator.current.is_empty() or not translator.jobs.is_empty()
@@ -206,6 +221,44 @@ func _mirror_report(incoming: Dictionary) -> Dictionary:
 	return {"state": incoming.get("state", "off"), "phase": "recognition", "epoch": incoming.get("generation", 0), "cues": _mirror_cues,
 		"position": position, "playing": true, "buffered": true, "cache_persistent": false}
 
+## Lines showing now or within 4 s that still lack a translation, by cache key.
+func _due_untranslated(cues: Array) -> Dictionary:
+	var due := {}
+	var position := playback_position(float(report.get("position", 0.0)))
+	var language := Protocol.language(source)
+	for cue: Dictionary in cues:
+		if float(cue.get("start", -1)) >= position + 4.0: break
+		if float(cue.get("end", -1)) <= position or str(cue.get("text", "")).is_empty(): continue
+		var key := Protocol.cache_key(Protocol.normalize(str(cue.text), language), language, target)
+		if not translator.cache.has(key): due[key] = true
+	return due
+
+func _cost(name: String, usec: int) -> void: translator._time(name, usec)
+
+func _observe_shown(cues: Array) -> void:
+	var now := Time.get_ticks_msec()
+	var position := playback_position(float(report.get("position", 0.0)))
+	var language := Protocol.language(source)
+	for cue: Dictionary in cues:
+		if position < float(cue.get("start", -1)) or position >= float(cue.get("end", -1)) or str(cue.get("text", "")).is_empty(): continue
+		var key := Protocol.cache_key(Protocol.normalize(str(cue.text), language), language, target)
+		if _shown.has(key) or _shown.size() >= 4096: continue
+		_shown[key] = true
+		var hit: bool = translator.cache.has(key)
+		translator._sample("due", [1 if hit else 0, now - translator.stats_mark])
+		if not hit: _missed[key] = now
+	for key: String in _missed.keys():
+		if translator.cache.has(key): translator._sample("miss_wait_ms", now - int(_missed[key])); _missed.erase(key)
+		elif now - int(_missed[key]) > 120000: _missed.erase(key)
+	if now - _stats_logged_at >= 60000:
+		_stats_logged_at = now
+		var stats: Dictionary = translator.stats
+		var due: Array = stats.get("due", [])
+		DiagnosticLog.record("live_translation", {"requests": stats.get("requests", {}), "ok": stats.get("ok", {}),
+			"failures": stats.get("failures", {}), "mismatch": stats.get("mismatch", 0), "preempted": stats.get("preempted", 0),
+			"lines": stats.get("line_ms", []).size(), "shown": due.size(), "shown_translated": due.reduce(func(sum, row): return sum + int(row[0]), 0),
+			"legacy": WorkGate.legacy})
+
 ## -1 when no line shows at [position], 0 when it shows untranslated, 1 when translated.
 func translation_at(position: float) -> int:
 	if not active() or not is_finite(position): return -1
@@ -216,6 +269,12 @@ func translation_at(position: float) -> int:
 	return -1
 
 func text_at(position: float) -> String:
+	var began := Time.get_ticks_usec()
+	var result := _text_at(position)
+	if not result.is_empty(): _cost("text_us", Time.get_ticks_usec() - began)
+	return result
+
+func _text_at(position: float) -> String:
 	if not active() or not is_finite(position): return ""
 	for cue: Dictionary in report.get("cues", []):
 		if position < float(cue.get("start", -1)) or position >= float(cue.get("end", -1)): continue

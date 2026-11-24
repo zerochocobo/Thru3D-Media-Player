@@ -12,6 +12,7 @@ const OVERVIEW_SIZE := 28
 const OVERVIEW_LINE_SPACING := 8
 const OVERVIEW_PAGE_LINES := 10
 const LIBRARY := 4000
+const POSTER_HOVER := 3999
 const PHOTO := 6000
 const ACTOR := 8000
 const PART := 10000
@@ -246,16 +247,26 @@ func _picture(node: Dictionary, center: Vector2, area: Vector2, parent: Node3D =
 	if texture:
 		var material = menu._material(Color.WHITE, 12); material.albedo_texture = texture
 		picture.material_override = material; browser._fit_picture(picture, texture, area)
-		if parent: style_hover_picture(picture)
+		if parent: style_hover_picture(picture, node)
+		elif browser.view == "picture": browser.artwork.autoplay = browser.artwork.binding(node, picture, texture)
+		else: bind_poster(node, picture, texture)
 	else:
 		menu._icon("image", Vector3(center.x, center.y, 0.008), minf(area.x, area.y) * 0.4, menu.MUTED, parent if parent else menu)
 
-func style_hover_picture(picture: MeshInstance3D) -> void:
+func bind_poster(node: Dictionary, picture: MeshInstance3D, texture: Texture2D) -> void:
+	var size: Vector2 = picture.mesh.size
+	browser.menu._hover_regions.append({"target": POSTER_HOVER, "rect": Rect2(-size / 2, size),
+		"node": picture, "enabled": false, "hover_disabled": true, "radius": 0.0,
+		"artwork": browser.artwork.binding(node, picture, texture)})
+
+func style_hover_picture(picture: MeshInstance3D, node: Dictionary) -> void:
 	var menu: Node = browser.menu
 	if menu._buttons.is_empty(): return
 	var button: Dictionary = menu._buttons.back()
 	# Compact list thumbnails keep row feedback; image-led cards lift only the picture.
-	if picture.get_parent() != button.node or button.rect.size.y < 0.20: return
+	if picture.get_parent() != button.node: return
+	button["artwork"] = browser.artwork.binding(node, picture, picture.material_override.albedo_texture)
+	if button.rect.size.y < 0.20: return
 	var image_size: Vector2 = picture.mesh.size
 	var material := ShaderMaterial.new(); material.shader = HOVER_PICTURE; material.render_priority = 12
 	material.set_shader_parameter("picture", picture.material_override.albedo_texture)

@@ -134,6 +134,7 @@ func start(dataDir, keyHex string) (err error) {
 	api.Use(gin.Recovery(), middlewares.StoragesLoaded, middlewares.Auth(false), middlewares.AuthAdmin)
 	api.POST("/list", handles.FsListSplit)
 	thunderRoutes(api)
+	guangyaRoutes(api)
 	comicRoutes(api)
 	comicSourceRoutes(api)
 	deletionRoutes(api)

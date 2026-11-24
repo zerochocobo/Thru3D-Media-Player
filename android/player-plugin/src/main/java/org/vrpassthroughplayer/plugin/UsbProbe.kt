@@ -13,6 +13,7 @@ internal object UsbProbe {
         fun error(): String = when {
             found.isNotEmpty() -> ""
             failures.any { it.stage == "partition_table" } -> "USB partition table could not be read"
+            failures.isNotEmpty() && failures.all { it.reason == "no_medium" } -> "No memory card in the USB card reader"
             failures.isNotEmpty() -> "USB capacity could not be read"
             else -> "No supported USB partitions"
         }
@@ -34,7 +35,11 @@ internal object UsbProbe {
                 UsbPartitions.scan(block) { failures.add(Failure(lun, "partition_boot", "read_failed")) }.forEach { found.add(Found(lun, it)) }
             } catch (error: Exception) {
                 if (!alive()) throw IOException("USB access stopped", error)
-                failures.add(Failure(lun, stage, if (error.message == "Invalid USB partition table") "invalid_table" else "read_failed"))
+                failures.add(Failure(lun, stage, when (error.message) {
+                    "Invalid USB partition table" -> "invalid_table"
+                    UsbScsi.NO_MEDIUM -> "no_medium"
+                    else -> "read_failed"
+                }))
             }
         }
         return Result(found, failures, geometry)

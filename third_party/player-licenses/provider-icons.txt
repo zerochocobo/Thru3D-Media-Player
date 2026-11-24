@@ -18,6 +18,7 @@ The retained `.svg` files are source material, not runtime downloads.
 | OneDrive | `onedrive.svg` | [selfh.st icons](https://github.com/selfhst/icons/blob/main/svg/microsoft-onedrive-2018-dark.svg), CC BY 4.0 |
 | WebDAV | `webdav.svg` | Original globe / bidirectional transfer pictogram, project GPL-3.0 |
 | Thunder Cloud Drive | `thunder.svg` | [Thunder Cloud official website](https://pan.xunlei.com/), [official combined SVG](https://static-pan.xunlei.com/_nuxt/dist/client/img/logo-pan-mix.9caf949.svg); vendor product mark |
+| GuangYaPan | `guangya-original.png`, `guangya.svg` | [GuangYaPan official website](https://www.guangyapan.com/), [official logo PNG](https://www.guangyapan.com/static/image/brand_logo_text.b577b15911.png); vector reconstruction of its white mark; vendor product mark |
 
 `tools/Prepare-ProviderIcons.py` reproducibly creates the runtime vectors in
 `app/godot/assets/provider-icons/`. Changes: remove application tile backgrounds
@@ -50,6 +51,13 @@ alpha. Blue starts from the official source tile's `#3F85FF`; the existing light
 theme contrast adjustment applies. This supersedes the initial pure-black preview.
 No colored background or additional raster copy is used. The official asset
 does not supply a separate artwork license; no trademark grant is asserted.
+
+GuangYaPan was added 2026-11-24. The official site publishes only raster logos,
+so `guangya.svg` traces the white duck mark (ring, beak and eye) from the left
+tile of the retained 1599 x 388 official PNG, without its orange tile or the
+wordmark. The one white vector is drawn white on dark themes and in the tile's
+orange on light themes, like Thunder. No separate artwork license is supplied;
+no trademark grant is asserted.
 
 Packaged attribution is in
 `third_party/player-licenses/provider-icons.txt`. Product names and marks remain

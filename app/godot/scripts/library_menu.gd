@@ -113,6 +113,7 @@ const SeekPolicy := preload("res://scripts/seek_policy.gd")
 const SeekStep := preload("res://scripts/seek_step.gd")
 const VideoAuto3D := preload("res://scripts/video_auto_3d.gd")
 const DepthEdgeSteady := preload("res://scripts/depth_edge_steady.gd")
+const DepthEdgeFade := preload("res://scripts/depth_edge_fade.gd")
 const HdrToSdr := preload("res://scripts/hdr_to_sdr.gd")
 const ChoiceFields := preload("res://scripts/choice_fields.gd")
 var choices := ChoiceFields.new(self)
@@ -779,6 +780,9 @@ func attach_platform(value: Object) -> void:
 		platform.media_local_refresh_storage()
 
 func _on_android_lifecycle(state: String) -> void:
+	if state in ["pause", "resume"]:
+		server_browser.artwork.foreground = state == "resume"
+		if state == "pause": server_browser.artwork.stop()
 	if state == "resume" and web_browser.active(): platform.web_browser_action("resume")
 	if state == "resume" and _local_grant_pending:
 		_local_grant_pending = false
@@ -1047,6 +1051,7 @@ func stick_scroll_horizontal(x: float, delta: float) -> void:
 		server_browser.gallery.stick_scroll(x, delta)
 
 func _process(delta: float) -> void:
+	server_browser.artwork.tick(Time.get_ticks_msec())
 	path_menu.tick(Time.get_ticks_msec())
 	Thumbnails.poll()
 	_apply_loaded_thumbnail()
@@ -1613,8 +1618,12 @@ func _update_highlights() -> void:
 		else: button.erase("hover_color")
 	super._update_highlights()
 	var changed := false
+	var focused_artwork := {}
+	var hovered_targets := _hover.values()
 	for button in _buttons:
-		var hovered: bool = media and button.enabled and _hover.values().has(button.target)
+		var hovered: bool = media and button.enabled and hovered_targets.has(button.target)
+		if hovered and button.has("artwork") and focused_artwork.is_empty():
+			focused_artwork = button.artwork
 		if button.get("media_hovered", false) == hovered: continue
 		if button.has("hover_picture"):
 			button.media_hovered = hovered
@@ -1628,6 +1637,12 @@ func _update_highlights() -> void:
 		button["media_hovered"] = hovered
 		if material.get_shader_parameter("hovered") != hovered:
 			material.set_shader_parameter("hovered", hovered); changed = true
+	if media and focused_artwork.is_empty():
+		for region in _hover_regions:
+			if hovered_targets.has(region.target) and region.has("artwork"):
+				focused_artwork = region.artwork
+				break
+	server_browser.artwork.focus = focused_artwork
 	if changed: composition_changed.emit()
 
 func refresh_music_quick_controls() -> void:
@@ -2640,6 +2655,7 @@ func _enter_tree() -> void:
 	thumbnail_prefetch.attach()
 
 func _exit_tree() -> void:
+	server_browser.artwork.clear()
 	thumbnail_prefetch.close()
 	_folder_covers.finish()
 	account_panel.close()
@@ -3592,6 +3608,7 @@ func _draw() -> void:
 		var web: Dictionary = account_panel.data.get("web", {})
 		login_region = "account-login-%s-%s" % [web.get("renderer", "legacy"), str(web.get("desktop", true))]
 	set_meta("menu_capture_region", login_region)
+	server_browser.artwork.autoplay = {}
 	server_browser.backdrop.clear_surface()
 	_audio_storage_labels.clear()
 	_audio_preview_rows.clear(); _subtitle_task_buttons.clear()
@@ -4438,6 +4455,9 @@ func _video_depth_rows(settings: Dictionary) -> Array[Dictionary]:
 	steady.title = I18n.t(DepthEdgeSteady.TITLE); steady.info = DepthEdgeSteady.HINT
 	# With Fill gaps the snapped steps follow picture texture and shred (photo_fill_sheet.py): stretch only.
 	if str(settings.get("depth_render", "stretch")) == "stretch": entries.append(steady)
+	var fade := DepthEdgeFade.choice(bool(settings.get(DepthEdgeFade.KEY, DepthEdgeFade.DEFAULT)))
+	fade.title = I18n.t(DepthEdgeFade.TITLE); fade.info = DepthEdgeFade.HINT
+	if str(settings.get("depth_render", "stretch")) == "stretch": entries.append(fade)
 	var position := preload("res://scripts/depth_position.gd").row(settings.get("depth_position_default", 0), "depth_position_default")
 	position.title = I18n.t("3D position"); position.info = position.hint; position.erase("hint")
 	entries.append(position)
@@ -4551,6 +4571,8 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 		var frame := _material(Color.WHITE, 12)
 		frame.albedo_texture = shown
 		area.material_override = frame
+		if section == Section.MEDIA_SERVER and row.has("scene") and not archives.browsing:
+			button["artwork"] = server_browser.artwork.binding(server_browser.cover_node(row), area, shown)
 	var glyph := _icon(icon, Vector3(0, 0.04, 0.005), 0.065 if picture and not folder_art else 0.1, FOLDER if folder_art else MUTED if picture else UiTheme.color("text"), node)
 	glyph.material_override.render_priority = 13
 	glyph.visible = shown == null

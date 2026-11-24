@@ -4,6 +4,20 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.18.9 — 2026-11-24
+
+- Add GuangYaPan: sign in, browse files and play compatible media directly on the headset.
+- Support compatible APNG and animated WebP covers, posters, actor portraits, episode images and stills from media servers. Point at an image to animate it, open a full-size preview for automatic playback, or use animated detail backgrounds.
+- Add Flat frame edges for video and webpage 2D-to-3D, easing depth back to the screen plane at the left and right picture edges. Off by default; works only with Stretch edges and does not affect photos.
+- Choose cloud services from a new icon grid that displays service icons and names together.
+- Improve live and whole-film subtitle translation: prioritize captions that are about to appear to reduce waiting, and retain completed translations after seeking to avoid repeated translation.
+- Detect baked-in black bars faster in videos and webpages to reduce their interference with 2D-to-3D depth estimation.
+- Fix webpage 2D-to-3D briefly flashing flat when the page updates, improving continuity of the stereo display.
+- Show the most recently added scenes first in Scene Gallery so new entries are easier to find.
+- Fix purple output in some Douyin webpage videos and restore the original video display. Verified on Quest 3.
+- Improve USB card-reader compatibility and error recovery, with a clear no-media message for empty slots.
+- Fix folder-loading errors when returning to Thunder Cloud Drive through recent items, Open containing folder from favorites and similar entries.
+
 ## 0.18.8.1 — 2026-11-24
 
 - Add a safeguard against unintended controller input loss: prioritize a held controller to reduce hand-tracking misclassification taking over controller input.

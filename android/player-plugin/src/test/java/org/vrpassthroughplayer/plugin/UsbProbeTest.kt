@@ -55,4 +55,20 @@ class UsbProbeTest {
             fail("Cancelled scan accepted")
         } catch (error: IOException) { assertEquals("USB access stopped", error.message) }
     }
+    @Test fun emptyCardReaderSlotsAreNamedAndDoNotHideTheInsertedCard() {
+        val disk = Disk(); disk.partition(0, 2048, "EXFAT   ")
+        val reader = UsbProbe.scan(0..2) { if (it == 1) disk else throw IOException(UsbScsi.NO_MEDIUM) }
+        assertEquals(1, reader.found.single().lun)
+        assertEquals(listOf("no_medium", "no_medium"), reader.failures.map { it.reason })
+        assertEquals("No memory card in the USB card reader", UsbProbe.scan(0..1) { throw IOException(UsbScsi.NO_MEDIUM) }.error())
+        assertEquals("USB capacity could not be read", UsbProbe.scan(0..1) { if (it == 0) throw IOException(UsbScsi.NO_MEDIUM) else throw IOException() }.error())
+    }
+    @Test fun onlyMediumNotPresentSenseStopsTheReadinessWait() {
+        fun sense(key: Int, asc: Int) = ByteArray(18).also { it[0] = 0x70; it[2] = key.toByte(); it[12] = asc.toByte() }
+        assertTrue(UsbScsi.noMedium(sense(2, 0x3a)))
+        assertFalse(UsbScsi.noMedium(sense(6, 0x28)))
+        assertFalse(UsbScsi.noMedium(sense(2, 0x04)))
+        assertFalse(UsbScsi.noMedium(sense(2, 0x3a).copyOf(12)))
+        assertFalse(UsbScsi.noMedium(null))
+    }
 }

@@ -3,8 +3,8 @@ extends RefCounted
 ## Rows are prepared in small frame budgets; drawing still uses LibraryMenu's viewport.
 const Methods := preload("res://scripts/platform_methods.gd")
 const Preferences := preload("res://scripts/cloud_paging_preferences.gd")
-const DEFAULTS := {"115_open": 200, "baidu": 1000, "aliyun_open": 200, "quark_open": 100, "123_open": 100, "onedrive": 200, "thunder": 100, "webdav": 200}
-const NAMES := {"115_open": "115", "baidu": "Baidu", "aliyun_open": "Aliyun", "quark_open": "Quark", "123_open": "123 Cloud Drive", "onedrive": "OneDrive", "thunder": "Thunder Cloud Drive (Beta)", "webdav": "WebDAV"}
+const DEFAULTS := {"115_open": 200, "baidu": 1000, "aliyun_open": 200, "quark_open": 100, "123_open": 100, "onedrive": 200, "thunder": 100, "guangya": 100, "webdav": 200}
+const NAMES := {"115_open": "115", "baidu": "Baidu", "aliyun_open": "Aliyun", "quark_open": "Quark", "123_open": "123 Cloud Drive", "onedrive": "OneDrive", "thunder": "Thunder Cloud Drive (Beta)", "guangya": "GuangYaPan", "webdav": "WebDAV"}
 const MAX_RAW := 12000
 const MAX_BYTES := 12 * 1024 * 1024
 const MAX_PAGE := 100000
@@ -65,7 +65,7 @@ func _init(owner: Node) -> void: menu = owner
 
 static func choices(provider: String) -> Array:
 	var result: Array = [{"value": 0, "label": "Auto (%d)" % int(DEFAULTS.get(provider, 200))}]
-	var cap := 1000 if provider in ["baidu", "webdav"] else (100 if provider in ["quark_open", "123_open", "thunder"] else 200)
+	var cap := 1000 if provider in ["baidu", "webdav"] else (100 if provider in ["quark_open", "123_open", "thunder", "guangya"] else 200)
 	for value in [48, 100, 200, 500, 1000]:
 		if value <= cap: result.append({"value": value, "label": str(value)})
 	return result
@@ -87,7 +87,17 @@ func settings_rows(settings: Dictionary) -> Array[Dictionary]:
 	return rows
 
 func provider() -> String:
-	return str(menu._cloud_stack[0].get("provider", "")) if not menu._cloud_stack.is_empty() else ""
+	if menu._cloud_stack.is_empty(): return ""
+	var root: Dictionary = menu._cloud_stack[0]
+	var value := str(root.get("provider", ""))
+	if value.is_empty():
+		# Saved locations (recent, favorites, pickers) keep only folder ids; an unknown
+		# provider would fall back to 200 rows, which 100-row drives reject.
+		var accounts: Dictionary = menu.collections.source_accounts.get("cloud", {})
+		if accounts.is_empty(): accounts = menu.collections._load_source_accounts("cloud")
+		value = str(accounts.get(str(root.get("id", "")).trim_prefix("/"), {}).get("provider", ""))
+		if not value.is_empty(): root["provider"] = value
+	return value
 
 func supported() -> bool:
 	return not menu._cloud_stack.is_empty() and Methods.supports(menu.platform, "media_cloud_page_options")
@@ -96,7 +106,7 @@ func page_size() -> int:
 	return int(menu._cloud_page_size)
 
 func desired_size() -> int:
-	if not supported(): return 48
+	if not supported() or provider().is_empty(): return 48
 	var settings: Dictionary = menu.settings_provider.call() if menu.settings_provider.is_valid() else {}
 	var value := int(settings.get("cloud_page_sizes", {}).get(provider(), 0))
 	for option in choices(provider()):

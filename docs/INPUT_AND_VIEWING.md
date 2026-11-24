@@ -67,3 +67,7 @@ The library folder tree navigates deep paths without changing account binding. R
 ## 0.18.8.1 safeguards
 
 A held controller retains priority over nearby optical hand tracking. VR Alpha cutout subjects appear in front of imported-scene blended materials such as glass and foliage in that display mode. Quark cloud startup, seek recovery and image reads address recent regressions; direct opens can recover their location without first browsing the folder, with extra time possible for a first open in a deep path. A bare 3D in a webpage video title no longer determines stereo packing. These fixes do not establish universal provider or headset acceptance.
+
+## 0.18.9 depth controls
+
+Flat frame edges is off by default and eases left/right video or webpage depth toward the screen plane only in Stretch edges mode. It does not affect photos and is separate from the withdrawn hard-subtitle protection, which remains disabled. Faster baked-in black-bar detection reduces bars entering depth estimation. Source/host tests do not establish headset frame rate or visual acceptance.

@@ -104,7 +104,9 @@ internal object DiagnosticLogs {
             val faultPattern = Regex("""(surface=\d+ mime=[A-Za-z0-9/_.+-]{1,70} codec=[A-Za-z0-9_.-]{1,100} stage=[a-z_]{1,32} type=[A-Za-z0-9_]{1,80} code=(?:na|-?\d+)) count=(\d+) boot_ms=(\d+)""")
             val sessionStart = android.os.Process.getStartElapsedRealtime()
             val faults = linkedMapOf<String, String>()
-            logcat(null, "-t", "1024", "Thru3DCodecFault:I", "*:S").lineSequence().forEach { line ->
+            // Lines read while capturing come first: Quest's small main log may have dropped them since.
+            val codecKept = DouyinFrameEvidence.codecLines()
+            (codecKept + "\n" + logcat(null, "-t", "1024", "Thru3DCodecFault:I", "*:S")).lineSequence().forEach { line ->
                 val event = faultPattern.matchEntire(line.substringAfter("Thru3DCodecFault:", "").trim())
                 if (event != null && (event.groupValues[3].toLongOrNull() ?: -1L) >= sessionStart)
                     faults[event.groupValues[1]] = event.groupValues[2]
@@ -113,7 +115,7 @@ internal object DiagnosticLogs {
                 .ifEmpty { "(no codec diagnostic event in buffer)" }).append('\n')
             val formatField = "(?:width|height|profile|level|bitrate|color-format|color-standard|color-range|color-transfer)"
             val formatRow = Regex("""(surface=\d+ codec=[A-Za-z0-9_.-]{1,100} stage=(?:input|output)(?: $formatField=-?\d+){0,9}) boot_ms=(\d+)""")
-            val formats = logcat(null, "-t", "256", "Thru3DCodecFormat:I", "*:S").lineSequence().mapNotNull { line ->
+            val formats = (codecKept + "\n" + logcat(null, "-t", "256", "Thru3DCodecFormat:I", "*:S")).lineSequence().mapNotNull { line ->
                 val row = formatRow.matchEntire(line.substringAfter("Thru3DCodecFormat:", "").trim())
                 row?.takeIf { (it.groupValues[2].toLongOrNull() ?: -1L) >= sessionStart }?.value
             }.distinct().toList().takeLast(24)

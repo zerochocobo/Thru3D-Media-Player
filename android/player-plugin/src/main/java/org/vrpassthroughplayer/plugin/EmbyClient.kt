@@ -450,10 +450,10 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         return JSONArray(images.values.take(128))
     }
     override fun cover(id: String): URI = account.endpoint("Items/${mediaId(id)}/Images/Primary?maxWidth=512&quality=85")
-    override fun image(id: String, type: String, index: Int, tag: String, width: Int): URI {
+    override fun image(id: String, type: String, index: Int, tag: String, width: Int, original: Boolean): URI {
         mediaRequire(type in setOf("Primary", "Thumb", "Backdrop", "Screenshot", "Art", "Banner") && index in 0..9999, "Cover unavailable")
         mediaRequire(tag.length <= 256 && width in 64..1024, "Invalid server request")
-        val args = linkedMapOf<String, Any>("maxWidth" to width, "maxHeight" to width, "quality" to 85)
+        val args = if (original) linkedMapOf<String, Any>() else linkedMapOf<String, Any>("maxWidth" to width, "maxHeight" to width, "quality" to 85)
         if (tag.isNotBlank()) args["tag"] = tag
         return account.endpoint("Items/${mediaId(id)}/Images/$type/$index?" + mediaQuery(args))
     }

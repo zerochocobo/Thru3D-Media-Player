@@ -601,6 +601,8 @@ func _ready() -> void:
 			plugin.set_depth_render_mode(_depth_render_mode())
 		if PlatformMethods.supports(plugin, "set_depth_edge_steady"):
 			plugin.set_depth_edge_steady(DepthEdgeSteady.load_enabled(settings))
+		if PlatformMethods.supports(plugin, "set_depth_edge_fade"):
+			plugin.set_depth_edge_fade(DepthEdgeFade.load_enabled(settings))
 		if PlatformMethods.supports(plugin, "set_depth_text_protection"):
 			plugin.set_depth_text_protection(false)
 		video.set_alpha_edge(_alpha_edge_value("alpha_feather"), _alpha_edge_value("alpha_shrink"))
@@ -4806,6 +4808,7 @@ func _restore_subtitle_settings() -> void:
 ## choice after headset tests, 2026-10-30).
 const DEPTH_RENDER_MODES := ["fill", "stretch"]
 const DepthEdgeSteady := preload("res://scripts/depth_edge_steady.gd")
+const DepthEdgeFade := preload("res://scripts/depth_edge_fade.gd")
 const DEPTH_RENDER_DEFAULT := "stretch"
 func _depth_render_mode() -> String:
 	var mode := str(settings.get_value("video", "depth_render", DEPTH_RENDER_DEFAULT))
@@ -4965,6 +4968,7 @@ func _library_settings() -> Dictionary:
 		"scene_body_height": scene_import.body_height if scene_import != null else 0.0,
 		"depth_render": _depth_render_mode(),
 		DepthEdgeSteady.KEY: DepthEdgeSteady.load_enabled(settings),
+		DepthEdgeFade.KEY: DepthEdgeFade.load_enabled(settings),
 		"depth_position_default": video.depth_position,
 		"video_auto_3d": video.default_auto_depth,
 		"depth_text_protection": false,
@@ -5131,6 +5135,11 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			settings.set_value("video", DepthEdgeSteady.KEY, bool(value)); settings.save(settings_path)
 			if platform_plugin and PlatformMethods.supports(platform_plugin, "set_depth_edge_steady"):
 				platform_plugin.set_depth_edge_steady(bool(value))
+			if recent_menu: recent_menu.refresh()
+		DepthEdgeFade.KEY:
+			settings.set_value("video", DepthEdgeFade.KEY, bool(value)); settings.save(settings_path)
+			if platform_plugin and PlatformMethods.supports(platform_plugin, "set_depth_edge_fade"):
+				platform_plugin.set_depth_edge_fade(bool(value))
 			if recent_menu: recent_menu.refresh()
 		"restart_app", "quit_app":
 			_finish_app(key == "restart_app")
@@ -5619,7 +5628,7 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		"subtitle_delay", "secondary_subtitle_delay":
 			if value is Dictionary and not video.commit_subtitle_delay(float(value.value), str(value.source_uri), str(value.get("subtitle_key", "__current__"))):
 				if is_instance_valid(player_menu): player_menu.refresh()
-		"alpha_keep_background", "alpha_mask_blend", "seek_mode", "hdr_to_sdr", "depth_render", "depth_edge_steady", "video_auto_3d", "depth_text_protection", "subtitle_distance", "subtitle_follow_view", "stereo_focus_mode", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line": _on_setting_changed(key, value)
+		"alpha_keep_background", "alpha_mask_blend", "seek_mode", "hdr_to_sdr", "depth_render", "depth_edge_steady", "depth_edge_fade", "video_auto_3d", "depth_text_protection", "subtitle_distance", "subtitle_follow_view", "stereo_focus_mode", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line": _on_setting_changed(key, value)
 		"viewing_eye": video.set_viewing_eye(int(value))
 		"spatial_auto_disparity": video.set_spatial_auto_disparity(bool(value))
 		"spatial_match_fov":
@@ -5883,6 +5892,7 @@ func _menu_state() -> Dictionary:
 	result["hand_locked"] = hand_lock.locked
 	result["depth_render"] = _depth_render_mode()
 	result[DepthEdgeSteady.KEY] = DepthEdgeSteady.load_enabled(settings)
+	result[DepthEdgeFade.KEY] = DepthEdgeFade.load_enabled(settings)
 	result["video_auto_3d"] = video.default_auto_depth
 	result["hdr_to_sdr"] = video.hdr_to_sdr_mode()
 	result["reuse_last_mode"] = video.reuse_last_mode
@@ -7761,6 +7771,9 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		video._write_debug_report()
 	elif operation in ["display_quality", "supersampling", "sharpness"]:
 		_on_setting_changed(operation, command.get("value", 0))
+	elif operation == "diagnostic_log_save" and OS.is_debug_build():
+		# Device probes: Settings' "Save log", written to Download/Thru3D/logs as a user's would be.
+		_on_setting_changed("diagnostic_log", "save")
 	elif operation in ["restart_app", "quit_app"]:
 		_finish_app(operation == "restart_app")
 	elif operation == "cloud_accounts":

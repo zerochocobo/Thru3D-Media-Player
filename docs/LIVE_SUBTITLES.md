@@ -45,3 +45,7 @@ Eligible seekable DLNA cast audio can enable live recognition/translation manual
 ## 0.18.8 recognition and narration
 
 Japanese look-ahead and whole-film tasks use Silero speech segments with the existing Moonshine recognition runtime. Live captions tolerate short playback-position delays and reduce duplicates. Subtitle narration reuses voice prompts and stops retries after a cue's speech deadline. The source also retains a SenseVoice host prototype; it is not the shipped Japanese recognition engine. Recordings, transcripts, diagnostic exports and model weights remain excluded.
+
+## 0.18.9 translation scheduling and transport
+
+Live and whole-film translation prioritize upcoming captions, preserve completed translations after seeking and reuse HTTP(S) connections. Imminent untranslated lines can use the existing Edge route while other requests use Bing. Recognized text and selected languages are sent to those services; media audio/video and local logs are not uploaded by this flow. Provider availability and timeouts still apply. The transport has local-server tests; no private transcript, network report or manual real-provider probe is exported.

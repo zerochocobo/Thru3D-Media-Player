@@ -23,6 +23,7 @@ BOUNDS = {
     "quark": (2, 6, 44, 36), "xbvr": (0, 0, 444, 123),
     "webdav": (1, 1, 22, 22),
     "thunder": (64.067072, 118.995862, 848.153938, 827.578527),
+    "guangya": (42.9, 79.7, 303.6, 227.5),
 }
 SERVER_COLORS = {
     "emby": "#52b54b", "jellyfin": "url(#jellyfin-color)",

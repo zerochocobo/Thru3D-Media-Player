@@ -175,7 +175,7 @@
    RefPtr<RenderThread> mThread;
 --- a/gfx/webrender_bindings/RendererOGL.cpp
 +++ b/gfx/webrender_bindings/RendererOGL.cpp
-@@ -21,7 +21,12 @@
+@@ -21,7 +21,13 @@
  #include "mozilla/widget/CompositorWidget.h"
  
  #ifdef MOZ_WIDGET_ANDROID
@@ -185,10 +185,11 @@
  #  include "GLContextEGL.h"
 +#  include "GLReadTexImageHelper.h"
 +#  include "RenderAndroidSurfaceTextureHost.h"
++#  include "nsPrintfCString.h"
  #  include "ScopedGLHelpers.h"
  #  include "mozilla/layers/AndroidHardwareBuffer.h"
  #endif
-@@ -227,6 +232,18 @@
+@@ -227,6 +233,18 @@
      return RenderedFrameId();
    }
  
@@ -207,7 +208,7 @@
    wr_renderer_update(mRenderer);
  
    if (fullRender) {
-@@ -238,9 +255,16 @@
+@@ -238,9 +256,16 @@
  
    nsTArray<DeviceIntRect> dirtyRects;
    bool didRasterize = false;
@@ -224,7 +225,7 @@
    FlushPipelineInfo();
  
    // Track whether any tiles were rasterized for reftest support.
-@@ -284,7 +308,7 @@
+@@ -284,7 +309,7 @@
      }
  
  #ifdef MOZ_WIDGET_ANDROID
@@ -233,7 +234,7 @@
  #endif
  
      if (size.Width() != 0 && size.Height() != 0) {
-@@ -518,15 +542,44 @@
+@@ -518,15 +543,44 @@
    return mPendingScreenPixelsRequest->mPromise;
  }
  
@@ -280,7 +281,7 @@
      request.mPromise->Resolve(Ok{}, __func__);
      return;
    }
-@@ -556,6 +609,41 @@
+@@ -556,6 +610,43 @@
                           destRect.YMost(), LOCAL_GL_COLOR_BUFFER_BIT,
                           LOCAL_GL_LINEAR);
  
@@ -304,8 +305,9 @@
 +    timespec now{};
 +    const bool timed = clock_gettime(CLOCK_BOOTTIME, &now) == 0;
 +    if (timed && !decoder.IsEmpty() && !rendered.IsEmpty()) {
-+      __android_log_print(
-+          ANDROID_LOG_INFO, "Thru3DGeckoFrame",
++      // About 3.6 KB: __android_log_print would cut it at its 1 KB buffer,
++      // __android_log_write keeps one logcat entry (up to about 4 KB).
++      const nsPrintfCString line(
 +          "paired side=%d surface=%" PRId64 " generation=%" PRId64
 +          " timestamp_ns=%" PRId64 " pts_us=%" PRId64 " boot_ns=%" PRId64
 +          " surface_rgb=%s webrender_rgb=%s bt709=%d",
@@ -313,6 +315,7 @@
 +          aFrameProbe->mGeneration, aFrameProbe->mTimestamp, aFrameProbe->mHost->mProbePtsUs,
 +          int64_t(now.tv_sec) * 1000000000 + now.tv_nsec, decoder.get(),
 +          rendered.get(), aFrameProbe->mHost->mProbeBt709 ? 1 : 0);
++      __android_log_write(ANDROID_LOG_INFO, "Thru3DGeckoFrame", line.get());
 +    } else {
 +      __android_log_print(ANDROID_LOG_INFO, "Thru3DGeckoFrame",
 +                          "unpaired: missing, changed or ambiguous video texture");

@@ -99,3 +99,7 @@ Android devices without a hardware AV1 decoder disable AV1 in browser playback a
 ## 0.18.7 browser picture controls and danmaku
 
 Picture Quality Mode is off by default and applies sharpening/denoising immediately to the focused region or whole page. As of 0.18.8, browser sharpening and denoising settings are independent of the player's per-video settings; browser super resolution is currently hidden. Bilibili on-demand Playback Beta offers optional VR danmaku with surround/rain modes, transparency and screen-occlusion controls (inspired by @Ao_Lei). It is off by default and is not enabled for arbitrary sites. Failed page loads show a reason and Retry. Device performance and visual acceptance require separate validation.
+
+## 0.18.9 display fixes
+
+Webpage 2D-to-3D retains stereo output while a new page frame and depth upload are coordinated. The Douyin webpage purple-video fix restores the original video display in the affected WebGL page path; the release record names Quest 3 verification and does not establish all-device or all-format acceptance. Flat frame edges is an optional video/page control, off by default.

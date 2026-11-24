@@ -89,7 +89,7 @@ object WebBrowserDepthBridge {
     }
     /** Picture quality mode over the pair (WebBrowserPicture.look's values; empty for none). */
     @JvmStatic fun quality(id: Int, values: FloatArray) { windows[id]?.quality(values) }
-    /** The player's steady-edges preference (MpvVideoBridge.depthSteady) changed: redraw every window. */
+    /** The player's steady or flat frame edges preference (MpvVideoBridge.depthSteady, depthFade) changed: redraw every window. */
     internal fun steadyChanged() { windows.values.forEach { it.redraw() } }
     @JvmStatic fun status(id: Int): String = windows[id]?.status() ?: "{}"
     /** Gecko must acknowledge surfaceDestroyed before this call; stops output before XR destruction. */
@@ -167,7 +167,8 @@ object WebBrowserDepthBridge {
         private var latched = false
         private var shown = 0L
         private var maskUploaded = false
-        private var limited: Pair<Float, Boolean>? = null // the shown slot's near limit and steady edges
+        private data class Limit(val shift: Float, val steady: Boolean, val fade: Boolean, val plane: Float)
+        private var limited: Limit? = null // the shown slot's near limit, steady edges and flat frame edges
         private var model = 0L // DepthWorker only
         private var modelRevision = -1L
         private var modelFrame = 0L
@@ -356,11 +357,20 @@ object WebBrowserDepthBridge {
                     val raw = rawInput
                     val near = synchronized(mapLock) { nearPool.first { it !== latest && it !== reading } }
                     val started = System.nanoTime()
-                    DepthNative.infer(model, rgb, raw)
+                    val inferred = JSONObject(DepthNative.infer(model, rgb, raw))
                     depthInferMs = depthInferMs * .9 + (System.nanoTime() - started) / 1e6 * .1
+                    // Black bars in the page (a portrait video in fullscreen), filled before inference, are no
+                    // more picture than the letterbox: only the picture sets the near band, as in the player.
+                    val band = content.copyOf()
+                    inferred.optJSONArray("picture")?.takeIf { it.length() == 4 && it.getInt(2) > 0 && it.getInt(3) > 0 }?.let { picture ->
+                        val x0 = maxOf(band[0], picture.getInt(0)); val y0 = maxOf(band[1], picture.getInt(1))
+                        val x1 = minOf(band[0] + band[2], picture.getInt(0) + picture.getInt(2))
+                        val y1 = minOf(band[1] + band[3], picture.getInt(1) + picture.getInt(3))
+                        if (x1 > x0 && y1 > y0) { band[0] = x0; band[1] = y0; band[2] = x1 - x0; band[3] = y1 - y0 }
+                    }
                     val reset = modelRevision != generation
                     val result = JSONObject(DepthNative.stabilize(model, raw, rgb, near.left, reset, if (reset) 1 else (frame - modelFrame).coerceIn(1L, 1000L).toInt(),
-                        content[0], content[1], content[2], content[3]))
+                        band[0], band[1], band[2], band[3]))
                     modelRevision = generation; modelFrame = frame
                     if (result.optString("state") != "ready") { submittedRevision = -1; return@post }
                     near.right.clear(); near.right.put(near.left.duplicate().apply { clear() }); near.right.clear()
@@ -381,22 +391,28 @@ object WebBrowserDepthBridge {
             var packed = false
             var depthReady = false
             if (near != null && strength > 0f && depthEnabled) {
-                // Steady edges follow the player's preference, edge stretching only (as in the player).
-                val view = .0175f * strength to (MpvVideoBridge.depthSteady && !fill)
+                // Steady and flat frame edges follow the player's preferences, edge stretching only (as in the player).
+                val fade = MpvVideoBridge.depthFade && !fill
+                val view = Limit(.0175f * strength, MpvVideoBridge.depthSteady && !fill, fade, if (fade) convergence else .35f)
                 if (!maskUploaded) {
-                    // The upload limits (and steadies) the map itself: set both first.
-                    RenderBridgeNative.steadyEdges(renderer, view.second); RenderBridgeNative.limitNear(renderer, 0L, view.first)
+                    // The upload limits (and steadies, and fades) the map itself: set all three first.
+                    RenderBridgeNative.steadyEdges(renderer, view.steady); RenderBridgeNative.edgeFade(renderer, view.fade, view.plane)
+                    RenderBridgeNative.limitNear(renderer, 0L, view.shift)
                     // Player slots accept a mask exactly once, with non-overlapping eye buffers.
                     try { check(RenderBridgeNative.uploadAlpha(renderer, shown, near.left, near.right)) }
                     finally { synchronized(mapLock) { reading = null } }
                     maskUploaded = true; limited = view
                 } else if (limited != view) {
                     // Only a changed strength or preference redoes the held map, not every redraw.
-                    RenderBridgeNative.steadyEdges(renderer, view.second); RenderBridgeNative.limitNear(renderer, shown, view.first)
+                    RenderBridgeNative.steadyEdges(renderer, view.steady); RenderBridgeNative.edgeFade(renderer, view.fade, view.plane)
+                    RenderBridgeNative.limitNear(renderer, shown, view.shift)
                     limited = view
                 }
                 depthReady = RenderBridgeNative.alphaReady(renderer, shown)
-                if (fill && depthReady) {
+                // Never present a new page frame flat while its map uploads: every Gecko repaint
+                // (playback, a hovering ray) then flickered the whole page between 2D and 3D.
+                if (!depthReady) { synchronized(mapLock) { reading = null }; return false }
+                if (fill) {
                     val warped = if (matte) RenderBridgeNative.warpAlpha(renderer,shown,.0175f*strength,convergence,matteTexture,matteContent)
                         else RenderBridgeNative.warp(renderer, shown, .0175f * strength, convergence)
                     if (warped != 0) { texture = warped; packed = true }
@@ -423,8 +439,7 @@ object WebBrowserDepthBridge {
             // A failed enhance leaves nothing drawn: the next tick draws the pair directly.
             if (staged && !picture.finish(current!!, 2, matte)) return false
             check(EGL14.eglSwapBuffers(display, target))
-            // Retry the held frame once the non-blocking Alpha upload fence signals.
-            return near == null || strength <= 0f || !depthEnabled || depthReady
+            return true
         }
         private fun fail(e: Throwable) { error = e.javaClass.simpleName; android.util.Log.e("BrowserDepth", "Browser 3D unavailable", e) }
         fun stop(): Boolean {

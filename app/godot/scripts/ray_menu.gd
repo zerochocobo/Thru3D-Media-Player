@@ -134,6 +134,8 @@ var _decorations: Array[Node3D] = []
 var _ray_blockers: Array[Dictionary] = []
 ## Passive surfaces stop the visual pointer without becoming clickable controls.
 var _pointer_panels: Array[MeshInstance3D] = []
+## Passive content can receive pointer focus without becoming a trigger or grab target.
+var _hover_regions: Array[Dictionary] = []
 var _backdrop: MeshInstance3D
 ## Hover names of icon-only buttons (target -> text), shown over the hovered button.
 var _tips: Dictionary = {}
@@ -373,6 +375,7 @@ func _pointer_hit_over(origin: Vector3, direction: Vector3, button_hit: Dictiona
 		surfaces.append({"target": NONE, "rect": Rect2(-size / 2, size), "enabled": false,
 			"hover_disabled": true, "node": panel,
 			"radius": panel.material_override.get_shader_parameter("corner_radius")})
+	surfaces.append_array(_hover_regions)
 	return _nearest_hit(origin, direction, surfaces, button_hit)
 
 func _block_rays(panel: MeshInstance3D, size: Vector2, radius: float = 0.025) -> void:
@@ -525,6 +528,7 @@ func _clear_layout() -> void:
 	_buttons_generation += 1
 	_ray_blockers.clear()
 	_pointer_panels.clear()
+	_hover_regions.clear()
 	for label in _labels:
 		label.free()
 	_labels.clear()

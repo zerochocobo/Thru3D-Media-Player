@@ -79,7 +79,8 @@ const Thru3DFixtureMiguTrace = (() => {
       redirects:(bag?.redirects||[]).map(r=>({from_request_index:urls.indexOf(r.from),to_request_index:urls.indexOf(r.to),status:r.status,
         same_host:address(r.from)?.host===address(r.to)?.host,same_path:address(r.from)?.pathname===address(r.to)?.pathname})),
       body_links:[...(bag?.bodyLinks||new Map())].flatMap(([from,links])=>links.urls.map(to=>({from_request_index:urls.indexOf(from),to_request_index:urls.indexOf(to),
-        format:links.kind,exactly_observed:bag.requests.has(to)}))).slice(0,128)};
+        format:links.kind,exactly_observed:bag.requests.has(to),serialized_request_index:urls.indexOf(address(to)?.href),
+        serialized_observed:bag.requests.has(address(to)?.href)}))).slice(0,128)};
   }
 
   function install(lookup, publish) {
@@ -159,7 +160,9 @@ const Thru3DFixtureMiguTrace = (() => {
     const state = documents.get(tab);
     if (!sample(page) || !state || state.page !== page || state.documentPage !== page) return null;
     return {trace: snapshot(state), requests: [...state.items.values()].filter(r => r.kind === 'hls').slice(-24)
-      .map(r => ({kind: r.kind, url: r.url, original_url: r.original_url, at: r.at}))};
+      .map(r => ({kind: r.kind, url: r.url, original_url: r.original_url, at: r.at})),
+      body_declarations:[...(bags.get(state)?.bodyLinks||new Map())].flatMap(([from,links])=>links.urls.map(url=>({
+        from_request_index:[...bags.get(state).requests].indexOf(from),format:links.kind,url}))).slice(0,128)};
   }
   return {install, snapshot, observed, bodyLinks};
 })();

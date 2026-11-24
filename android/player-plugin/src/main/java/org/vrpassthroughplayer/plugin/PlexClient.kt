@@ -163,7 +163,7 @@ internal class PlexClient(private val account: MediaServerAccount, private val h
     private fun imageNode(id: String, type: String, key: String) = JSONObject().put("id", id).put("image_type", type).put("image_index", 0)
         .put("image_tag", java.security.MessageDigest.getInstance("SHA-256").digest(key.toByteArray()).take(16).joinToString("") { "%02x".format(it) })
 
-    override fun image(id: String, type: String, index: Int, tag: String, width: Int): URI {
+    override fun image(id: String, type: String, index: Int, tag: String, width: Int, original: Boolean): URI {
         mediaRequire(type in setOf("Primary", "Thumb", "Backdrop") && index == 0 && tag.length <= 256 && width in 64..1024, "Cover unavailable")
         val section = Regex("section-([0-9]{1,20})").matchEntire(id)
         val actor = Regex("actor-([0-9]{1,20})-([0-9]{1,20})").matchEntire(id)
@@ -188,6 +188,8 @@ internal class PlexClient(private val account: MediaServerAccount, private val h
         mediaRequire(asset.rawUserInfo == null && asset.fragment == null && if (asset.isAbsolute)
             asset.scheme in setOf("http", "https") && !asset.host.isNullOrBlank() else
             key.startsWith('/') && !key.startsWith("//") && asset.path.split('/').none { it in setOf(".", "..") }, "Cover unavailable")
+        if (original && key.startsWith("/library/metadata/") && asset.rawQuery == null)
+            return endpoint(key, "/library/metadata/")
         // Plex fetches its own declared asset. The account token stays on the local server.
         return account.endpoint("photo/:/transcode?" + mediaQuery(mapOf("url" to key, "width" to width, "height" to width, "minSize" to 0, "upscale" to 0)))
     }

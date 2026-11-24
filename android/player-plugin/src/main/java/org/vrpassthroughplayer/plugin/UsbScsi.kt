@@ -5,6 +5,10 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 internal object UsbScsi {
+    const val NO_MEDIUM="USB medium not present"
+    /** Fixed-format sense: NOT READY / MEDIUM NOT PRESENT, e.g. an empty card-reader slot. */
+    fun noMedium(sense:ByteArray?)=sense!=null && sense.size>12 && (sense[0].toInt() and 0x7e)==0x70 &&
+        (sense[2].toInt() and 15)==2 && sense[12].toInt()==0x3a
     fun capacity(capacity10:ByteArray,capacity16:()->ByteArray):Pair<Int,Long> {
         var b=ByteBuffer.wrap(capacity10).order(ByteOrder.BIG_ENDIAN)
         var last=b.int.toLong() and 0xffffffffL

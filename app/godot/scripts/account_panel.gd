@@ -201,7 +201,7 @@ func rows() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	if view == "choose":
 		if kind == "cloud":
-			for p in ["115_open", "baidu", "aliyun_open", "quark_open", "123_open", "onedrive", "thunder", "webdav"]:
+			for p in ["115_open", "baidu", "aliyun_open", "quark_open", "123_open", "onedrive", "thunder", "guangya", "webdav"]:
 				var row := {"title": provider_name(p), "icon": menu.Icons.provider(p), "account_provider": p}
 				if p == "thunder": row.tip = "Beta. Unofficial integration; may be unstable."
 				result.append(row)
@@ -297,7 +297,7 @@ func action(target: int) -> bool:
 			else: web_selecting = true; web_selection = Rect2()
 			web_filters.clear(); menu.refresh()
 		30:
-			if data.get("web", {}).get("desktop_only", false): return true
+			if data.get("web", {}).get("desktop_only", false) or provider == "guangya": return true
 			if not web_hand.is_empty(): return true
 			web_selecting = false; web_focus = Focus.FULL; web_filters.clear()
 			web_action("mobile" if data.get("web", {}).get("desktop", false) else "desktop")
@@ -323,6 +323,25 @@ func _draw_server_choices() -> void:
 	if not menu.rows.is_empty():
 		menu._button(menu.ROW_BASE, str(menu.rows[0].title), Vector2(0.155, -0.36), Vector2(1.25, 0.095), true, "", false, menu._list)
 
+## Cloud providers as a 3-column icon grid, so the whole list fits on one page.
+func _draw_cloud_choices() -> void:
+	menu._list = Node3D.new(); menu.add_child(menu._list); menu._decorations.append(menu._list); menu._bar_thumb = null
+	var card_size := Vector2(0.40, 0.19)
+	for i in menu.rows.size():
+		var row: Dictionary = menu.rows[i]
+		var title := str(row.title)
+		menu._button(menu.ROW_BASE + i, title, Vector2(-0.275 + (i % 3) * 0.43, 0.24 - (i / 3) * 0.22), card_size, true, "", false, menu._list)
+		var card: MeshInstance3D = menu._buttons.back().node
+		var label: Label3D = card.get_child(0)
+		label.position.y = -0.058
+		var size: int = menu.TEXT_BODY
+		while size > menu.TEXT_AUX - 2 and menu.text_width(title, size) > card_size.x - 0.03: size -= 1
+		menu.set_label_size(label, size)
+		if menu.text_width(title, size) > card_size.x - 0.03:
+			label.text = menu._fit_title(title, "", card_size.x - 0.03, size)
+		menu._icon(str(row.icon), Vector3(0, 0.025, 0.004), 0.085, UiTheme.color("provider_ink"), card)
+		if row.has("tip"): menu._tips[menu.ROW_BASE + i] = I18n.t(str(row.tip))
+
 func draw() -> void:
 	if view == "web":
 		draw_web(); return
@@ -336,6 +355,7 @@ func draw() -> void:
 	var enabled := not bool(data.get("busy", false))
 	if view in ["choose", "accounts", "discover", "license", "plex_servers"]:
 		if view == "choose" and kind == "server": _draw_server_choices()
+		elif view == "choose": _draw_cloud_choices()
 		else: menu._draw_rows()
 		if view == "accounts": menu._button(BASE + 22, "", Vector2(0.8, 0.46), Vector2(0.09, 0.07), true, "plus")
 		if view == "discover": menu._button(BASE + 22, I18n.t("Add manually"), Vector2(0.15, -0.51), Vector2(0.38, 0.07))
@@ -358,7 +378,7 @@ func draw() -> void:
 				elif provider == "115":
 					menu._button(BASE + 7, I18n.t("Sign in on website"), Vector2(-0.15, login_y), Vector2(0.54, 0.077), enabled)
 					menu._button(BASE + 6, I18n.t("Sign in"), Vector2(0.46, login_y), Vector2(0.54, 0.077), enabled and not str(data.get("fields", {}).get("username", "")).is_empty() and int(data.get("password_length", 0)) > 0, "", true)
-				else: menu._button(BASE + 7, I18n.t("Authorize" if provider in ["115_open", "baidu", "aliyun_open", "quark_open", "123_open", "onedrive"] else "Sign in on website"), Vector2(0.17, login_y), Vector2(0.7, 0.077), enabled, "", true)
+				else: menu._button(BASE + 7, I18n.t("Authorize" if provider in ["115_open", "baidu", "aliyun_open", "quark_open", "123_open", "onedrive", "guangya"] else "Sign in on website"), Vector2(0.17, login_y), Vector2(0.7, 0.077), enabled, "", true)
 				if _editing_id():
 					menu._button(BASE + 8, "", Vector2(0.73, header if compact else -0.51), Vector2(0.1, 0.07), enabled and not str(data.get("fields", {}).get("name", "")).strip_edges().is_empty(), "check")
 					menu._tips[BASE + 8] = I18n.t("Save name")
@@ -517,7 +537,8 @@ func draw_gecko() -> void:
 	var actions := [
 		[BASE, "up", "Back"], [BASE + 17, "back", "Back"], [BASE + 18, "refresh", "Reload"],
 		[BASE + 29, "close" if web_selecting else "expand" if web_focus != Focus.FULL else "region_focus", "Cancel selection" if web_selecting else "Exit focus" if web_focus != Focus.FULL else "Focus free region"]]
-	if not info.get("desktop_only", false): actions.append([BASE + 30, "phone" if info.get("desktop", false) else "desktop", "Mobile site" if info.get("desktop", false) else "Desktop site"])
+	# GuangYaPan's sign-in page has a single layout, so it offers no desktop/mobile switch.
+	if not info.get("desktop_only", false) and provider != "guangya": actions.append([BASE + 30, "phone" if info.get("desktop", false) else "desktop", "Mobile site" if info.get("desktop", false) else "Desktop site"])
 	actions.append([menu.CLOSE, "close", "Close"])
 	for i in actions.size():
 		var item: Array = actions[i]

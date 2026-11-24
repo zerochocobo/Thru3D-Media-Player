@@ -14,8 +14,9 @@ param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT }
     [switch]$EnableNarrationDevelopment,
     # A worktree has no keystore of its own: point at the main checkout's keystore/signing.
     [string]$SigningDirectory = '',
-    # A separate package keeps emulator Debug diagnostics apart from an installed Release.
-    [ValidateSet('','com.wapok.thru3d.emulator')][string]$DebugApplicationId = '',
+    # A separate package keeps emulator Debug diagnostics apart from an installed Release; .probe is the
+    # QUEST Debug twin of the Douyin frame probe package, driven by debug commands to verify the engine.
+    [ValidateSet('','com.wapok.thru3d.emulator','com.wapok.thru3d.probe')][string]$DebugApplicationId = '',
     # PICO China uses the same identity, with a distinct channel and upload build number.
     [switch]$PicoChinaStore,
     # Optional Meta store identity, separate from the ordinary Quest application.
@@ -41,7 +42,11 @@ if ($PicoChinaStore -and $AndroidVersionCode -eq 0) { throw 'PICO China requires
 if ($QuestStore -and ($BuildType -ne 'Release' -or $XrVendor -ne 'Quest')) { throw 'QuestStore is limited to QUEST Release builds.' }
 $distributionChannel = if ($PicoChinaStore) { 'pico_cn_store' } elseif ($QuestStore) { 'quest_store' } else { 'standard' }
 if ($UncompressedNativeLibraries -and ($BuildType -ne 'Release' -or $XrVendor -ne 'Quest')) { throw 'UncompressedNativeLibraries is limited to QUEST Release comparison builds.' }
-if ($DouyinPlaybackLog -and -not ($QuestStore -or ($XrVendor -eq 'Pico' -and $BuildType -eq 'Release'))) {
+$probeVerification = $DebugApplicationId -eq 'com.wapok.thru3d.probe'
+if ($probeVerification -and -not ($DouyinPlaybackLog -and $BuildType -eq 'Debug' -and $XrVendor -eq 'Quest')) {
+    throw 'The probe application id is limited to the QUEST Debug verification of DouyinPlaybackLog.'
+}
+if ($DouyinPlaybackLog -and -not ($QuestStore -or $probeVerification -or ($XrVendor -eq 'Pico' -and $BuildType -eq 'Release'))) {
     throw 'DouyinPlaybackLog requires a dedicated QUEST store or PICO Release diagnostic package.'
 }
 if ($DouyinPlaybackLog -and (-not $GeckoProbeAar -or -not (Test-Path -LiteralPath $GeckoProbeAar -PathType Leaf))) { throw 'The diagnostic build requires the patched ARM64 GeckoProbeAar.' }
@@ -73,8 +78,11 @@ if ($XrVendor -eq 'OpenXR') {
 }
 $applicationId = if ($QuestStore) { 'com.thru3d.quest' } else { 'com.wapok.thru3d' }
 $applicationName = if ($QuestStore) { 'Thru3D Media Player XR' } else { 'Thru3D Media Player' }
-if ($DebugApplicationId) {
+if ($DebugApplicationId -and -not $probeVerification) {
     if ($BuildType -ne 'Debug' -or $XrVendor -ne 'Pico') { throw 'The emulator application id is limited to PICO Debug builds.' }
+    $applicationId = $DebugApplicationId
+}
+if ($probeVerification) {
     $applicationId = $DebugApplicationId
 }
 function Convert-HexString([byte[]]$Bytes) { -join ($Bytes | ForEach-Object { $_.ToString('X2') }) }
@@ -178,6 +186,8 @@ if ($DebugApplicationId -or $QuestStore) {
 if ($DouyinPlaybackLog) {
     if ($QuestStore) {
         $ApkName = "Thru3D-QUEST-META-STORE-$appVersion-DOUYIN-FRAME-$releaseStamp.apk"
+    } elseif ($probeVerification) {
+        $ApkName = "Thru3D-QUEST-$appVersion-DOUYIN-FRAME-VERIFY-debug-$releaseStamp.apk"
     } else {
         $probePlatform = if ($PicoChinaStore) { 'PICO-CN-STORE' } else { 'PICO' }
         $ApkName = "Thru3D-$probePlatform-$appVersion-vc$expectedVersionCode-DOUYIN-FRAME-$releaseStamp.apk"

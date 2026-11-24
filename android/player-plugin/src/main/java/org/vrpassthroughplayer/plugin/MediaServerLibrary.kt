@@ -59,18 +59,31 @@ internal object MediaServerPosterCache {
 
     fun prune(cacheDir: File, keep: File) {
         val files = posters(cacheDir)
-        var bytes = files.sumOf { it.length() }
-        for (file in files.sortedBy { it.lastModified() }) {
-            if (bytes <= 128L * 1024 * 1024) break
+        val totalLimit = 128L * 1024 * 1024
+        val animationLimit = 16L * 1024 * 1024
+        var animationBytes = 0L
+        var bytes = 0L
+        for (file in files) {
+            val size = file.length()
+            bytes += size
+            if (file.extension == "anim") animationBytes += size
+        }
+        if (bytes <= totalLimit && animationBytes <= animationLimit) return
+        // Drop old optional originals before evicting ordinary posters.
+        for (file in files.sortedWith(compareBy<File> { it.extension != "anim" }.thenBy { it.lastModified() })) {
+            if (bytes <= totalLimit && (animationBytes <= animationLimit || file.extension != "anim")) break
             if (file == keep) continue
             val size = file.length()
-            if (file.delete()) bytes -= size
+            if (file.delete()) {
+                bytes -= size
+                if (file.extension == "anim") animationBytes -= size
+            }
         }
     }
 
     private fun posters(cacheDir: File): List<File> =
         File(cacheDir, DIRECTORY).listFiles().orEmpty().filter { it.isDirectory }
-            .flatMap { directory -> directory.listFiles().orEmpty().filter { it.isFile && it.extension == "jpg" } }
+            .flatMap { directory -> directory.listFiles().orEmpty().filter { it.isFile && (it.extension == "jpg" || it.extension == "anim") } }
 }
 
 internal class MediaServerLibrary(private val context: () -> Context?, private val streams: () -> LocalStreamServer,
@@ -140,7 +153,7 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
                             "folder_artwork" -> client.folderArtwork(req.getString("scene_id"))
                             "candidates" -> client.candidates(req)
                             "detail" -> JSONObject().put("detail", client.detail(req.getString("scene_id")))
-                            "cover" -> cover(app, account, client, http, req, posterGeneration)
+                            "cover", "cover_animation" -> cover(app, account, client, http, req, posterGeneration)
                             else -> throw MediaServerFailure("Invalid server request")
                         }
                     }
@@ -164,31 +177,42 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
         val type = request.optString("image_type", "Primary"); val index = request.optInt("image_index")
         val tag = request.optString("image_tag"); val width = request.optInt("max_width", 512)
         // Validate before consulting the cache, including warm-cache requests.
-        val image = client.image(id, type, index, tag, width)
+        val animation = request.optString("action") == "cover_animation"
+        val image = client.image(id, type, index, tag, width, original = animation)
         val variant = if (!request.has("image_type")) "" else "-" + java.security.MessageDigest.getInstance("SHA-256")
             .digest("$type/$index/$tag/$width".toByteArray()).take(12).joinToString("") { "%02x".format(it) }
         mediaRequire(generation == MediaServerPosterCache.generation, "Request cancelled")
         val directory = File(app.cacheDir, MediaServerPosterCache.DIRECTORY + "/" + account.id).apply { mkdirs() }
-        val file = File(directory, "$id$variant.jpg")
+        val file = File(directory, "$id$variant." + if (animation) "anim" else "jpg")
+        val result = JSONObject().put("scene_id", id)
         if (!file.isFile || System.currentTimeMillis() - file.lastModified() > 86400000) {
-            val bitmap = runCatching { decodeCover(http.bytes(image, 8 * 1024 * 1024), maxSize = width) }.getOrElse { original ->
-                if (original is MediaServerFailure && original.code in setOf("Request cancelled", "Server authentication required")) throw original
-                if (request.has("image_type")) throw MediaServerFailure("Cover unavailable")
-                val fallback = client.coverFallback(id) ?: throw MediaServerFailure("Cover unavailable")
-                decodeCover(http.bytes(fallback.uri, 16 * 1024 * 1024), fallback)
-            }
             val temporary = File(directory, "$id.${UUID.randomUUID()}.tmp")
             try {
-                temporary.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+                if (animation) {
+                    val connection = http.open(image, accept = "image/webp,image/png,image/jpeg,*/*;q=0.5")
+                    val found = try {
+                        connection.inputStream.use { MediaArtworkFile.copyAnimation(it, connection.contentLengthLong, temporary) }
+                    } finally { http.release(connection) }
+                    if (!found) return result
+                } else {
+                    val bitmap = runCatching { decodeCover(http.bytes(image, 8 * 1024 * 1024), maxSize = width) }.getOrElse { original ->
+                        if (original is MediaServerFailure && original.code in setOf("Request cancelled", "Server authentication required")) throw original
+                        if (request.has("image_type")) throw MediaServerFailure("Cover unavailable")
+                        val fallback = client.coverFallback(id) ?: throw MediaServerFailure("Cover unavailable")
+                        decodeCover(http.bytes(fallback.uri, 16 * 1024 * 1024), fallback)
+                    }
+                    try { temporary.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 85, it) } }
+                    finally { bitmap.recycle() }
+                }
                 synchronized(MediaServerStore) {
                     mediaRequire(generation == MediaServerPosterCache.generation &&
                         !Thread.currentThread().isInterrupted && MediaServerStore.get(app, account.id) == account, "Request cancelled")
                     mediaRequire(temporary.renameTo(file), "Cover unavailable")
                     MediaServerPosterCache.prune(app.cacheDir, file)
                 }
-            } finally { bitmap.recycle(); temporary.delete() }
+            } finally { temporary.delete() }
         }
-        return JSONObject().put("scene_id", id).put("path", file.absolutePath)
+        return result.put("path", file.absolutePath)
     }
     private fun decodeCover(bytes: ByteArray, region: MediaCover? = null, maxSize: Int = 512): Bitmap {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }

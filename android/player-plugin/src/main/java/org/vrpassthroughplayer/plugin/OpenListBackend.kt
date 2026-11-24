@@ -11,7 +11,7 @@ import java.util.UUID
 /** Mount secrets live in the encrypted core database; account IDs keep cloud paths stable. */
 internal object OpenListBackend {
     private val drivers = OpenListAuth.drivers + (CloudDrive.WEBDAV to "WebDav") +
-        (CloudDrive.THUNDER to "ThunderPlayer")
+        (CloudDrive.THUNDER to "ThunderPlayer") + (CloudDrive.GUANGYA to "GuangyaPlayer")
     fun supported(provider: String) = provider in drivers
     private var initialized = false
     @Synchronized fun start(context: Context) {
@@ -41,6 +41,7 @@ internal object OpenListBackend {
     fun createThunder(credential: JSONObject): JSONObject {
         return create(CloudDrive.THUNDER, ThunderAuth.credential(credential))
     }
+    fun createGuangya(credential: JSONObject): JSONObject = create(CloudDrive.GUANGYA, GuangyaWebLogin.addition(credential))
     fun createWebDav(connection: RemoteWebDav.Connection): JSONObject =
         create(CloudDrive.WEBDAV, connection.addition()).apply {
             val fields = connection.metadata()
@@ -255,7 +256,7 @@ internal object OpenListBackend {
             require(!file.folder && file.size > 0)
             // Reuse the existing identity-bound proxy: transient CDN disconnects
             // become 502, allowing CloudStreamSource's single exact-range retry.
-            if (provider == CloudDrive.THUNDER) return resolveArchive(file)
+            if (provider == CloudDrive.THUNDER || provider == CloudDrive.GUANGYA) return resolveArchive(file)
             // Consume a single recent find() result instead of searching the same path twice.
             // Listed companions and subsequent link refreshes still verify identity afresh.
             var receipt = synchronized(this) {
