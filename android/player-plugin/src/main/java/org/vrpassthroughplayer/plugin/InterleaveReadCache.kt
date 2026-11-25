@@ -368,7 +368,9 @@ internal class AdaptiveInterleaveSource(private val source: StreamSource,
     override fun open(): StreamSource.Reader {
         check(!closed)
         cache?.let { return it.open() }
-        return if ((source as? CloudStreamSource)?.continuable == true) ContinuingReader() else source.open()
+        val continueBody = (source as? CloudStreamSource)?.continuable == true ||
+            (source as? HttpRangeStreamSource)?.wholeFileResponse == true
+        return if (continueBody) ContinuingReader() else source.open()
     }
     override fun openAudio(): StreamSource.Reader {check(!closed);return cache?.openAudio() ?: source.openAudio()}
     override fun close() {

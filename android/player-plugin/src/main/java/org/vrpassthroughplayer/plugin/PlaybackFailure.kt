@@ -23,6 +23,10 @@ internal data class PlaybackFailure(
     val decoder: JSONObject? = null,
     /** Coarse request context for a media-library open failure. */
     val mediaServer: JSONObject? = null,
+    /** Loopback cloud read context: provider label, failing step, error kind, timing. */
+    val cloud: JSONObject? = null,
+    /** Last MPV cache observation before the output-format deadline. Unavailable properties are omitted. */
+    val outputWait: JSONObject? = null,
 ) {
     fun json(): JSONObject = JSONObject().put("reason", reason).put("stage", stage)
         .put("detail", safeDetail(detail)).put("http_status", httpStatus).put("mpv_code", mpvCode)
@@ -31,6 +35,8 @@ internal data class PlaybackFailure(
             if (video != null) it.put("video", video)
             if (decoder != null) it.put("decoder", decoder)
             if (mediaServer != null) it.put("media_server", mediaServer)
+            if (cloud != null) it.put("cloud", cloud)
+            if (outputWait != null) it.put("output_wait", outputWait)
         }
 
     companion object {
@@ -109,9 +115,18 @@ internal data class PlaybackFailure(
                 "nothing_to_play", "unknown_format" -> "parsing"
                 else -> "opening"
             } }
+            val details = status.optJSONObject("details")
+            val outputWait = if (reason == "output_timeout" && details != null) JSONObject().apply {
+                details.optString("cache_duration").toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }?.let { put("cache_seconds", it) }
+                details.optString("cache_speed").toLongOrNull()?.takeIf { it >= 0 }?.let { put("cache_bytes_per_second", it) }
+                when (details.optString("paused_for_cache")) {
+                    "yes" -> put("paused_for_cache", true)
+                    "no" -> put("paused_for_cache", false)
+                }
+            }.takeIf { it.length() > 0 } else null
             val failure = PlaybackFailure(reason, stage, listOf(status.optString("error"), status.optString("render_error"))
-                .filter(String::isNotBlank).joinToString("; "), httpStatus = httpStatus, mpvCode = code)
-            val stream = DecoderCapacity.stream(status.optJSONObject("details")) ?: return failure
+                .filter(String::isNotBlank).joinToString("; "), httpStatus = httpStatus, mpvCode = code, outputWait = outputWait)
+            val stream = DecoderCapacity.stream(details) ?: return failure
             val decoder = runCatching { DecoderCapacity.describe(stream) }.getOrNull()
             return withCapacity(failure, stream.json(), decoder)
         }
@@ -119,8 +134,14 @@ internal data class PlaybackFailure(
         /** Name the hardware limit when a decoding/output failure meets a video beyond what this device advertises. */
         fun withCapacity(failure: PlaybackFailure, video: JSONObject, decoder: JSONObject?): PlaybackFailure {
             val exceeded = decoder?.optBoolean("exceeded") == true
-            val reason = if (exceeded && failure.reason in setOf("unknown", "decoder_failed", "video_output_failed", "output_timeout"))
-                "decoder_capacity_exceeded" else failure.reason
+            // A rate outside the advertised range cannot identify the cause of a concrete VO error.
+            val rateOnly = decoder?.optBoolean("size_supported") == true && !decoder.optBoolean("rate_supported", true)
+            val capacityFailure = when (failure.reason) {
+                "unknown", "decoder_failed" -> exceeded
+                "video_output_failed", "output_timeout" -> exceeded && !rateOnly
+                else -> false
+            }
+            val reason = if (capacityFailure) "decoder_capacity_exceeded" else failure.reason
             return failure.copy(reason = reason, stage = if (reason != failure.reason) "decoding" else failure.stage, video = video, decoder = decoder)
         }
 

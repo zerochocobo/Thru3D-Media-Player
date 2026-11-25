@@ -5,6 +5,8 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+import org.json.JSONObject
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
@@ -19,6 +21,9 @@ internal class CloudStreamSource(
     constructor(size: Long, resolve: () -> CloudLink, linkConnection: (URI, CloudLink) -> HttpURLConnection) :
         this(size, resolve) { this.linkConnection = linkConnection }
     @Volatile private var link: CloudLink? = null
+    /** The account's provider label, for failure reports only. */
+    @Volatile var provider = ""
+    @Volatile private var delivered = false
     private var resolvedAt = 0L
     @Volatile private var rangeWindow=Long.MAX_VALUE
     @Volatile private var closed = false
@@ -70,6 +75,7 @@ internal class CloudStreamSource(
         check(!closed)
         return CloudStreamSource(size, resolve, connect).also {
             it.linkConnection = linkConnection; it.rangeWindow = rangeWindow
+            it.provider = provider
             it.archivePacer = archivePacer
             it.completeRanges = completeRanges
             it.link = link; it.resolvedAt = resolvedAt
@@ -189,7 +195,7 @@ internal class CloudStreamSource(
         private fun requestRange(offset: Long) {
             disconnect()
             var selected = currentLink()
-            var refreshed=false;var gatewayRetried=false;var busyRetries=0
+            var refreshed=false;var gatewayRetried=false;var busyRetries=0;var attempts=0
             val requestedEnd=minOf(rangeEnd, offset+minOf(windowBytes,size-offset)-1)
             while(true) {
                 var retry=false
@@ -197,6 +203,7 @@ internal class CloudStreamSource(
                 for (redirect in 0..5) {
                     if (closed || done || originRetired || Thread.currentThread().isInterrupted) throw cancelled()
                     archivePacer?.await { closed || done }
+                    val started = System.nanoTime(); attempts++
                     val request = linkConnection?.invoke(target, selected) ?: connect(target)
                     synchronized(this) {
                         if (closed || done || originRetired) { request.disconnect(); throw cancelled() }
@@ -234,7 +241,8 @@ internal class CloudStreamSource(
                         break
                     }
                     if (status !in setOf(200, 206)) {
-                        throw PlaybackFailureException(PlaybackFailure.http(status).copy(sourceCode=reason))
+                        throw PlaybackFailureException(PlaybackFailure.http(status).copy(sourceCode=reason,
+                            cloud=readContext(request, started, attempts, offset)))
                     }
                     val type = request.contentType.orEmpty().lowercase()
                     if (type.contains("text/html") || type.contains("application/json")) throw PlaybackFailureException(PlaybackFailure("not_media", "reading", "Upstream returned HTML or JSON instead of media", httpStatus = status))
@@ -255,10 +263,23 @@ internal class CloudStreamSource(
                         input = request.inputStream
                         next = offset
                     }
+                    if (!delivered) { delivered = true; deliveredSources.incrementAndGet() }
+                    lastDelivered = System.nanoTime()
                     return
                 }
                 if(!retry)throw PlaybackFailureException(PlaybackFailure("redirect_failed", "reading", "Upstream redirect limit exceeded"))
             }
+        }
+        /** Where the loopback read failed, how long the failing request took, and whether this
+         * process read any cloud media before it: labels and numbers only, never the address. */
+        private fun readContext(request: HttpURLConnection, started: Long, attempts: Int, offset: Long): JSONObject {
+            val last = lastDelivered
+            return JSONObject().put("provider", provider)
+                .put("step", request.getHeaderField("X-Thru3D-Read-Step").orEmpty().takeIf { it in readSteps }.orEmpty())
+                .put("error", request.getHeaderField("X-Thru3D-Read-Error").orEmpty().takeIf { it in readErrors }.orEmpty())
+                .put("elapsed_ms", (System.nanoTime() - started) / 1_000_000).put("attempts", attempts)
+                .put("from_start", offset == 0L).put("sources_ok", deliveredSources.get())
+                .put("since_ok_s", if (last == 0L) -1 else (System.nanoTime() - last) / 1_000_000_000)
         }
         fun disconnect() {
             // Disconnect first to unblock a pending read during logout or player shutdown.
@@ -274,6 +295,11 @@ internal class CloudStreamSource(
     }
     companion object {
         private class OriginSwitched : IOException("Origin ownership changed")
+        val readSteps = setOf("lease", "storage", "link", "proxy", "first_part", "panic", "legacy")
+        val readErrors = setOf("dns", "timeout", "canceled", "http", "tls", "connect", "eof", "network", "not_found", "storage", "other")
+        /** Cloud sources in this process that received their first media response. */
+        private val deliveredSources = AtomicInteger()
+        @Volatile private var lastDelivered = 0L
         val upstreamReasons=setOf("upstream_error","cdn_cookie_missing","cdn_cookie_invalid","cdn_ua_missing","cdn_expired","cdn_signature_invalid","cdn_signature_missing","cdn_ip_mismatch","cdn_rate_limited","cdn_connections_limited")
         private fun cancelled() = PlaybackFailureException(PlaybackFailure("cancelled", "reading", "Request cancelled"))
         private fun invalidRange(status: Int) = PlaybackFailureException(PlaybackFailure("invalid_range", "reading", "Upstream returned an invalid byte range", httpStatus = status))

@@ -92,7 +92,7 @@ func run() -> void:
 	platform.browser.fullscreen=false; poll(); host._depth_changed("auto_3d_hidden",false)
 	check(host.depth.enabled and not peer.depth.auto_3d_hidden,"Disabling the default affects future hides without turning off current 3D")
 	for language in ["zh","zh_Hant","en","ja"]:
-		I18n.use(language); host.depth_settings=true; host.refresh()
+		I18n.use(language); host.depth_settings=true; host.depth_expanded=true; host.refresh()
 		var switches: Array=host.depth_choices.targets.values().filter(func(item): return item.key=="auto_3d_hidden")
 		check(switches.size()==1 and switches[0].value==true,"Browser settings use one shared sliding switch in "+language)
 		var title: Label3D=host._labels.filter(func(label): return label.text==I18n.t("3D when menus hide"))[0]

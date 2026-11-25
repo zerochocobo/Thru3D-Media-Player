@@ -22,7 +22,7 @@ static func allows(caps: Dictionary, operation: String) -> bool:
 	if operation == "previous_video": return caps.get("has_previous", false)
 	if operation == "next_video": return caps.get("has_next", false) or caps.get("seek", false)
 	if operation in ["seek", "seek_mode", "playback_speed", "loop", "repeat_one"]: return caps.get("seek", false)
-	if operation in ["depth", "depth_strength", "depth_position", "alpha", "color_grade"]: return caps.get("effects", false)
+	if operation in ["depth", "depth_strength", "depth_position", "depth_foreground", "alpha", "color_grade"]: return caps.get("effects", false)
 	if operation in ["sequence", "repeat_all", "shuffle"]: return false
 	return true
 

@@ -292,6 +292,7 @@ internal class MpvVideoBridge(
         // 2D->3D view: eye-width fraction of the full parallax and the near value on the screen plane.
         @Volatile var depthShift = 0.035f
         @Volatile var depthConvergence = 0.35f
+        @Volatile var depthForeground = 0f // -1..1, near_foreground.h
         val depthViewQueued = AtomicBoolean(false)
         /** Both effects run a model on every presented frame and gate pairs through it. */
         val inference get() = alpha || depth
@@ -301,6 +302,10 @@ internal class MpvVideoBridge(
         var layerMasks = 0L // GL thread
         var debugTicks = 0L // GL thread
         var audioDelay = 0.0 // seconds MPV delays the audio by: the layer's measured hold for masks
+        var depthHoldMs: Double? = null // host lock: 2D->3D's hold as last measured
+        /** 2D->3D frame interpolation shows each stereo pair this much later than it arrives (ms; Godot sets it). */
+        @Volatile var pairDelayMs = 0.0
+        @Volatile var pairDelaySet = false // from then on the delay follows it even before a hold was measured
         var maskLatencyMs = 0.0 // GL thread: capture -> mask on the layer, smoothed
         val captureNs = HashMap<Long, Long>() // GL thread: capture time of each Alpha layer token
         /** GPU copy: finished masks waiting for their frame to be drawn, and the one on the layer. The
@@ -328,6 +333,9 @@ internal class MpvVideoBridge(
         var copyingPair: JSONObject? = null
         var pendingSource: JSONObject? = null // Retain producer lease until a consumer slot accepts the copy.
         var deferredCopies = 0L
+        /** Draws that found the previous copy's GPU fence still pending; one copy is in flight, so
+         * each such draw postpones the next capture by a frame. Diagnostics only. */
+        var copyFenceWaits = 0L
         val leases = HashMap<Long, Lease>()
         // Host-copy model inputs: taken per capture, back when the lease retires. (Keyed by colour texture,
         // they grew by a pair per frame where each capture has a new texture, the layer path without
@@ -482,10 +490,7 @@ internal class MpvVideoBridge(
                     "fd://${file.descriptor.fd}"
                 }
                 host.markStartup("source_resolved_ms")
-                val documentName = if (source.scheme == "content") app.contentResolver.query(source,
-                        arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
-                            if (it.moveToFirst()) it.getString(0).orEmpty() else ""
-                        }.orEmpty() else ""
+                val documentName = if (source.scheme == "content") StorageDocumentReader.displayName(app.contentResolver, source).orEmpty() else ""
                 val iso = Uri.parse(path).path.orEmpty().lowercase().endsWith(".iso") ||
                     source.path.orEmpty().lowercase().endsWith(".iso") || documentName.lowercase().endsWith(".iso")
                 if (iso) host.loadingPhase = "reading_disc"
@@ -602,7 +607,7 @@ internal class MpvVideoBridge(
                                         windowDegrees = debugInt("debug.vrpp.layer.window", 0).coerceIn(0, 180).toFloat(),
                                         budgetMs = debugInt("debug.vrpp.layer.budget", (LayerCopy.DEFAULT_BUDGET_MS * 10).toInt()).coerceIn(10, 200) / 10.0,
                                         tint = debugInt("debug.vrpp.layer.tint", 0) == 1)
-                                        .also { it.keepFrames = host.alphaLayer }
+                                        .also { it.keepFrames = host.alphaLayer; it.speed = host.speed }
                                 }.onFailure { android.util.Log.w("QuestPlayer", "Layer copy unavailable", it) }.getOrNull()
                                 if (host.layer && host.copy == null && host.debugFanout) host.fanout = runCatching {
                                     LayerFanout(host.layerSurface!!, surfaceWidth, surfaceHeight, holdable = host.alphaLayer).also { it.keepFrames = host.alphaLayer }
@@ -781,6 +786,7 @@ internal class MpvVideoBridge(
             if (session.host.handle > 0 && !MpvSourceNative.setSpeed(session.host.handle, speed)) return false
             if(session.host.speed!=speed)session.host.narration?.transportChanged()
             session.host.speed = speed
+            session.host.copy?.speed = speed
             return true
         }
     }
@@ -809,6 +815,13 @@ internal class MpvVideoBridge(
             if (!MpvSourceNative.setAudioDelay(host.handle, seconds + host.pipelineAudioDelay)) return false
             host.userAudioDelay = seconds
         }
+        return true
+    }
+    fun setPairDelay(id: Int, ms: Double): Boolean {
+        if (!ms.isFinite() || ms !in 0.0..500.0) return false
+        val session = sessions[id] ?: return false
+        if (!session.depth) return false
+        session.pairDelayMs = ms; session.pairDelaySet = true
         return true
     }
     fun setNarration(id: Int, json: String): Boolean {
@@ -1337,9 +1350,14 @@ internal class MpvVideoBridge(
                         // short and steady, so a finer step follows it; until a new generation (a seek) has
                         // measured its own, the delay stays where it was.
                         val depthDelay = if (session.depth) session.depthModel?.audioDelayMs else null
+                        if (depthDelay != null) session.depthHoldMs = depthDelay
+                        val depthHold = session.depthHoldMs
+                        // Frame interpolation shows each frame later too, by the copy's own steady delay; 2D->3D's
+                        // pairs by the delay Godot paces them with, on top of their hold.
                         val delay = if (session.layerAlpha) Math.round(session.host.frames?.holdMs ?: 0.0) / 1000.0
-                            else if (depthDelay != null) Math.round(depthDelay) / 1000.0
-                            else if (session.depth) session.host.pipelineAudioDelay else 0.0
+                            else if (session.depth && (depthHold != null || session.pairDelaySet)) Math.round((depthHold ?: 0.0) + session.pairDelayMs) / 1000.0
+                            else if (session.depth) session.host.pipelineAudioDelay
+                            else Math.round(session.host.copy?.holdMs ?: 0.0) / 1000.0
                         val step = if (session.depth) 0.008 else 0.02
                         if (Math.abs(delay - session.host.pipelineAudioDelay) >= step && MpvSourceNative.setAudioDelay(session.host.handle, delay + session.host.userAudioDelay))
                             session.host.pipelineAudioDelay = delay
@@ -1392,6 +1410,7 @@ internal class MpvVideoBridge(
                         .put("unique_post_draw_frames", session.uniquePostDrawFrames).put("rvm_model_created", session.model != null)
                         .put("rvm_model_ready", session.model?.isReady() == true)
                         .put("producer_copy_deferred", session.deferredCopies).put("producer_copy_pending", session.pendingSource != null)
+                        .put("copy_fence_waits", session.copyFenceWaits)
                         .put("eof_pair_post_draw", session.end.complete()).put("eof_presented_slot", session.end.completedSlot())
                         .put("audio_focus", audioFocusState).put("narration", narrationStatus))
                     Trace.endSection()
@@ -1689,7 +1708,7 @@ internal class MpvVideoBridge(
     }
     private fun finishCopy(session: Session) {
         val copying = session.copying ?: return
-        if (!RenderBridgeNative.ready(session.renderer, copying.second)) return
+        if (!RenderBridgeNative.ready(session.renderer, copying.second)) { session.copyFenceWaits++; return }
         val texture = RenderBridgeNative.texture(session.renderer, copying.second)
         val bytes = session.dims[0]*session.dims[1]*3*4
         val pair = session.copyingPair ?: error("Immutable copy descriptor missing")
@@ -1781,6 +1800,7 @@ internal class MpvVideoBridge(
         if (pair.optBoolean("layer_alpha")) session.cadence.finished(token) // room for the next frame
         check(session.leases.containsKey(token)) { "Alpha color lease unavailable" }
         if (session.depth) {
+            check(RenderBridgeNative.foreground(session.renderer, session.depthForeground, session.depthConvergence))
             check(RenderBridgeNative.limitNear(session.renderer, 0L, session.depthShift))
             check(RenderBridgeNative.steadyEdges(session.renderer, depthSteady && depthStretch))
             check(RenderBridgeNative.edgeFade(session.renderer, depthFade && depthStretch, session.depthConvergence))
@@ -1935,6 +1955,13 @@ internal class MpvVideoBridge(
         depthFade = enabled
         sessions.forEach { (id, session) -> if (session.depth) setDepthView(id, session.depthShift.toDouble(), session.depthConvergence.toDouble()) }
     }
+    /** Foreground scale (-1..1); a held (paused) 2D->3D frame is redrawn with it. */
+    fun setDepthForeground(id: Int, scale: Double): Boolean {
+        val session = sessions[id] ?: return false
+        if (!session.depth || !scale.isFinite() || scale !in -1.0..1.0) return false
+        session.depthForeground = scale.toFloat()
+        return setDepthView(id, session.depthShift.toDouble(), session.depthConvergence.toDouble())
+    }
     fun setDepthView(id: Int, shift: Double, convergence: Double): Boolean {
         val session = sessions[id] ?: return false
         if (!session.depth || shift !in 0.0..0.2 || convergence !in 0.0..1.0) return false
@@ -1950,6 +1977,7 @@ internal class MpvVideoBridge(
                     // Both views read the limited near texture: re-limit it before any rewarp.
                     RenderBridgeNative.steadyEdges(session.renderer, depthSteady && depthStretch)
                     RenderBridgeNative.edgeFade(session.renderer, depthFade && depthStretch, session.depthConvergence)
+                    RenderBridgeNative.foreground(session.renderer, session.depthForeground, session.depthConvergence)
                     RenderBridgeNative.limitNear(session.renderer, token, session.depthShift)
                     if (pair.optInt("warp_texture_id") > 0)
                         stereoPair(session, token)

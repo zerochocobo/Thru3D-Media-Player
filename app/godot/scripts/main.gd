@@ -411,6 +411,8 @@ func _ready() -> void:
 	_apply_memory_mode(null)
 	# Older GPUs (Quest 2, Neo3) take the cheaper 2x pass.
 	if low_end_gpu: display.eye_msaa = Viewport.MSAA_2X
+	# Debug A/B only: MSAA takes effect at startup (Quest ignores a later change).
+	if OS.is_debug_build() and settings.has_section_key("debug", "eye_msaa"): display.eye_msaa = int(settings.get_value("debug", "eye_msaa"))
 	display.configure(get_viewport(), world.environment, XRServer.find_interface("OpenXR"), desktop)
 	# QIYU's STAGE space disagrees with its own view poses once the user sets a floor height (head
 	# -1.09 m, eyes +0.98 m; user log 2026-11-18). LOCAL ignores that setting; XrFloor then adds
@@ -439,6 +441,7 @@ func _ready() -> void:
 	video.preferred_depth_strength = video.DepthStrength.load_preference(settings, false)
 	video.depth_strength = video.preferred_depth_strength
 	video.set_depth_position(video.DepthPosition.load_value(settings))
+	video.set_depth_foreground(video.DepthForeground.load_value(settings))
 	video.default_auto_depth = video.Auto3D.load_enabled(settings)
 	video.changed.connect(_on_video_changed)
 	video.playback_completed.connect(_on_video_completed)
@@ -461,6 +464,7 @@ func _ready() -> void:
 	subtitle_tasks.load_settings(settings)
 	video.pip.load_settings(settings)
 	video.pip.compositor.density = 20.0 if low_end_gpu else 26.0
+	video.anime4k_low_end = low_end_gpu
 	video.pip.image_requested.connect(_begin_pip_image)
 	video.pip.zoom_changed.connect(_on_pip_zoom_changed)
 	video.pip.window_opened.connect(func(window):
@@ -482,6 +486,7 @@ func _ready() -> void:
 	_restore_subtitle_settings()
 	video.alpha_copy_packed = memory_saver
 	video.load_picture_preferences(settings)
+	video.last_picture_changed.connect(_on_last_picture_changed)
 	_restore_flat_video_settings()
 	video.restore_screen_curve(settings, "screen")
 	add_child(video)
@@ -1888,6 +1893,8 @@ func _sync_display_policy() -> void:
 			# The beach draws its whole world every refresh and measured 10 ms alone: 120 Hz halves the view.
 			if _beach_active(): cap = minf(cap, 72.0 if low_end_gpu else 90.0)
 			rate = display.video_refresh_rate(float(fps), display.available_refresh_rates(), cap)
+			# Frame interpolation fills every refresh whatever the source's rate: the lowest leaves it the most time.
+			if video.picture_interpolating(): rate = display.video_refresh_rate(72.0, display.available_refresh_rates(), cap)
 	var now := Time.get_ticks_msec()
 	if not is_equal_approx(rate, _refresh_wanted):
 		_refresh_wanted = rate; _refresh_since = now
@@ -1908,7 +1915,8 @@ func _sync_display_policy() -> void:
 var frame_budget := preload("res://scripts/frame_diagnostics.gd").new()
 
 ## Once a second: playback windows for the exported log (see playback_diagnostics.gd).
-var playback_windows := preload("res://scripts/playback_diagnostics.gd").new()
+const PlaybackDiagnostics := preload("res://scripts/playback_diagnostics.gd")
+var playback_windows := PlaybackDiagnostics.new()
 var _playback_window_sampled_ms := 0
 func _sample_playback_diagnostics(playing: bool) -> void:
 	var now := Time.get_ticks_msec()
@@ -1921,6 +1929,7 @@ func _playback_diagnostic_sample() -> Dictionary:
 	var details: Dictionary = video.media.playback.get("details", {})
 	var menu := _active_menu()
 	return {"frames": video.presented_frames(), "xr_frames": Engine.get_frames_drawn(),
+		"eye": PlaybackDiagnostics.eye_sample(video.media.playback, video.media.last_pair) if not video.video_layer_shown else {},
 		"decoder_drops": str(details.get("decoder_frame_drop_count", "")).to_int(),
 		"vo_drops": str(details.get("vo_frame_drop_count", "")).to_int(),
 		"vo_late": str(details.get("vo_delayed_frame_count", "")).to_int(),
@@ -3586,6 +3595,8 @@ func _poll_external_video() -> void:
 		true, false, "", {"external_temporary": bool(request.get("temporary", true))})
 	if not _external_video_uri.is_empty(): _show_player_menu()
 	Log.record("external_video_open", {"temporary": bool(request.get("temporary", true)),
+		"source_scheme": request.get("source_scheme", ""), "loopback": request.get("loopback", false),
+		"action": request.get("action", ""),
 		"reuse_last_mode": video.reuse_last_mode, "last_mode": video.last_mode.duplicate(),
 		"mode_lock": video.mode_lock.duplicate()})
 
@@ -4970,6 +4981,7 @@ func _library_settings() -> Dictionary:
 		DepthEdgeSteady.KEY: DepthEdgeSteady.load_enabled(settings),
 		DepthEdgeFade.KEY: DepthEdgeFade.load_enabled(settings),
 		"depth_position_default": video.depth_position,
+		"depth_foreground_default": video.depth_foreground,
 		"video_auto_3d": video.default_auto_depth,
 		"depth_text_protection": false,
 		"subtitle_distance": video.subtitle_distance, "subtitle_follow_view": video.subtitle_follow_view,
@@ -5125,6 +5137,9 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 		"depth_position_default":
 			video.set_depth_position(value)
 			settings.set_value("video", "depth_position", video.depth_position); settings.save(settings_path)
+		"depth_foreground_default":
+			video.set_depth_foreground(value)
+			settings.set_value("video", "depth_foreground", video.depth_foreground); settings.save(settings_path)
 		"depth_render":
 			if str(value) in DEPTH_RENDER_MODES:
 				settings.set_value("video", "depth_render", str(value)); settings.save(settings_path)
@@ -5535,9 +5550,10 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		if not photo_active and video: video.set_video_aspect_lock(bool(value))
 		return
 	if screen_edit_lock.guard(key): return
-	if key in ["picture_quality", "picture_upscale", "picture_denoise"]:
+	if key in ["picture_quality", "picture_upscale", "picture_denoise", "picture_interpolation", "picture_anime4k", "picture_anime4k_mode", "picture_anime4k_tier"]:
 		if photo_active or not video: return
 		if not _picture_controls_current(): return
+		if key == "picture_interpolation" and bool(value): video.retry_interpolation()
 		video.preview_picture(key, value)
 		_commit_picture_adjustment()
 		return
@@ -5556,6 +5572,13 @@ func _on_player_setting(key: String, value: Variant) -> void:
 			value = value.get("value")
 		if not photo_active and video.cast_allows(key) and video.set_depth_position(value):
 			settings.set_value("video", key, video.depth_position); settings.save(settings_path)
+		return
+	if key == "depth_foreground":
+		if value is Dictionary:
+			if str(value.get("source_uri", "")) != video.local_uri: return
+			value = value.get("value")
+		if not photo_active and video.cast_allows(key) and video.set_depth_foreground(value):
+			settings.set_value("video", key, video.depth_foreground); settings.save(settings_path)
 		return
 	if key == "dual_subtitles" and not photo_active:
 		video.dual_subtitles.set_enabled(bool(value)); return
@@ -5740,6 +5763,13 @@ func _on_last_video_mode_changed(mode: Dictionary) -> void:
 	settings.set_value("video", "last_mode", mode)
 	settings.save(settings_path)
 
+func _on_last_picture_changed(picture: Dictionary, network: bool) -> void:
+	if picture.is_empty():
+		if settings.has_section_key("video", "last_picture"): settings.erase_section_key("video", "last_picture")
+	else:
+		settings.set_value("video", "last_picture", {"picture": picture, "network": network})
+	settings.save(settings_path)
+
 func _on_last_photo_mode_changed(mode: Dictionary) -> void:
 	settings.set_value("photo", "last_mode", mode)
 	settings.save(settings_path)
@@ -5813,6 +5843,7 @@ func _menu_state() -> Dictionary:
 		"depth_requested": video.portrait.strength > 0.0 if video.portrait_requested() else video.depth_requested,
 		"depth_enabled": video.portrait.active if video.portrait_requested() else video.depth_enabled,
 		"depth_position": video.depth_position,
+		"depth_foreground": video.depth_foreground,
 		"depth_strength": video.portrait.strength if video.portrait_requested() else video.depth_strength,
 		"portrait_requested": video.portrait_requested(), "portrait_auto": video.portrait.automatic,
 		"flat_passthrough_requested": video.flat_passthrough_requested(),
@@ -5859,6 +5890,9 @@ func _menu_state() -> Dictionary:
 		"picture_sharpness": roundf(video.picture_sharpness * 100.0),
 		"picture_upscale": video.picture_upscale, "picture_upscale_available": video.picture_upscale_available(),
 		"picture_denoise": video.picture_denoise,
+		"picture_interpolation": video.picture_interpolation, "picture_interpolation_blocker": video.picture_interpolation_blocker(),
+		"picture_anime4k": video.picture_anime4k, "picture_anime4k_mode": video.picture_anime4k_mode, "picture_anime4k_tier": video.picture_anime4k_tier,
+		"picture_anime4k_blocker": video.picture_anime4k_blocker(), "picture_anime4k_tiers": video.anime4k_tiers(),
 		"picture_upscale_sizes": video.picture_upscale_sizes(),
 		# Options that leave the compositor layer carry a warning only where the layer exists.
 		"layer_available": video.video_layer != null and video.video_layer.available(),
@@ -6092,9 +6126,9 @@ func _on_video_thumbnail_ready(uri: String) -> void:
 
 func _on_video_playback_failed() -> void:
 	if not _external_video_uri.is_empty() and video.local_uri == _external_video_uri:
-		_external_video_uri = ""
+		var message := _menu_error()
 		_close_current_media(false)
-		recent_menu.status = I18n.t("Cannot open media. Check the address and access permissions.")
+		recent_menu.status = message if not message.is_empty() else I18n.t("Media loading failed. No specific cause was reported.")
 		recent_menu.refresh()
 		return
 	if recent_menu and recent_menu.web_browser.has_playback_return(video.local_uri):
@@ -7336,6 +7370,14 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 	if screen_edit_lock.guard(key): return
 	if key == "depth_position_default":
 		video.set_depth_position(value); return
+	if key == "depth_foreground_default":
+		video.set_depth_foreground(value); return
+	if key == "depth_foreground":
+		if value is Dictionary:
+			if str(value.get("source_uri", "")) != video.local_uri: return
+			value = value.get("value")
+		if not photo_active and video.cast_allows(key): video.set_depth_foreground(value)
+		return
 	if key == "depth_position":
 		if value is Dictionary:
 			if str(value.get("source_uri", "")) != video.local_uri: return
@@ -7486,6 +7528,7 @@ func _save_playback_adjustments() -> void:
 	video.commit_stereo_view()
 	settings.set_value("video", "playback_speed", video.preferred_playback_speed)
 	settings.set_value("video", "depth_position", video.depth_position)
+	settings.set_value("video", "depth_foreground", video.depth_foreground)
 	_remember_current_screen()
 	if not _cinema_video_locked() and not portrait_screen.active: _set_screen_preference("curve_degrees", video.screen_curve)
 	settings.set_value("subtitles", "size", video.subtitle_size)
@@ -7866,6 +7909,10 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		if video and command.has("picture_sharpness"): video.picture_sharpness = float(command.picture_sharpness)
 		if video and command.has("picture_upscale"): video.picture_upscale = int(command.picture_upscale)
 		if video and command.has("picture_denoise"): video.picture_denoise = int(command.picture_denoise)
+		if video and command.has("picture_interpolation"): video.picture_interpolation = bool(command.picture_interpolation)
+		if video and command.has("picture_anime4k"): video.picture_anime4k = bool(command.picture_anime4k)
+		if video and command.has("picture_anime4k_mode"): video.picture_anime4k_mode = int(command.picture_anime4k_mode)
+		if video and command.has("picture_anime4k_tier"): video.picture_anime4k_tier = int(command.picture_anime4k_tier)
 		if video and command.get("grade") is Dictionary:
 			for key in command.grade: video.color_grade.adjust(str(key), command.grade[key])
 			video.color_grade.apply(video.material)
@@ -7878,6 +7925,8 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		if command.has("relight_look") and passthrough_relight: passthrough_relight.debug_look = command.relight_look
 		if command.has("relight_state") and passthrough_relight: DiagnosticLog.record("passthrough_relight_state", passthrough_relight.snapshot())
 		if command.has("relief_foveation"): display.debug_relief_foveation = int(command.relief_foveation); display._apply_foveation()
+		# Eye-buffer video cost: the plain-playback fast path on or off (QIYU turns it on).
+		if video and command.has("plain_fast_path"): video.material.set_shader_parameter("plain_fast_path", bool(command.plain_fast_path))
 		if command.has("render_scale") and display.xr != null and "render_target_size_multiplier" in display.xr:
 			display.xr.render_target_size_multiplier = float(command.render_scale)
 		if video and video.video_layer:
@@ -8004,7 +8053,13 @@ func _finish_app(restart: bool) -> bool:
 		get_tree().quit()
 	return true
 
+var _focus_in_deferred := false
+
 func _notification(what: int) -> void:
+	# Godot sends FOCUS_IN from the render thread's event queue before the EGL context is current
+	# again: a menu rebuilt here would get GPU buffers 0 and crash the next draw (DNEX6363).
+	if what == NOTIFICATION_APPLICATION_FOCUS_IN and not _focus_in_deferred:
+		_deferred_focus_in.call_deferred(); return
 	var usage := preload("res://scripts/session_usage.gd")
 	if what == NOTIFICATION_APPLICATION_PAUSED: usage.suspend("paused", true)
 	elif what == NOTIFICATION_APPLICATION_RESUMED: usage.suspend("paused", false)
@@ -8038,6 +8093,9 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_PAUSED and video: video.checkpoint_playback()
 	if what == NOTIFICATION_APPLICATION_PAUSED and photo and _gallery_save_after > 0:
 		_save_photo_adjustments()
+
+func _deferred_focus_in() -> void:
+	_focus_in_deferred = true; _notification(NOTIFICATION_APPLICATION_FOCUS_IN); _focus_in_deferred = false
 
 func _photo_menu_state() -> Dictionary:
 	var state: Dictionary = photo.snapshot() if photo else {}

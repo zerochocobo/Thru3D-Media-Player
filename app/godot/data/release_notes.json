@@ -2,6 +2,204 @@
   "schema": 1,
   "entries": [
     {
+      "version": "0.18.10",
+      "date": "2026-11-25",
+      "title": {
+        "zh": "Anime4K、补帧（Beta）与 3D 调节",
+        "zh_Hant": "Anime4K、補幀（Beta）與 3D 調整",
+        "en": "Anime4K, Frame Interpolation (Beta) and 3D Controls",
+        "ja": "Anime4K・フレーム補間（Beta）・3D調整"
+      },
+      "items": [
+        {
+          "id": "anime4k-picture-plugin",
+          "text": {
+            "zh": "画质面板新增「插件」页，内置适用于 2D 动画的 Anime4K。开启后可选模式和档位，设置按片记忆。启用时，画质面板默认打开「插件」页。负载过高时会自动停用。Anime4K 和补帧只能开启其中一项。",
+            "zh_Hant": "畫質面板新增「外掛」頁，內建適用於 2D 動畫的 Anime4K。開啟後可選擇模式與等級，設定逐片記憶。啟用時，畫質面板預設開啟「外掛」頁。負載過高時會自動停用。Anime4K 與補幀只能開啟其中一項。",
+            "en": "The picture panel adds a Plugins tab with Anime4K for 2D animation. Choose a mode and tier after enabling it. Settings are remembered per video. While Anime4K is enabled, the picture panel opens on Plugins. Anime4K turns off under excessive load and cannot run alongside frame interpolation.",
+            "ja": "画質パネルに「プラグイン」タブと2Dアニメ向けのAnime4Kを追加しました。オンにするとモードとグレードを選べ、設定は動画ごとに記憶されます。有効時は画質パネルが「プラグイン」タブで開きます。負荷が高いと自動で停止し、フレーム補間とは同時に使えません。"
+          }
+        },
+        {
+          "id": "frame-interpolation-beta",
+          "text": {
+            "zh": "普通视频播放也新增补帧（Beta），在画质模式中开启，默认关闭并按片记忆。支持不高于4K、33fps的兼容片源，不支持人物透视和鱼眼，设备负载过高时自动停止补帧。PICO版为首次开放，画面不顺时欢迎通过「发送日志」反馈。自动停止后，可在当前视频中重新开启。",
+            "zh_Hant": "一般影片播放也新增補幀（Beta），可在畫質模式中開啟，預設關閉並逐片記憶。支援不高於4K、33fps的相容片源，不支援人物透視和魚眼，裝置負載過高時自動停止補幀。PICO版為首次開放，畫面不順暢時歡迎透過「傳送日誌」回報。自動停止後，可在目前播放的影片中重新開啟。",
+            "en": "Add Frame interpolation (Beta) to regular video playback in Picture Quality Mode, off by default and remembered per video. Supports compatible sources up to 4K and 33fps, excluding person passthrough and fisheye, and stops interpolating when device load is too high. This is its first release on PICO: if motion is not smooth, please report it with Send log. If it stops automatically, you can turn it on again without reopening the video.",
+            "ja": "通常の動画再生にもフレーム補間（Beta）を追加しました。画質モードでオンにでき、初期設定はオフで動画ごとに記憶します。4K・33fps以下の対応ソースで利用でき、人物パススルーと魚眼には非対応です。端末の負荷が高い場合は補間を止めます。PICO版では今回初めて利用できます。動きが滑らかでない場合は「ログを送信」からお知らせください。自動停止した場合は、動画を開き直さずに再度オンにできます。"
+          }
+        },
+        {
+          "id": "stereo-frame-interpolation-trial",
+          "text": {
+            "zh": "2D转3D新增补帧（Beta），在画质模式中开启，默认关闭并按片记忆。适用于不高于33fps、单眼输出像素量不超过2560×1440的兼容视频；不支持人物透视和鱼眼，负载过高或深度更新跟不上时自动停止补帧，视频照常播放。",
+            "zh_Hant": "2D轉3D新增補幀（Beta），可在畫質模式中開啟，預設關閉並逐片記憶。適用於不高於33fps、單眼輸出像素量不超過2560×1440的相容影片；不支援人物透視和魚眼，負載過高或深度更新跟不上時自動停止補幀，影片照常播放。",
+            "en": "Add Frame interpolation (Beta) for 2D-to-3D in Picture Quality Mode, off by default and remembered per video. Requires compatible video at up to 33fps and an output pixel count per eye no greater than 2560×1440. Person passthrough and fisheye are unsupported; if the load is too high or depth updates fall behind, interpolation stops and the video keeps playing.",
+            "ja": "2D→3Dの画質モードにフレーム補間（Beta）を追加しました。初期設定はオフで、動画ごとに記憶します。33fps以下、片眼の出力画素数が2560×1440以下の対応動画で利用でき、人物パススルーと魚眼には非対応です。負荷が高い場合や奥行き更新が追いつかない場合は補間を止め、動画はそのまま再生されます。"
+          }
+        },
+        {
+          "id": "stereo-convergence-and-foreground",
+          "text": {
+            "zh": "「3D立体位置」改名为「3D会聚平面」，并新增可调节近处景深的「3D前景缩放」。视频、网页和全局设置均可调节这两项。按住拖动视频或网页的 3D 强度、会聚平面或前景缩放滑块时，菜单会暂时隐藏。网页设置新增 3D 强度滑块，相关选项收在「2D转3D」分组。",
+            "zh_Hant": "「3D立體位置」改名為「3D會聚平面」，並新增可調整近處景深的「3D前景縮放」。影片、網頁及全域設定均可調整這兩項。按住拖曳影片或網頁的 3D 強度、會聚平面或前景縮放滑桿時，選單會暫時隱藏。網頁設定新增 3D 強度滑桿，相關選項收在「2D轉3D」群組。",
+            "en": "3D Position is now 3D Convergence. The new 3D Foreground Scale adjusts nearby depth. Both are available in video, web and global settings. In video and web views, holding and dragging the 3D Strength, Convergence or Foreground Scale slider temporarily hides the menu. Browser settings add a 3D Strength slider and group the related options under 2D to 3D.",
+            "ja": "「3D立体位置」を「3Dコンバージェンス」に改名し、手前の奥行きを調整する「3D前景スケール」を追加しました。どちらも動画・ウェブ・全体設定で調整できます。動画やウェブで3D強度・コンバージェンス・前景スケールのスライダーを押したまま調整すると、メニューが一時的に隠れます。ウェブ設定にも3D強度を追加し、関連項目を「2D→3D」にまとめました。"
+          }
+        },
+        {
+          "id": "remember-carried-picture-after-restart",
+          "text": {
+            "zh": "「沿用上次画面设置」支持跨重启保留，重新打开应用也能继续使用上次参数；画质面板通过图标区分本片已保存或沿用的设置。",
+            "zh_Hant": "「沿用上次畫面設定」支援跨重新啟動保留，再次開啟應用也能繼續使用上次參數；畫質面板透過圖示區分本片已儲存或沿用的設定。",
+            "en": "Reuse Last Picture Settings now survives app restarts. Icons in the picture panel distinguish this video’s saved settings from carried settings.",
+            "ja": "「前回の画質設定を引き継ぐ」がアプリ再起動後も有効になりました。画質パネルのアイコンで、この動画の保存済み設定と引き継いだ設定を区別できます。"
+          }
+        },
+        {
+          "id": "restore-system-volume-after-boost",
+          "text": {
+            "zh": "结束音量增强播放时恢复此前的系统音量；若异常退出后音量仍为最大，下次启动会尝试恢复，减少音量意外过大的情况。",
+            "zh_Hant": "結束音量增強播放時恢復先前的系統音量；若異常結束後音量仍為最大，下次啟動會嘗試恢復，減少音量意外過大的情況。",
+            "en": "Restore the previous system volume when boosted playback ends. If an interrupted exit leaves system volume at maximum, the next launch attempts to restore it.",
+            "ja": "音量ブーストを使った再生の終了時に以前のシステム音量へ戻します。異常終了後に音量が最大のままであれば、次回起動時に復元を試みます。"
+          }
+        },
+        {
+          "id": "library-sibling-folder-controls",
+          "text": {
+            "zh": "新增同级文件夹切换：本地、SMB、DLNA和网盘目录可直接切换上一个或下一个文件夹，并提示目标名称；同时整理来源图标与收藏按钮位置。",
+            "zh_Hant": "新增同層資料夾切換：本機、SMB、DLNA和網盤目錄可直接切換上一個或下一個資料夾，並提示目標名稱；同時整理來源圖示與收藏按鈕位置。",
+            "en": "Switch directly to the previous or next sibling folder in local, SMB, DLNA and cloud locations, with the destination name in a tooltip. Source icons and the favorite button are also repositioned.",
+            "ja": "ローカル・SMB・DLNA・クラウドの一覧で、前後の同階層フォルダーへ直接移動でき、ヒントに移動先名を表示します。接続先アイコンとお気に入りボタンの配置も整理しました。"
+          }
+        },
+        {
+          "id": "android-nas-external-video",
+          "text": {
+            "zh": "改善从绿联云等安卓应用打开单个视频的兼容性，支持通过系统分享交给 Thru3D 播放。也改善了部分 NAS 直接返回整段视频或返回较大字节范围时的读取。",
+            "zh_Hant": "改善從綠聯雲等 Android 應用程式開啟單部影片的相容性，支援透過系統分享交給 Thru3D 播放。也改善部分 NAS 直接傳回整段影片或傳回較大位元組範圍時的讀取。",
+            "en": "Open individual videos shared from UGREEN NAS and similar Android apps in Thru3D. External playback also handles servers that return the full file or a byte range larger than requested.",
+            "ja": "UGREEN NASなどのAndroidアプリから、システムの共有機能で1本の動画をThru3Dで開けるようになりました。ファイル全体や要求より広いバイト範囲を返すNASからの読み込みにも対応しました。"
+          }
+        },
+        {
+          "id": "dlna-open-images-and-audio",
+          "text": {
+            "zh": "修复部分 DLNA 共享图片只能看到缩略图、点不开原图的问题，同时改善 DLNA 音频条目的打开。",
+            "zh_Hant": "修正部分 DLNA 分享圖片只能看到縮圖、無法開啟原圖的問題，同時改善 DLNA 音訊項目的開啟。",
+            "en": "Fix DLNA shared images that showed thumbnails but failed to open at full size, and improve opening DLNA audio items.",
+            "ja": "DLNA共有の画像でサムネイルが表示されても元画像を開けない問題を修正し、DLNAの音声ファイルを開く処理も改善しました。"
+          }
+        },
+        {
+          "id": "douyin-audio-output-compatibility",
+          "text": {
+            "zh": "针对抖音网页播放杂音增加兼容处理，让声音使用原视频音频输出，不再使用该网页的响度均衡。",
+            "zh_Hant": "針對抖音網頁播放雜音加入相容處理，讓聲音使用原影片音訊輸出，不再使用該網頁的響度等化。",
+            "en": "Add a compatibility workaround for noisy audio on Douyin webpages, using the original video’s audio output instead of the site’s loudness equalization.",
+            "ja": "抖音のウェブ再生で発生する雑音への互換処理を追加しました。サイトのラウドネス調整を使わず、元の動画の音声出力を使用します。"
+          }
+        },
+        {
+          "id": "youtube-extractor-update",
+          "text": {
+            "zh": "更新 YouTube 网页视频解析组件，以适配近期的网页播放器变化。登录后的头显内解析待复测。",
+            "zh_Hant": "更新 YouTube 網頁影片解析元件，以因應近期的網頁播放器變更。登入後的頭戴裝置內解析待複測。",
+            "en": "Update the YouTube web video extractor for recent changes to the web player. Extraction while signed in still needs headset verification.",
+            "ja": "YouTubeのウェブプレーヤーの最近の変更に対応するため動画解析機能を更新しました。ログイン状態での動作はヘッドセットでの再確認が必要です。"
+          }
+        },
+        {
+          "id": "mediacodec-no-frame-timeout",
+          "text": {
+            "zh": "新增解码无画面超时保护：解码器长时间不输出画面时结束等待，并尝试备用解码方式。",
+            "zh_Hant": "新增解碼無畫面逾時保護：解碼器長時間未輸出畫面時結束等待，並嘗試備用解碼方式。",
+            "en": "Add a timeout safeguard when a decoder produces no video frames, ending the wait and attempting a fallback decoding path.",
+            "ja": "デコーダーから映像が出ない状態が続く場合のタイムアウト保護を追加し、待機を終了して代替のデコード経路を試すようにしました。"
+          }
+        },
+        {
+          "id": "decoder-frame-rate-limit-hint",
+          "text": {
+            "zh": "完善播放失败提示：片源帧率超出设备硬件解码能力时，也能明确提示原因和可查询到的设备上限。",
+            "zh_Hant": "完善播放失敗提示：片源影格率超出裝置硬體解碼能力時，也能明確提示原因及可查得的裝置上限。",
+            "en": "Improve playback failure messages when a source’s frame rate exceeds hardware decoding capacity, showing the cause and available device-limit information.",
+            "ja": "ソースのフレームレートがハードウェアのデコード能力を超える場合のエラー表示を改善し、原因と取得できた端末の上限を示すようにしました。"
+          }
+        },
+        {
+          "id": "eye-buffer-video-frame-handoff",
+          "text": {
+            "zh": "优化眼缓冲播放的解码帧回收与交接，减少部分普通视频因等待上一帧而跳过画面更新的情况。",
+            "zh_Hant": "最佳化眼緩衝播放的解碼畫格回收與交接，減少部分一般影片因等待上一個畫格而略過畫面更新的情況。",
+            "en": "Improve decoded-frame recycling and handoff in eye-buffer playback to reduce skipped picture updates in some regular videos.",
+            "ja": "アイバッファー再生でのデコード済みフレームの再利用と受け渡しを改善し、一部の通常再生で映像の更新が飛ぶことを抑えます。"
+          }
+        },
+        {
+          "id": "android-resume-rendering-protection",
+          "text": {
+            "zh": "改善从系统主页返回播放器时的恢复处理，防止图形环境尚未就绪就开始更新画面。",
+            "zh_Hant": "改善從系統首頁返回播放器時的復原處理，避免圖形環境尚未就緒便開始更新畫面。",
+            "en": "When returning to the player from the system home screen, wait for graphics to be ready before updating the picture.",
+            "ja": "システムのホーム画面からプレーヤーに戻るとき、描画環境の準備が整ってから画面を更新するようにしました。"
+          }
+        },
+        {
+          "id": "guangyapan-membership-message",
+          "text": {
+            "zh": "光鸭云盘登录或浏览时若缺少会员权限，会显示明确的会员提示，减少与网络故障混淆。",
+            "zh_Hant": "光鴨雲盤登入或瀏覽時若缺少會員權限，會顯示明確的會員提示，減少與網路故障混淆。",
+            "en": "Show a clear membership-required message when GuangYaPan sign-in or browsing lacks membership access, instead of an ambiguous network error.",
+            "ja": "光鴨クラウド（GuangYaPan）のログインや閲覧に会員権限が必要な場合、ネットワーク障害と区別できる案内を表示します。"
+          }
+        },
+        {
+          "id": "browser-failure-log-button",
+          "text": {
+            "zh": "修复浮动网页窗口中「发送日志」按钮被误识别为缩放操作、无法正常点击的问题。",
+            "zh_Hant": "修復浮動網頁視窗中「傳送日誌」按鈕被誤判為縮放操作、無法正常點擊的問題。",
+            "en": "Fix the Send logs button in floating browser windows being mistaken for a resize action and failing to respond to clicks.",
+            "ja": "フローティングブラウザーのログ送信ボタンがサイズ変更操作として扱われ、クリックできない問題を修正しました。"
+          }
+        },
+        {
+          "id": "browser-failure-log-public-page",
+          "text": {
+            "zh": "网页转内置播放失败后，主动发送日志时可附带脱敏后的公开页面地址及必要的媒体编号，便于复现问题。",
+            "zh_Hant": "網頁轉至內建播放器失敗後，主動傳送日誌時可附上已去識別化的公開頁面網址及必要的媒體編號，方便重現問題。",
+            "en": "When you send a log after a web video fails to open in the built-in player, it can include the sanitized public page address and relevant media IDs to help reproduce the issue.",
+            "ja": "ウェブ動画を内蔵プレーヤーで開けなかったときにログを送信すると、問題の再現に必要な公開ページのURLとメディアIDが、機密情報を除いた形で含まれる場合があります。"
+          }
+        },
+        {
+          "id": "openxr-account-login-keyboard",
+          "text": {
+            "zh": "OpenXR版修复网盘网页登录时，输入框切换或刷新导致应用内键盘关闭、输入中断的问题。",
+            "zh_Hant": "OpenXR版修復網盤網頁登入時，輸入欄位切換或重新整理導致應用程式內鍵盤關閉、輸入中斷的問題。",
+            "en": "On OpenXR, fix the in-app keyboard closing and interrupting cloud web sign-in when the page replaces or changes the focused input field.",
+            "ja": "OpenXR版で、クラウドのウェブログイン中に入力欄の切り替えや更新でアプリ内キーボードが閉じ、入力が中断する問題を修正しました。"
+          },
+          "scope": [
+            "openxr"
+          ]
+        },
+        {
+          "id": "qiyu-eye-buffer-playback",
+          "text": {
+            "zh": "奇遇版优化普通视频的渲染性能，输出分辨率选「自动」时使用 4096 像素宽，仍可手动选 5760 或原始宽度。奇遇 A091 的实际性能待真机复测。",
+            "zh_Hant": "奇遇版最佳化一般影片的渲染效能，輸出解析度選「自動」時使用 4096 像素寬，仍可手動選擇 5760 或原始寬度。奇遇 A091 的實際效能待實機複測。",
+            "en": "On QIYU, optimize regular video rendering and use a 4096-pixel output width when set to Auto. A width of 5760 and the original width remain available. Performance on the QIYU A091 still needs headset verification.",
+            "ja": "QIYU向けに通常の動画描画を最適化しました。出力解像度を「自動」に設定すると幅4096ピクセルになり、幅5760や元の幅も引き続き選択できます。QIYU A091での性能は実機での再確認が必要です。"
+          },
+          "scope": [
+            "qiyu"
+          ]
+        }
+      ]
+    },
+    {
       "version": "0.18.9",
       "date": "2026-11-24",
       "title": {

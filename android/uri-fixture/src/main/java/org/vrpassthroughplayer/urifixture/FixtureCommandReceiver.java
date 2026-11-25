@@ -37,6 +37,12 @@ public final class FixtureCommandReceiver extends BroadcastReceiver {
                         .setPackage(TARGET).putExtra(Intent.EXTRA_TITLE,"Thru3D external content test")
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION));
                     break;
+                case "share_external":
+                    // A NAS file chooser lists SEND handlers by MIME, then sends the URI as EXTRA_STREAM.
+                    context.startActivity(new Intent(Intent.ACTION_SEND).setType("video/*")
+                        .setPackage(TARGET).putExtra(Intent.EXTRA_STREAM, URI)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION));
+                    break;
                 default: throw new IllegalArgumentException("Unknown operation");
             }
             report.put("state","applied").put("clip_exists",FixtureDocumentsProvider.clip(context).isFile());

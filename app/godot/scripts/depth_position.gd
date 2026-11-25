@@ -1,8 +1,9 @@
 extends RefCounted
-## User offset from the existing screen plane, independent of disparity strength.
+## The convergence (zero parallax plane): user offset from the existing screen plane, independent of
+## disparity strength. The key keeps its old name so saved preferences carry over.
 const KEY := "depth_position"
-const TITLE := "3D position"
-const HINT := "Left: into screen. Right: out of screen. 0: default."
+const TITLE := "3D convergence"
+const HINT := "Zero parallax plane: things at this depth sit on the screen. Left: the picture moves into the screen. Right: it comes out toward you. 0: default."
 const LIMITS := Vector3(-100, 100, 5)
 
 static func normalize(value: Variant) -> float:

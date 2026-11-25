@@ -87,6 +87,8 @@ object WebBrowserDepthBridge {
     @JvmStatic fun configure(id: Int, strength: Float, position: Float, identity: String, fill: Boolean, depth: Boolean) {
         windows[id]?.configure(strength, position, identity, fill, depth)
     }
+    /** Foreground scale, -1..1 (near_foreground.h). */
+    @JvmStatic fun foreground(id: Int, scale: Float) { windows[id]?.foreground(scale) }
     /** Picture quality mode over the pair (WebBrowserPicture.look's values; empty for none). */
     @JvmStatic fun quality(id: Int, values: FloatArray) { windows[id]?.quality(values) }
     /** The player's steady or flat frame edges preference (MpvVideoBridge.depthSteady, depthFade) changed: redraw every window. */
@@ -116,6 +118,7 @@ object WebBrowserDepthBridge {
         @Volatile private var revision = 0L
         @Volatile private var strength = .5f
         @Volatile private var convergence = .35f
+        @Volatile private var foreground = 0f
         @Volatile private var fill = false
         @Volatile private var depthEnabled = true
         @Volatile private var matteFrames = 0L
@@ -167,7 +170,7 @@ object WebBrowserDepthBridge {
         private var latched = false
         private var shown = 0L
         private var maskUploaded = false
-        private data class Limit(val shift: Float, val steady: Boolean, val fade: Boolean, val plane: Float)
+        private data class Limit(val shift: Float, val steady: Boolean, val fade: Boolean, val plane: Float, val foreground: Float, val convergence: Float)
         private var limited: Limit? = null // the shown slot's near limit, steady edges and flat frame edges
         private var model = 0L // DepthWorker only
         private var modelRevision = -1L
@@ -194,6 +197,10 @@ object WebBrowserDepthBridge {
             depthEnabled = depth
             if (identity != key) { identity = key; revision++; matteLease.move(revision); synchronized(mapLock) { latest = null } }
             gl.post { dirty = true }
+        }
+        fun foreground(scale: Float) {
+            if (!scale.isFinite()) return
+            foreground = scale.coerceIn(-1f, 1f); gl.post { dirty = true }
         }
         fun quality(values: FloatArray) {
             val next = WebBrowserPicture.look(values)
@@ -393,10 +400,11 @@ object WebBrowserDepthBridge {
             if (near != null && strength > 0f && depthEnabled) {
                 // Steady and flat frame edges follow the player's preferences, edge stretching only (as in the player).
                 val fade = MpvVideoBridge.depthFade && !fill
-                val view = Limit(.0175f * strength, MpvVideoBridge.depthSteady && !fill, fade, if (fade) convergence else .35f)
+                val view = Limit(.0175f * strength, MpvVideoBridge.depthSteady && !fill, fade, if (fade) convergence else .35f, foreground, convergence)
                 if (!maskUploaded) {
                     // The upload limits (and steadies, and fades) the map itself: set all three first.
                     RenderBridgeNative.steadyEdges(renderer, view.steady); RenderBridgeNative.edgeFade(renderer, view.fade, view.plane)
+                    RenderBridgeNative.foreground(renderer, view.foreground, view.convergence)
                     RenderBridgeNative.limitNear(renderer, 0L, view.shift)
                     // Player slots accept a mask exactly once, with non-overlapping eye buffers.
                     try { check(RenderBridgeNative.uploadAlpha(renderer, shown, near.left, near.right)) }
@@ -405,6 +413,7 @@ object WebBrowserDepthBridge {
                 } else if (limited != view) {
                     // Only a changed strength or preference redoes the held map, not every redraw.
                     RenderBridgeNative.steadyEdges(renderer, view.steady); RenderBridgeNative.edgeFade(renderer, view.fade, view.plane)
+                    RenderBridgeNative.foreground(renderer, view.foreground, view.convergence)
                     RenderBridgeNative.limitNear(renderer, shown, view.shift)
                     limited = view
                 }

@@ -65,9 +65,23 @@ func run() -> void:
 	check(browser.handoff_error.get("message")=="Decoder failed" and report.get("trigger")=="web_beta" and report.get("category")=="web"
 		and report.get("site")=="weibo.com" and report.get("stage")=="native" and report.get("failure",{}).get("reason")=="decoder_failed"
 		and not str(report).contains("chosen-card"),"A native failure is shown on the page with a report naming only the site")
+	check(report.get("page")=="https://weibo.com/","The report carries the page it failed on")
+	var youtube: Dictionary = browser.failure_page("https://user:pw@www.youtube.com/watch?v=QK2stBG5IYo&pp=sig%3D1&t=40&list=PL_x-1#comments")
+	check(youtube=={"site":"www.youtube.com","page":"https://www.youtube.com/watch","page_params":{"v":"QK2stBG5IYo","list":"PL_x-1"}},
+		"A page keeps only its public video keys, never sign-in parts, fragments or other query values")
+	check(browser.failure_page("https://search.example.com/results?search_query=secret")=={"site":"search.example.com","page":"https://search.example.com/results"},
+		"Search words are not sent")
+	check(browser.failure_page("https://www.bilibili.com/video/BV1tkrWYoEaH?p=2&id=<x>")=={"site":"www.bilibili.com","page":"https://www.bilibili.com/video/BV1tkrWYoEaH","page_params":{"p":"2"}},
+		"A key whose value is not a plain id is left out")
+	for own in ["http://192.168.1.5:8096/web/index.html#!/details?id=1&api_key=k","https://media.example.com:8920/web/#/video?api_key=k",
+			"http://nas.local/jellyfin/web/","http://myserver/plex","http://[fd00::1]:32400/web/"]:
+		check(browser.failure_page(own)=={"site":"private"},"A user's own server is only private: " + own)
 	poll(browser)
 	var host: Node3D = browser.input_host()
 	check(host._buttons.any(func(b): return b.target==browser.FAILURE_LOG and b.enabled),"The failed page offers its log beside the address")
+	const BrowserWindow := preload("res://scripts/web_browser_window.gd")
+	check(browser.FAILURE_LOG not in [BrowserWindow.MOVE,BrowserWindow.WEB,BrowserWindow.RESIZE,BrowserWindow.RESIZE_RIGHT,BrowserWindow.RESIZE_BOTTOM,BrowserWindow.SELECT],
+		"A floating window's drag handles never take the send-log press")
 	var quick: Array = []
 	menu.setting_changed.connect(func(key,value): if key=="diagnostic_quick": quick.append(value))
 	browser.action(browser.FAILURE_LOG)

@@ -110,6 +110,7 @@ const WHISPER := 163
 const BOOST_HEIGHT := 0.14
 const BOOST_BUTTON_SIZE := Vector2(0.078, 0.052)
 const DepthPosition := preload("res://scripts/depth_position.gd")
+const DepthForeground := preload("res://scripts/depth_foreground.gd")
 const DepthStrength := preload("res://scripts/depth_strength.gd")
 const VideoAuto3D := preload("res://scripts/video_auto_3d.gd")
 const HdrToSdr := preload("res://scripts/hdr_to_sdr.gd")
@@ -222,6 +223,8 @@ const PICTURE_CLOSE := 11281
 const PICTURE_QUALITY_TAB := 11282
 const PICTURE_ADVANCED := 11284
 const PICTURE_CLEAR := 11286
+const PICTURE_SOURCE := 11287
+const PICTURE_PLUGIN_TAB := 11288
 const PICTURE_PANEL_WIDTH := 0.76
 const PICTURE_PANEL_X := 0.24
 var picture_controls_open_id := 0
@@ -231,6 +234,7 @@ var _picture_panel_bounds := Rect2()
 var _picture_drawn: Array = []
 ## The 2D to 3D settings fold under one header above Alpha's, closed each time like it.
 const DEPTH_GROUP := 462
+const DEPTH_FOREGROUND := 463
 const DEPTH_GROUP_SETTINGS := ["video_auto_3d", "depth_render", "depth_edge_steady", "depth_edge_fade"]
 const DepthEdgeSteady := preload("res://scripts/depth_edge_steady.gd")
 const DepthEdgeFade := preload("res://scripts/depth_edge_fade.gd")
@@ -244,6 +248,32 @@ const PICTURE_LOCKED_HINT := "Turn on Picture quality mode to adjust"
 const PICTURE_UPSCALE_HINT := "Shows low-resolution video enlarged, with cleaner edges: flat video below 4K to 4K, VR video below 6K to 6K. Uses more battery and the headset runs warmer; sharpening then covers the centre of your view only."
 const PICTURE_UPSCALE_LEVELS := {1: "Balanced: this video is shown enlarged from %d×%d to %d×%d, twice its size at most. Cleaner edges at a lighter load than Maximum.", 2: "Maximum: this video is shown enlarged from %d×%d to %d×%d. The cleanest edges; uses more battery and the headset runs warmer."}
 const PICTURE_DENOISE_HINT := "Evens out compression noise and blotches before sharpening; suits old and low-bitrate video. Set too high it wipes out fine detail such as skin and fabric."
+const PICTURE_INTERPOLATION_HINT := "Draws the pictures between a film's frames, so 24 to 30 fps video moves smoothly. Fast motion and text over moving pictures can smear. Uses more battery and the headset runs warmer."
+const PICTURE_INTERPOLATION_STOPPED := "The headset could not keep up, so frame interpolation stopped. Turn it on to try again."
+const PICTURE_INTERPOLATION_BLOCKERS := {
+	"fps": "This video already runs above 30 fps: there is nothing to add between its frames.",
+	"size": "This video is larger than 4K: the headset cannot draw the pictures in between in time.",
+	"mode": "Not available with passthrough cut-out or lens-shaped video yet.",
+	"depth_size": "2D to 3D makes this video's two pictures too large for the headset to draw the pictures in between in time.",
+	"load": "The headset could not draw the pictures in between in time for this video.",
+	"anime4k": "Not available while Anime4K is on.",
+	"runtime": "This headset does not report its display timing, which the pictures in between are paced by."}
+## The plugins tab: Anime4K's modes and tiers, and why it cannot run on the video on show.
+const PICTURE_ANIME4K_HINT := "Anime4K: sharpens and enlarges the line art of 2D cartoons and anime. When on, it takes the place of super resolution and denoising."
+const PICTURE_ANIME4K_MODES := ["A", "B", "C"]
+const PICTURE_ANIME4K_HINTS := ["Mode A: restores blurred, compressed lines, then enlarges. Suits most anime.",
+	"Mode B: a gentler restore, then enlarges. For video that A leaves too sharp or with halos.",
+	"Mode C: enlarges and removes noise, without restoring. For clean video."]
+const PICTURE_ANIME4K_TIERS := ["S", "M", "L", "VL"]
+const PICTURE_ANIME4K_TIER_HINT := "Higher levels draw cleaner lines and use more of the headset's GPU."
+const PICTURE_ANIME4K_BLOCKERS := {
+	"mode": "Not available for 3D, lens-shaped or passthrough cut-out video, or with 2D to 3D on.",
+	"hdr": "Not available for HDR video.",
+	"load": "Stopped for this video: the headset could not keep up.",
+	"unsupported": "This headset's GPU cannot run Anime4K."}
+const PICTURE_ANIME4K_TOO_HEAVY := "Too heavy for this video's resolution."
+const PICTURE_ANIME4K_C_SIZE := "Mode C enlarges, and this video is already large."
+const PICTURE_ANIME4K_REPLACES := "Anime4K is on: it enlarges and cleans the picture itself."
 const PICTURE_UPSCALE_FULL := {false: "This video is already %d×%d: flat video is enlarged up to 4K, so there is nothing to enlarge.", true: "This video is already %d×%d: VR video is enlarged up to 6K, so there is nothing to enlarge."}
 ## The three Alpha sliders fold under one header, as in the library's video settings; closed each time.
 var _alpha_expanded := false
@@ -594,6 +624,7 @@ func allows_pip_input() -> bool:
 func _finish_depth_drag() -> void:
 	if not _depth_hand.is_empty():
 		_depth_hand = ""
+		_restore_after_adjustment()
 		depth_strength_committed.emit()
 
 func _close_depth_slider() -> void:
@@ -935,12 +966,15 @@ func _picture_key() -> Array:
 	return [_state.get("picture_quality"), _state.get("picture_quality_supported"), _state.get("picture_quality_available"),
 		_state.get("picture_quality_blocker"), _state.get("grade_curves_locked"), _state.get("picture_upscale_sizes"),
 		_state.get("picture_upscale_available"), _state.get("picture_denoise"), _state.get("picture_upscale"),
+		_state.get("picture_interpolation"), _state.get("picture_interpolation_blocker"),
+		_state.get("picture_anime4k"), _state.get("picture_anime4k_mode"), _state.get("picture_anime4k_tier"), _state.get("picture_anime4k_blocker"), _state.get("picture_anime4k_tiers"),
 		_state.get("picture_source"), _state.get("picture_clear_available"), _state.get("reuse_last_picture"), _state.get("picture_inherit_available")]
 
 func _open_picture_controls() -> void:
 	picture_controls_open_id = int(_state.get("picture_open_id", 0))
 	_adjustment = "picture"
-	_picture_tab = 0 if _state.get("picture_quality_supported", false) else 1
+	# Anime4K on: the panel opens on the plugins tab, where its settings are.
+	_picture_tab = (2 if _state.get("picture_anime4k", false) else 0) if _state.get("picture_quality_supported", false) else 1
 	_picture_advanced = false
 	_grade_page = 0
 	_capture_open = false
@@ -950,8 +984,12 @@ func _draw_picture_panel() -> void:
 	var x := PICTURE_PANEL_X
 	var has_mode: bool = _state.get("picture_quality_supported", false)
 	var in_color := _picture_tab == 1 or not has_mode
+	var in_plugins := _picture_tab == 2 and has_mode
 	var keys: Array = Grade.PAGES[_grade_page] if _picture_advanced else ["exposure", "contrast", "saturation"]
-	var height := (0.41 + 0.064 * keys.size()) if in_color and _picture_advanced else (0.55 if in_color else 0.435)
+	# The plugins tab: Anime4K's switch, and its mode and level beneath it while it is on.
+	var plugin_rows := 3 if _state.get("picture_anime4k", false) else 1
+	var height := (0.41 + 0.064 * keys.size()) if in_color and _picture_advanced \
+		else (0.55 if in_color else 0.243 + 0.064 * plugin_rows if in_plugins else 0.499)
 	if not has_mode: height -= 0.10
 	var bottom := POPUP_BOTTOM
 	var top := bottom + height
@@ -964,14 +1002,20 @@ func _draw_picture_panel() -> void:
 	_picture_drawn = _picture_key()
 	_label(I18n.t("Picture quality & color"), Vector3(x, top - 0.039, 0.004), TEXT_TITLE)
 	_glyph(PICTURE_CLOSE, "close", Vector2(x + 0.33, top - 0.039), 0.054, true, I18n.t("Close"))
+	var source: String = _state.get("picture_source", "")
+	if source in ["file", "last"]:
+		_glyph(PICTURE_SOURCE, "history", Vector2(x - 0.33, top - 0.039), 0.054, true,
+			I18n.t("Saved for this video" if source == "file" else "Reuse last picture settings"))
 	var tabs_y := top - 0.155
 	if has_mode:
 		_picture_quality_switch(top - 0.101)
-		for index in 2:
-			_button(PICTURE_QUALITY_TAB + index, I18n.t(["Picture quality", "Color"][index]),
-				Vector2(x + (-0.17 if index == 0 else 0.17), tabs_y), Vector2(0.32, 0.05))
+		for index in 3:
+			_button(PICTURE_PLUGIN_TAB if index == 2 else PICTURE_QUALITY_TAB + index,
+				_fit_title(I18n.t(["Picture quality", "Color", "Plugins"][index]), "", 0.2, TEXT_BODY),
+				Vector2(x + 0.227 * (index - 1), tabs_y), Vector2(0.215, 0.05))
 			if index == _picture_tab: _buttons.back().base_color = SELECTED
 	if in_color: _draw_picture_color(x, top - (0.214 if has_mode else 0.114), keys)
+	elif in_plugins: _picture_plugin_rows(top - 0.215)
 	else: _picture_quality_rows(top - 0.215)
 	_draw_picture_footer(x, bottom + 0.035)
 	_refresh_adjustments()
@@ -980,10 +1024,6 @@ func _draw_picture_footer(x: float, y: float) -> void:
 	if _state.get("picture_clear_available", false):
 		_button(PICTURE_CLEAR, I18n.t("Clear video settings"), Vector2(x - 0.207, y), Vector2(0.252, 0.045))
 		set_label_size(_buttons.back().node.get_child(0), TEXT_AUX)
-	elif _state.get("picture_source", "") == "last":
-		var label := _label(I18n.t("Carried over"), Vector3(x - 0.33, y, 0.006), TEXT_AUX)
-		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		label.modulate = MUTED
 	if _state.get("picture_inherit_available", false):
 		var carry := _fit_title(I18n.t("Reuse last picture settings"), "", 0.29, TEXT_AUX)
 		var label := _label(carry, Vector3(x + 0.225, y, 0.005), TEXT_AUX)
@@ -1884,6 +1924,7 @@ func _draw_depth() -> void:
 	_buttons.back().foreground = MUTE_INK
 	_refresh_depth()
 	_raise_quick_popup(before)
+	_depth_rail_nodes.assign(get_children().filter(func(child): return child is Node3D and not before.has(child)))
 
 func _refresh_depth_position() -> void:
 	if choices.capture.is_empty():
@@ -2119,7 +2160,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	if not bookmarks.capture.is_empty(): return true
 	for owner in [_adjust_hand, _depth_hand, _volume_hand, _seek_hand, str(_choice_hold.get("hand", ""))]:
 		if not owner.is_empty() and owner != hand:
-			if owner == _adjust_hand or owner == _choice_hold.get("hand", ""): _adjust_keep_menu = true; _sync_adjust_clear()
+			if owner in [_adjust_hand, _depth_hand] or owner == _choice_hold.get("hand", ""): _adjust_keep_menu = true; _sync_adjust_clear()
 			return false
 	update_pointer(hand, origin, direction, tracked)
 	var hit := ray_hit(origin, direction) if tracked else {}
@@ -2150,6 +2191,8 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 		if not _depth_hand.is_empty() and _depth_hand != hand: return false
 		_depth_hand = hand
 		_depth_sent = -1
+		# Held, the strength rail clears the menu off the picture like a held settings slider.
+		_adjust_pressed_ms = Time.get_ticks_msec(); _adjust_seen_ms = _adjust_pressed_ms; _adjust_keep_menu = false
 		_set_depth_at(_input_point(hit).y)
 		return true
 	if not hit.is_empty() and int(hit.target) == VOLUME:
@@ -2174,7 +2217,7 @@ func cancel_for_hand_lock(hand: String) -> void:
 		_restore_after_adjustment()
 	if _choice_hold.get("hand", "") == hand:
 		_choice_hold.clear(); _restore_after_adjustment()
-	if _depth_hand == hand: _depth_hand = ""
+	if _depth_hand == hand: _depth_hand = ""; _restore_after_adjustment()
 	cancel_pointer(hand)
 
 func cancel_pointer(hand: String) -> void:
@@ -2233,8 +2276,10 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		if not visible or not tracked or not _depth_open or not _can_depth():
 			_finish_depth_drag()
 		else:
+			_adjust_seen_ms = Time.get_ticks_msec()
 			var depth_point: Variant = _plane_point(origin, direction, DEPTH)
 			if depth_point != null: _set_depth_at(float(depth_point.y))
+			_sync_adjust_clear()
 	if hand != _volume_hand or not tracked or not _volume_open:
 		return
 	var point: Variant = _plane_point(origin, direction, VOLUME)
@@ -2451,8 +2496,9 @@ func _draw_panel() -> void:
 	var depth_position_setting: bool = section == 1 and _cast_allowed(DepthPosition.KEY)
 	var height := 0.12 + tile_rows * 0.105 + (0.175 + ((0.085 + (0.355 if _alpha_expanded else 0.0)) if alpha_fps else 0.0) if section == 1 else 0.36)
 	var depth_rows: Array = DEPTH_GROUP_SETTINGS.filter(_cast_allowed) if section == 1 else []
-	var depth_group: bool = depth_position_setting or not depth_rows.is_empty()
-	if depth_group: height += 0.085 + ((depth_rows.size() + (1 if depth_position_setting else 0)) * 0.085 if _depth_expanded else 0.0)
+	var depth_foreground_setting: bool = section == 1 and _cast_allowed(DepthForeground.KEY)
+	var depth_group: bool = depth_position_setting or depth_foreground_setting or not depth_rows.is_empty()
+	if depth_group: height += 0.085 + ((depth_rows.size() + (1 if depth_position_setting else 0) + (1 if depth_foreground_setting else 0)) * 0.085 if _depth_expanded else 0.0)
 	if alpha_fps and _alpha_expanded and _state.get("portrait_requested", false): height += 0.17
 	if alpha_fps and _state.get("flat_passthrough_requested", false): height += 0.17
 	var top := _settings_frame(height)
@@ -2507,6 +2553,11 @@ func _draw_panel() -> void:
 				_adjustment_row(DEPTH_POSITION, DepthPosition.KEY, DepthPosition.TITLE, DepthPosition.LIMITS, y)
 				_tips[DEPTH_POSITION] = I18n.t(DepthPosition.HINT)
 				_slider_tick(DEPTH_POSITION, 0, "0", y)
+			if depth_foreground_setting:
+				y -= 0.085
+				_adjustment_row(DEPTH_FOREGROUND, DepthForeground.KEY, DepthForeground.TITLE, DepthForeground.LIMITS, y)
+				_tips[DEPTH_FOREGROUND] = I18n.t(DepthForeground.HINT)
+				_slider_tick(DEPTH_FOREGROUND, 0, "0", y)
 		if alpha_fps:
 			y -= 0.085
 			_alpha_group_header(y)
@@ -2637,10 +2688,61 @@ func _picture_quality_rows(y: float) -> void:
 		levels.append({"value": level, "label": "Balanced" if level == 1 else "Maximum",
 			"hint": I18n.t(PICTURE_UPSCALE_LEVELS[level]) % [source.x, source.y, target.x, target.y] if source.x > 0 and target.x > source.x else PICTURE_UPSCALE_HINT})
 	var full := I18n.t(PICTURE_UPSCALE_FULL[bool(sizes.get("vr", false))]) % [source.x, source.y] if on and not fits else ""
-	_picture_choice_row("Super resolution", "picture_upscale", int(_state.get("picture_upscale", 0)), levels, y - 0.064, on, full)
+	# Anime4K enlarges and cleans the picture in their place.
+	var replaced := I18n.t(PICTURE_ANIME4K_REPLACES) if on and _anime4k_on() else ""
+	_picture_choice_row("Super resolution", "picture_upscale", int(_state.get("picture_upscale", 0)), levels, y - 0.064, on,
+		replaced if not replaced.is_empty() else full)
 	_picture_choice_row("Denoise", "picture_denoise", int(_state.get("picture_denoise", 0)),
 		[{"value": 0, "label": "Off"}, {"value": 1, "label": "Low"}, {"value": 2, "label": "Medium"}, {"value": 3, "label": "High"}].map(
-			func(option): option["hint"] = PICTURE_DENOISE_HINT; return option), y - 0.128, on, "")
+			func(option): option["hint"] = PICTURE_DENOISE_HINT; return option), y - 0.128, on, replaced)
+	var blocker := str(_state.get("picture_interpolation_blocker", ""))
+	# Stopped for the load, it shows off and stays open: turned on again (after easing the load), it retries.
+	var hint := PICTURE_INTERPOLATION_STOPPED if blocker == "load" else PICTURE_INTERPOLATION_HINT
+	_picture_choice_row("Frame interpolation (Beta)", "picture_interpolation", 1 if _state.get("picture_interpolation", false) and blocker.is_empty() else 0,
+		[{"value": 0, "label": "Off", "hint": hint}, {"value": 1, "label": "On", "hint": hint}],
+		y - 0.192, on, I18n.t(PICTURE_INTERPOLATION_BLOCKERS[blocker]) if on and blocker != "load" and PICTURE_INTERPOLATION_BLOCKERS.has(blocker) else "")
+
+func _anime4k_on() -> bool:
+	return _state.get("picture_anime4k", false) and str(_state.get("picture_anime4k_blocker", "")).is_empty()
+
+## The plugins tab: Anime4K's switch; while it is on, its mode and level beneath it. A level too heavy
+## for this video's resolution is greyed with that reason; the rows are when it cannot run on this video.
+func _picture_plugin_rows(y: float) -> void:
+	var x := PICTURE_PANEL_X
+	var on: bool = _state.get("picture_quality_available", false) and _state.get("picture_quality", false)
+	var enabled: bool = _state.get("picture_anime4k", false)
+	var blocker := str(_state.get("picture_anime4k_blocker", ""))
+	var unavailable := I18n.t(PICTURE_ANIME4K_BLOCKERS[blocker]) if on and PICTURE_ANIME4K_BLOCKERS.has(blocker) else ""
+	var heading := _label(I18n.t("Anime4K"), Vector3(x - 0.33, y, 0.004), TEXT_BODY)
+	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	choices.field(null, {"key": "picture_anime4k", "value": enabled, "switch": true, "choices": [], "hint": PICTURE_ANIME4K_HINT}, Vector2(x + 0.29, y), 0.09, 0.05)
+	var toggle: Dictionary = _buttons.back()
+	if not on:
+		toggle.enabled = false
+		toggle["hover_disabled"] = true
+		_tips[toggle.target] = I18n.t(PICTURE_LOCKED_HINT)
+		heading.modulate = MUTED
+	elif not unavailable.is_empty() and not enabled:
+		_grey_choice(toggle, unavailable)
+		heading.modulate = MUTED
+	if not enabled: return
+	var first := _buttons.size()
+	_picture_choice_row("Mode", "picture_anime4k_mode", int(_state.get("picture_anime4k_mode", 1)), range(PICTURE_ANIME4K_MODES.size()).map(
+		func(index): return {"value": index + 1, "label": PICTURE_ANIME4K_MODES[index], "hint": PICTURE_ANIME4K_HINTS[index]}), y - 0.064, on, unavailable)
+	if on and unavailable.is_empty() and blocker == "c_size": _grey_choice(_buttons[first + 2], I18n.t(PICTURE_ANIME4K_C_SIZE))
+	first = _buttons.size()
+	_picture_choice_row("Level", "picture_anime4k_tier", int(_state.get("picture_anime4k_tier", 1)), range(PICTURE_ANIME4K_TIERS.size()).map(
+		func(tier): return {"value": tier, "label": PICTURE_ANIME4K_TIERS[tier], "hint": PICTURE_ANIME4K_TIER_HINT}), y - 0.128, on, unavailable)
+	if not on or not unavailable.is_empty(): return
+	var tiers: Array = _state.get("picture_anime4k_tiers", [])
+	for tier in mini(tiers.size(), PICTURE_ANIME4K_TIERS.size()):
+		if not tiers[tier]: _grey_choice(_buttons[first + tier], I18n.t(PICTURE_ANIME4K_TOO_HEAVY))
+
+## One option of a choice row greyed, with its reason as the tooltip.
+func _grey_choice(button: Dictionary, reason: String) -> void:
+	button.enabled = false
+	button["hover_disabled"] = true
+	_tips[button.target] = reason
 
 ## One of the mode's choices in a row: locked with the mode off, and greyed with a reason (unavailable)
 ## when this video has no use for it.
@@ -2712,6 +2814,7 @@ func _settings_key() -> String:
 		_state.get("error", ""), _state.get("error_report", {}), _state.get("usb_takeover_offer", false), _state.get("diagnostic_upload", {}), _alpha_expanded, _depth_expanded,
 		_state.get("picture_quality", false), _state.get("picture_quality_available", false), _state.get("picture_quality_supported", false),
 		_state.get("picture_quality_blocker", ""), _state.get("picture_upscale", 0), _state.get("picture_denoise", 0), _state.get("picture_upscale_available", true),
+		_state.get("picture_interpolation", false), _state.get("picture_interpolation_blocker", ""),
 		_state.get("picture_upscale_sizes", {})])
 
 func _setting_choices(operation: String) -> Dictionary:
@@ -3384,10 +3487,12 @@ var _adjust_cleared: Array[int] = []
 ## Everything the held slider clears, gathered once per redraw.
 var _adjust_clearing: Array[Node3D] = []
 var _adjust_cleared_generation := -1
+## The strength rail's own nodes (_draw_depth): a held rail keeps them.
+var _depth_rail_nodes: Array[Node3D] = []
 
 ## Picture choices held the same way: the option under the trigger applies once the hold is long
 ## enough, and the menu clears down to its row until the release. A tap stays a plain choice.
-const HOLD_CHOICE_KEYS := ["picture_upscale", "picture_denoise",
+const HOLD_CHOICE_KEYS := ["picture_upscale", "picture_denoise", "picture_interpolation", "picture_anime4k_mode", "picture_anime4k_tier",
 	# Subtitle options that change how the captions look or sit on the picture.
 	"subtitle_follow_view", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line", "subtitle_below_screen",
 	"depth_edge_steady", "depth_edge_fade"]
@@ -3399,7 +3504,7 @@ const GRADE_PRESET_BASE := 410
 var _choice_hold: Dictionary = {}
 
 func _clears_menu(key: String) -> bool:
-	return Grade.DEFAULTS.has(key) or key == DepthPosition.KEY or key in ADJUST_CLEAR_KEYS or key in Surface.ImmersiveAdjustments.KEYS
+	return Grade.DEFAULTS.has(key) or key in [DepthPosition.KEY, DepthForeground.KEY] or key in ADJUST_CLEAR_KEYS or key in Surface.ImmersiveAdjustments.KEYS
 
 func _grade_preset_target(target: int) -> bool:
 	return target >= GRADE_PRESET_BASE and target < GRADE_PRESET_BASE + Grade.PRESETS.size()
@@ -3424,6 +3529,9 @@ func _apply_held_choice() -> void:
 
 ## What a hold keeps on show, with its hand; empty while nothing held clears the menu.
 func _menu_hold() -> Dictionary:
+	if not _depth_hand.is_empty():
+		var rail := _depth_rail_nodes.filter(func(node): return is_instance_valid(node))
+		return {"hand": _depth_hand, "keep": rail} if _depth_open and not rail.is_empty() else {}
 	if not _adjust_hand.is_empty():
 		var row: Dictionary = _adjust_rows.get(_adjust_target, {})
 		if row.is_empty() or not _clears_menu(str(row.key)) or not is_instance_valid(row.button.node): return {}
@@ -3810,7 +3918,7 @@ func _leaves_layer(key: String) -> bool:
 	return key in EYE_BUFFER_GRADES or not _state.get("grade_on_layer", true)
 
 func _adjustment_default(key: String) -> Variant:
-	if key == DepthPosition.KEY: return 0.0
+	if key in [DepthPosition.KEY, DepthForeground.KEY]: return 0.0
 	if key == "bar_transparency": return 14.0
 	if key == "danmaku_transparency": return 0.0
 	if key == "picture_sharpness": return 50.0
@@ -3895,6 +4003,7 @@ func _refresh_adjustments() -> void:
 		defaults["picture_sharpness"] = 50.0
 		defaults["stereo_focus"] = FOCUS_DEFAULT
 		defaults[DepthPosition.KEY] = 0.0
+		defaults[DepthForeground.KEY] = 0.0
 		for key in Surface.ImmersiveAdjustments.KEYS: defaults[key] = 0.0
 		defaults["portrait_scale"] = 100.0
 		defaults["video_aspect_factor"] = 1.0
@@ -3921,7 +4030,7 @@ func _refresh_adjustments() -> void:
 		elif row.key == "screen_curve": row.label.text = _curve_caption(value)
 		elif row.key == "screen_rotation": row.label.text = "%+.0f°" % value if value != 0 else "0°"
 		elif row.key == "playback_speed": row.label.text = "%.2f×" % value
-		elif row.key == DepthPosition.KEY: row.label.text = "%+.0f" % value if value != 0 else "0"
+		elif row.key in [DepthPosition.KEY, DepthForeground.KEY]: row.label.text = "%+.0f" % value if value != 0 else "0"
 		elif row.key == "video_aspect_factor": row.label.text = "%.3f×" % value
 		elif row.key == "alpha_fps": row.label.text = "%d FPS" % roundi(value)
 		elif row.key in ["alpha_feather", "alpha_shrink", "bar_transparency", "danmaku_transparency"]: row.label.text = "%d%%" % roundi(value)
@@ -4010,8 +4119,8 @@ func _activate_adjustment(target: int) -> void:
 	elif editing_picture():
 		if target == PICTURE_CLOSE:
 			_adjustment = ""
-		elif target in [PICTURE_QUALITY_TAB, PICTURE_QUALITY_TAB + 1]:
-			_picture_tab = target - PICTURE_QUALITY_TAB
+		elif target in [PICTURE_QUALITY_TAB, PICTURE_QUALITY_TAB + 1, PICTURE_PLUGIN_TAB]:
+			_picture_tab = 2 if target == PICTURE_PLUGIN_TAB else target - PICTURE_QUALITY_TAB
 			_picture_advanced = false
 		elif target == PICTURE_ADVANCED:
 			_picture_advanced = not _picture_advanced

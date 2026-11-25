@@ -45,6 +45,12 @@
                 <data android:mimeType="application/vnd.apple.mpegurl" />
                 <data android:mimeType="application/x-mpegURL" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <!-- The video URI is in EXTRA_STREAM. Chooser discovery has no data URI. -->
+                <data android:mimeType="video/*" />
+            </intent-filter>
         </activity>
         <service android:name="org.vrpassthroughplayer.plugin.VoiceCloneService"
             android:exported="false" android:process=":voice_clone" android:stopWithTask="true" />

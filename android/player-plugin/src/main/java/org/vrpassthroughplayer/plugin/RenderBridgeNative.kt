@@ -88,6 +88,9 @@ internal object RenderBridgeNative {
     /** 2D->3D flat frame edges for later near uploads and re-limits: the map eases to [plane] (the convergence)
      * at the picture's left and right edges, within the stretch bound of near_edge_fade.h for the limit's shift. */
     @JvmStatic external fun edgeFade(handle: Long, enabled: Boolean, plane: Float): Boolean
+    /** 2D->3D foreground scale for later near uploads and re-limits (near_foreground.h): [scale] -1..1 curves
+     * the map about [plane] (the convergence), positive giving the near end more layers. 0: the model's map. */
+    @JvmStatic external fun foreground(handle: Long, scale: Float, plane: Float): Boolean
     @JvmStatic external fun alphaReady(handle: Long, token: Long): Boolean
     /** Mono R8 shape decoded by *1.5; optional 64x64 signed residual uses 128 as zero.
      * Resolves private mip levels before Godot's single-level import. */

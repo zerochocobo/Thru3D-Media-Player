@@ -1,5 +1,6 @@
 extends SceneTree
 const Position := preload("res://scripts/depth_position.gd")
+const Foreground := preload("res://scripts/depth_foreground.gd")
 const Video := preload("res://scripts/mpv_video_display.gd")
 const Photo := preload("res://scripts/photo_display.gd")
 const Menu := preload("res://scripts/player_menu.gd")
@@ -12,8 +13,11 @@ var checks := 0
 var failures: Array[String] = []
 class Host extends RefCounted:
 	var calls: Array = []
+	var foregrounds: Array = []
 	func set_mpv_depth_view(id: int, strength: float, plane: float) -> bool:
 		calls.append([id, strength, plane]); return true
+	func set_mpv_depth_foreground(id: int, scale: float) -> bool:
+		foregrounds.append([id, scale]); return true
 	func prepare_photo_3d(_id: int, _strength: float) -> bool: return true
 	func prepare_photo_3d_view(id: int, strength: float, plane: float, rotation: int) -> bool:
 		calls.append([id, strength, plane, rotation]); return true
@@ -70,6 +74,20 @@ func run() -> void:
 	stored.load(main.settings_path)
 	check(video.depth_position == -45 and Position.load_value(stored) == -45, "Global video entry shares the same persisted value")
 	video.set_depth_position(30)
+	for invalid in [null, "35", NAN, INF, -INF]: check(Foreground.normalize(invalid) == 0, "Invalid foreground scale defaults")
+	check(Foreground.normalize(999) == 100 and Foreground.normalize(-999) == -100 and Foreground.scale(-50) == -0.5, "Foreground scale is bounded and maps to the bridge's -1..1")
+	count = host.calls.size()
+	video.set_depth_foreground(60)
+	check(host.foregrounds.back() == [12, 0.6] and host.calls.size() == count + 1 and video.depth_position == 30, "Foreground scale reaches the bridge with a redraw, plane unchanged")
+	count = host.calls.size(); video._send_depth_view()
+	check(host.calls.size() == count, "Unchanged foreground scale deduplicates")
+	main._on_playback_adjustment("depth_foreground_default", -40)
+	main._on_setting_changed("depth_foreground_default", -40)
+	stored.load(main.settings_path)
+	check(video.depth_foreground == -40 and Foreground.load_value(stored) == -40, "Global foreground entry persists")
+	main._on_player_setting(Foreground.KEY, 25)
+	stored.load(main.settings_path)
+	check(video.depth_foreground == 25 and Foreground.load_value(stored) == 25, "Playback foreground slider commits the same global value")
 	var photo := Photo.new(); photo.material = ShaderMaterial.new(); photo.material.shader = preload("res://shaders/photo.gdshader")
 	photo.platform = host; photo.geometry = 0
 	check(photo.set_depth_position(75) and photo.depth_position == 75 and video.depth_position == 30, "Photo preference independent of video")
@@ -107,8 +125,30 @@ func run() -> void:
 			menu.release_pointer("right_hand", p, -menu.global_basis.z, true)
 			stored.load(main.settings_path)
 			check(video.depth_position == 100 and Position.load_value(stored) == 100, "Settings release saves global position")
+			var foreground_row: Dictionary = menu._adjust_rows.get(Menu.DEPTH_FOREGROUND, {})
+			check(not foreground_row.is_empty() and foreground_row.left == slider.left, "Foreground scale sits under the convergence")
+			if not foreground_row.is_empty():
+				var f: Vector3 = menu.to_global(Vector3(foreground_row.left, foreground_row.button.node.position.y, 1))
+				check(menu.press_pointer("right_hand", f, -menu.global_basis.z, true), "Settings ray captures foreground slider")
+				# Held past the tap time, the slider clears the menu down to its own row.
+				menu.pointer_held = func(_hand): return true
+				menu._adjust_pressed_ms -= 1000
+				menu.update_pointer("right_hand", f, -menu.global_basis.z, true)
+				check(not menu._backdrop.visible and foreground_row.knob.visible, "Held foreground slider clears the menu, keeps its row")
+				menu.release_pointer("right_hand", f, -menu.global_basis.z, true)
+				stored.load(main.settings_path)
+				check(menu._backdrop.visible and video.depth_foreground == -100 and Foreground.load_value(stored) == -100, "Release brings the menu back and saves the foreground scale")
 			menu.section = 0; menu._depth_open = true; menu.refresh()
 			check(not menu._adjust_rows.has(Menu.DEPTH_POSITION) and menu.choices.sliders.is_empty(), "Quick strength rail has no position popup")
+			var rail_button: Dictionary = menu._buttons.filter(func(b): return b.target == Menu.DEPTH)[0]
+			var r: Vector3 = rail_button.node.global_position + menu.global_basis.z
+			check(menu.press_pointer("left_hand", r, -menu.global_basis.z, true) and menu._depth_hand == "left_hand", "Ray captures the strength rail")
+			menu._adjust_pressed_ms -= 1000
+			menu.update_pointer("left_hand", r, -menu.global_basis.z, true)
+			check(not menu._backdrop.visible and rail_button.node.visible and menu._depth_rail_nodes.all(func(n): return n.visible), "Held strength rail clears the menu, keeps the rail")
+			menu.release_pointer("left_hand", r, -menu.global_basis.z, true)
+			check(menu._backdrop.visible and menu._depth_hand.is_empty(), "Rail release brings the menu back")
+			menu.pointer_held = Callable()
 			main._on_player_setting(Position.KEY, -45)
 			menu.free()
 			continue

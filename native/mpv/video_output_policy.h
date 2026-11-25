@@ -3,6 +3,40 @@
 #include <string_view>
 
 namespace quest {
+enum class SourceSlotPhase { free, rendering, ready, acquired, retiring };
+
+// acquire_frame only offers tokens newer than the last acquired token. Return skipped
+// decoder images to MediaCodec as soon as their existing producer fences complete.
+template<class Slots>
+unsigned retire_superseded_decoder_images(Slots& slots, uint64_t acquired_token) {
+    unsigned retired = 0;
+    for (auto& slot : slots) {
+        if (slot.phase == SourceSlotPhase::ready && slot.image && slot.token < acquired_token) {
+            slot.phase = SourceSlotPhase::retiring;
+            ++retired;
+        }
+    }
+    return retired;
+}
+
+// The producer may overwrite its own RGBA texture in command order. Returning a
+// decoder image to MediaCodec also requires its GPU read to have finished.
+template<class Slots, class ImageReady>
+auto writable_source_slot(Slots& slots, ImageReady image_ready, bool& waiting) -> typename Slots::value_type* {
+    waiting = false;
+    typename Slots::value_type* oldest = nullptr;
+    for (auto& slot : slots) {
+        if (slot.phase == SourceSlotPhase::free) return &slot;
+        if (slot.phase == SourceSlotPhase::ready && (!oldest || slot.token < oldest->token))
+            oldest = &slot;
+    }
+    if (oldest && oldest->image && !image_ready(*oldest)) {
+        waiting = true;
+        return nullptr;
+    }
+    return oldest;
+}
+
 // Decoder OES sampling converts YUV to RGB, but cannot tone-map PQ/HLG or map
 // their wide gamut into the SDR eye-buffer contract. Profile 5 additionally
 // needs the existing RPU/IPT conversion, even without a container transfer tag.

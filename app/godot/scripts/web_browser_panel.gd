@@ -67,7 +67,8 @@ const BASE := 986000
 const PASTE := BASE + 27
 const HISTORY := BASE + 28
 ## Sends the log of the Beta failure the address bar shows (library_menu.request_quick_diagnostic).
-const FAILURE_LOG := BASE + 31
+## BASE + 30..33 are the window's move/resize handles (web_browser_window.gd), which take the press first.
+const FAILURE_LOG := BASE + 29
 const WEB := BASE + 20
 const KEY := BASE + 100
 const KEY_CONTROL := BASE + 40
@@ -663,7 +664,12 @@ func _handoff_failed() -> void:
 	if code.is_empty() or not code.is_valid_identifier(): code = "unknown"
 	if handoff_context.get("bilibili", false):
 		DiagnosticLog.trail("web_beta.handoff_failed", "waiting_pause=%s code=%s" % [handoff_waiting_pause, code])
-	handoff_error = _failure(handoff_context, menu.web_video.error_hint(), {"stage": "handoff", "error_code": code, "waiting_pause": handoff_waiting_pause})
+	var report := {"stage": "handoff", "error_code": code, "waiting_pause": handoff_waiting_pause}
+	if code == "browser_playback_required":
+		report.entry = "captured_file" if handoff_context.get("direct", false) else "beta" if handoff_beta else "legacy"
+		if menu.web_video.result.get("capture") is Dictionary:
+			report.capture = menu.web_video.result.capture
+	handoff_error = _failure(handoff_context, menu.web_video.error_hint(), report)
 	_cancel_handoff()
 	menu.web_video.result = {}
 
@@ -675,7 +681,8 @@ func failure_log_state() -> Dictionary:
 	if upload.has("path"): return {"icon": "check", "tip": I18n.t("Saved to %s") % str(upload.path).get_base_dir()}
 	if upload.has("save_error"): return {"icon": "save", "action": "save", "tip": str(upload.save_error)}
 	if upload.has("error"): return {"icon": "save", "action": "save", "tip": str(upload.error) + "\n" + I18n.t("Save log")}
-	return {"icon": "cloud", "action": "upload", "tip": I18n.t("Send log") + "\n" + I18n.t(DiagnosticLog.UPLOAD_TIP)}
+	return {"icon": "cloud", "action": "upload", "tip": I18n.t("Send log") + "\n" + I18n.t(DiagnosticLog.UPLOAD_TIP)
+		+ "\n" + I18n.t("Includes this page's address, without sign-in details or private servers")}
 
 func _draw_failure_log(host: Node) -> void:
 	var entry := failure_log_state()
@@ -727,13 +734,39 @@ func _discard_playback_return() -> void:
 	if playback_return.get("retained", false): _video_command("release_retained_page", playback_return)
 	playback_return.clear()
 
-## The failure the address bar shows, with what its log report says: the site's host, never the page.
+## The failure the address bar shows, with what its log report says about the page (failure_page).
 func _failure(context: Dictionary, message: String, report: Dictionary) -> Dictionary:
 	_failure_count += 1
-	var host := str(context.get("origin", "")).get_slice("://", 1).get_slice("/", 0)
-	host = host.substr(host.rfind("@") + 1)
 	return context.merged({"message": message, "failure_id": "web:%d" % _failure_count,
-		"report": report.merged({"category": "web", "trigger": "web_beta", "site": host.get_slice(":", 0)})})
+		"report": report.merged(failure_page(str(context.get("origin", "")))).merged({"category": "web", "trigger": "web_beta"})})
+
+## Query keys that name a public video (YouTube v/list, Bilibili p, ...); every other one is left out.
+const FAILURE_PAGE_PARAMS := ["v", "list", "p", "id", "vid", "bvid", "aid", "ep_id", "season_id"]
+
+## The page a failure happened on, as far as reproducing it needs: host and path plus the public
+## video keys, never sign-in parts, fragments or other query values. A server of the user's own
+## (an address, a port, a local name) is only "private". The log's own masking (DiagnosticLogs.redact)
+## still runs over all of it.
+static func failure_page(url: String) -> Dictionary:
+	var rest := url.get_slice("://", 1) if url.contains("://") else url
+	rest = rest.get_slice("#", 0)
+	var authority := rest.get_slice("?", 0).get_slice("/", 0)
+	var host := authority.substr(authority.rfind("@") + 1).to_lower()
+	var name := host.get_slice(":", 0)
+	if host.begins_with("[") or host.contains(":") or not name.contains(".") or name.replace(".", "").is_valid_int() \
+			or name.get_extension() in ["local", "lan", "home", "internal", "localhost", "test", "arpa"]:
+		return {"site": "private"}
+	var scheme := url.get_slice("://", 0).to_lower() if url.contains("://") else "https"
+	var page := {"site": name, "page": scheme + "://" + name + rest.get_slice("?", 0).trim_prefix(authority).left(200)}
+	var params := {}
+	var query := rest.get_slice("?", 1) if rest.contains("?") else ""
+	for pair in query.split("&", false):
+		var key := pair.get_slice("=", 0)
+		var value := pair.get_slice("=", 1)
+		if key in FAILURE_PAGE_PARAMS and pair.contains("=") and RegEx.create_from_string("^[A-Za-z0-9_.-]{1,64}$").search(value):
+			params[key] = value
+	if not params.is_empty(): page.page_params = params
+	return page
 
 ## [failure] (failed only): the player's message, error and report, shown on the page it returns to.
 func restore_playback(failed: bool, position_ms: int = -1, failure: Dictionary = {}) -> void:

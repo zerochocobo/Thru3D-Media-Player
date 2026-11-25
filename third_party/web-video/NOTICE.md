@@ -4,7 +4,7 @@ The application uses yt-dlp for local media discovery, and the Android Python an
 QuickJS distribution from youtubedl-android. It does not use its download manager,
 automatic updates, FFmpeg or aria2c packages.
 
-- yt-dlp 2026.11.16.232655 (official nightly): https://github.com/yt-dlp/yt-dlp/tree/8f9e23a47eb68816a639096aecfb9d802f83c0a5
+- yt-dlp 2026.11.23.232705 (official nightly): https://github.com/yt-dlp/yt-dlp/tree/696c0673e9e06bf50514a11e6796644771ce330e
   (Unlicense; see LICENSE.yt-dlp). The pinned Python zip includes EJS 0.8.0;
   its Meriyah and Astring notices are embedded in the solver JavaScript headers,
   not standalone license files. NOTICE.ejs.txt makes those original headers

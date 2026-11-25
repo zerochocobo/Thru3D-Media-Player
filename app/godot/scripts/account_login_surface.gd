@@ -103,9 +103,12 @@ func _sync_keyboard(menu: Node, panel: RefCounted, info: Dictionary) -> void:
 	if epoch == _keyboard_seen and ChineseInput.active(): return
 	_keyboard_seen = epoch
 	var surface_id := str(info.get("surface_id", ""))
+	# Bound to the editor this popup opened for: a newer connection on the same page replaces
+	# the popup, and the old one's close must not blur that new field (QIYU 115 login).
 	var current := func() -> bool:
 		var web: Dictionary = panel.data.get("web", {})
-		return str(web.get("surface_id", "")) == surface_id and web.get("editing", false)
+		return str(web.get("surface_id", "")) == surface_id and web.get("editing", false) \
+			and int(web.get("keyboard_epoch", 0)) == epoch
 	ChineseInput.open(menu, "account_web", func(operation: String, value: String) -> bool:
 		if not current.call(): return false
 		match operation:

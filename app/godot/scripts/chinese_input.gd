@@ -41,7 +41,8 @@ static func configure_browser(value: String) -> void:
 
 static func configure(value: bool) -> void:
 	selected = value
-	if not enabled() and active() and (popup.owner_id != "browser" or not browser_enabled()): popup.close()
+	# Web pages, the browser's and the account login's, follow browser_enabled() instead.
+	if not enabled() and active() and (popup.owner_id not in ["browser", "account_web"] or not browser_enabled()): popup.close()
 	if enabled(): Keyboard.Pinyin.begin_load()
 
 static func ensure(parent: Node) -> Node3D:

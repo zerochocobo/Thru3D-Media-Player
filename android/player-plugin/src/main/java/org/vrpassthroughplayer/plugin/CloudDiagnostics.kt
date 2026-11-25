@@ -41,6 +41,9 @@ internal object CloudDiagnostics {
         val detail = result.optString("error_detail").ifBlank { message }
         if (result.optString("error_reason") in setOf("cloud_page_expired", "cloud_location_expired", "cloud_metadata_limit"))
             throw CloudFailure(result.getString("error_reason"), detail, apiCode = code.takeIf { it != 0 })
+        // Drivers report a provider's non-member rejection as text; the sign-in screen needs it as a reason.
+        if ("membership required" in detail.lowercase())
+            throw CloudFailure("cloud_membership_required", "OpenList $route · code $code\n$detail", apiCode = code.takeIf { it != 0 })
         throw CloudFailure(detail = "OpenList $route · code $code\n$detail", apiCode = code.takeIf { it != 0 })
     }
     fun providerFailure(json: JSONObject): CloudFailure {

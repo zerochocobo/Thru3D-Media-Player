@@ -102,6 +102,18 @@ func _run() -> void:
 			await RenderingServer.frame_post_draw
 			await RenderingServer.frame_post_draw
 			viewport.get_texture().get_image().save_png(output.path_join("%s_%d.png" % [detail, page]))
+	# The plugins tab: Anime4K's switch alone while off, its mode and level beneath it while on.
+	state.merge({"picture_quality_supported": true, "picture_quality_available": true, "picture_quality": true,
+		"picture_anime4k_mode": 1, "picture_anime4k_tier": 1, "picture_anime4k_blocker": "", "picture_anime4k_tiers": [true, true, true, false]})
+	menu._adjustment = "picture"; menu._picture_advanced = false; menu._picture_tab = 2
+	for anime4k in [false, true]:
+		state.picture_anime4k = anime4k
+		menu.refresh()
+		await process_frame
+		await RenderingServer.frame_post_draw
+		await RenderingServer.frame_post_draw
+		viewport.get_texture().get_image().save_png(output.path_join("plugins_%s.png" % ("on" if anime4k else "off")))
+	state.picture_anime4k = false
 	menu._adjustment = ""
 	state.geometry = 1
 	state.stereo = true

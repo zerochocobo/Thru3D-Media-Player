@@ -238,6 +238,7 @@ internal class AccountManager(private val host: () -> Activity?) {
                         is CloudLoginFailure -> when (e.reason) {
                             "cloud_login_required" -> "Sign in again."
                             "cloud_store_unavailable" -> "Cloud account storage unavailable"
+                            "cloud_membership_required" -> "This cloud drive requires a membership"
                             else -> "Cloud connection failed"
                         }
                         is CloudFailure -> if (e.reason == "cloud_login_required") "Sign in again." else "Cloud connection failed"

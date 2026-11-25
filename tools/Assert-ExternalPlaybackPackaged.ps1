@@ -20,6 +20,11 @@ if ($block -notmatch 'android:exported[^\r\n]*=true' -or $block -match 'android:
 # Validate complete filters, not tokens scattered across unrelated filters. In particular,
 # network playback must survive Android's MATCH_DEFAULT_ONLY domain preference filtering.
 $filters = [regex]::Matches($block, '(?m)^(?<indent> *)E: intent-filter\b[^\r\n]*(?:\r?\n(?!\k<indent>E: )[^\r\n]*)*')
+$shareFilter = @($filters | Where-Object {
+    $_.Value.Contains('="android.intent.action.SEND"') -and $_.Value.Contains('="android.intent.category.DEFAULT"') -and
+    $_.Value.Contains('="video/*"') -and $_.Value -notmatch 'android:scheme'
+})
+if (!$shareFilter.Count) { throw 'APK cannot receive a single shared video via EXTRA_STREAM.' }
 foreach ($scheme in @('file', 'content', 'http', 'https')) {
     foreach ($mime in @('video/*', 'application/vnd.apple.mpegurl', 'application/x-mpegURL')) {
         $required = @('android.intent.action.VIEW', 'android.intent.category.DEFAULT', $scheme, $mime)

@@ -1,6 +1,6 @@
 /* Passive Douyin adapter: public video metadata plus this document's observed
- * requests. No API replay or account-storage access; the one page-visible change is
- * installVideoCanvasBypass below. */
+ * requests. No API replay or account-storage access; the page-visible changes are
+ * installVideoCanvasBypass and installAudioGraphBypass below. */
 const Thru3DDouyin = (() => {
   'use strict';
   // Firefox 135+ exposes the original numeric token to JSON revivers. Never
@@ -212,5 +212,22 @@ const Thru3DDouyin = (() => {
       return installed;
     } catch (_) { return false; }
   };
-  return {parse,page,documentPage,address,matches,sourceId,normalize,binding,owner,merge,direct,diagnostics,installVideoCanvasBypass};
+  // Douyin's loudness balancing routes the video's sound through an AudioContext and AudioWorklet.
+  // GeckoView 151+ opens WebAudio output on Android with a 384-frame (8 ms) AAudio buffer that
+  // underruns under VR load and crackles (Mozilla bug 2087144; Quest 3, 2026-11-25: 8-9 underruns
+  // per 30 s). Refusing the worklet module takes the page's own failure path: it closes the
+  // context and the video keeps its ordinary media-element output. Re-check when GeckoView changes.
+  const installAudioGraphBypass = scope => {
+    if (typeof exportFunction !== 'function' || !documentPage(scope.location.href)) return false;
+    try {
+      const page = scope.wrappedJSObject, target = page?.AudioWorklet?.prototype, original = scope.AudioWorklet?.prototype?.addModule;
+      if (!target || typeof original !== 'function') return false;
+      target.addModule = exportFunction(function () {
+        if (!documentPage(scope.location.href)) return Reflect.apply(original, this, arguments);
+        return page.Promise.reject(new page.DOMException('Audio worklets are unavailable', 'NotSupportedError'));
+      }, scope);
+      return true;
+    } catch (_) { return false; }
+  };
+  return {parse,page,documentPage,address,matches,sourceId,normalize,binding,owner,merge,direct,diagnostics,installVideoCanvasBypass,installAudioGraphBypass};
 })();

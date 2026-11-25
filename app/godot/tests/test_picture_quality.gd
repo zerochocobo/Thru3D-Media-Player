@@ -181,6 +181,49 @@ func _run() -> void:
 	check("Picture: 4096 x 2048 | Reduced to the output resolution" in menu._info_text(), "The info page shows a picture the cap made smaller")
 	state.shown_picture = {"size": [0, 0], "upscaled": false, "reduced": false}
 	check(not ("Picture:" in menu._info_text()), "Nothing shown yet: no picture line")
+	# The plugins tab: Anime4K's switch first; its mode and level appear beneath it only while it is on.
+	state.picture_quality_available = true
+	state.picture_quality = true
+	state.picture_anime4k = false
+	state.picture_anime4k_mode = Video.Anime4k.A
+	state.picture_anime4k_tier = 1
+	state.picture_anime4k_blocker = ""
+	state.picture_anime4k_tiers = [true, true, false, false]
+	var targets_of := func(key: String) -> Array:
+		return menu._buttons.filter(func(button): return menu.choices.targets.get(button.target, {}).get("key", "") == key)
+	menu._activate(Menu.PICTURE_PLUGIN_TAB)
+	check(menu._picture_tab == 2 and "Anime4K" in menu.text_snapshot(), "The third tab shows Anime4K")
+	check(targets_of.call("picture_anime4k").size() == 1 and targets_of.call("picture_anime4k").front().enabled, "Off: one switch, ready to turn on")
+	check(targets_of.call("picture_anime4k_mode").is_empty() and targets_of.call("picture_anime4k_tier").is_empty(), "Off: no mode or level rows")
+	var off_height: float = menu._picture_panel_bounds.size.y
+	state.picture_anime4k = true
+	menu.refresh()
+	check(targets_of.call("picture_anime4k_mode").size() == 3 and targets_of.call("picture_anime4k_tier").size() == 4, "On: the mode and level rows appear")
+	check(menu._picture_panel_bounds.size.y > off_height, "On: the panel grows for them")
+	check(option.call("picture_anime4k_mode", 3).enabled and option.call("picture_anime4k_tier", 1).enabled, "Its modes and an affordable level are on offer")
+	check(not option.call("picture_anime4k_tier", 2).enabled and menu._tips[option.call("picture_anime4k_tier", 3).target] == Menu.PICTURE_ANIME4K_TOO_HEAVY,
+		"Levels too heavy for this video are greyed and say why")
+	state.picture_anime4k_blocker = "hdr"
+	menu.refresh()
+	check(not option.call("picture_anime4k_mode", 1).enabled and menu._tips[option.call("picture_anime4k_tier", 0).target] == Menu.PICTURE_ANIME4K_BLOCKERS.hdr,
+		"Where it cannot run its rows are greyed with the reason")
+	check(targets_of.call("picture_anime4k").front().enabled, "It can still be switched off there")
+	state.picture_anime4k_blocker = ""
+	menu._adjustment = ""
+	menu._open_picture_controls()
+	check(menu._picture_tab == 2, "With Anime4K on the panel opens on the plugins tab")
+	state.picture_anime4k = false
+	menu._adjustment = ""
+	menu._open_picture_controls()
+	check(menu._picture_tab == 0, "With it off the panel opens on picture quality")
+	state.picture_anime4k = true
+	menu._activate(Menu.PICTURE_QUALITY_TAB)
+	check(not option.call("picture_upscale", 2).enabled and menu._tips[option.call("picture_denoise", 1).target] == Menu.PICTURE_ANIME4K_REPLACES,
+		"With Anime4K on, super resolution and denoise give way to it")
+	state.picture_interpolation_blocker = "anime4k"
+	menu.refresh()
+	check(menu._tips[option.call("picture_interpolation", 1).target] == Menu.PICTURE_INTERPOLATION_BLOCKERS.anime4k, "Interpolation says Anime4K keeps it off")
+	_anime4k()
 	for failure in failures: printerr("FAIL: " + failure)
 	print("picture quality tests: %d failures" % failures.size())
 	quit(1 if not failures.is_empty() else 0)
@@ -257,6 +300,92 @@ func _picture_memory() -> void:
 	restored.load_saved()
 	check(restored.lookup(a).is_empty() and restored.lookup(b) == saved_b and restored.lookup(c).is_empty(),
 		"Valid banks reload only explicitly saved and uncleared settings")
+	# The carried look survives a restart, also with per-video memory off.
+	var stored := {}
+	video.last_picture_changed.connect(func(picture: Dictionary, network: bool) -> void:
+		stored.picture = picture; stored.network = network)
+	privacy.configure_file_settings(privacy.NONE)
+	video.set_reuse_last_picture(true)
+	open_clip.call(b)
+	presented.call()
+	video.preview_picture("picture_sharpness", 120.0)
+	video.commit_picture()
+	check(stored.get("picture", {}).get("picture_sharpness") == 1.2 and stored.get("network") == true,
+		"A temporary edit is handed out for saving across restarts")
+	var config := ConfigFile.new()
+	config.set_value("video", "reuse_last_picture", true)
+	config.set_value("video", "last_picture", stored.duplicate(true))
+	var reopened := Video.new()
+	reopened.load_picture_preferences(config)
+	reopened.local_uri = c
+	reopened.media.begin(1)
+	reopened._open_picture(c, true)
+	check(reopened.picture_source == "last" and reopened.picture_sharpness == 1.2, "After a restart the next clip carries the last look")
+	reopened.clear_last_picture(true)
+	reopened.local_uri = a
+	reopened._open_picture(a, true)
+	check(reopened.picture_source == "default", "Clearing network settings drops a look carried from a network file")
+	config.set_value("video", "last_picture", {"picture": {"picture_quality": "yes"}, "network": false})
+	var damaged := Video.new()
+	damaged.load_picture_preferences(config)
+	damaged.local_uri = a
+	damaged.media.begin(1)
+	damaged._open_picture(a, true)
+	check(damaged.picture_source == "default", "A damaged stored look is ignored")
+	privacy.configure_file_settings(previous_policy)
+	reopened.free()
+	damaged.free()
+	video.free()
+
+## Anime4K: the sizes its doublings make, the levels a video affords, its memory and where it cannot run.
+func _anime4k() -> void:
+	check(Video.anime4k_doublings(Vector2i(352, 240)) == 2 and Video.anime4k_doublings(Vector2i(720, 480)) == 2, "A DVD is doubled twice")
+	check(Video.anime4k_doublings(Vector2i(1920, 1080)) == 1 and Video.anime4k_doublings(Vector2i(1080, 1920)) == 1, "1080p becomes 4K, upright too")
+	check(Video.anime4k_doublings(Vector2i(2560, 1440)) == 0, "1440p and above are only restored")
+	check(Video.anime4k_doublings(Vector2i(1920, 1080), 2048) == 0 and Video.anime4k_doublings(Vector2i(720, 480), 2048) == 1, "The output cap holds")
+	var budget := Video.ANIME4K_BUDGET_MS
+	check(Video.anime4k_cost(Vector2i(720, 480), Video.Anime4k.A, 3, 2) <= budget, "A DVD affords VL")
+	check(Video.anime4k_cost(Vector2i(1920, 1080), Video.Anime4k.A, 1, 1) <= budget, "1080p affords M")
+	check(Video.anime4k_cost(Vector2i(1920, 1080), Video.Anime4k.A, 3, 1) > budget, "1080p does not afford VL")
+	check(absf(Video.anime4k_cost(Vector2i(1920, 1080), Video.Anime4k.A, 1, 1) - 16.9) < 1.0, "The estimate follows Quest 3's measured 16.9 ms")
+	check(Video.anime4k_cost(Vector2i(3840, 2160), Video.Anime4k.A, 1, 0) > budget and Video.anime4k_cost(Vector2i(3840, 2160), Video.Anime4k.A, 0, 0) <= budget,
+		"4K is only restored, at S")
+	var memory := Video.PictureMemory.new(ProjectSettings.globalize_path("res://../../build/anime4k-test-%s" % Time.get_ticks_usec()))
+	var older := memory.clean({"picture_quality": true, "picture_sharpness": 0.5, "picture_upscale": 0, "picture_denoise": 0,
+		"color_grade": Grade.new().snapshot()})
+	check(not older.picture_anime4k and older.picture_anime4k_mode == 1 and older.picture_anime4k_tier == 1, "A look saved before the plugins tab reads as Anime4K off, A at M")
+	var chosen := memory.edited(memory.edited(older, "picture_anime4k", true), "picture_anime4k_mode", 2)
+	check(chosen.picture_anime4k and chosen.picture_anime4k_mode == 2 and memory.edited(chosen, "picture_anime4k_tier", 9).picture_anime4k_tier == 3, "Switch, mode and level are kept and clamped")
+	check(memory.clean(chosen) == chosen, "The chosen look round-trips")
+	check(memory.edited(chosen, "picture_anime4k", false).picture_anime4k_mode == 2, "Switching it off keeps the mode")
+	var first_build := older.duplicate(); first_build.erase("picture_anime4k_mode"); first_build.picture_anime4k = 3
+	check(memory.clean(first_build).picture_anime4k and memory.clean(first_build).picture_anime4k_mode == 3, "The first test build's saved mode reads as on in that mode")
+	first_build.picture_anime4k = 0
+	check(not memory.clean(first_build).picture_anime4k, "Its saved 0 reads as off")
+	var video := Video.new()
+	video.picture_anime4k = true
+	video.stereo_sbs = true
+	check(video.picture_anime4k_blocker() == "mode", "A 3D picture keeps it off")
+	video.stereo_sbs = false
+	check(video.picture_anime4k_blocker() == "", "Nothing shown yet: no reason")
+	video.media.format = {"width": 3840, "height": 2160}
+	video.picture_anime4k_mode = Video.Anime4k.C
+	check(video.picture_anime4k_blocker() == "c_size", "Mode C has nothing to enlarge on 4K")
+	video.picture_anime4k_mode = Video.Anime4k.A
+	video.picture_anime4k_tier = 3
+	check(video.picture_anime4k_blocker() == "tier" and video.anime4k_tiers() == [true, false, false, false], "4K affords only S")
+	check(video._picture_values().size() == 23 and video._picture_values()[20] == 0.0, "Where it does not run the copy is told mode 0")
+	check(video._picture_values()[22] == Video.ANIME4K_BUDGET_MS, "The copy is told this headset's budget")
+	video.media.format = {"width": 1920, "height": 1080}
+	check(video.anime4k_tiers() == [true, true, false, false], "Quest 3 at 1080p: A at S and M")
+	video.anime4k_low_end = true
+	check(video.anime4k_tiers() == [false, false, false, false] and video._picture_values()[22] == Video.ANIME4K_LOW_END_BUDGET_MS,
+		"Quest 2 at 1080p: no level of A (A S fell to 53 fps there)")
+	video.picture_anime4k_mode = Video.Anime4k.C
+	check(video.anime4k_tiers()[0] and not video.anime4k_tiers()[1], "Quest 2 at 1080p: C at S (72 fps there)")
+	video.media.format = {"width": 720, "height": 480}
+	video.picture_anime4k_mode = Video.Anime4k.A
+	check(video.anime4k_tiers()[1] and not video.anime4k_tiers()[3], "Quest 2 on a DVD: A at M, not VL")
 	video.free()
 
 ## Each setting that keeps Alpha off the layer has its own explanation on the switch.

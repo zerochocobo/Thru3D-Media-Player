@@ -6,6 +6,8 @@ render_mode unshaded, cull_disabled, depth_draw_never, blend_mix;
 uniform sampler2D color_texture : filter_linear, repeat_disable;
 uniform sampler2D alpha_texture : filter_linear, repeat_disable;
 uniform bool alpha_enabled = true;
+// QIYU eye-buffer playback (no compositor video layer): take the plain fast path in fragment().
+uniform bool plain_fast_path = false;
 // The player's edge feather/shrink: mask values remapped from [x, y] to [0, 1] ((0, 1): unchanged).
 uniform vec2 alpha_edge = vec2(0.0, 1.0);
 float edge_alpha(float m) { return clamp((m - alpha_edge.x) / max(alpha_edge.y - alpha_edge.x, 0.001), 0.0, 1.0); }
@@ -139,6 +141,34 @@ void vertex() {
 }
 
 void fragment() {
+	// Plain playback (no mask, depth, PiP, packed Alpha, stream mesh or sharpening): projection, eye,
+	// alignment, footprint, grade and captions only. Quest 2 stand-in for QIYU A091, 8K VR180 in the eye
+	// buffer at 1.00x: 24.9 ms GPU on the full body below, 16.3 ms on this path (2026-11-25).
+	if (!alpha_enabled && !depth_enabled && !pip_enabled && !packed_alpha && !projection_mesh && !projection_uv_packed
+			&& sharpness <= 0.0 && plain_fast_path) {
+		vec2 plain_uv = eye_uv(UV, media_direction);
+		vec2 plain_shown = aligned_eye_uv(plain_uv);
+		int plain_eye = source_eye();
+		vec2 plain_size = view_size();
+		vec2 plain_p = clamp(raw_eye_uv(plain_shown), vec2(0.5) / plain_size, vec2(1.0) - vec2(0.5) / plain_size);
+		vec2 plain_lo = vec2(0.5) / source_size;
+		vec2 plain_hi = vec2(1.0) - plain_lo;
+		if (stereo_sbs && top_bottom) {
+			plain_p.y = (plain_p.y + float(plain_eye)) * 0.5; plain_lo.y += float(plain_eye) * 0.5; plain_hi.y -= float(1 - plain_eye) * 0.5;
+		} else if (stereo_sbs) {
+			plain_p.x = (plain_p.x + float(plain_eye)) * 0.5; plain_lo.x += float(plain_eye) * 0.5; plain_hi.x -= float(1 - plain_eye) * 0.5;
+		}
+		vec3 plain_rgb = texture(color_texture, plain_p).rgb;
+		plain_rgb = footprint_color(plain_p, dFdx(plain_p), dFdy(plain_p), plain_lo, plain_hi, plain_rgb);
+		ALBEDO = outside_lens(media_direction) || outside_alignment(plain_shown) ? vec3(0.0) : color_grade(plain_rgb, FRAGCOORD.xy);
+		ALPHA = 1.0;
+		if (!separate_subtitles) {
+			vec4 plain_caption = caption_composite(ALBEDO, ALPHA, projected_caption());
+			plain_caption = caption_composite(plain_caption.rgb, plain_caption.a, bitmap_caption(raw_eye_uv(plain_uv)));
+			ALBEDO = plain_caption.rgb;
+			ALPHA = plain_caption.a;
+		}
+	} else { // Full path. pip_shader.cmake builds the compositor PiP shader from here on.
 	if (projection_mesh && abs(COLOR.r - float(source_eye())) > 0.25) { discard; }
 	vec3 sample_direction = pip_direction(UV, media_direction);
 	vec2 shown_uv = projection_mesh ? UV : eye_uv(pip_uv(UV), sample_direction);
@@ -199,5 +229,6 @@ void fragment() {
 	if (pip_enabled) {
 		vec2 fade = smoothstep(vec2(0.0), max(pip_edge_feather, vec2(0.00001)), min(UV, vec2(1.0) - UV));
 		ALPHA *= fade.x * fade.y;
+	}
 	}
 }

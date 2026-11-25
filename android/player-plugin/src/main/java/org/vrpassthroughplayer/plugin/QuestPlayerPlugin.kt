@@ -35,6 +35,12 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun system_media_volume(): String = systemVolume.status()
     @UsedByGodot fun set_system_media_volume(percent: Double, showUi: Boolean): Long = systemVolume.set(percent, showUi)
     @Volatile private var signalsReady = false
+    // Godot delivers every plugin signal through GLSurfaceView's event queue, which keeps running
+    // while paused and in the first milliseconds after resume with no current EGL context. A handler
+    // that builds a mesh there gets buffer 0 and the next glDrawArrays reads address 0 (11-18, DNEX6363).
+    // Signals from pause until the first draw with a context wait here and go out in order.
+    private val heldSignals = ArrayDeque<Pair<String, Array<out Any?>>>()
+    private var holdSignals = false
     @Volatile private var playbackPrivacyConfigured = false
     internal fun externalPlaybackProbeHostReady(): Boolean =
         signalsReady && playbackPrivacyConfigured && !closed.get() && activity?.hasWindowFocus() == true
@@ -939,6 +945,36 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
                                            sharpen: Float, grade: FloatArray, denoiseStep: Float, denoiseTolerance: Float): Boolean =
         runCatching { VideoLayerNative.enhanceTexture(slot, texture, sourceWidth, sourceHeight, eyesAcross, eyesDown, sharpen,
             grade.takeIf { it.size >= 11 }, denoiseStep, denoiseTolerance) }.getOrDefault(false)
+    /** [enhance_layer_texture] with Anime4K: [plugin] holds its mode, tier and doublings (see
+     * [VideoLayerNative.enhanceTexturePlugin]); [frame] names the frame, whose result is kept (-1: none). */
+    @UsedByGodot fun enhance_layer_texture_plugin(slot: Int, texture: Int, sourceWidth: Int, sourceHeight: Int, eyesAcross: Int, eyesDown: Int,
+                                                  sharpen: Float, grade: FloatArray, denoiseStep: Float, denoiseTolerance: Float,
+                                                  plugin: FloatArray, frame: Long): Boolean =
+        runCatching { VideoLayerNative.enhanceTexturePlugin(slot, texture, sourceWidth, sourceHeight, eyesAcross, eyesDown, sharpen,
+            grade.takeIf { it.size >= 11 }, denoiseStep, denoiseTolerance, plugin.takeIf { it.size >= 3 }, frame) }.getOrDefault(false)
+    /** Anime4K could not run on the picture layer's GL. */
+    @UsedByGodot fun anime4k_picture_refused(): Boolean = runCatching { VideoLayerNative.anime4kPictureRefused() }.getOrDefault(false)
+    /** The picture layer's last frame went without Anime4K while its networks are being linked: draw it again. */
+    @UsedByGodot fun anime4k_picture_pending(): Boolean = runCatching { VideoLayerNative.anime4kPicturePending() }.getOrDefault(false)
+    /** Frame interpolation for 2D->3D's stereo pairs on the picture layer: see [VideoLayerNative.interpPairPush]
+     * and [VideoLayerNative.interpPairDraw]. An empty [grade] leaves the colours as they are. */
+    @UsedByGodot fun interpolate_pair_push(texture: Int, width: Int, height: Int, id: Long, before: Long): Boolean =
+        runCatching { VideoLayerNative.interpPairPush(texture, width, height, id, before) }.getOrDefault(false)
+    @UsedByGodot fun interpolate_pair_draw(slot: Int, before: Long, after: Long, phase: Float, sourceWidth: Int, sourceHeight: Int,
+                                           sharpen: Float, grade: FloatArray, denoiseStep: Float, denoiseTolerance: Float): Boolean =
+        runCatching { VideoLayerNative.interpPairDraw(slot, before, after, phase, sourceWidth, sourceHeight, sharpen,
+            grade.takeIf { it.size >= 11 }, denoiseStep, denoiseTolerance) }.getOrDefault(false)
+    /** The same for pairs shown at their own size: see [VideoLayerNative.interpPairPushEnhanced]. */
+    @UsedByGodot fun interpolate_pair_push_enhanced(texture: Int, width: Int, height: Int, id: Long, before: Long,
+                                                    sharpen: Float, grade: FloatArray, denoiseStep: Float, denoiseTolerance: Float): Boolean =
+        runCatching { VideoLayerNative.interpPairPushEnhanced(texture, width, height, id, before, sharpen,
+            grade.takeIf { it.size >= 11 }, denoiseStep, denoiseTolerance) }.getOrDefault(false)
+    @UsedByGodot fun interpolate_pair_show(slot: Int, before: Long, after: Long, phase: Float): Boolean =
+        runCatching { VideoLayerNative.interpPairShow(slot, before, after, phase) }.getOrDefault(false)
+    @UsedByGodot fun interpolate_pair_release() { runCatching { VideoLayerNative.interpPairRelease() } }
+    /** How much later than they arrive 2D->3D's interpolated pairs show (ms; 0: as they come): MPV delays the
+     * audio as long. */
+    @UsedByGodot fun set_mpv_pair_delay(id: Int, ms: Double): Boolean = !closed.get() && mpv.setPairDelay(id, ms)
     @UsedByGodot fun video_layer_limits(): String = runCatching { VideoLayerNative.compositorLimits() }.getOrDefault("0 0 0")
     @UsedByGodot fun pip_compositor_metrics(): String = runCatching { VideoLayerNative.pipMetrics() }.getOrDefault("0 0 0 0 0")
     @UsedByGodot fun pip_compositor_samples(request: Boolean): String =
@@ -1030,8 +1066,25 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun set_mpv_vsync(displayNs: Long, periodNs: Long, latchLeadNs: Long): Boolean {
         if (closed.get() || !MpvSourceNative.supported()) return false
         if (android.os.Build.VERSION.SDK_INT >= 29) android.os.Trace.setCounter("T3D.vsyncAheadUs", (displayNs - System.nanoTime()) / 1000)
+        // Frame interpolation draws for the same latches.
+        LayerCopy.cadence = if (displayNs > 0 && periodNs in 5_000_000L..34_000_000L && latchLeadNs in 0L until 100_000_000L)
+            longArrayOf(displayNs, periodNs, latchLeadNs, System.nanoTime()) else null
         return MpvSourceNative.setVsync(displayNs, periodNs, latchLeadNs)
     }
+    /** [set_mpv_vsync] for frame interpolation's copy thread alone, on a runtime whose latches are not
+     * measured (PICO...): MPV keeps releasing at its own targets. A display time more than a second from
+     * System.nanoTime is on another clock: the copy then places the refresh two periods after this call,
+     * which Godot makes as its frame begins (a guess, as the lead is there; the copy's stats say so). */
+    @UsedByGodot fun set_copy_vsync(displayNs: Long, periodNs: Long, latchLeadNs: Long): Boolean {
+        val now = System.nanoTime()
+        val usable = !closed.get() && periodNs in 5_000_000L..34_000_000L && latchLeadNs in 0L until 100_000_000L
+        val converted = Math.abs(displayNs - now) >= 1_000_000_000L
+        LayerCopy.cadence = if (usable) longArrayOf(if (converted) now + 2 * periodNs else displayNs, periodNs, latchLeadNs, now) else null
+        LayerCopy.cadenceConverted = usable && converted
+        return usable
+    }
+    /** Frame interpolation stopped for this file (late, or refused): the copy tries it again. */
+    @UsedByGodot fun retry_layer_interpolation() { LayerCopy.retries.incrementAndGet() }
     /** Picture quality mode for the files opened next (see [MpvVideoBridge.pictureQuality]). */
     @UsedByGodot fun set_layer_picture_quality(enabled: Boolean) { mpv.pictureQuality = enabled }
     /** Its sharpening and colour grade, applied from the next video frame (see [LayerCopy.picture]). */
@@ -1087,6 +1140,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun get_mpv_subtitle_bitmap_styled(id: Int, version: Long, rgb: Int, opacity: Float): ByteArray = if (closed.get()) ByteArray(0) else mpv.subtitleBitmap(id, version, rgb, opacity)
     @UsedByGodot fun set_mpv_depth_view(id: Int, shift: Double, convergence: Double): Boolean =
         !closed.get() && mpv.setDepthView(id, shift, convergence)
+    @UsedByGodot fun set_mpv_depth_foreground(id: Int, scale: Double): Boolean =
+        !closed.get() && mpv.setDepthForeground(id, scale)
     @UsedByGodot fun set_mpv_portrait_depth(id: Int, enabled: Boolean): Boolean =
         !closed.get() && mpv.setPortraitDepth(id, enabled)
     @UsedByGodot fun claim_mpv_pair(id: Int, token: Long): String = if (closed.get()) "" else mpv.claim(id, token)
@@ -1178,8 +1233,26 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         if (!closed.get()) { sources.onActivityResult(requestCode, resultCode, data); picker.result(requestCode, resultCode, data) }
     }
 
+    override fun emitSignal(signalName: String, vararg signalArgs: Any?) {
+        synchronized(heldSignals) {
+            if (holdSignals || heldSignals.isNotEmpty()) {
+                // Bounded for a long stay in the background; the oldest is the least likely to matter.
+                if (heldSignals.size >= 4096) Log.w("VRPassthroughPlayer", "Held signal dropped: ${heldSignals.removeFirst().first}")
+                heldSignals.addLast(signalName to signalArgs); return
+            }
+        }
+        super.emitSignal(signalName, *signalArgs)
+    }
+
+    private fun releaseHeldSignals() = synchronized(heldSignals) {
+        holdSignals = false
+        // Queued under the lock so a signal sent meanwhile cannot overtake the held ones.
+        while (heldSignals.isNotEmpty()) heldSignals.removeFirst().let { super.emitSignal(it.first, *it.second) }
+    }
+
     override fun onGLDrawFrame(gl: GL10?) {
         if (EGL14.eglGetCurrentContext() == EGL14.EGL_NO_CONTEXT) return
+        releaseHeldSignals()
         repeat(16) { controlledRenderTasks.poll()?.run() ?: return@repeat }
         if (!closed.get()) { media.draw(); controlled.draw(); mpv.draw() }
     }
@@ -1247,7 +1320,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
 
     // Android can resume before Godot registers the plugin's native signals.
     override fun onGodotSetupCompleted() { activity?.let { CrashRecords.start(it); WebBrowserDepthBridge.install(it); ExternalInputProbe.install(it) { payload -> if (signalsReady && !closed.get()) emitSignal("external_input", payload) } }; WebBrowserTextureBridge.install { runOnRenderThread(it) }; signalsReady = true; clearPhotoCache(true); runCatching { panoramaOriginals.prepare() } }
-    override fun onMainPause() { artworkPlayer.stop(); CrashRecords.foreground(false); if (!closed.get()) { sources.serverPlaybackPaused(); webBrowser.action("pause"); listeningTasks.foreground(false); readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
+    override fun onMainPause() { synchronized(heldSignals) { holdSignals = true }; artworkPlayer.stop(); CrashRecords.foreground(false); if (!closed.get()) { sources.serverPlaybackPaused(); webBrowser.action("pause"); listeningTasks.foreground(false); readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
     override fun onMainResume() { CrashRecords.foreground(true); if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; listeningTasks.foreground(true); readingPages.foreground(true); dlnaForeground(true); systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
     override fun onMainDestroy() { close() }
     override fun onGodotTerminating() { close() }

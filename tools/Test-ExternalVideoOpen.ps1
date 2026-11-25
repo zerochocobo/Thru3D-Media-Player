@@ -31,6 +31,8 @@ foreach ($scheme in @('http', 'https')) {
     $candidates = (& $adb -s $Serial shell cmd package query-activities --brief --query-flags 65536 -a android.intent.action.VIEW -t text/html -d "${scheme}://example.com/") -join "`n"
     if ($LASTEXITCODE -ne 0 -or $candidates.Contains($entry)) { throw 'External video entry must not claim ordinary HTML pages.' }
 }
+$share = (& $adb -s $Serial shell cmd package query-activities --brief --query-flags 65536 -a android.intent.action.SEND -t 'video/mp4') -join "`n"
+if ($LASTEXITCODE -ne 0 -or !$share.Contains($entry)) { throw 'Single video share without a data URI must find the external video entry.' }
 $evidence = [ordered]@{ mode=$Mode; registered=$true; component=$entry; fixture=$Fixture; registration=$registration; html_excluded=$true }
 if ($Mode -ne 'Registration') {
     # Public, synthetic fixtures only. No authenticated URI or user media appears in shell/log output.

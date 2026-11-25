@@ -45,6 +45,7 @@ internal class CloudFailure(val reason: String = "cloud_unavailable", detail: St
     val httpStatus: Int = 0, val apiCode: Int? = null) : IOException(when (reason) {
     "cloud_login_required" -> "Please sign in to your cloud account again"
     "cloud_store_unavailable" -> "Cloud account storage unavailable"
+    "cloud_membership_required" -> "This cloud drive requires a membership"
     "cloud_file_missing" -> "Cloud file or account not found"
     "cloud_file_changed" -> "Cloud file changed. Refresh the folder"
     "cloud_file_ambiguous" -> "Duplicate cloud names. Rename in cloud storage"

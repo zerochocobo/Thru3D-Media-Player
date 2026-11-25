@@ -34,6 +34,11 @@ var busy_ring: MeshInstance3D
 var strength_open := false
 var global_footer := false
 var _last_effect_error := ""
+## A held strength rail clears the footer and the open popup down to the rail, as the player's does.
+const RAIL_HOLD_MS := 250
+var _rail_nodes: Array[Node3D] = []
+var _rail_pressed_ms := 0
+var _rail_cleared: Array[Node3D] = []
 var _error_until := 0
 var host: Node3D:
 	get: return window_ref.get_ref() if window_ref else null
@@ -63,6 +68,7 @@ func refresh_session_controls(force: bool = false) -> void:
 func sync(now: int = -1) -> void:
 	if not host or not host.visible or not host.browser.active():
 		finish_drag(); _hide_controls(); near_hands.clear(); entered = -1; last_near = -1; return
+	_sync_rail_hold()
 	if now < 0: now = Time.get_ticks_msec()
 	if host.depth.error != _last_effect_error:
 		_last_effect_error = host.depth.error
@@ -224,11 +230,34 @@ func _draw() -> void:
 	power.base_color=UiTheme.color("danger_surface");power.foreground=UiTheme.color("danger")
 	power.node.material_override.set_shader_parameter("surface_color",power.base_color)
 	power.node.get_child(1).material_override.albedo_color=power.foreground
+	_rail_nodes.clear()
 	for child in get_children():
 		if child is Node3D and not before.has(child):
 			child.position.z += 0.02
 			_raise_rail(child)
+			_rail_nodes.append(child)
 	_refresh_strength()
+	_sync_rail_hold()
+
+func rail_holding() -> bool:
+	return not capture_hand.is_empty() and Time.get_ticks_msec() - _rail_pressed_ms >= RAIL_HOLD_MS
+
+func _sync_rail_hold() -> void:
+	if not rail_holding():
+		for node in _rail_cleared:
+			if is_instance_valid(node): node.visible = true
+		if not _rail_cleared.is_empty(): _rail_cleared.clear(); composition_layout_changed.emit()
+		return
+	var hidden: Array[Node3D] = []
+	for child in get_children():
+		if child is Node3D and child != _backdrop and not _rail_nodes.has(child): hidden.append(child)
+	if host: hidden.append_array(host._hold_nodes)
+	var changed := false
+	for node in hidden:
+		if is_instance_valid(node) and node.visible:
+			node.visible = false; changed = true
+			if not _rail_cleared.has(node): _rail_cleared.append(node)
+	if changed: composition_layout_changed.emit()
 
 func strength_bounds() -> Rect2:
 	var bottom := RAIL.x-0.095
@@ -284,11 +313,12 @@ func drag_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bo
 		host.depth.strength = host.depth.Strength.clamp_value(1.0+(point.y-RAIL.y)/BOOST_HEIGHT,2.0)
 	if fraction<0.02: host.depth.strength=0.0
 	_refresh_strength()
+	_sync_rail_hold()
 func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
 	var hit := ray_hit(origin,direction) if tracked else {}
 	if hit.is_empty(): return false
 	if hit.target == STRENGTH:
-		capture_hand = hand; drag_pointer(hand,origin,direction,tracked)
+		capture_hand = hand; _rail_pressed_ms = Time.get_ticks_msec(); drag_pointer(hand,origin,direction,tracked)
 	else:
 		hit.hand = hand
 		_activate_hit(hit)
@@ -296,6 +326,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 func finish_drag() -> void:
 	if capture_hand.is_empty(): return
 	capture_hand = ""
+	_sync_rail_hold()
 	if host: host._depth_changed("strength",host.depth.strength*100.0)
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	app_actions.release(hand)

@@ -48,10 +48,19 @@ class MpvSourceDiagnosticsTest {
         assertFalse(report.toString().contains("private"))
 
         val wait = JSONObject().put("stage", "core_terminate").put("closing_ms", 51000).put("decoder", "hardware")
+            .put("mediacodec_started_ms", 500).put("decoder_observed_ms", 630).put("layer_software_fallback", false)
             .put("recent_modules", JSONArray(listOf("vd", "ao/aaudio"))).put("last_log_ms", 50500)
             .put("path", "/private/Film.mkv")
+            .put("control_call", "snapshot").put("control_call_ms", 17000)
+            .put("core_recent_modules", JSONArray(listOf("af", "ao/aaudio"))).put("core_last_log_ms", 16900)
+            .put("core_decoder", "unknown").put("core_decoder_observed_ms", -1).put("core_mediacodec_started_ms", 480)
         val native = MpvSourceDiagnostics.native(wait)!!
-        assertEquals(setOf("stage", "closing_ms", "decoder", "recent_modules", "last_log_ms"), native.keys().asSequence().toSet())
+        assertEquals(setOf("stage", "closing_ms", "decoder", "recent_modules", "last_log_ms", "mediacodec_started_ms",
+            "decoder_observed_ms", "layer_software_fallback", "control_call", "control_call_ms", "core_recent_modules",
+            "core_last_log_ms", "core_decoder", "core_decoder_observed_ms", "core_mediacodec_started_ms"),
+            native.keys().asSequence().toSet())
+        assertEquals("snapshot", native.getString("control_call"))
+        assertEquals("ao/aaudio", native.getJSONArray("core_recent_modules").getString(1))
         assertEquals("ao/aaudio", native.getJSONArray("recent_modules").getString(1))
         assertNull(MpvSourceDiagnostics.native(null))
     }

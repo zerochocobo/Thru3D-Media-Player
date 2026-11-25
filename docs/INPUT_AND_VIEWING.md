@@ -50,7 +50,7 @@ Compatible fisheye and AI person passthrough paths support picture controls, inc
 
 ## Per-video picture controls in 0.18.5
 
-The picture-controls popup combines quality mode, sharpness, Super Resolution, denoising and color. As of 0.18.8, the Settings entry opens the same current-video panel as the control bar and is unavailable without a video. New videos start from factory values or the optional reuse-last-picture setting; player-wide picture defaults are no longer used. Browser picture settings remain independent. Saved per-video adjustments take priority when reopening a video and can be cleared in the popup footer; saving follows the per-file privacy preference. Optional Reuse Last Picture Settings applies only to videos without their own adjustments and lasts for the current app session. Super Resolution respects the output-size cap, and the information page shows the processed size. Panorama direction supports one-degree steps, saved independently for global and photo backgrounds.
+The picture-controls popup combines quality mode, sharpness, Super Resolution, denoising and color. As of 0.18.8, the Settings entry opens the same current-video panel as the control bar and is unavailable without a video. New videos start from factory values or the optional reuse-last-picture setting; player-wide picture defaults are no longer used. Browser picture settings remain independent. Saved per-video adjustments take priority when reopening a video and can be cleared in the popup footer; saving follows the per-file privacy preference. Optional Reuse Last Picture Settings applies only to videos without their own adjustments and as of 0.18.10 also survives app restarts. Super Resolution respects the output-size cap, and the information page shows the processed size. Panorama direction supports one-degree steps, saved independently for global and photo backgrounds.
 
 ## Photo 3D and previews in 0.18.6
 
@@ -71,3 +71,7 @@ A held controller retains priority over nearby optical hand tracking. VR Alpha c
 ## 0.18.9 depth controls
 
 Flat frame edges is off by default and eases left/right video or webpage depth toward the screen plane only in Stretch edges mode. It does not affect photos and is separate from the withdrawn hard-subtitle protection, which remains disabled. Faster baked-in black-bar detection reduces bars entering depth estimation. Source/host tests do not establish headset frame rate or visual acceptance.
+
+## 0.18.10 stereo controls and recovery
+
+3D Position is now 3D Convergence; Foreground Scale controls nearer depth. Video, web and global settings provide both. Holding and dragging the video/web strength, convergence or foreground slider temporarily hides its menu. The previous picture settings can survive restarts, with icons separating saved-per-file from carried values. Boosted playback restores system volume when it ends and can attempt recovery on the next launch after an interrupted exit. Feature availability follows the current video and runtime.

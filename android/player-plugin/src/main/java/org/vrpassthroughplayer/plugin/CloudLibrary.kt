@@ -133,9 +133,9 @@ internal object CloudLibrary {
             if (identity(credentials(account.getString("id"))) != identity(account)) throw CloudFailure("cloud_login_required")
             if (objectLookup && client is OpenListBackend.Client) client.resolveArchive(file) else client.resolve(file)
         }
-        return if (OpenListBackend.supported(account.getString("provider")))
+        return (if (OpenListBackend.supported(account.getString("provider")))
             CloudStreamSource(file.size, resolve, linkConnection = OpenListBackend::connection)
-        else CloudStreamSource(file.size, resolve)
+        else CloudStreamSource(file.size, resolve)).also { it.provider = account.getString("provider") }
     }
 
     fun rename(id: String, name: String) = safe {

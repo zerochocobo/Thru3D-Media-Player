@@ -26,7 +26,7 @@ func run() -> void:
 	for language in ["zh","zh_Hant","en","ja"]:
 		I18n.use(language)
 		for enabled in [false,true]:
-			host.depth.auto_3d_hidden=enabled; host.depth_settings=true; host.refresh()
+			host.depth.auto_3d_hidden=enabled; host.depth_settings=true; host.depth_expanded=true; host.refresh()
 			footer.near_hands.right=true; footer.entered=0; footer.sync(1000)
 			var toggle: Array=host.depth_choices.targets.values().filter(func(item): return item.key=="auto_3d_hidden")
 			if toggle.size()!=1: failures.append("Missing switch "+language)

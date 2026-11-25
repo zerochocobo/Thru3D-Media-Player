@@ -76,6 +76,39 @@ func _initialize() -> void:
 	expect(copying.get("copy_out") == "3840x2160" and copying.get("copy_gpu_ms") == 30.5 and copying.get("copy_window") == 30.0,
 		"The window carries the copy's output size, GPU time and window")
 	expect(not clean.has("copy_fps"), "Playback without a copy reports none")
+	# The release eye-buffer status can arrive before the first pair or after a seek.
+	var pair := {"session_id": 1, "source_epoch": 2, "color_target": "external", "width": 8192,
+		"height": 4096, "source_width": 8192, "source_height": 4096}
+	var status := {"session_id": 1, "last_source_epoch": 2, "layer": false, "published": 10,
+		"unique_post_draw_frames": 2, "decoder_recycle_waits": 1, "private_key": "private_value"}
+	var eye := Windows.eye_sample(status, pair)
+	expect(Windows.eye_sample(status, {}).is_empty() and Windows.eye_sample(status.merged({"layer": true}, true), pair).is_empty(), "Only a bound eye-buffer source is sampled")
+	expect(Windows.eye_sample(status.merged({"last_source_epoch": 3}, true), pair).is_empty(), "The decoder epoch must match the bound frame")
+	expect(Windows.eye_sample(status, pair.merged({"source_width": 0}, true)).is_empty(), "An incomplete frame descriptor is not a size measurement")
+	windows = Windows.new()
+	windows.tick(0, sample(0, {"path": "E:xr", "eye": eye}))
+	var later := Windows.eye_sample(status.merged({"published": 45, "unique_post_draw_frames": 31}, true), pair)
+	var event := windows.tick(10000, sample(30, {"path": "E:xr", "eye": later}))
+	expect(event.eye_output.published == 35 and event.eye_output.unique_post_draw_frames == 29 and event.eye_output.decoder_recycle_waits == 0, "Producer and post-draw counts have independent increments")
+	# The bridge keeps one copy in flight: draws that found its fence pending explain a halved bind rate.
+	windows = Windows.new()
+	windows.tick(0, sample(0, {"path": "E:xr", "eye": Windows.eye_sample(status.merged({"copy_fence_waits": 4}, true), pair)}))
+	var fenced := windows.tick(10000, sample(30, {"path": "E:xr", "eye":
+		Windows.eye_sample(status.merged({"copy_fence_waits": 19}, true), pair)}))
+	expect(fenced.eye_output.copy_fence_waits == 15, "Draws waiting on the previous copy fence are counted per window")
+	# Producer render time per window separates a stalled libmpv render from an idle producer.
+	windows = Windows.new()
+	windows.tick(0, sample(0, {"path": "E:xr", "eye": Windows.eye_sample(status.merged({"producer_render_us": 120000, "producer_slow_renders": 1}, true), pair)}))
+	var producer := windows.tick(10000, sample(30, {"path": "E:xr", "eye":
+		Windows.eye_sample(status.merged({"producer_render_us": 5620000, "producer_slow_renders": 91}, true), pair)}))
+	expect(producer.eye_output.producer_render_us == 5500000 and producer.eye_output.producer_slow_renders == 90, "Producer render time and slow renders are counted per window")
+	windows = Windows.new()
+	windows.tick(0, sample(0, {"path": "E:xr", "eye": eye}))
+	event = windows.tick(10000, sample(30, {"path": "E:xr", "eye": later}))
+	expect(event.eye_output.external and event.eye_output.source == "8192x4096" and event.eye_output.output == "8192x4096", "The actual decoder image path and dimensions are reported")
+	expect(not event.eye_output.has("superseded_decoder_images") and not event.eye_output.has("session") and not JSON.stringify(event).contains("private_value"), "Missing counters and private status are omitted")
+	event = windows.tick(20000, sample(60, {"path": "E:xr", "eye": eye.merged({"session": 2}, true)}))
+	expect(not event.has("eye_output"), "Opening a different decoder never differences unrelated counters")
 	# No media names or identifiers reach the event.
 	expect(not JSON.stringify(clean).contains("uri") and not JSON.stringify(clean).contains("title"), "The event carries no media identity")
 	print("Playback diagnostics: %d checks, %d failures" % [checks, failures.size()])

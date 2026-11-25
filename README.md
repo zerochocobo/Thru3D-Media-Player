@@ -6,11 +6,15 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.18.9** (Android versionCode **124**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.18.10** (Android versionCode **126**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
 ## Features
+
+- Anime4K picture plugins for compatible 2D animation, with per-video modes/tiers and load protection. See [picture plugins](docs/PICTURE_PLUGINS.md).
+- Optional Frame Interpolation (Beta) for regular video and compatible 2D-to-3D, with source-size/frame-rate limits and automatic load/depth safeguards; mutually exclusive with Anime4K.
+- Video/web 3D Convergence and Foreground Scale controls, plus direct sibling-folder navigation across supported storage sources.
 
 - GuangYaPan cloud sign-in, browsing and compatible media playback directly on the headset.
 - APNG and animated WebP media-server artwork, with hover playback, full-size previews and animated detail backgrounds.
@@ -21,7 +25,7 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 
 - Local/SMB/DLNA media preview prefetching, progressive photo 3D with fast/quality modes, and picture controls on compatible real-time 2D-to-3D video paths. Enhancement and upscaling remain subject to device capabilities and GPU load.
 
-- Per-video picture quality and color settings: Settings and the control bar open the same current-video panel. New videos use factory values or optional session-only reuse of the previous video’s adjustments. Saving follows per-file privacy preferences.
+- Per-video picture quality and color settings: Settings and the control bar open the same current-video panel. New videos use factory values or optional reuse of the last picture settings, including across app restarts. Saving follows per-file privacy preferences.
 - A media-library folder tree for deep paths, with account-specific sources in recent items and favorites.
 
 - Offline release history from the library and About, with unread reminders and headset/channel-specific entries in Simplified Chinese, Traditional Chinese, English and Japanese.

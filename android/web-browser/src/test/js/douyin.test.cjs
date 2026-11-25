@@ -325,3 +325,26 @@ test('WebGL uploads of a video are skipped and their canvas hidden only on the o
  assert.equal(gl1.page.prototype.texImage2D.call(context,3553,0,6408,6408,5121,video),'done');
  assert.equal(calls.length,3);
 });
+test('AudioWorklet modules are refused only on the official document',async()=>{
+ const calls=[];
+ const own={prototype:{addModule(...a){calls.push([this,a]);return Promise.resolve('loaded');}}};
+ const pageProto={addModule:own.prototype.addModule};
+ class PageException extends Error{constructor(message,name){super(message);this.name=name;}}
+ const scope={location:{href:'https://www.douyin.com/jingxuan?modal_id=7710913309478133477'},AudioWorklet:own,
+  wrappedJSObject:{AudioWorklet:{prototype:pageProto},Promise,DOMException:PageException}};
+ const guarded=vm.createContext({URL,Reflect,exportFunction:fn=>fn});
+ vm.runInContext(fs.readFileSync(path.join(root,'douyin.js'),'utf8'),guarded);
+ const install=vm.runInContext('Thru3DDouyin',guarded).installAudioGraphBypass;
+ assert.equal(api.installAudioGraphBypass(scope),false,'without exportFunction nothing is replaced');
+ assert.equal(install({...scope,location:{href:'https://www.douyin.com.evil/'}}),false);
+ assert.equal(install({...scope,wrappedJSObject:{Promise,DOMException:PageException}}),false,'no AudioWorklet');
+ assert.equal(pageProto.addModule,own.prototype.addModule);
+ assert.equal(install(scope),true);
+ const worklet={};
+ await assert.rejects(pageProto.addModule.call(worklet,'volume.js'),e=>e instanceof PageException&&e.name==='NotSupportedError');
+ assert.equal(calls.length,0);
+ // After leaving the site the page's own module loads unchanged.
+ scope.location.href='https://example.com/';
+ assert.equal(await pageProto.addModule.call(worklet,'other.js',{credentials:'omit'}),'loaded');
+ assert.deepEqual(calls.map(c=>[c[0]===worklet,c[1]]),[[true,['other.js',{credentials:'omit'}]]]);
+});

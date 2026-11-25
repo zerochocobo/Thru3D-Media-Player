@@ -11,7 +11,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 class MediaServerClientTest {
-    internal data class Reply(val code: Int = 200, val headers: String = "", val body: ByteArray, val declaredLength: Int = body.size)
+    internal data class Reply(val code: Int = 200, val headers: String = "", val body: ByteArray, val declaredLength: Int? = body.size)
     internal class Fixture(val handle: (String, Map<String, String>, String) -> Reply) : Closeable {
         private val socket = ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
         val url = "http://127.0.0.1:${socket.localPort}"
@@ -27,7 +27,8 @@ class MediaServerClientTest {
                 var at = 0; while (at < body.size) { val n = input.read(body, at, body.size - at); if (n < 0) break; at += n }
                 val response = handle(request, headers, String(body, Charsets.UTF_8))
                 runCatching { peer.getOutputStream().apply {
-                    write(("HTTP/1.1 ${response.code} Test\r\nContent-Length: ${response.declaredLength}\r\nConnection: close\r\n${response.headers}\r\n").toByteArray())
+                    val length = response.declaredLength?.let { "Content-Length: $it\r\n" }.orEmpty()
+                    write(("HTTP/1.1 ${response.code} Test\r\n${length}Connection: close\r\n${response.headers}\r\n").toByteArray())
                     write(response.body); flush()
                 } }
             } }

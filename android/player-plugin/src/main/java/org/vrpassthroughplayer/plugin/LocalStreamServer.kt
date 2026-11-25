@@ -86,7 +86,7 @@ internal class LocalStreamServer : Closeable {
         val token = ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it) }
         meters[token] = TransferMeter()
         diagnostics[token] = Diagnostics()
-        sources[token] = if (source is CloudStreamSource || source is HttpRangeStreamSource || source.forkable) {
+        sources[token] = if (source is CloudStreamSource || (source is HttpRangeStreamSource && source.size >= 0) || source.forkable) {
             if (name.endsWith(".iso", true)) IsoReadCache(source, isoMemory) { meters[token]?.add(it) }
             else AdaptiveInterleaveSource(source, meters[token])
         } else source
@@ -103,6 +103,7 @@ internal class LocalStreamServer : Closeable {
     fun listeningInput(url: String): ListeningInput? {
         val key=token(url) ?: return null
         val source=sources[key] ?: return null
+        if (source.size < 0) return null
         return ListeningInput(source.size,source.openAudio(),source::readSnapshot) { reader,offset,buffer,length ->
             check(sources[key]===source)
             read(key,source,reader,offset,buffer,length).also {
@@ -196,7 +197,7 @@ internal class LocalStreamServer : Closeable {
         } catch (error: Exception) { record(token, source, attempt, error); throw error }
     }
 
-    private fun serve(client: Socket) = client.use {
+    private fun serve(client: Socket): Unit = client.use {
         try {
             client.soTimeout = 30_000
             val input = BufferedInputStream(client.getInputStream())
@@ -216,6 +217,10 @@ internal class LocalStreamServer : Closeable {
             val source = try { (registered as? StreamSnapshotSource)?.snapshot() ?: registered }
                 catch (_: Exception) { return respond(output, 502, "Bad Gateway") }
             val meter = meters[token]
+            if (source is HttpRangeStreamSource && source.size < 0) {
+                serveSequential(source, token, parts[0], output)
+                return
+            }
             val range = parseRange(headers["range"], source.size) ?: return respond(output, 416, "Range Not Satisfiable",
                 "Content-Range: bytes */${source.size}\r\n")
             val start = range.first
@@ -259,6 +264,34 @@ internal class LocalStreamServer : Closeable {
         } catch (_: Throwable) {
             // Client seeks close connections mid-body; that is normal for MPV.
         } finally { clients.remove(client) }
+    }
+
+    private fun serveSequential(source: HttpRangeStreamSource, token: String, method: String, output: OutputStream) {
+        val headers = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: none\r\nConnection: close\r\n\r\n".toByteArray()
+        if (method == "HEAD") { output.write(headers); return }
+        val attempt = diagnostics[token]?.begin() ?: 0
+        var sentHeaders = false
+        try {
+            source.withSequentialBody { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (!closed) {
+                    val count = input.read(buffer)
+                    if (count < 0) {
+                        mediaRequire(sentHeaders, "Invalid media response")
+                        diagnostics[token]?.success(attempt)
+                        break
+                    }
+                    try {
+                        if (!sentHeaders) { output.write(headers); sentHeaders = true }
+                        output.write(buffer, 0, count)
+                    } catch (_: java.io.IOException) { return@withSequentialBody } // decoder closed this request
+                    meters[token]?.add(count)
+                }
+            }
+        } catch (error: Exception) {
+            record(token, source, attempt, error)
+            if (!sentHeaders) respond(output, 502, "Bad Gateway")
+        }
     }
 
     private fun respond(output: OutputStream, code: Int, text: String, extra: String = "") {

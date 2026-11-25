@@ -164,9 +164,9 @@ func start(dataDir, keyHex string) (err error) {
 	}
 	capability := hex.EncodeToString(capabilityKey)
 	streams := gin.New()
-	streams.Use(gin.Recovery(), middlewares.StoragesLoaded)
+	streams.Use(gin.CustomRecovery(recoverStream), middlewares.StoragesLoaded)
 	// The unguessable per-process path authorizes this loopback-only stream.
-	chain := []gin.HandlerFunc{middlewares.PathParse, middlewares.Down(func(string, string) error { return nil }), handles.Proxy}
+	chain := []gin.HandlerFunc{markLegacyStream, middlewares.PathParse, middlewares.Down(func(string, string) error { return nil }), handles.Proxy}
 	streams.GET("/"+capability+"/*path", chain...)
 	streams.HEAD("/"+capability+"/*path", chain...)
 	playback115Routes(streams, capability)

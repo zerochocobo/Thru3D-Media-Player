@@ -1,6 +1,8 @@
 package org.vrpassthroughplayer.plugin
 
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -14,6 +16,20 @@ internal class ExternalPlaybackIntentReader(private val source: Intent) {
     fun title() = text("title") ?: text(Intent.EXTRA_TITLE) ?: text("forcename")
     fun position(): Number? = (value("position") ?: value("extra_position"))?.let { it as? Int ?: it as? Long }
     fun startMs(): Int = ExternalPlaybackContract.startMs(positionKeys.map(::value))
+
+    @Suppress("DEPRECATION")
+    fun mediaUri(): Uri? = when (source.action) {
+        Intent.ACTION_VIEW -> source.data
+        Intent.ACTION_SEND -> if (Build.VERSION.SDK_INT >= 34) source.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            else source.getParcelableExtra<android.os.Parcelable>(Intent.EXTRA_STREAM) as? Uri
+        else -> null
+    }
+
+    private fun actionLabel() = when (source.action) {
+        Intent.ACTION_VIEW -> Intent.ACTION_VIEW
+        Intent.ACTION_SEND -> Intent.ACTION_SEND
+        else -> "unsupported"
+    }
 
     private fun headerPairs(key: String): List<Pair<String?, String?>>? {
         val bundle = runCatching { source.getBundleExtra(key) }.getOrNull()
@@ -37,7 +53,7 @@ internal class ExternalPlaybackIntentReader(private val source: Intent) {
     fun metadata(): JSONObject = try {
         evidence()
     } catch (_: Exception) {
-        JSONObject().put("flags", source.flags).put("action", Intent.ACTION_VIEW).put("metadata_state", "failed")
+        JSONObject().put("flags", source.flags).put("action", actionLabel()).put("metadata_state", "failed")
     }
 
     private fun evidence(): JSONObject {
@@ -45,7 +61,7 @@ internal class ExternalPlaybackIntentReader(private val source: Intent) {
         val knownMime = setOf("video/*", "video/mp4", "video/mpeg", "video/x-matroska", "video/webm",
             "video/x-msvideo", "video/quicktime", "application/vnd.apple.mpegurl", "application/x-mpegurl",
             "application/dash+xml", "application/octet-stream")
-        val value = JSONObject().put("flags", source.flags).put("action", Intent.ACTION_VIEW)
+        val value = JSONObject().put("flags", source.flags).put("action", actionLabel())
             .put("mime", if (type.isEmpty()) "none" else if (type in knownMime) type else "unclassified")
         val names = runCatching { source.extras?.keySet()?.toList() }
         if (names.isFailure) return value.put("extras_state", "unreadable")

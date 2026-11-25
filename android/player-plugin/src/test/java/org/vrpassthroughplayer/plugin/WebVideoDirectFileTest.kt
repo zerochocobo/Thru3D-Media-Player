@@ -80,4 +80,38 @@ class WebVideoDirectFileTest {
             assertFalse(published)
         }
     }
+
+    @Test fun untransferableSnapshotReportsOnlyItsBranchSourceTypeAndCounts() {
+        val page = "https://115vod.com/?pickcode=fixture-only"
+        val chosen = media()
+        val requests = chosen.getJSONArray("network")
+        // Neither an unrelated preload nor an unbound blob establishes a whole file.
+        chosen.put("source", "https://cdn.example/different.mp4")
+        fun failed(direct: Boolean): JSONObject {
+            WebVideoResolver({ android.content.ContextWrapper(null) }, { fail("Unexpected transfer") },
+                browserMedia = { chosen }, selectedMedia = { _, _ -> chosen }).use { resolver ->
+                resolver.begin(page, selection = if (direct) chosen.getString("capture_identity") else "", directFile = direct)
+                val deadline = System.nanoTime() + 3_000_000_000L
+                while (JSONObject(resolver.snapshot()).optString("state") == "resolving" && System.nanoTime() < deadline) Thread.sleep(5)
+                val result = JSONObject(resolver.snapshot())
+                assertEquals(result.toString(), "browser_playback_required", result.optString("error_code"))
+                return result.getJSONObject("capture")
+            }
+        }
+        val direct = failed(true)
+        assertEquals(setOf("step", "source_kind", "file", "hls", "dash", "source_matches"), direct.keys().asSequence().toSet())
+        assertEquals("file_descriptor", direct.getString("step"))
+        assertEquals("http", direct.getString("source_kind"))
+        assertEquals(0, direct.getInt("source_matches"))
+        assertEquals(1, direct.getInt("file"))
+        // Nine distinct files exceed the generic resolver's probe limit, before any I/O.
+        chosen.put("source", "").put("blob", true)
+        for (i in 1..8) requests.put(JSONObject().put("kind", "file").put("url", "https://cdn.example/$i.mp4"))
+        val network = failed(false)
+        assertEquals(direct.keys().asSequence().toSet(), network.keys().asSequence().toSet())
+        assertEquals("network_capture", network.getString("step"))
+        assertEquals("blob", network.getString("source_kind"))
+        assertEquals(9, network.getInt("file"))
+        for (key in listOf("hls", "dash", "source_matches")) assertEquals(0, network.getInt(key))
+    }
 }

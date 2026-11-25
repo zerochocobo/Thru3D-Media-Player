@@ -30,6 +30,33 @@ class PlaybackFailureTest {
         val fits = PlaybackFailure.withCapacity(timeout, stream.json(), JSONObject().put("exceeded", false))
         assertEquals("output_timeout", fits.reason)
     }
+    @Test fun rateOutsideAdvertisedRangePreservesTheObservedOutputFailure() {
+        val video = DecoderCapacity.Stream("hevc", 8192, 4096, 59.94).json()
+        val decoder = JSONObject().put("exceeded", true).put("size_supported", true).put("rate_supported", false)
+        for (reason in listOf("output_timeout", "video_output_failed")) {
+            val failure = PlaybackFailure.withCapacity(PlaybackFailure(reason, "output"), video, decoder)
+            val report = PlaybackFailure.report("MPV_FRAME_PIPELINE_FAILED", PlaybackFailureException(failure), "reading")
+            assertEquals(reason, report.getString("reason"))
+            assertEquals("output", report.getString("stage"))
+            assertEquals(59.94, report.getJSONObject("video").getDouble("fps"), 0.0)
+            assertFalse(report.getJSONObject("decoder").getBoolean("rate_supported"))
+        }
+    }
+
+    @Test fun outputTimeoutKeepsOnlyAvailableCacheMeasurements() {
+        val details = JSONObject().put("cache_duration", "0.25").put("cache_speed", "0").put("paused_for_cache", "yes")
+            .put("url", "https://secret.example/private")
+        val status = JSONObject().put("failure_reason", "output_timeout").put("failure_stage", "output").put("details", details)
+        val wait = PlaybackFailure.native(status).json().getJSONObject("output_wait")
+        assertEquals(setOf("cache_seconds", "cache_bytes_per_second", "paused_for_cache"), wait.keys().asSequence().toSet())
+        assertEquals(0.25, wait.getDouble("cache_seconds"), 0.0)
+        assertEquals(0L, wait.getLong("cache_bytes_per_second"))
+        assertTrue(wait.getBoolean("paused_for_cache"))
+        assertFalse(PlaybackFailure.native(status.put("failure_reason", "unknown")).json().has("output_wait"))
+        details.put("cache_duration", "nan").put("cache_speed", "").put("paused_for_cache", "")
+        assertFalse(PlaybackFailure.native(status.put("failure_reason", "output_timeout")).json().has("output_wait"))
+    }
+
     @Test fun providerTransportFailureIsNotAMissingFile() {
         val uri = "content://com.android.externalstorage.documents/tree/1234-ABCD%3A/document/1234-ABCD%3Amovie.mp4"
         assertEquals("storage_provider_failed", PlaybackFailure.from(StorageProviderUnavailable(), "reading").reason)

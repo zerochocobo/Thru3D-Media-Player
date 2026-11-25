@@ -15,6 +15,7 @@ signal seek_presented(request_id: int, position_ms: int)
 const PlatformMethods := preload("res://scripts/platform_methods.gd")
 const I18n := preload("res://scripts/i18n.gd")
 const PlaybackErrors := preload("res://scripts/playback_errors.gd")
+const QiyuController := preload("res://scripts/qiyu_controller.gd")
 const Loading := preload("res://scripts/media_loading.gd")
 var _loading_status := {}
 var _loading_poll_ms := 0
@@ -198,6 +199,8 @@ const DEPTH_SHIFT := 0.0175
 const DEPTH_CONVERGENCE := 0.35
 const DepthPosition := preload("res://scripts/depth_position.gd")
 var depth_position := 0.0
+const DepthForeground := preload("res://scripts/depth_foreground.gd")
+var depth_foreground := 0.0
 var _depth_view_sent := ""
 var _portrait_depth_sent := ""
 var _debug_portrait_shots: Array[Dictionary] = []
@@ -316,9 +319,12 @@ var picture_memory := PictureMemory.new()
 var picture_defaults := picture_memory.load_defaults(ConfigFile.new())
 var picture_source := "default"
 var picture_open_id := 0
+## Carries the last look across restarts; empty when cleared. Never the file it came from.
+signal last_picture_changed(picture: Dictionary, network: bool)
 var reuse_last_picture := false
 var _last_picture := {}
 var _last_picture_uri := ""
+var _last_picture_network := false
 var _picture_committed := {}
 var _picture_eligible := false
 var _picture_pending := true
@@ -424,6 +430,7 @@ var _pixel_request := 0
 var _pixel_request_key := ""
 var _pixel_busy := false
 const VideoLayer := preload("res://scripts/video_layer.gd")
+const PairInterpolation := preload("res://scripts/pair_interpolation.gd")
 ## Normal playback on the compositor video layer (user setting; the runtime must support it).
 var layer_enabled := true
 var video_layer: VideoLayer
@@ -544,6 +551,8 @@ func _ready() -> void:
 	listening.memory.load_saved()
 	recent_files.load_saved()
 	initialize_surface(load("res://shaders/video_rvm_pair.gdshader"))
+	# QIYU draws every video in the eye buffer, where this path cut 8K GPU time by a third (Quest 2 stand-in).
+	material.set_shader_parameter("plain_fast_path", QiyuController.runtime)
 	color_grade.apply(material)
 	caption = Label3D.new()
 	caption.name = "Subtitles"
@@ -1257,6 +1266,7 @@ func close_video() -> void:
 	_whisper_restore_remember = false
 	audio_whisper = 0; audio_boost_saved = 0; whisper_error = ""
 	system_volume.cancel_source()
+	if not pip.reopening: system_volume.restore_before_boost()
 	_output_deadline_ms = 0
 	_buffering_deadline_ms = 0
 	_track_restore.clear()
@@ -1575,10 +1585,20 @@ func _send_depth_view() -> void:
 	# JNISingleton.has_method() cannot see Java plugin methods. Only inspect host test doubles.
 	if not Engine.has_singleton("QuestPlayer") and not platform.has_method("set_mpv_depth_view"): return
 	var strength := depth_strength if depth_requested else 0.0
-	var key := "%d:%f:%f" % [media.session_id, strength, depth_position]
-	if key != _depth_view_sent and platform.set_mpv_depth_view(media.session_id,
+	var key := "%d:%f:%f:%f" % [media.session_id, strength, depth_position, depth_foreground]
+	if key == _depth_view_sent: return
+	if Engine.has_singleton("QuestPlayer") or platform.has_method("set_mpv_depth_foreground"):
+		platform.set_mpv_depth_foreground(media.session_id, DepthForeground.scale(depth_foreground))
+	if platform.set_mpv_depth_view(media.session_id,
 		DEPTH_SHIFT * strength, DepthPosition.convergence(depth_position)):
 		_depth_view_sent = key
+
+func set_depth_foreground(value: Variant) -> bool:
+	depth_foreground = DepthForeground.normalize(value)
+	_send_depth_view()
+	_picture_refresh = 6
+	changed.emit()
+	return true
 
 func set_depth_position(value: Variant) -> bool:
 	depth_position = DepthPosition.normalize(value)
@@ -2598,7 +2618,7 @@ func match_spatial_fov() -> bool:
 func mode_action_allowed(operation: String) -> bool:
 	if not cast_allows(operation): return false
 	if not is_spatial_video(): return true
-	return operation not in ["stereo", "projection", "lock_mode", "depth", "depth_strength", "depth_position"] \
+	return operation not in ["stereo", "projection", "lock_mode", "depth", "depth_strength", "depth_position", "depth_foreground"] \
 		and not operation.begins_with("stereo_") and not operation.begins_with("projection_") \
 		and not operation.begins_with("fov_")
 
@@ -4006,11 +4026,12 @@ func layout_snapshot() -> Dictionary:
 		"spatial_video": is_spatial_video(), "spatial_metadata": spatial_metadata(), "spatial_auto_disparity": spatial_auto_disparity,
 		"top_bottom": stereo_sbs and top_bottom, "stereo_half": stereo_sbs and stereo_half, "fisheye_fov": fisheye_fov,
 		"alpha_requested": alpha_requested, "alpha_enabled": alpha_enabled, "profile": profile,
-		"depth_requested": depth_requested, "depth_enabled": depth_enabled, "depth_strength": depth_strength, "depth_position": depth_position, "auto_depth": auto_depth,
+		"depth_requested": depth_requested, "depth_enabled": depth_enabled, "depth_strength": depth_strength, "depth_position": depth_position, "depth_foreground": depth_foreground, "auto_depth": auto_depth,
 		"screen_rotation": screen_rotation, "playback_speed": playback_speed,
 		"video_layer": {"shown": video_layer_shown, "surface": _layer_session, "picture_token": _picture_token,
 			"frame_picture": _frame_picture, "frame_quality": _frame_quality_drawn, "frame_picture_size": [_frame_picture_size.x, _frame_picture_size.y],
-			"warped": _binding.warped, "layers": video_layer.debug_layers() if video_layer else []},
+			"warped": _binding.warped, "layers": video_layer.debug_layers() if video_layer else [],
+			"pair_interpolation": _pair_interpolation_report()},
 		"pip": pip.compositor.snapshot(),
 		"alpha_ready": alpha_ready(), "backend": "Android_libmpv", "loop_enabled": loop_enabled,
 		"playback_control": playback, "subtitles": {"requested_track": subtitles.requested_track,
@@ -4517,6 +4538,44 @@ const DENOISE := [Vector2.ZERO, Vector2(1.0, 0.0012), Vector2(1.5, 0.004), Vecto
 var picture_denoise := 0:
 	set(value):
 		picture_denoise = clampi(int(value), 0, DENOISE.size() - 1)
+## Frame interpolation within the mode: a film's 24 to 30 frames a second become one picture for every
+## display refresh, drawn between the two frames either side by the layer copy (LayerCopy.interpolate).
+## For sources up to 4K and 33 frames a second on the decoder's surface, where the runtime reports its
+## refreshes (the copy paces its draws by them).
+var picture_interpolation := false
+const INTERPOLATION_MAX_FPS := 33.0
+const INTERPOLATION_MAX_PIXELS := 4096 * 2304
+## 2D->3D draws both eyes' pictures every refresh: up to the pair edge stretching makes of a 4K film.
+const INTERPOLATION_MAX_EYE_PIXELS := 2560 * 1440
+## Anime4K (bloc97, MIT), the plugins tab: one of its official v4 modes runs over the whole picture in
+## place of denoising and super resolution (native/xr-layer/anime4k.cpp): A restores then enlarges, B the
+## same with a softer restore, C enlarges and denoises in one. Tiers S to VL trade load for quality. It
+## takes one SDR picture at a time, the layer copy's decoder frames or a software decoder's frames on the
+## picture layer: not 2D->3D's pairs, a lens or 3D picture, or Alpha.
+## On or off, and the mode it runs in when on: kept apart, so switching it off and on keeps the mode.
+enum Anime4k { OFF, A, B, C }
+var picture_anime4k := false
+var picture_anime4k_mode := Anime4k.A:
+	set(value):
+		picture_anime4k_mode = clampi(int(value), Anime4k.A, Anime4k.C)
+const ANIME4K_TIER_DEFAULT := PictureMemory.ANIME4K_TIER_DEFAULT
+var picture_anime4k_tier := ANIME4K_TIER_DEFAULT:
+	set(value):
+		picture_anime4k_tier = clampi(int(value), 0, ANIME4K_RESTORE_MS.size() - 1)
+## Quest 3's GPU milliseconds per source megapixel of each network, by tier S, M, L, VL: restoring, and
+## enlarging (its doubled output included). docs/ANIME4K_PLUGIN_BENCH_20261125_CN.md; VL from the DVD's.
+const ANIME4K_RESTORE_MS := [1.23, 3.56, 5.6, 12.0]
+const ANIME4K_UPSCALE_MS := [2.13, 4.48, 6.8, 14.0]
+## A tier whose networks would take longer than this a frame is not offered: the copy stops Anime4K for
+## a file whose frames stay past it (LayerCopy.ANIME4K_BUDGET_MS).
+const ANIME4K_BUDGET_MS := 20.0
+## An XR2 Gen1 class GPU (Quest 2, PICO Neo3: main.gd's low_end_gpu) takes about 2.1 to 2.8 times Quest 3's
+## time (Quest 2 at 1080p: A S 19.8 ms against 9.3, C S 14.0), and its own rendering leaves less room:
+## there C S at 14 ms kept 72 fps and A S at 19.8 ms fell to 53.
+var anime4k_low_end := false
+const ANIME4K_LOW_END_SCALE := 2.5
+const ANIME4K_LOW_END_BUDGET_MS := 15.0
+const ANIME4K_DOUBLE_UP_TO := 1920
 const UPSCALE_FLAT_LONG := 3840.0
 const UPSCALE_FLAT_PIXELS := 3840.0 * 2160.0
 const UPSCALE_VR180_EYE := 2880.0
@@ -4546,6 +4605,77 @@ static func upscale_size(source: Vector2i, kind: int, across: int, down: int, le
 
 func _upscale_kind() -> int:
 	return 0 if geometry == Geometry.Geometry.FLAT else (2 if geometry == Geometry.Geometry.EQUIRECT_360 else 1)
+
+## How many times Anime4K doubles a source (LayerCopy.anime4kDoublings is the same rule): again while its
+## long side is at most 1920, twice at most, never past max_width (0: none). A DVD's 720 x 480 becomes
+## 2880 x 1920, 1080p becomes 4K, and larger sources are only restored.
+static func anime4k_doublings(source: Vector2i, max_width: int = 0) -> int:
+	var longest := maxi(source.x, source.y)
+	var doublings := 0
+	while doublings < 2 and (longest << doublings) <= ANIME4K_DOUBLE_UP_TO \
+		and (max_width <= 0 or (source.x << (doublings + 1)) <= max_width):
+		doublings += 1
+	return doublings
+
+## Estimated GPU milliseconds of a frame's networks: the restore (A, B) at the source's size, the first
+## enlargement by the tier, a second one by the tier below at four times the pixels.
+static func anime4k_cost(source: Vector2i, mode: int, tier: int, doublings: int) -> float:
+	var megapixels := source.x * source.y / 1e6
+	var ms := 0.0
+	if mode == Anime4k.A or mode == Anime4k.B: ms += ANIME4K_RESTORE_MS[tier] * megapixels
+	if doublings >= 1: ms += ANIME4K_UPSCALE_MS[tier] * megapixels
+	if doublings >= 2: ms += ANIME4K_UPSCALE_MS[1 if tier >= 2 else 0] * megapixels * 4.0
+	return ms
+
+## This headset's frame budget for the networks: the copy stops Anime4K past it, and tiers estimated past it
+## are not offered.
+func anime4k_budget_ms() -> float:
+	return ANIME4K_LOW_END_BUDGET_MS if anime4k_low_end else ANIME4K_BUDGET_MS
+
+## For the menu: whether each tier (S, M, L, VL) fits this video under the mode chosen, on this headset.
+## Unknown sizes count as fitting.
+func anime4k_tiers() -> Array:
+	var source: Vector2i = picture_upscale_sizes().source
+	var doublings := anime4k_doublings(source, _copy_width_cap())
+	var scale := ANIME4K_LOW_END_SCALE if anime4k_low_end else 1.0
+	var fits := []
+	for tier in ANIME4K_RESTORE_MS.size():
+		fits.append(source.x <= 0 or anime4k_cost(source, picture_anime4k_mode, tier, doublings) * scale <= anime4k_budget_ms())
+	return fits
+
+## Why Anime4K cannot run on this video, for the menu: "" when it can, else the way it is shown ("mode":
+## 2D->3D, Alpha, a lens or 3D picture, the eye buffers), "hdr", "c_size" (mode C enlarges, and this
+## video is too large to), "tier" (the tier chosen is too heavy for its size), "load" (the copy stopped it:
+## its frames took too long), "unsupported" (this GPU refused the networks).
+func picture_anime4k_blocker() -> String:
+	if depth_requested or alpha_requested or geometry == Geometry.Geometry.FISHEYE or stereo_sbs or packed_file: return "mode"
+	var copy: Variant = media.playback.get("layer_copy")
+	if _layer_session:
+		if copy is Dictionary:
+			if copy.get("anime4k_refused", false): return "unsupported"
+			if copy.get("anime4k_hdr", false): return "hdr"
+			if copy.get("anime4k_overloaded", false): return "load"
+	elif _frame_picture:
+		if not PlatformMethods.supports(platform, "enhance_layer_texture_plugin"): return "mode"
+		if picture_anime4k and PlatformMethods.supports(platform, "anime4k_picture_refused") and platform.anime4k_picture_refused():
+			return "unsupported"
+	elif not _binding.ticket.is_empty(): return "mode"
+	var source: Vector2i = picture_upscale_sizes().source
+	if picture_anime4k_mode == Anime4k.C and source.x > 0 and anime4k_doublings(source, _copy_width_cap()) == 0: return "c_size"
+	if not anime4k_tiers()[picture_anime4k_tier]: return "tier"
+	return ""
+
+## Anime4K runs on the picture on show: chosen, and nothing above keeps it off.
+func _anime4k_running() -> bool:
+	return picture_quality and picture_anime4k and picture_quality_available() and picture_anime4k_blocker().is_empty()
+
+## What the picture layer's draw takes for a software-decoded frame of [source]: mode, tier and doublings,
+## or empty where Anime4K does not run.
+func _anime4k_values(source: Vector2i) -> PackedFloat32Array:
+	if not _anime4k_running(): return PackedFloat32Array()
+	var doublings := anime4k_doublings(source)
+	if picture_anime4k_mode == Anime4k.C and doublings == 0: return PackedFloat32Array()
+	return PackedFloat32Array([picture_anime4k_mode, picture_anime4k_tier, doublings])
 
 ## For the menu: the source's size, the sizes each level of super resolution shows it at (the source's
 ## own when there is nothing to enlarge) and whether it is a VR picture. Zero sizes: not known yet.
@@ -4603,17 +4733,27 @@ var _copy_focus := []
 
 func load_picture_preferences(settings: ConfigFile) -> void:
 	reuse_last_picture = bool(settings.get_value("video", "reuse_last_picture", false))
+	var stored: Variant = settings.get_value("video", "last_picture", {})
+	if reuse_last_picture and stored is Dictionary:
+		_last_picture = picture_memory.clean(stored.get("picture"))
+		_last_picture_network = bool(stored.get("network", false))
 	_apply_picture(picture_defaults)
 
 func picture_snapshot() -> Dictionary:
 	return {"picture_quality": picture_quality, "picture_sharpness": picture_sharpness,
-		"picture_upscale": picture_upscale, "picture_denoise": picture_denoise, "color_grade": color_grade.snapshot()}
+		"picture_upscale": picture_upscale, "picture_denoise": picture_denoise, "picture_interpolation": picture_interpolation,
+		"picture_anime4k": picture_anime4k, "picture_anime4k_mode": picture_anime4k_mode, "picture_anime4k_tier": picture_anime4k_tier,
+		"color_grade": color_grade.snapshot()}
 
 func _apply_picture(picture: Dictionary) -> void:
 	if picture_quality != picture.picture_quality: set_picture_quality(picture.picture_quality)
 	picture_sharpness = picture.picture_sharpness
 	picture_upscale = picture.picture_upscale
 	picture_denoise = picture.picture_denoise
+	picture_interpolation = picture.get("picture_interpolation", false)
+	picture_anime4k = picture.get("picture_anime4k", false)
+	picture_anime4k_mode = picture.get("picture_anime4k_mode", Anime4k.A)
+	picture_anime4k_tier = picture.get("picture_anime4k_tier", ANIME4K_TIER_DEFAULT)
 	color_grade.restore(picture.color_grade)
 	_sync_picture_lock()
 	color_grade.apply(material)
@@ -4639,13 +4779,20 @@ func _picture_can_inherit() -> bool:
 
 func _remember_last_picture() -> void:
 	if not reuse_last_picture or not _picture_can_inherit() or _picture_pending or not media.accepts(media.session_id): return
+	var network := not ModeMemory.Privacy.is_local(local_uri)
+	var changed_look := _last_picture != _picture_committed or _last_picture_network != network
 	_last_picture = _picture_committed.duplicate(true)
 	_last_picture_uri = local_uri
+	_last_picture_network = network
+	if changed_look: last_picture_changed.emit(_last_picture.duplicate(true), network)
 
 func clear_last_picture(network_only: bool = false) -> void:
-	if network_only and ModeMemory.Privacy.is_local(_last_picture_uri): return
+	if network_only and not _last_picture_network: return
+	var had := not _last_picture.is_empty()
 	_last_picture.clear()
 	_last_picture_uri = ""
+	_last_picture_network = false
+	if had: last_picture_changed.emit({}, false)
 
 func set_reuse_last_picture(enabled: bool) -> void:
 	reuse_last_picture = enabled
@@ -4680,7 +4827,10 @@ func commit_picture() -> void:
 func picture_diagnostic() -> String:
 	if not picture_quality: return "off"
 	var blocker := picture_quality_blocker()
-	return "on up%d dn%d sh%.2f%s" % [picture_upscale, picture_denoise, picture_sharpness, "" if blocker.is_empty() else " blocked:" + blocker]
+	var interpolation := "" if not picture_interpolation else " fi" if picture_interpolation_blocker().is_empty() else " fi:" + picture_interpolation_blocker()
+	var anime4k := "" if not picture_anime4k else " a4k%s%s%s" % ["ABC"[picture_anime4k_mode - 1], ["S", "M", "L", "VL"][picture_anime4k_tier],
+		"" if picture_anime4k_blocker().is_empty() else ":" + picture_anime4k_blocker()]
+	return "on up%d dn%d sh%.2f%s%s%s" % [picture_upscale, picture_denoise, picture_sharpness, interpolation, anime4k, "" if blocker.is_empty() else " blocked:" + blocker]
 
 func clear_current_picture() -> void:
 	if picture_source != "file" or not _picture_can_remember(): return
@@ -4726,6 +4876,47 @@ func picture_quality_blocker() -> String:
 		return "alpha"
 	if depth_requested: return "3d"
 	return "source"
+
+## Why this video cannot be interpolated, for the menu: "" when it can, else the runtime (no refresh
+## timing), the way it is shown (off the decoder's surface: Alpha, a lens picture, software frames), its
+## frame rate, its size, or the load (the copy gave up: this GPU cannot draw the pictures, or did not
+## draw them in time). 2D->3D's stereo pairs are interpolated on the picture layer (_interpolate_pair),
+## by Godot's own frames: that needs the runtime's display times, not its latches.
+func picture_interpolation_blocker() -> String:
+	if depth_requested: return _pair_interpolation_blocker()
+	# Anime4K works on each frame as it comes; the pictures in between would run its networks every refresh.
+	if _anime4k_running(): return "anime4k"
+	if video_layer == null or not (video_layer.cadence_supported or video_layer.copy_cadence): return "runtime"
+	if alpha_requested or geometry == Geometry.Geometry.FISHEYE or packed_file: return "mode"
+	var copy: Variant = media.playback.get("layer_copy")
+	if picture_quality and _quality_requested and copy is Dictionary and not _quality_copying(): return "mode"
+	if copy is Dictionary and (copy.get("interpolation_overloaded", false) or copy.get("interpolation_unsupported", false)): return "load"
+	var fps := str(media.playback.get("details", {}).get("container_fps", ""))
+	if fps.is_valid_float() and float(fps) > INTERPOLATION_MAX_FPS: return "fps"
+	var source: Vector2i = picture_upscale_sizes().source
+	if source.x * source.y > INTERPOLATION_MAX_PIXELS: return "size"
+	return ""
+
+func _pair_interpolation_blocker() -> String:
+	if video_layer == null or not video_layer.frame_timed(): return "runtime"
+	var ticket := _binding.ticket
+	# Without the bridge's stereo pair (older GPUs: the shader's own parallax) there are no two pictures to draw between.
+	if alpha_requested or geometry != Geometry.Geometry.FLAT or packed_file or not PlatformMethods.supports(platform, "interpolate_pair_draw") \
+		or not picture_quality_available() or _depth_quality_failed == media.session_id \
+		or (not ticket.is_empty() and bool(ticket.get("depth_ran", false)) and not _binding.warped): return "mode"
+	if _pair_failed == media.session_id or (_pair_timeline != null and _pair_session == media.session_id and _pair_timeline.overloaded): return "load"
+	var fps := str(media.playback.get("details", {}).get("container_fps", ""))
+	if fps.is_valid_float() and float(fps) > INTERPOLATION_MAX_FPS: return "fps"
+	if _binding.warped:
+		var pair := Binding.warp_size(ticket)
+		if pair.x / 2 * pair.y > INTERPOLATION_MAX_EYE_PIXELS: return "depth_size"
+	return ""
+
+## The copy is interpolating, or will with the next frames: the display then needs no multiple of the
+## source's rate, and the lowest refresh rate leaves the GPU the most time for each picture.
+func picture_interpolating() -> bool:
+	return picture_quality and picture_interpolation and (_quality_requested or (depth_requested and _quality_wanted())) \
+		and picture_interpolation_blocker().is_empty()
 
 func picture_quality_supported() -> bool:
 	return video_layer != null and video_layer.available() and video_layer.picture_quality and layer_enabled \
@@ -4817,6 +5008,20 @@ var _depth_quality_drawn := false
 var _depth_picture_size := Vector2i.ZERO # both eyes
 var _depth_quality_failed := 0 # the session the draw failed in
 var _depth_upscale_failed := 0 # the session the runtime refused the enlarged pair in
+## Frame interpolation for those pairs: the session's timeline, the pair last handed to the native side,
+## what the picture layer was last drawn with, and the process frame it last ran in (it stops, and frees
+## the native copies, once a frame passes without it).
+var _pair_timeline: PairInterpolation
+var _pair_session := 0
+var _pair_token := -1
+var _pair_stamp := []
+var _pair_frame := -1
+var _pair_delay_ms := 0.0 # as told to the plugin, which delays the audio as long
+var _pair_failed := 0 # the session this GL could not interpolate in
+## The kept pairs are the mode's finished pictures (shown at their own size), so a refresh is one draw; with
+## super resolution enlarging them they are kept as they came and each picture passes the mode's draw.
+var _pair_direct := false
+var _pair_drawn := Vector2i.ZERO # for the debug report: its draws of the picture layer, and those of them in between two pairs
 
 ## Picture quality mode for frames a software decoder made (a DVD's MPEG-2, Profile 5...): they never
 ## pass the layer copy, so the picture layer draws them enlarged, sharpened and graded itself.
@@ -4836,7 +5041,8 @@ func _sync_picture_lock() -> void:
 
 ## The mode's settings as the plugin takes them: sharpening, 1 when graded, the grade's gain, gamma and
 ## offset per channel, contrast and saturation; then super resolution: its level, the kind and the eyes;
-## then the denoising's step and tolerance.
+## then the denoising's step and tolerance; then 1 for frame interpolation; then Anime4K's mode (0 where it
+## does not run), tier and this headset's budget in milliseconds.
 func _picture_values() -> PackedFloat32Array:
 	var p := color_grade.values()
 	var gain := color_grade.gain()
@@ -4844,7 +5050,9 @@ func _picture_values() -> PackedFloat32Array:
 		p.red_gamma * p.gamma, p.green_gamma * p.gamma, p.blue_gamma * p.gamma,
 		p.red_offset, p.green_offset, p.blue_offset, p.contrast, p.saturation,
 		float(picture_upscale) if _layout_pending == null else 0.0, _upscale_kind(), 2.0 if stereo_sbs and not top_bottom else 1.0,
-		2.0 if stereo_sbs and top_bottom else 1.0, DENOISE[picture_denoise].x, DENOISE[picture_denoise].y])
+		2.0 if stereo_sbs and top_bottom else 1.0, DENOISE[picture_denoise].x, DENOISE[picture_denoise].y,
+		1.0 if picture_interpolation and picture_interpolation_blocker().is_empty() else 0.0,
+		float(picture_anime4k_mode) if _anime4k_running() else 0.0, float(picture_anime4k_tier), anime4k_budget_ms()])
 
 ## Sharpening and grade for the layer copy, sent when they change; it draws its frame again with them.
 func _sync_copy_picture() -> void:
@@ -4956,6 +5164,9 @@ func set_browser_screen_owned(value: bool) -> void:
 	_update_layer()
 
 func _update_layer() -> void:
+	# 2D->3D's frame interpolation ran, and not in the frame before this one: the mode, the file or the picture's place changed.
+	if _pair_frame >= 0 and Engine.get_process_frames() - _pair_frame > 1: _stop_pair_interpolation()
+	_record_interpolation()
 	if vr_passthrough.active() or browser_screen_owned or not video_layer:
 		# Nothing below runs: the frames stay as they are bound rather than wait on a draw that will not come.
 		_binding.enhance_expected = false
@@ -5311,22 +5522,19 @@ func _show_depth_picture(origin: XROrigin3D, extras: Array = []) -> bool:
 	var size := upscale_size(source, _upscale_kind(), 2, 1, int(look[13])) \
 		if quality and look[13] > 0.5 and _depth_upscale_failed != media.session_id else source
 	var token := int(ticket.get("slot_token", 0))
+	if quality and look[19] > 0.5 and _pair_failed != media.session_id:
+		var drawn := _interpolate_pair(ticket, source, size, look)
+		if drawn == PAIR_FAILED: return false
+		if drawn == PAIR_DRAWN:
+			return video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(_depth_picture_size), 1, Vector2.ZERO, Vector4(0, 0, 1, 1),
+				VideoLayer.OPAQUE, extras)
 	var stamp := [quality, size, look]
 	if token != _picture_token or _picture_refresh > 0 or stamp != _depth_picture_look:
 		_picture_refresh = maxi(0, _picture_refresh - 1)
 		var warp := int(ticket.get("warp_texture_id", 0))
-		var created: bool = warp > 0 and platform.create_layer_image(VideoLayer.PICTURE_SLOT, size.x, size.y, 1, false)
-		if warp > 0 and not created and size != source:
-			# A runtime may refuse the enlarged swapchain: this session shows the pair at its own size.
-			DiagnosticLog.record("depth_upscale_failed", {"source": [source.x, source.y], "size": [size.x, size.y]})
-			_depth_upscale_failed = media.session_id
-			size = source
-			stamp[1] = size
-			created = platform.create_layer_image(VideoLayer.PICTURE_SLOT, size.x, size.y, 1, false)
-		if created and Vector2i(video_layer.picture_size) != size:
-			video_layer.invalidate() # a new swapchain for this size
-			video_layer.picture_size = Vector2(size)
-		if not created or platform.acquire_layer_image(VideoLayer.PICTURE_SLOT) <= 0:
+		size = _depth_picture_image(source, size) if warp > 0 else Vector2i.ZERO
+		stamp[1] = size
+		if size == Vector2i.ZERO or platform.acquire_layer_image(VideoLayer.PICTURE_SLOT) <= 0:
 			return false
 		var copied: bool = platform.enhance_layer_texture(VideoLayer.PICTURE_SLOT, warp, source.x, source.y, 2, 1,
 			look[0], look.slice(2, 13) if look[1] > 0.5 else PackedFloat32Array(), look[17], look[18]) if quality \
@@ -5343,6 +5551,157 @@ func _show_depth_picture(origin: XROrigin3D, extras: Array = []) -> bool:
 		_depth_picture_size = size
 	return video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(size), 1, Vector2.ZERO, Vector4(0, 0, 1, 1),
 		VideoLayer.OPAQUE, extras)
+
+## The picture layer's swapchain for a pair shown at `size`; a runtime may refuse an enlarged one, and
+## the session then shows its pairs at their own size. Returns the size made, or zero.
+func _depth_picture_image(source: Vector2i, size: Vector2i) -> Vector2i:
+	var created: bool = platform.create_layer_image(VideoLayer.PICTURE_SLOT, size.x, size.y, 1, false)
+	if not created and size != source:
+		DiagnosticLog.record("depth_upscale_failed", {"source": [source.x, source.y], "size": [size.x, size.y]})
+		_depth_upscale_failed = media.session_id
+		size = source
+		created = platform.create_layer_image(VideoLayer.PICTURE_SLOT, size.x, size.y, 1, false)
+	if not created: return Vector2i.ZERO
+	if Vector2i(video_layer.picture_size) != size:
+		video_layer.invalidate() # a new swapchain for this size
+		video_layer.picture_size = Vector2(size)
+	return size
+
+const PAIR_IDLE := 0 # nothing between two pairs to show now: the pair on show is drawn as without interpolation
+const PAIR_DRAWN := 1
+const PAIR_FAILED := -1 # no picture image
+
+## Frame interpolation for 2D->3D: this refresh's picture between two of the bridge's stereo pairs, drawn
+## into the picture layer with the mode's sharpening and grade (the native side keeps a copy of each pair
+## as it comes and the motion between them, each eye on its own; frame_interp.cpp). The timeline is
+## PairInterpolation's. A pause ends in the newest pair, which the caller then draws as ever: it is the
+## one the bridge redraws when the depth's strength changes.
+func _interpolate_pair(ticket: Dictionary, source: Vector2i, size: Vector2i, look: PackedFloat32Array) -> int:
+	var display := video_layer.predicted_display_ns()
+	var period := video_layer.refresh_period_ns()
+	var warp := int(ticket.get("warp_texture_id", 0))
+	if display <= 0 or period <= 0 or warp <= 0: return PAIR_IDLE
+	if _pair_timeline == null or _pair_session != media.session_id:
+		_pair_timeline = PairInterpolation.new()
+		_pair_session = media.session_id; _pair_token = -1; _pair_stamp = []; _pair_drawn = Vector2i.ZERO
+		_pair_delay_ms = 0.0 # the plugin's delay is the session's
+	if _pair_timeline.overloaded: return PAIR_IDLE
+	var direct := size == source and PlatformMethods.supports(platform, "interpolate_pair_show")
+	if direct != _pair_direct and _pair_frame >= 0:
+		_stop_pair_interpolation() # the kept pairs are of the other kind: from this pair on
+	_pair_direct = direct
+	_pair_frame = Engine.get_process_frames()
+	var grade := look.slice(2, 13) if look[1] > 0.5 else PackedFloat32Array()
+	var token := int(ticket.get("slot_token", 0))
+	if token != _pair_token:
+		_pair_token = token
+		var ids := _pair_timeline.push(int(ticket.get("pts_us", 0)), display, period, playback_speed)
+		var kept: bool = platform.interpolate_pair_push_enhanced(warp, source.x, source.y, ids.x, ids.y, look[0], grade, look[17], look[18]) if direct \
+			else platform.interpolate_pair_push(warp, source.x, source.y, ids.x, ids.y)
+		if not kept:
+			_pair_failed = media.session_id
+			DiagnosticLog.record("pair_interpolation_failed", {"source": [source.x, source.y], "step": "push"})
+			_stop_pair_interpolation()
+			return PAIR_IDLE
+	_send_pair_delay(_pair_timeline.delay_ns / 1e6)
+	var pick := _pair_timeline.pick(display, playback_speed)
+	if pick.is_empty() or pick.settled:
+		if not _pair_stamp.is_empty():
+			_pair_stamp = []
+			_picture_token = -1 # the layer holds a picture of this function's: the caller draws the pair over it
+		return PAIR_IDLE
+	# Kept as finished pictures, the pairs carry the look they came with: a slider reaches the next pairs.
+	var stamp := [pick.before, pick.after, pick.phase, size, PackedFloat32Array() if direct else look]
+	if stamp != _pair_stamp:
+		size = _depth_picture_image(source, size)
+		if size == Vector2i.ZERO or platform.acquire_layer_image(VideoLayer.PICTURE_SLOT) <= 0: return PAIR_FAILED
+		stamp[3] = size
+		var drawn: bool = platform.interpolate_pair_show(VideoLayer.PICTURE_SLOT, pick.before, pick.after, pick.phase) if direct \
+			else platform.interpolate_pair_draw(VideoLayer.PICTURE_SLOT, pick.before, pick.after, pick.phase, source.x, source.y,
+				look[0], grade, look[17], look[18])
+		if not platform.release_layer_image(VideoLayer.PICTURE_SLOT, false) or not drawn:
+			_pair_failed = media.session_id
+			DiagnosticLog.record("pair_interpolation_failed", {"source": [source.x, source.y], "size": [size.x, size.y], "step": "draw"})
+			_stop_pair_interpolation()
+			_picture_token = -1
+			return PAIR_IDLE
+		_pair_stamp = stamp
+		_picture_token = -1
+		_depth_picture_look = []
+		_depth_quality_drawn = true
+		_depth_picture_size = size
+		_pair_drawn += Vector2i(1, 1 if pick.phase > 0.0 and pick.phase < 1.0 else 0)
+	_pair_timeline.paced(display, period)
+	if media.playback.has("depth_updates"):
+		_pair_timeline.depth_counts(int(media.playback.depth_updates), int(media.playback.get("captured_frames", 0)))
+	if _pair_timeline.overloaded:
+		DiagnosticLog.record("pair_interpolation_overloaded", {"source": [source.x, source.y], "size": [size.x, size.y],
+			"depth": _pair_timeline.depth_starved, "depth_share": _pair_timeline.depth_share})
+		_send_pair_delay(0.0)
+	return PAIR_DRAWN
+
+func _pair_interpolation_report() -> Dictionary:
+	return {"active": _pair_frame >= 0, "drawn": _pair_drawn.x, "between": _pair_drawn.y, "delay_ms": _pair_delay_ms,
+		"pairs": _pair_timeline.pushed() if _pair_timeline else 0, "held": _pair_timeline.frames.size() if _pair_timeline else 0,
+		"overloaded": _pair_timeline != null and _pair_timeline.overloaded, "failed": _pair_failed == media.session_id,
+		"direct": _pair_direct, "depth_starved": _pair_timeline != null and _pair_timeline.depth_starved,
+		"depth_share": _pair_timeline.depth_share if _pair_timeline else 1.0,
+		"missed": [_pair_timeline.missed_total, _pair_timeline.paced_total, _pair_timeline.last_window] if _pair_timeline else []}
+
+## For the logs users send: what frame interpolation did, every ten seconds while it is asked for. It is
+## a Beta, and on PICO its timing is a guess (Meta's latch lead): these lines are how it gets judged there.
+const INTERPOLATION_LOG_MS := 10_000
+const COPY_LOG_KEYS := ["arrived", "drawn", "between", "late", "failed", "interpolating", "interpolation_delay_ms",
+	"interpolation_overloaded", "interpolation_unsupported", "estimate_gpu_ms", "between_gpu_ms", "gpu_ms", "latch_margin_ms",
+	"after_latch", "display_ahead_ms", "display_estimated", "period_ms", "lead_ms", "output_width", "output_height", "enlarged", "error"]
+var _interpolation_logged_ms := -INTERPOLATION_LOG_MS
+
+func _record_interpolation() -> void:
+	if not picture_quality or not picture_interpolation or video_layer == null: return
+	var now := Time.get_ticks_msec()
+	if now - _interpolation_logged_ms < INTERPOLATION_LOG_MS: return
+	_interpolation_logged_ms = now
+	var entry := {"blocker": picture_interpolation_blocker(), "session_id": media.session_id, "depth": depth_requested,
+		"meta_latches": video_layer.cadence_supported, "copy_latches": video_layer.copy_cadence,
+		"refresh_ms": video_layer.refresh_period_ns() / 1e6, "fps": str(media.playback.get("details", {}).get("container_fps", "")),
+		"speed": playback_speed}
+	if depth_requested:
+		entry["pairs"] = _pair_interpolation_report()
+		entry["depth_updates"] = media.playback.get("depth_updates", -1)
+		entry["captured_frames"] = media.playback.get("captured_frames", -1)
+	var copy: Variant = media.playback.get("layer_copy")
+	if not depth_requested and copy is Dictionary:
+		var values := {}
+		for key in COPY_LOG_KEYS: if copy.has(key): values[key] = copy[key]
+		entry["copy"] = values
+	Log.record("frame_interpolation", entry)
+
+## Frame interpolation stopped for this video (the headset fell behind, or its GPU refused): the user
+## turning it on again, after easing the load elsewhere, tries again instead of reopening the video.
+func retry_interpolation() -> void:
+	if picture_interpolation_blocker() != "load": return
+	if _pair_failed == media.session_id or (_pair_timeline != null and _pair_timeline.overloaded):
+		_stop_pair_interpolation()
+		_pair_timeline = null; _pair_failed = 0
+	if PlatformMethods.supports(platform, "retry_layer_interpolation"): platform.retry_layer_interpolation()
+	# The copy's stats say so until they are read again.
+	var copy: Variant = media.playback.get("layer_copy")
+	if copy is Dictionary: copy.interpolation_overloaded = false; copy.interpolation_unsupported = false
+	DiagnosticLog.record("interpolation_retried", {"session_id": media.session_id, "depth": depth_requested})
+
+func _send_pair_delay(ms: float) -> void:
+	if is_equal_approx(ms, _pair_delay_ms) or not PlatformMethods.supports(platform, "set_mpv_pair_delay"): return
+	if platform.set_mpv_pair_delay(media.session_id, ms) or ms == 0.0: _pair_delay_ms = ms
+
+## The pairs are shown as they come again: the audio's delay goes and the native copies are freed.
+func _stop_pair_interpolation() -> void:
+	_pair_frame = -1; _pair_token = -1
+	if _pair_timeline != null: _pair_timeline.clear()
+	if not _pair_stamp.is_empty():
+		_pair_stamp = []
+		_picture_token = -1
+	_send_pair_delay(0.0)
+	if PlatformMethods.supports(platform, "interpolate_pair_release"): platform.interpolate_pair_release()
 
 ## Profile 5 and software decode cannot use the decoder surface; MPV normalizes their colour and
 ## orientation into RGBA frames. Each new frame is copied into the picture layer once, instead of the
@@ -5365,7 +5724,10 @@ func _show_frame_picture(origin: XROrigin3D, extras: Array) -> bool:
 	# graded. Its settings redraw the frame on show, so a paused picture follows the sliders.
 	var quality := _frame_quality()
 	var look := _picture_values() if quality else PackedFloat32Array()
-	var size := upscale_size(source, _upscale_kind(), 2 if stereo_sbs and not top_bottom else 1, 2 if stereo_sbs and top_bottom else 1,
+	# Anime4K in place of the denoising and super resolution: the picture is the size its doublings make.
+	var networks := _anime4k_values(source) if quality else PackedFloat32Array()
+	var size := Vector2i(source.x << int(networks[2]), source.y << int(networks[2])) if not networks.is_empty() \
+		else upscale_size(source, _upscale_kind(), 2 if stereo_sbs and not top_bottom else 1, 2 if stereo_sbs and top_bottom else 1,
 		int(look[13])) if quality and look[13] > 0.5 else source
 	var stamp := [quality, size, look]
 	if token != _picture_token or stamp != _frame_picture_look:
@@ -5379,15 +5741,24 @@ func _show_frame_picture(origin: XROrigin3D, extras: Array) -> bool:
 			video_layer.picture_size = Vector2(size)
 		if platform.acquire_layer_image(VideoLayer.PICTURE_SLOT) <= 0:
 			return false
-		var copied: bool = platform.enhance_layer_texture(VideoLayer.PICTURE_SLOT, int(ticket.color_texture_id), source.x, source.y,
-			2 if stereo_sbs and not top_bottom else 1, 2 if stereo_sbs and top_bottom else 1, look[0], look.slice(2, 13) if look[1] > 0.5 else PackedFloat32Array(), look[17], look[18]) if quality \
-			else platform.copy_layer_texture(VideoLayer.PICTURE_SLOT, int(ticket.color_texture_id))
+		var copied: bool = false
+		if not networks.is_empty():
+			# The networks' result is kept by the frame's token: a slider moved on a paused frame does not run them again.
+			copied = platform.enhance_layer_texture_plugin(VideoLayer.PICTURE_SLOT, int(ticket.color_texture_id), source.x, source.y, 1, 1,
+				look[0], look.slice(2, 13) if look[1] > 0.5 else PackedFloat32Array(), look[17], look[18], networks, token)
+		elif quality:
+			copied = platform.enhance_layer_texture(VideoLayer.PICTURE_SLOT, int(ticket.color_texture_id), source.x, source.y,
+				2 if stereo_sbs and not top_bottom else 1, 2 if stereo_sbs and top_bottom else 1, look[0], look.slice(2, 13) if look[1] > 0.5 else PackedFloat32Array(), look[17], look[18])
+		else:
+			copied = platform.copy_layer_texture(VideoLayer.PICTURE_SLOT, int(ticket.color_texture_id))
 		if not platform.release_layer_image(VideoLayer.PICTURE_SLOT, false) or not copied:
 			_frame_picture_failed = true
 			DiagnosticLog.record("frame_picture_failed", {"stage": "enhance" if quality else "copy", "size": [size.x, size.y]})
 			return false
 		_picture_token = token
-		_frame_picture_look = stamp
+		# Drawn without Anime4K while its networks are linked: drawn again next frame, also when paused.
+		var linking: bool = not networks.is_empty() and PlatformMethods.supports(platform, "anime4k_picture_pending") 			and platform.anime4k_picture_pending()
+		_frame_picture_look = [] if linking else stamp
 		_frame_quality_drawn = quality
 		_frame_picture_size = size; _picture_upscaled = size != source
 	return video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(size), -1, Vector2.ZERO, Vector4(0, 0, 1, 1),

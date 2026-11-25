@@ -56,3 +56,7 @@ The common string offsets in native/unity-scene/common_strings.inc were checked 
 ## AMD FidelityFX FSR 1
 
 Picture quality mode adapts AMD FidelityFX FSR 1 EASU and RCAS under MIT. See the [source and modification notice](fidelityfx-fsr/NOTICE.md) and [full license](fidelityfx-fsr/LICENSE.txt).
+
+## Anime4K
+
+Picture plugins convert the pinned [Anime4K GLSL sources](anime4k/source-lock.json), including their unchanged coefficients, to GLES interfaces. Upstream is bloc97/Anime4K, revision 7684e9586f8dcc738af08a1cdceb024cc184f426. Preserve its [MIT license](anime4k/LICENSE) and packaged notice in player-licenses/anime4k.txt. Generated source is rebuilt with tools/anime4k/Generate-Anime4kGlsl.ps1; personal media and external model payloads are excluded.

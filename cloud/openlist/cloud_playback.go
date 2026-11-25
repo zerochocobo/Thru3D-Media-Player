@@ -178,11 +178,13 @@ func servePlayback115(c *gin.Context, resolve func(string) (driver.Driver, strin
 	lease := cloudPlaybackLeases.items[c.Param("lease")]
 	cloudPlaybackLeases.Unlock()
 	if lease == nil || time.Since(lease.created) >= 24*time.Hour || c.Param("name") != "/"+lease.file.GetName() {
+		markReadFailure(c, "lease", nil)
 		c.Status(http.StatusNotFound)
 		return
 	}
 	storage, actual, err := resolve(lease.mount + lease.remote)
 	if err != nil || storage != lease.storage || actual != lease.remote || storage.GetStorage().Disabled {
+		markReadFailure(c, "storage", err)
 		c.Status(http.StatusGone)
 		return
 	}
@@ -192,6 +194,7 @@ func servePlayback115(c *gin.Context, resolve func(string) (driver.Driver, strin
 	c.Request.Header.Del("X-Thru3D-Archive-Read") // Internal policy never goes to the provider.
 	cancel()                                      // Only link lookup is bounded here; media may stream for hours.
 	if err != nil {
+		markReadFailure(c, "link", err)
 		c.Status(http.StatusBadGateway)
 		return
 	}
@@ -225,6 +228,11 @@ func servePlayback115(c *gin.Context, resolve func(string) (driver.Driver, strin
 		c.Writer.Header().Del("Content-Length") // Set for the parted body that never came.
 		c.Writer.Header().Del("Content-Range")
 		recordReadDiagnostic(status, reason, message, link.Header.Get("User-Agent") == c.Request.Header.Get("User-Agent"))
+		step := "proxy"
+		if parted {
+			step = "first_part"
+		}
+		markReadFailure(c, step, err)
 		c.Header("X-Thru3D-Upstream-Reason", reason)
 		c.Status(status)
 	}

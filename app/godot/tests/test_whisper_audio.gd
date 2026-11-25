@@ -68,6 +68,7 @@ func run() -> void:
 	video.bookmark_store = preload("res://scripts/bookmark_store.gd").new(directory.path_join("bookmarks"))
 	root.add_child(video); video.set_process(false)
 	var host := Host.new(); video.platform = host
+	video.system_volume.restore_path = directory.path_join("volume_before_boost.json")
 	var main := Main.new(); main.video = video
 	main.settings.set_value("audio", "volume", 13.0); main.settings.set_value("audio", "muted", true)
 	var global_before := main.settings.encode_to_text()
@@ -155,6 +156,18 @@ func run() -> void:
 	video.set_volume_level(150); video.open_local("file:///new-source.mp4", "new-source.mp4")
 	host.finish_write(); video.system_volume.poll(true)
 	check(video.audio_whisper == 0, "A deferred boost cannot cross source/session boundaries")
+	check(host.writes.back() == [55.0, false] and video.audio_volume == 55, "Closing a boosted video returns system volume to the level before boost")
+	check(not FileAccess.file_exists(video.system_volume.restore_path), "A restored level leaves nothing for the next start")
+	var restore_path: String = video.system_volume.restore_path
+	for case in [[100.0, true, "A start still at the boosted maximum puts back the level left on disk"],
+			[70.0, false, "A start at another level keeps it: the user chose it since"]]:
+		var file := FileAccess.open(restore_path, FileAccess.WRITE); file.store_string(JSON.stringify({"percent": 30})); file.close()
+		host.percent = case[0]; writes = host.writes.size()
+		var restarted := preload("res://scripts/system_video_volume.gd").new(video)
+		restarted.restore_path = restore_path
+		restarted.poll(true)
+		check((host.writes.size() == writes + 1 and host.writes.back() == [30.0, false]) == case[1] 			and (host.writes.size() == writes) != case[1] and not FileAccess.file_exists(restore_path), case[2])
+	host.percent = 55; video.system_volume.poll(true)
 	writes = host.writes.size(); host.writable = false; video.system_volume.poll(true)
 	check(not video.set_volume_level(30) and host.writes.size() == writes, "Read-only/fixed system volume cannot pretend to change")
 	host.writable = true; host.available = false; video.system_volume.poll(true)

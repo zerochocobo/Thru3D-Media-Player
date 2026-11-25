@@ -2,8 +2,50 @@
 #include "../../native/mpv/network_read_policy.h"
 #undef NDEBUG // This executable's checks must also run in Release configurations.
 #include <cassert>
+#include <array>
 #include <iostream>
+
+static void check_decoder_slots() {
+    using Phase = quest::SourceSlotPhase;
+    struct Slot { Phase phase; uint64_t token; bool image; bool complete; };
+    std::array<Slot, 7> slots{{
+        {Phase::ready, 8, true, false}, {Phase::ready, 9, true, true},
+        {Phase::acquired, 10, true, false}, {Phase::ready, 11, true, false},
+        {Phase::ready, 7, false, true}, {Phase::acquired, 3, true, false},
+        {Phase::retiring, 4, true, false}
+    }};
+    assert(quest::retire_superseded_decoder_images(slots, 10) == 2);
+    assert(slots[0].phase == Phase::retiring && slots[1].phase == Phase::retiring);
+    assert(slots[2].phase == Phase::acquired && slots[3].phase == Phase::ready);
+    assert(slots[4].phase == Phase::ready && slots[5].phase == Phase::acquired);
+    assert(quest::retire_superseded_decoder_images(slots, 10) == 0);
+
+    bool waiting = false;
+    auto complete = [](const Slot& slot) { return slot.complete; };
+    // The RGBA slot is writable in producer command order. All claimed/retiring slots stay reserved.
+    assert(quest::writable_source_slot(slots, complete, waiting) == &slots[4] && !waiting);
+    slots[4].phase = Phase::rendering;
+    for (int poll = 0; poll < 30; ++poll) {
+        assert(quest::writable_source_slot(slots, complete, waiting) == nullptr && waiting);
+        assert(slots[3].phase == Phase::ready && slots[3].image);
+    }
+    slots[3].complete = true;
+    assert(quest::writable_source_slot(slots, complete, waiting) == &slots[3] && !waiting);
+    // A consumer can take that image while the producer waits; the next poll reselects.
+    slots[3].phase = Phase::acquired;
+    assert(quest::writable_source_slot(slots, complete, waiting) == nullptr && !waiting);
+    slots[1] = {Phase::free, 9, false, true};
+    assert(quest::writable_source_slot(slots, complete, waiting) == &slots[1] && !waiting);
+
+    // A close that interrupted a fence wait also drains the newest unclaimed image.
+    slots[3] = {Phase::ready, 11, true, false};
+    assert(quest::retire_superseded_decoder_images(slots, 12) == 1);
+    assert(slots[3].phase == Phase::retiring && slots[3].image);
+    assert(slots[2].phase == Phase::acquired);
+}
+
 int main() {
+    check_decoder_slots();
     // A seek read with the old playing intent still arms; Godot's pause follows it.
     auto retry = quest::SeekFrameRetry::arm(72199, false, 4, false, true);
     assert(retry.floor == 4);

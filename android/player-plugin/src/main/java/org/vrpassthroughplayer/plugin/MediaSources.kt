@@ -301,9 +301,8 @@ internal class MediaSources(
         if (StrmFile.location(uri)) return true
         val source = android.net.Uri.parse(uri)
         if (source.scheme != "content") return false
-        return context()?.contentResolver?.query(source, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
-            it.moveToFirst() && StrmFile.named(it.getString(0).orEmpty())
-        } == true
+        val resolver = context()?.contentResolver ?: return false
+        return StrmFile.named(StorageDocumentReader.displayName(resolver, source).orEmpty())
     }
 
     private fun readStrm(uri: String): StrmDocument {

@@ -23,6 +23,7 @@
 #include <string>
 #include <thread>
 #include "../rvm/near_edge_fade.h"
+#include "../rvm/near_foreground.h"
 #include "../rvm/photo_depth.h"
 #include "../rvm/photo_rotation.h"
 #include <unordered_map>
@@ -1145,13 +1146,15 @@ struct Bridge final {
     // Flat frame edges (near_edge_fade.h), optional: with the limit, the map is held near the screen plane
     // (edge_plane, the convergence) at the picture's left and right edges.
     bool edge_fade = false; float edge_plane = 0.35f;
+    // Foreground scale (near_foreground.h), first: the fade and the limit see the curved map.
+    float foreground_exponent = 1.f, foreground_table_plane = 0.35f; std::array<float, 256> foreground_table = quest::near_foreground_table(1.f, 0.35f);
     std::vector<unsigned char> limited_near(const std::vector<unsigned char>& packed) const {
         const float half = near_limit_shift * 0.5f * content_rect[2] * input_width;
         if (half <= 0.f) return packed;
         const int w = input_width, h = input_height;
         std::vector<float> plane(static_cast<size_t>(w) * h);
         for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x)
-            plane[static_cast<size_t>(y)*w+x] = packed[static_cast<size_t>(y)*w*2+x] / 255.f;
+            plane[static_cast<size_t>(y)*w+x] = foreground_table[packed[static_cast<size_t>(y)*w*2+x]];
         const int cx = std::clamp(static_cast<int>(std::lround(content_rect[0] * w)), 0, w - 1);
         const int cy = std::clamp(static_cast<int>(std::lround(content_rect[1] * h)), 0, h - 1);
         const int cw = std::clamp(static_cast<int>(std::lround(content_rect[2] * w)), 1, w - cx);
@@ -1276,7 +1279,10 @@ struct Bridge final {
         glDeleteSync(slot.fence); slot.fence = nullptr;
         slot.phase = slot.phase == Phase::copying ? Phase::held : Phase::free;
         if (slot.phase == Phase::free) release_decoder(slot);
-        if (slot.phase == Phase::held && slot.opaque_pending) slot.alpha_valid = true;
+        if (slot.phase == Phase::held && slot.opaque_pending) {
+            slot.alpha_valid = true;
+            slot.opaque_cached = true;
+        }
         return slot.phase == Phase::held;
     }
     Slot& find(jlong token) {
@@ -1309,7 +1315,7 @@ struct Bridge final {
             glBindTexture(GL_TEXTURE_2D, slot.alpha);
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, input_width*2, input_height, GL_RED, GL_UNSIGNED_BYTE, mask.data());
             check_gl("Render bridge opaque mask upload");
-            slot.opaque_cached = true; opaque_uploads++;
+            opaque_uploads++;
         }
         opaque_copies++;
     }
@@ -1382,6 +1388,18 @@ struct Bridge final {
         if (opaque) {
             if (scout) throw std::runtime_error("ROI scout requires staged inference inputs");
             opaque_mask(*free);
+            // MPV leases only producer-fence-ready images. Godot imports the EGLImage itself,
+            // and this slot's full mask has already completed a fenced upload on an earlier use.
+            // Neither image has new pixel writes to wait for on the owner GL queue.
+            if (free->opaque_cached) {
+                check_gl("Render bridge opaque decoder import");
+                free->text_regions.clear();
+                free->text_weights.clear();
+                free->token = token;
+                free->alpha_valid = true;
+                free->phase = Phase::held;
+                return token;
+            }
             return stage(*free, token, false);
         }
         if (scout) {
@@ -2939,6 +2957,21 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_steadyEdges(JNIEnv* env, jclass, jlong id, jboolean enabled) {
     try {
         std::lock_guard<std::mutex> guard(registry_mutex); find(id).steady = enabled == JNI_TRUE; return JNI_TRUE;
+    } catch (const std::exception& e) { error(env, e.what()); return JNI_FALSE; }
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_foreground(JNIEnv* env, jclass, jlong id, jfloat scale, jfloat plane) {
+    try {
+        if (!std::isfinite(scale) || scale < -1.f || scale > 1.f || !std::isfinite(plane) || plane < 0.f || plane > 1.f)
+            throw std::runtime_error("Invalid foreground scale");
+        std::lock_guard<std::mutex> guard(registry_mutex); auto& bridge = find(id);
+        const float exponent = quest::near_foreground_exponent(scale);
+        if (exponent != bridge.foreground_exponent || (exponent != 1.f && plane != bridge.foreground_table_plane)) {
+            bridge.foreground_exponent = exponent; bridge.foreground_table_plane = plane;
+            bridge.foreground_table = quest::near_foreground_table(exponent, plane);
+            bridge.map_half = -1.f; // the warp map follows the new texture
+        }
+        return JNI_TRUE;
     } catch (const std::exception& e) { error(env, e.what()); return JNI_FALSE; }
 }
 extern "C" JNIEXPORT jboolean JNICALL

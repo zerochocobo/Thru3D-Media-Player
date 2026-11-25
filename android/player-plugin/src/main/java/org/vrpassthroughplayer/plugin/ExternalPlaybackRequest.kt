@@ -6,6 +6,7 @@ import java.util.Locale
 
 /** Validated, transient input. Never serialize this object into diagnostics or history. */
 internal class ExternalPlaybackRequest private constructor(
+    val action: String,
     val uri: String,
     val title: String,
     val mime: String,
@@ -19,11 +20,14 @@ internal class ExternalPlaybackRequest private constructor(
 
         fun parse(action: String?, text: String?, title: String? = null, mime: String? = null,
                   headers: Map<String, String> = emptyMap(), privateRoots: List<File> = emptyList()): ExternalPlaybackRequest {
-            require(action == "android.intent.action.VIEW") { "UNSUPPORTED_ACTION" }
+            require(action == android.content.Intent.ACTION_VIEW || action == android.content.Intent.ACTION_SEND) { "UNSUPPORTED_ACTION" }
             require(text != null && text.length in 1..8192 && text.none { it.isISOControl() }) { "INVALID_URI" }
             val value = try { URI(text) } catch (_: Exception) { throw IllegalArgumentException("INVALID_URI") }
             val scheme = value.scheme?.lowercase(Locale.ROOT)
             require(scheme in setOf("file", "content", "http", "https")) { "UNSUPPORTED_SCHEME" }
+            if (action == android.content.Intent.ACTION_SEND) {
+                require(scheme == "content" && mime?.matches(Regex("video/[A-Za-z0-9.*+_-]+", RegexOption.IGNORE_CASE)) == true) { "INVALID_SHARED_VIDEO" }
+            }
             require(value.rawUserInfo == null) { "URI_CREDENTIALS_NOT_SUPPORTED" }
             if (scheme == "http" || scheme == "https") {
                 require(!value.host.isNullOrBlank() && value.port in -1..65535) { "INVALID_URI" }
@@ -51,7 +55,7 @@ internal class ExternalPlaybackRequest private constructor(
                 host.matches(Regex("127\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}"))
             val cleanTitle = title.orEmpty().filterNot { it.isISOControl() }
             val titleEnd = cleanTitle.offsetByCodePoints(0, minOf(256, cleanTitle.codePointCount(0, cleanTitle.length)))
-            return ExternalPlaybackRequest(text, cleanTitle.substring(0, titleEnd),
+            return ExternalPlaybackRequest(action, text, cleanTitle.substring(0, titleEnd),
                 mime.orEmpty().take(128), cleanHeaders.toMap(), scheme!!, loopback)
         }
     }

@@ -22,3 +22,7 @@ Internal photos/reading/previews use bounded versioned lossless RGBA transfers r
 ## 0.18.9 cloud selection
 
 GuangYaPan supports in-headset Web OAuth with PKCE, browsing and compatible media playback. Registered client identifiers are public identifiers; verifier/state are generated for each login and access/refresh tokens stay in app-private account storage. The service picker uses an icon grid. Service availability, account permissions and supported media still apply; no account data is supplied with this source.
+
+## 0.18.10 navigation and errors
+
+Supported local, SMB, DLNA and cloud lists expose previous/next sibling folders. DLNA image/audio opening and external NAS reads handle additional response shapes. GuangYaPan membership denial is distinguished from network failure. Decoder no-frame waits can time out and attempt fallback; excessive source frame rates have clearer device-limit messages. These checks do not establish all-server/media acceptance.

@@ -169,6 +169,8 @@ class DlnaLibraryTest {
                             "no_video_resource" -> item("<res protocolInfo=\"http-get:*:text/srt:*\">/movie.srt</res>")
                             "unrecognized_video" -> item("<res protocolInfo=\"http-get:*:VIDEO/MP4:*\">/private-name?token=secret-value</res>")
                             "wrong_id" -> video(id = "other")
+                            "image" -> item("<class>object.item.imageItem.photo</class><res protocolInfo=\"http-get:*:image/jpeg:*\">/photo.jpg</res>")
+                            "audio" -> item("<class>object.item.audioItem.musicTrack</class><res protocolInfo=\"http-get:*:audio/mpeg:*\">/song.mp3</res>")
                             else -> video(captions = parentCaptions)
                         } else (if (mode == "removed_video") "" else video(directoryVideoId, parentCaptions, directoryResource)) +
                             if (includeOther) video(id = "other") else ""
@@ -200,6 +202,17 @@ class DlnaLibraryTest {
             f.unrelatedCount = 300; library.browse("id", "unrelated")
             f.mode = "changed_uri"
             assertEquals(f.fixture.url + "/movie.mp4?token=new", f.library().playable("dlna://id/v_1"))
+        }
+    }
+
+    @Test fun imageAndAudioItemsOpenThroughTheirDlnaIdentity() {
+        CaptionFixture().use { f ->
+            val library = f.library()
+            f.mode = "image"
+            assertEquals(f.fixture.url + "/photo.jpg", library.playable("dlna://id/v_1"))
+            f.mode = "audio"
+            assertEquals(f.fixture.url + "/song.mp3", library.playable("dlna://id/v_1"))
+            assertEquals(listOf("metadata:v_1", "metadata:v_1"), f.requests)
         }
     }
 

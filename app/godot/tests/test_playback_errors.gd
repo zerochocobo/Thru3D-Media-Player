@@ -13,6 +13,16 @@ class Host extends RefCounted:
 	func close_mpv_video(id: int) -> void: closed.append(id)
 	func mpv_supported() -> bool: return false
 
+class ExternalLibrary extends Node3D:
+	var status := ""
+	func refresh() -> void: pass
+
+class ExternalHost extends "res://scripts/main.gd":
+	func _close_current_media(_restore_browser: bool = true) -> void:
+		_external_video_uri = ""
+		video.media.error = ""
+		video.media.error_report = {}
+
 func check(ok: bool, message: String) -> void:
 	checks += 1
 	if not ok: failures.append(message)
@@ -24,6 +34,18 @@ func _run() -> void:
 	var main := Main.new()
 	var video := Video.new()
 	root.add_child(video); video.set_process(false)
+	var external := ExternalHost.new()
+	var library := ExternalLibrary.new()
+	external.recent_menu = library
+	external.video = video
+	video.local_uri = "externalvideo://fixture/video"
+	external._external_video_uri = video.local_uri
+	video.media.error_report = {"reason": "tls_failed"}
+	video.media.error = Errors.message(video.media.error_report)
+	external._on_video_playback_failed()
+	check(library.status == I18n.t(Errors.REASONS.tls_failed), "External failure preserves the certificate diagnosis after closing the video")
+	video.local_uri = ""
+	library.free(); external.free()
 	main.video = video
 	var host := Host.new()
 	video.platform = host
@@ -243,6 +265,20 @@ func _run() -> void:
 	check(Errors.message(oversized) == "本机没有可解码视频 AV1 7680×7680 59.94fps 的硬件解码器。", "Missing hardware decoder is named")
 	check("解码器：无硬件解码器 · video/av01 · Quest 2" in Errors.details(oversized), "Details say no hardware decoder")
 	check(Errors.message({"reason": "resolution_unsupported"}) == Errors.REASONS.resolution_unsupported,"Without parameters the fixed reason remains")
+	var timed_out := Errors.clean({"reason": "output_timeout", "stage": "output", "output_wait": {"cache_bytes_per_second": 0, "paused_for_cache": false, "path": "/private"}})
+	check(timed_out.output_wait.cache_bytes_per_second == 0 and timed_out.output_wait.paused_for_cache == false, "An output timeout retains the last cache observation")
+	check(not timed_out.output_wait.has("path"), "Only known cache measurements enter the timeout report")
+	check(Errors.message(timed_out) == Errors.REASONS.output_timeout, "Output timeout shows the observed error")
+	# An 8K59.94 HEVC start past the advertised 48 fps keeps output_timeout in the report and names the limit to the user.
+	var rate_only := Errors.clean({"reason": "output_timeout", "stage": "output", "video": {"codec": "hevc", "width": 8192, "height": 4096, "fps": 59.94},
+		"decoder": {"hardware": true, "decoder": "c2.qti.hevc.decoder", "mime": "video/hevc", "peak_width": 8192, "peak_height": 4320, "peak_fps": 48,
+		"size_supported": true, "rate_supported": false, "exceeded": true}})
+	check(rate_only.reason == "output_timeout", "The report keeps the observed output error")
+	check(Errors.message(rate_only) == "视频 HEVC 8192×4096 59.94fps 超出本机硬件解码能力（最高 8192×4320 48fps）。", "The user still sees the advertised limit: " + Errors.message(rate_only))
+	rate_only.reason = "video_output_failed"
+	check("48fps" in Errors.message(rate_only), "A video output failure past the limit names it too")
+	rate_only.decoder.exceeded = false
+	check(Errors.message(rate_only) == Errors.REASONS.video_output_failed, "Within the limit the output error stays")
 	# The media-library 404 context must survive the clean() that guards logged and saved reports.
 	var server_404 := {"reason": "not_found", "stage": "resolving", "http_status": 404, "media_server": {"provider": "emby",
 		"request": "server_original_range", "redirect": "same_host", "has_base_path": true, "explicit_version": false,
@@ -253,18 +289,31 @@ func _run() -> void:
 	check(not "secret" in str(kept) and not kept.has("nested"), "Media server context passes the redaction boundary")
 	check(Errors.message(Errors.clean(server_404)) == Errors.message({"reason": "not_found", "stage": "resolving", "http_status": 404}),
 		"Request context does not change the user message")
+	# A cloud read failure keeps where the loopback read failed, its timing and earlier successes.
+	var cloud_500 := {"reason": "http_error", "stage": "reading", "http_status": 500, "cloud": {"provider": "quark",
+		"step": "link", "error": "dns", "elapsed_ms": 5, "attempts": 1, "from_start": true, "sources_ok": 1, "since_ok_s": 13,
+		"note": "https://cdn.example/file?token=secret", "nested": {"path": "/private"}}}
+	var cloud: Dictionary = Errors.clean(cloud_500).get("cloud", {})
+	check(cloud.get("provider") == "quark" and cloud.get("step") == "link" and cloud.get("error") == "dns" and cloud.get("elapsed_ms") == 5
+		and cloud.get("attempts") == 1 and cloud.get("from_start") == true and cloud.get("sources_ok") == 1 and cloud.get("since_ok_s") == 13,
+		"Cloud read context is kept: " + str(cloud))
+	check(not "secret" in str(cloud) and not cloud.has("nested"), "Cloud read context passes the redaction boundary")
 	# A stalled source reaches the exported log with labels, marks, the native wait and module names only.
 	var stalled := {"kind": "close_stuck", "scheme": "smb", "stage": "core_terminate", "closing_ms": 51000, "first_frame": false,
 		"detail": "smb://nas/share?token=secret", "nested": [1, 2],
 		"startup": {"worker_started_ms": 1, "native_created_ms": 812, "note": {"deep": true}},
 		"native": {"stage": "core_terminate", "decoder": "hardware", "last_log_ms": 50500,
-			"recent_modules": ["vd", "ao/aaudio", 5, "ffmpeg/demuxer-with-a-very-long-module-name"]}}
+			"recent_modules": ["vd", "ao/aaudio", 5, "ffmpeg/demuxer-with-a-very-long-module-name"],
+			"control_call": "snapshot", "control_call_ms": 17000, "core_recent_modules": ["af", "ao/aaudio", "smb://nas/x"],
+			"core_last_log_ms": 16900, "core_decoder": "unknown"}}
 	var cleaned := Errors.clean_source_diagnostic(stalled, 4)
 	check(cleaned.session_id == 4 and cleaned.kind == "close_stuck" and cleaned.closing_ms == 51000 and cleaned.first_frame == false,
 		"Stalled-source labels and numbers are kept: " + str(cleaned))
 	check(cleaned.startup == {"worker_started_ms": 1, "native_created_ms": 812}, "Startup marks are kept one level down: " + str(cleaned.startup))
 	check(cleaned.native.recent_modules == ["vd", "ao/aaudio", "ffmpeg/demuxer-with-a-ve"] and cleaned.native.last_log_ms == 50500,
 		"MPV modules are short names only: " + str(cleaned.native))
+	check(cleaned.native.control_call == "snapshot" and cleaned.native.control_call_ms == 17000 and cleaned.native.core_last_log_ms == 16900
+		and cleaned.native.core_recent_modules.slice(0, 2) == ["af", "ao/aaudio"], "The blocking call and the core's own trail are kept: " + str(cleaned.native))
 	check(not cleaned.has("nested") and not "secret" in str(cleaned), "Stalled-source records pass the redaction boundary")
 	var Log := preload("res://scripts/diagnostic_log.gd")
 	var Privacy := preload("res://scripts/media_privacy.gd")

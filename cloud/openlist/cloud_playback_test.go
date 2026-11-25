@@ -3,8 +3,11 @@ package cloudcore
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,13 +15,17 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
+	"github.com/OpenListTeam/OpenList/v4/internal/errs"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
+	cloudnet "github.com/OpenListTeam/OpenList/v4/internal/net"
 	"github.com/gin-gonic/gin"
+	pkgerrors "github.com/pkg/errors"
 )
 
 type playbackProxyFixture struct {
@@ -464,5 +471,86 @@ func TestCdnRateLimitDoesNotDiscardAnArchiveDownloadTicket(t *testing.T) {
 	}
 	if d.links.Load() != 1 || len(lease.links) != 1 {
 		t.Fatal("rate limit caused a new provider ticket", d.links.Load())
+	}
+}
+
+func TestPlaybackFailureNamesTheStepAndErrorKind(t *testing.T) {
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 32)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/broken" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		http.ServeContent(w, r, "film.mp4", time.Unix(0, 0), bytes.NewReader(payload))
+	}))
+	defer upstream.Close()
+	file := &model.Object{ID: "9", Name: "film.mp4", Size: int64(len(payload)), Modified: time.Unix(0, 0)}
+	for _, test := range []struct {
+		name, origin string
+		partSize     int
+		userAgent    string
+		step, kind   string
+	}{
+		{"whole read", "/broken", 0, "fixture-player", "proxy", "http"},
+		{"first part", "/broken", 16, "fixture-player", "first_part", ""},
+		{"provider link", "/valid", 0, "other-player", "link", "other"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			d := &playbackProxyFixture{origin: upstream.URL + test.origin, partSize: test.partSize}
+			handler, uri, _ := playbackRecoveryHandler(t, d, file)
+			r := httptest.NewRequest("GET", uri, nil)
+			r.Header.Set("User-Agent", test.userAgent)
+			r.Header.Set("Range", "bytes=42-103")
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			if w.Code < 400 || w.Header().Get("X-Thru3D-Read-Step") != test.step {
+				t.Fatal("failure step", w.Code, w.Header().Get("X-Thru3D-Read-Step"))
+			}
+			if test.kind != "" && w.Header().Get("X-Thru3D-Read-Error") != test.kind {
+				t.Fatal("error kind", w.Header().Get("X-Thru3D-Read-Error"))
+			}
+		})
+	}
+	d := &playbackProxyFixture{origin: upstream.URL + "/valid"}
+	handler, uri, _ := playbackRecoveryHandler(t, d, file)
+	if w := playbackRecoveryRequest(handler, uri); w.Code != 206 || w.Header().Get("X-Thru3D-Read-Step") != "" {
+		t.Fatal("a successful read must not carry a failure label", w.Code)
+	}
+}
+
+func TestReadErrorClassKeepsOnlyTheKind(t *testing.T) {
+	dial := func(inner error) error {
+		return &url.Error{Op: "Get", URL: "https://cdn.example/secret", Err: &net.OpError{Op: "dial", Net: "tcp", Err: inner}}
+	}
+	for _, test := range []struct {
+		err  error
+		want string
+	}{
+		{nil, ""},
+		{dial(&net.DNSError{Err: "no such host", Name: "cdn.example", IsNotFound: true}), "dns"},
+		{dial(syscall.ECONNREFUSED), "connect"},
+		{fmt.Errorf("get link: %w", context.DeadlineExceeded), "timeout"},
+		{context.Canceled, "canceled"},
+		{fmt.Errorf("http request failure,status: %w", cloudnet.HttpStatusCodeError(500)), "http"},
+		{&url.Error{Op: "Get", URL: "https://cdn.example", Err: x509.UnknownAuthorityError{}}, "tls"},
+		{&url.Error{Op: "Get", URL: "https://cdn.example", Err: io.ErrUnexpectedEOF}, "eof"},
+		{&net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}, "network"},
+		{pkgerrors.WithMessage(errs.ObjectNotFound, "failed to get file"), "not_found"},
+		{errors.New("provider said no"), "other"},
+	} {
+		if got := readErrorClass(test.err); got != test.want {
+			t.Errorf("%v: got %q, want %q", test.err, got, test.want)
+		}
+	}
+}
+
+func TestRecoveredStreamPanicIsLabelled(t *testing.T) {
+	engine := gin.New()
+	engine.Use(gin.CustomRecovery(recoverStream))
+	engine.GET("/panic", func(*gin.Context) { panic("handler failed") })
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, httptest.NewRequest("GET", "/panic", nil))
+	if w.Code != 500 || w.Header().Get("X-Thru3D-Read-Step") != "panic" {
+		t.Fatal("panic was not labelled", w.Code, w.Header())
 	}
 }

@@ -30,7 +30,7 @@ class Layer extends RefCounted:
 	func present(_pose: Transform3D,_size: Vector2,_crop: Rect2) -> bool: shown += 1;return true
 	func hide() -> void: pass
 	func input_surface() -> JavaObject: return null
-	func configure_effect(_strength: float,_position: float,_identity: String,_fill: bool,_depth: bool) -> String: return ""
+	func configure_effect(_strength: float,_position: float,_identity: String,_fill: bool,_depth: bool,_foreground: float = 0.0) -> String: return ""
 	func configure_picture(_values: PackedFloat32Array) -> void: pass
 	func destroy(nonblocking: bool=false) -> bool: destroy_calls += 1;asynchronous=nonblocking;return stop_ready
 class Producer extends Surface:

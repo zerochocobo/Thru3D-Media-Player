@@ -118,10 +118,12 @@ func configure_picture(values: PackedFloat32Array) -> void:
 	JavaClassWrapper.get_exception()
 	_picture_sent = values
 
-func configure_effect(strength: float, position: float, identity: String, fill: bool = false, depth: bool = true) -> String:
+func configure_effect(strength: float, position: float, identity: String, fill: bool = false, depth: bool = true, foreground: float = 0.0) -> String:
 	if not stereo or not effects: return ""
-	var signature := str([strength, position, identity, fill, depth])
+	var signature := str([strength, position, identity, fill, depth, foreground])
 	if signature != _effect_sent:
+		effects.foreground(id, foreground)
+		JavaClassWrapper.get_exception()
 		effects.configure(id, strength, position, identity, fill, depth)
 		JavaClassWrapper.get_exception()
 		_effect_sent = signature

@@ -215,6 +215,8 @@ const STORAGE_ROOT := 91
 const RETRY_USB := 92
 const TAKEOVER_USB := 93
 const EDITOR_SYSTEM_KEYBOARD := 94
+const SIBLING_PREVIOUS := 95
+const SIBLING_NEXT := 96
 var _usb_takeover_pending := false
 const USB_BUSY_EJECT := "USB device is in use; eject it in system settings, then retry"
 var view_mode := "grid"
@@ -323,6 +325,9 @@ const BROWSE_POSITION_HINT := "Resume where you left off, separately for each fo
 const AlphaEdgeSettings := preload("res://scripts/alpha_edge.gd")
 const AUTO_PASSTHROUGH_HINT := "Automatically enable passthrough when the filename contains alpha or passthrough. When off, you can enable it manually from the playback menu."
 var _restore_folder_key := ""
+## Folders beside the open one, in the order the parent listed them, and where that parent was.
+var _siblings: Array = []
+var _siblings_owner: Array = []
 var _editor := {}                  # SMB or DLNA server; empty when not editing
 var _editor_system_keyboard := false
 var _field := 1
@@ -2858,6 +2863,8 @@ func _activate(target: int) -> void:
 		else: collections._remove_rows(catalog.list_recent(), true)
 	elif target >= CRUMB_BASE and target < CRUMB_BASE + 10:
 		_go_to(target - CRUMB_BASE)
+	elif target in [SIBLING_PREVIOUS, SIBLING_NEXT]:
+		_open_sibling(-1 if target == SIBLING_PREVIOUS else 1)
 	elif target >= FILTER_BASE and target <= FILTER_BASE + FOLDER_FILTER:
 		if image_picker_mode or voice_picker_mode: return
 		if target == FILTER_BASE + FOLDER_FILTER and not _favorite_folder_filter(): return
@@ -3022,6 +3029,8 @@ func _choose(row: Dictionary) -> void:
 	elif row.has("container"):
 		var container: Dictionary = row.container
 		_save_folder_position(row)
+		_siblings = rows.filter(func(r): return r.has("container") and bool(r.get("enabled", true))).map(func(r): return r.container.duplicate(true))
+		_siblings_owner = _sibling_owner()
 		scroll = 0.0
 		if section == Section.LOCAL:
 			_local_stack.append(container.duplicate(true))
@@ -3264,6 +3273,61 @@ func _go_to(level: int) -> void:
 	_restore_folder_key = _folder_key()
 	refresh()
 
+func _sibling_owner() -> Array:
+	return [section, _smb_server if section == Section.SMB else _dlna_server if section == Section.DLNA else "",
+		image_picker_mode, subtitle_picker_mode, audio_import_mode, voice_picker_mode]
+
+## Where the open folder sits among the siblings recorded on entering it; -1 when elsewhere.
+func _sibling_index() -> int:
+	if archives.browsing or cloud_search.active or _siblings.size() < 2 or _siblings_owner != _sibling_owner(): return -1
+	for index in _siblings.size():
+		var sibling: Dictionary = _siblings[index]
+		match section:
+			Section.LOCAL: if not _local_stack.is_empty() and _local_stack.back() == sibling: return index
+			Section.CLOUD: if not _cloud_stack.is_empty() and _cloud_stack.back() == sibling: return index
+			Section.SMB: if not _smb_path.is_empty() and _smb_path == str(sibling.get("id", "")): return index
+			Section.DLNA: if not _dlna_stack.is_empty() and str(_dlna_stack.back().id) == str(sibling.get("id", "")): return index
+	return -1
+
+func _sibling_tip(index: int, label: String) -> String:
+	if index < 0 or index >= _siblings.size(): return I18n.t(label)
+	var sibling: Dictionary = _siblings[index]
+	var name := str(sibling.get("title", ""))
+	if name.is_empty(): name = str(sibling.get("id", "")).get_file()
+	return I18n.t(label) + "
+" + name
+
+## Replaces the open folder with its neighbour, as going up and choosing it would, without the parent's read.
+func _open_sibling(step: int) -> void:
+	var index := _sibling_index()
+	if index < 0 or index + step < 0 or index + step >= _siblings.size(): return
+	var container: Dictionary = _siblings[index + step]
+	file_actions.reset()
+	_save_folder_position()
+	_browse_activity()
+	_retire_directory_reads()
+	scroll = 0.0
+	status = ""
+	match section:
+		Section.LOCAL:
+			_local_stack[-1] = container.duplicate(true)
+			_local_entries = []
+			_load_section()
+		Section.CLOUD:
+			_cloud_stack[-1] = container.duplicate(true)
+			_cloud_entries = []
+			_load_section()
+		Section.SMB:
+			_smb_path = str(container.id)
+			_smb_entries = []
+			_request("smb_browse", _browse_smb(_smb_server, _smb_path))
+		Section.DLNA:
+			_dlna_stack[-1] = {"id": str(container.id), "title": str(container.title)}
+			_dlna_entries = []
+			_request("dlna_browse", platform.media_dlna_browse(_dlna_server, str(container.id)))
+	_restore_folder_key = _folder_key()
+	refresh()
+
 func _refresh_source() -> void:
 	if not platform:
 		return
@@ -3484,12 +3548,12 @@ func _draw_compact() -> void:
 	else:
 		var usb := not archives.browsing and not _external_volumes().is_empty()
 		var title_x := -0.32 if usb else -0.45
-		if path_controls: title_x = path_menu.draw_header(crumbs, title_x, 0.36) + 0.018
-		var title_width := 0.20 - title_x
 		var provider_icon := _header_provider_icon()
 		if not provider_icon.is_empty():
 			_icon(provider_icon, Vector3(title_x + 0.022, 0.36, 0.004), 0.048, UiTheme.color("provider_ink"))
-			title_x += 0.060; title_width -= 0.060
+			title_x += 0.060
+		if path_controls: title_x = path_menu.draw_header(crumbs, title_x, 0.36) + 0.018
+		var title_width := 0.20 - title_x
 		if path_controls:
 			var trail := " › ".join(crumbs.slice(-2))
 			heading = trail if text_width(trail, 19) <= title_width else str(crumbs.back())
@@ -3746,6 +3810,11 @@ func _draw() -> void:
 		var inset := _folder_header_inset()
 		_button(BACK, "", Vector2(-0.52 + inset, _header_y()), Vector2(0.09, 0.07), true, "up")
 		var path_x := -0.455 + inset
+		# The provider marks the whole path, so it leads it, before the folder tree.
+		var provider_icon := _header_provider_icon()
+		if not provider_icon.is_empty():
+			_icon(provider_icon, Vector3(path_x + 0.025, _header_y(), 0.004), 0.055, UiTheme.color("provider_ink"))
+			path_x += 0.070
 		if path_menu.available(crumbs): path_x = path_menu.draw_header(crumbs, path_x, _header_y()) + 0.018
 		_draw_crumbs(crumbs, path_x)
 	if (archives.browsing or section in [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD]) and not cloud_managing:
@@ -3878,7 +3947,7 @@ func _draw() -> void:
 func _align_folder_tools() -> void:
 	if not browser_content() or (section == Section.RECENT and not archives.browsing): return
 	var tools: Array[Dictionary] = []
-	for target in [FileActions.SORT, FileActions.EDIT_MODE, EJECT_STORAGE, USB_STORAGE, ALL_FILES, CloudSearch.OPEN, SubtitleFilter.OPEN, EDIT, REFRESH, VIEW_LIST, VIEW_GRID]:
+	for target in [Collections.FAVORITE_FOLDER, FileActions.SORT, FileActions.EDIT_MODE, EJECT_STORAGE, USB_STORAGE, ALL_FILES, CloudSearch.OPEN, SubtitleFilter.OPEN, EDIT, REFRESH, VIEW_LIST, VIEW_GRID]:
 		for button in _buttons:
 			if button.target == target and is_equal_approx(button.rect.get_center().y, 0.445): tools.append(button)
 	var right := 0.845
@@ -3900,13 +3969,10 @@ func _draw_crumbs(crumbs: Array, x: float) -> void:
 	var base: int = archives.CRUMB if archives.browsing else CRUMB_BASE
 	# Leave room for account actions; the up button still exposes every parent.
 	var first := maxi(0, crumbs.size() - (2 if section in [Section.CLOUD, Section.LOCAL] or file_actions.sortable() else 4))
-	var provider := not archives.browsing and section == Section.CLOUD and not _cloud_stack.is_empty()
 	var count := crumbs.size() - first
-	var max_text := minf(0.24, (0.83 - x - (0.070 if provider else 0.0) - 0.035 * (count - 1)) / count - 0.05)
+	var spare := 0.115 if not archives.browsing and _sibling_index() >= 0 else 0.0
+	var max_text := minf(0.24 - spare / count, (0.83 - x - spare - 0.035 * (count - 1)) / count - 0.05)
 	for i in range(first, crumbs.size()):
-		if provider and i == maxi(1, first):
-			_icon(Icons.provider(cloud_pagination.provider()), Vector3(x + 0.025, _header_y(), 0.004), 0.055, UiTheme.color("provider_ink"))
-			x += 0.070
 		var text := _fit_title(str(crumbs[i]), "", max_text, 19)
 		var width := text_width(text, 19) + 0.05
 		var current := i == crumbs.size() - 1
@@ -3917,6 +3983,11 @@ func _draw_crumbs(crumbs: Array, x: float) -> void:
 		label.modulate = ACCENT if current else MUTED
 		if current:
 			_buttons.back().base_color = Color(TILE, 0.0)
+			var sibling := _sibling_index() if spare > 0.0 else -1
+			if sibling >= 0:
+				_glyph(SIBLING_PREVIOUS, "previous", Vector2(x + width + 0.03, _header_y()), 0.05, sibling > 0, _sibling_tip(sibling - 1, "Previous folder"))
+				_glyph(SIBLING_NEXT, "next", Vector2(x + width + 0.085, _header_y()), 0.05, sibling < _siblings.size() - 1, _sibling_tip(sibling + 1, "Next folder"))
+				width += 0.115
 			if section == Section.LOCAL and not archives.browsing and not compact:
 				_thumbnail_indicator = _icon("image", Vector3(minf(x + width + 0.012, 0.48), _header_y(), 0.004), 0.035, MUTED)
 				_thumbnail_indicator.visible = _thumbnail_reading
@@ -4458,9 +4529,14 @@ func _video_depth_rows(settings: Dictionary) -> Array[Dictionary]:
 	var fade := DepthEdgeFade.choice(bool(settings.get(DepthEdgeFade.KEY, DepthEdgeFade.DEFAULT)))
 	fade.title = I18n.t(DepthEdgeFade.TITLE); fade.info = DepthEdgeFade.HINT
 	if str(settings.get("depth_render", "stretch")) == "stretch": entries.append(fade)
-	var position := preload("res://scripts/depth_position.gd").row(settings.get("depth_position_default", 0), "depth_position_default")
-	position.title = I18n.t("3D position"); position.info = position.hint; position.erase("hint")
+	var position_script := preload("res://scripts/depth_position.gd")
+	var position := position_script.row(settings.get("depth_position_default", 0), "depth_position_default")
+	position.title = I18n.t(position_script.TITLE); position.info = position.hint; position.erase("hint")
 	entries.append(position)
+	var foreground_script := preload("res://scripts/depth_foreground.gd")
+	var foreground := foreground_script.row(settings.get("depth_foreground_default", 0), "depth_foreground_default")
+	foreground.title = I18n.t(foreground_script.TITLE); foreground.info = foreground.hint; foreground.erase("hint")
+	entries.append(foreground)
 	return entries
 
 func _video_alpha_rows(settings: Dictionary) -> Array[Dictionary]:

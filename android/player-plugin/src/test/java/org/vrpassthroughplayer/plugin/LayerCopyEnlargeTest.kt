@@ -26,4 +26,20 @@ class LayerCopyEnlargeTest {
         assertNull(LayerCopy.enlargedSize(1920, 1080, look(0, 0), 0))
         assertNull(LayerCopy.enlargedSize(8192, 4096, look(2, 1, across = 2), 0))
     }
+
+    @Test fun anime4kDoublesUpTo1080pTwiceAtMost() {
+        assertEquals(2, LayerCopy.anime4kDoublings(352, 240, 0)) // DVD (VCD size): 1408 x 960
+        assertEquals(2, LayerCopy.anime4kDoublings(720, 480, 0)) // DVD: 2880 x 1920
+        assertEquals(1, LayerCopy.anime4kDoublings(1280, 720, 0))
+        assertEquals(1, LayerCopy.anime4kDoublings(1920, 1080, 0))
+        assertEquals(1, LayerCopy.anime4kDoublings(1080, 1920, 0)) // portrait: the long side counts
+        assertEquals(0, LayerCopy.anime4kDoublings(2560, 1440, 0))
+        assertEquals(0, LayerCopy.anime4kDoublings(3840, 2160, 0))
+    }
+
+    @Test fun anime4kStaysWithinTheOutputCap() {
+        assertEquals(1, LayerCopy.anime4kDoublings(720, 480, 2048))
+        assertEquals(0, LayerCopy.anime4kDoublings(1920, 1080, 2048))
+        assertEquals(1, LayerCopy.anime4kDoublings(1920, 1080, 4096))
+    }
 }

@@ -135,7 +135,7 @@ internal class DlnaLibrary(
         var parentStatus = "not_queried"
         var outcome = "failed"
         try {
-            val metadata = video(DlnaClient.browse(endpoint, objectId, metadata = true, diagnostics = metadataDiagnostics), objectId)
+            val metadata = media(DlnaClient.browse(endpoint, objectId, metadata = true, diagnostics = metadataDiagnostics), objectId)
             val parentId = metadata?.optString("parent_id")?.takeIf { it.isNotBlank() && it != objectId }
                 ?: knownParent(id, objectId, metadata?.optString("uri"))
             // Some servers list the stream only in BrowseDirectChildren. Use the saved parent
@@ -147,7 +147,7 @@ internal class DlnaLibrary(
                 parentStatus = "no_known_parent"
                 val parent = parentId ?: error("DLNA item unavailable")
                 parentDiagnostics = metadataDiagnostics?.let { DlnaClient.BrowseDiagnostics(objectId) }
-                video(DlnaClient.browse(endpoint, parent, diagnostics = parentDiagnostics), objectId)
+                media(DlnaClient.browse(endpoint, parent, diagnostics = parentDiagnostics), objectId)
                     ?.takeIf { DlnaClient.httpUri(it.optString("uri")) != null } ?: error("DLNA item unavailable")
             }
             val resolved = entry.getString("uri")
@@ -255,9 +255,13 @@ internal class DlnaLibrary(
         }.take(8)
     }
 
-    private fun video(entries: JSONArray, objectId: String): JSONObject? = (0 until entries.length())
-        .mapNotNull { entries.optJSONObject(it) }
-        .singleOrNull { it.optString("kind") == "video" && it.optString("id") == objectId }
+    private fun video(entries: JSONArray, objectId: String): JSONObject? = media(entries, objectId, setOf("video"))
+
+    /** Images and audio open through the same dlna:// identity as videos; subtitles stay video-only. */
+    private fun media(entries: JSONArray, objectId: String, kinds: Set<String> = setOf("video", "image", "audio")): JSONObject? =
+        (0 until entries.length())
+            .mapNotNull { entries.optJSONObject(it) }
+            .singleOrNull { it.optString("kind") in kinds && it.optString("id") == objectId }
 
     @Synchronized fun clearPlaybackReferences() {
         references.clear(); playbackReferences.clear(); transientReferences.clear(); durableReferences = JSONArray(); durablePlayback = JSONArray()

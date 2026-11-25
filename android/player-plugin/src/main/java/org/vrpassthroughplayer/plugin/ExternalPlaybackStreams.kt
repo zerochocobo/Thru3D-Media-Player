@@ -27,6 +27,7 @@ internal class ExternalPlaybackStreams(private val server: () -> LocalStreamServ
             if (stable) File(URI(request.uri)).name else "Video"
         }
         return JSONObject().put("uri", uri).put("title", title).put("start_ms", startMs)
+            .put("action", request.action.substringAfterLast('.')).put("source_scheme", request.scheme).put("loopback", request.loopback)
             .put("temporary", !stable).toString()
     }
 
@@ -36,7 +37,7 @@ internal class ExternalPlaybackStreams(private val server: () -> LocalStreamServ
         val request = synchronized(this) { check(!closed); requests[uri] } ?: error("External video expired; open it again")
         if (request.scheme == "content") return request.uri
         val address = URI(request.uri)
-        val local = server()
+        val local = synchronized(this) { check(!closed); server() }
         if (request.mime.lowercase() in setOf("application/vnd.apple.mpegurl", "application/x-mpegurl") ||
             address.path.orEmpty().endsWith(".m3u8", true)) {
             val manifest = synchronized(this) { check(!closed); WebVideoHls(local, strictOriginHeaders = true).also { preparing.add(it) } }
@@ -46,10 +47,10 @@ internal class ExternalPlaybackStreams(private val server: () -> LocalStreamServ
             } catch (failure: Exception) { manifest.close(); throw failure }
             finally { preparing.remove(manifest) }
         }
-        val source = HttpRangeStreamSource(MediaServerAccount("external-video", "External video", "http://127.0.0.1", "")) {
+        val source = HttpRangeStreamSource(MediaServerAccount("external-video", "External video", "http://127.0.0.1", ""), externalVideo = true) {
             MediaStreamLink(address, uri, remote = true, headers = request.headers)
         }.boundedRanges(1024 * 1024L)
-        return try { local.publish(source, "video.mp4") }
+        return try { synchronized(this) { check(!closed); local.publish(source, "video.mp4") } }
         catch (failure: Exception) { source.close(); throw failure }
     }
 

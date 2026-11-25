@@ -4,6 +4,29 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.18.10 — 2026-11-25
+
+- The picture panel adds a Plugins tab with Anime4K for 2D animation. Choose a mode and tier after enabling it. Settings are remembered per video. While Anime4K is enabled, the picture panel opens on Plugins. Anime4K turns off under excessive load and cannot run alongside frame interpolation.
+- Add Frame interpolation (Beta) to regular video playback in Picture Quality Mode, off by default and remembered per video. Supports compatible sources up to 4K and 33fps, excluding person passthrough and fisheye, and stops interpolating when device load is too high. This is its first release on PICO: if motion is not smooth, please report it with Send log. If it stops automatically, you can turn it on again without reopening the video.
+- Add Frame interpolation (Beta) for 2D-to-3D in Picture Quality Mode, off by default and remembered per video. Requires compatible video at up to 33fps and an output pixel count per eye no greater than 2560×1440. Person passthrough and fisheye are unsupported; if the load is too high or depth updates fall behind, interpolation stops and the video keeps playing.
+- 3D Position is now 3D Convergence. The new 3D Foreground Scale adjusts nearby depth. Both are available in video, web and global settings. In video and web views, holding and dragging the 3D Strength, Convergence or Foreground Scale slider temporarily hides the menu. Browser settings add a 3D Strength slider and group the related options under 2D to 3D.
+- Reuse Last Picture Settings now survives app restarts. Icons in the picture panel distinguish this video’s saved settings from carried settings.
+- Restore the previous system volume when boosted playback ends. If an interrupted exit leaves system volume at maximum, the next launch attempts to restore it.
+- Switch directly to the previous or next sibling folder in local, SMB, DLNA and cloud locations, with the destination name in a tooltip. Source icons and the favorite button are also repositioned.
+- Open individual videos shared from UGREEN NAS and similar Android apps in Thru3D. External playback also handles servers that return the full file or a byte range larger than requested.
+- Fix DLNA shared images that showed thumbnails but failed to open at full size, and improve opening DLNA audio items.
+- Add a compatibility workaround for noisy audio on Douyin webpages, using the original video’s audio output instead of the site’s loudness equalization.
+- Update the YouTube web video extractor for recent changes to the web player. Extraction while signed in still needs headset verification.
+- Add a timeout safeguard when a decoder produces no video frames, ending the wait and attempting a fallback decoding path.
+- Improve playback failure messages when a source’s frame rate exceeds hardware decoding capacity, showing the cause and available device-limit information.
+- Improve decoded-frame recycling and handoff in eye-buffer playback to reduce skipped picture updates in some regular videos.
+- When returning to the player from the system home screen, wait for graphics to be ready before updating the picture.
+- Show a clear membership-required message when GuangYaPan sign-in or browsing lacks membership access, instead of an ambiguous network error.
+- Fix the Send logs button in floating browser windows being mistaken for a resize action and failing to respond to clicks.
+- When you send a log after a web video fails to open in the built-in player, it can include the sanitized public page address and relevant media IDs to help reproduce the issue.
+- On OpenXR, fix the in-app keyboard closing and interrupting cloud web sign-in when the page replaces or changes the focused input field.
+- On QIYU, optimize regular video rendering and use a 4096-pixel output width when set to Auto. A width of 5760 and the original width remain available. Performance on the QIYU A091 still needs headset verification.
+
 ## 0.18.9 — 2026-11-24
 
 - Add GuangYaPan: sign in, browse files and play compatible media directly on the headset.

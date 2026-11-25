@@ -42,6 +42,9 @@ var page_size := RECT.size
 var selecting := false
 var depth := preload("res://scripts/web_browser_depth.gd").new()
 var depth_settings := false
+## The settings popup's 2D to 3D group, collapsed whenever the popup opens (like the player's).
+const DEPTH_GROUP := 986040
+var depth_expanded := false
 var picture_settings := false
 var depth_choices := preload("res://scripts/choice_fields.gd").new(self)
 var SELECTED: Color:
@@ -580,6 +583,7 @@ func _draw() -> void:
 	sync_page_beta_visibility()
 	_clear_layout()
 	_picture_nodes.clear()
+	_hold_nodes.clear()
 	_sync_presentation()
 	_backdrop.visible = not chrome_hidden()
 	if browser and (not page_input_blocked() or on_screen()): browser.draw_window(self)
@@ -651,12 +655,15 @@ func _activate(target: int) -> void:
 		if effect_controls: effect_controls.set_strength_open(depth.enabled)
 		refresh(); return
 	if target == browser.BASE + 17:
-		depth_settings = not depth_settings; picture_settings = false; depth_choices.reset(); refresh(); effect_controls.refresh(); return
+		depth_settings = not depth_settings; picture_settings = false; depth_expanded = false; depth_choices.reset(); refresh(); effect_controls.refresh(); return
+	if target == DEPTH_GROUP:
+		depth_expanded = not depth_expanded; depth_choices.reset(); refresh(); return
 	browser.action(target)
 
 func _depth_preview(key: String, value: Variant) -> void:
 	if key == "strength": depth.strength = float(value) / 100.0
 	elif key == "position": depth.position = depth.Position.normalize(value)
+	elif key == "foreground": depth.foreground = depth.Foreground.normalize(value)
 	elif key == "web_picture_sharpness": browser.picture_preview = {"picture_sharpness": float(value) / 100.0}
 	elif key == "web_picture_denoise": browser.picture_preview = {"picture_denoise": int(value)}
 
@@ -675,43 +682,59 @@ func _depth_changed(key: String, value: Variant) -> void:
 	browser.effects_changed.emit()
 
 func _draw_depth_settings() -> void:
-	var panel := _quad(Vector2(0.98, 0.70), Vector3(0.13, 0.025, 0.028), PANEL, 30)
+	var first_node := get_child_count()
+	const PITCH := 0.11
+	var group_y := 0.20
+	var clarity_y := group_y - PITCH * (6 if depth_expanded else 1) - 0.02
+	var bottom := clarity_y - 0.13
+	var panel := _quad(Vector2(0.98, 0.375 - bottom), Vector3(0.13, (0.375 + bottom) / 2, 0.028), PANEL, 30)
 	add_child(panel); _decorations.append(panel); _pointer_panels.append(panel)
 	var title := _label(I18n.t("Settings"), Vector3(-0.30, 0.325, 0.04), 24)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; title.render_priority = 32
 	_button(browser.BASE + 17, "", Vector2(0.54, 0.325), Vector2(0.08, 0.08), true, "close")
 	_buttons.back().node.position.z = 0.04
 	_depth_overlay_priority(_buttons.back().node)
-	var rows: Array = depth.rows()
-	for index in 2:
-		var y := 0.21 - index * 0.13
-		var label := _label(I18n.t([depth.Position.TITLE, "3D rendering"][index]), Vector3(-0.30, y, 0.04), 20)
-		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.render_priority = 32
-		var first := _buttons.size()
-		depth_choices.field(null, rows[index + 1], Vector2(0.30, y), 0.48, 0.055)
-		for button in _buttons.slice(first):
-			button.node.position.z += 0.038
-			_depth_overlay_priority(button.node)
-	var auto_title := _label(I18n.t("3D when menus hide"), Vector3(-0.30, -0.05, 0.04), 20)
-	auto_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; auto_title.render_priority = 32
-	var auto_first := _buttons.size()
-	depth_choices.field(null, {"key":"auto_3d_hidden", "value":depth.auto_3d_hidden, "switch":true,
-		"choices":[{"value":false,"label":"Off"},{"value":true,"label":"On"}],
-		"hint":"Automatically enable 2D to 3D when browser menus are hidden."}, Vector2(0.50, -0.05), 0.09, 0.055)
-	for button in _buttons.slice(auto_first):
-		button.node.position.z += 0.038; _depth_overlay_priority(button.node)
-	var clarity_title := _label(I18n.t("Page clarity"), Vector3(-0.30, -0.18, 0.04), 20)
+	# 2D to 3D: strength (also the footer rail), convergence, foreground scale, rendering and auto 3D.
+	_button(DEPTH_GROUP, "", Vector2(0.13, group_y), Vector2(0.90, 0.07))
+	var header: Dictionary = _buttons.back()
+	header.node.position.z += 0.038; _depth_overlay_priority(header.node)
+	var caption := _label(I18n.t("2D to 3D"), Vector3(-0.43, 0, 0.004), 20, header.node)
+	caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_icon("chevron_down" if depth_expanded else "next", Vector3(0.40, 0, 0.004), 0.034, MUTED, header.node)
+	_depth_overlay_priority(header.node)
+	if depth_expanded:
+		var rows: Array = depth.rows()
+		var fields := [["3D strength", rows[0]], [depth.Position.TITLE, rows[1]], [depth.Foreground.TITLE, rows[2]], ["3D rendering", rows[3]],
+			["3D when menus hide", {"key":"auto_3d_hidden", "value":depth.auto_3d_hidden, "switch":true,
+				"choices":[{"value":false,"label":"Off"},{"value":true,"label":"On"}],
+				"hint":"Automatically enable 2D to 3D when browser menus are hidden."}]]
+		for index in fields.size():
+			var y := group_y - PITCH * (index + 1)
+			var label := _label(I18n.t(fields[index][0]), Vector3(-0.30, y, 0.04), 20)
+			label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.render_priority = 32
+			var first := _buttons.size()
+			var row: Dictionary = fields[index][1]
+			if row.get("switch", false): depth_choices.field(null, row, Vector2(0.50, y), 0.09, 0.055)
+			else: depth_choices.field(null, row, Vector2(0.30, y), 0.48, 0.055)
+			for button in _buttons.slice(first):
+				button.node.position.z += 0.038
+				_depth_overlay_priority(button.node)
+	var clarity_title := _label(I18n.t("Page clarity"), Vector3(-0.30, clarity_y, 0.04), 20)
 	clarity_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; clarity_title.render_priority = 32
 	var clarity_first := _buttons.size()
 	depth_choices.field(null, {"key": "web_clarity", "value": browser.clarity, "choices": [
 		{"value": "low", "label": "Low", "hint": "Smoother pages"}, {"value": "medium", "label": "Medium"},
-		{"value": "high", "label": "High", "hint": "Sharper text"}]}, Vector2(0.30, -0.18), 0.48, 0.055)
+		{"value": "high", "label": "High", "hint": "Sharper text"}]}, Vector2(0.30, clarity_y), 0.48, 0.055)
 	for button in _buttons.slice(clarity_first):
 		button.node.position.z += 0.038; _depth_overlay_priority(button.node)
 	if browser.clarity_pending():
-		var pending := _label(I18n.t("Restart to apply"), Vector3(0.30, -0.26, 0.04), 16)
+		var pending := _label(I18n.t("Restart to apply"), Vector3(0.30, clarity_y - 0.08, 0.04), 16)
 		pending.modulate = MUTED; pending.render_priority = 32
 	_finish_choice_popups()
+	for index in range(first_node, get_child_count()):
+		var node := get_child(index) as Node3D
+		if node: _hold_nodes.append(node)
+	_sync_picture_hold()
 
 ## Picture quality mode for the page (footer's right end): its switch on a row of its own, then the
 ## player's own sharpness and denoise. No super resolution: Gecko's density needs a restart.
@@ -749,19 +772,26 @@ func _draw_picture_settings() -> void:
 	for index in range(first_node, get_child_count()):
 		var node := get_child(index) as Node3D
 		if node: _picture_nodes.append(node)
+	_hold_nodes.assign(_picture_nodes)
 	_sync_picture_hold()
 
 ## Holding a picture control clears the menu off the page, as the player's menu does: the sharpness
 ## slider while it is dragged (the page follows it), an option or the switch once held (it applies
-## then). Only the held row stays; letting go brings the menu back.
+## then). Only the held row stays; letting go brings the menu back. The settings popup's 3D sliders
+## clear it the same way, and the footer's strength rail clears the open popup (effect controls).
 const PICTURE_HOLD_MS := 250
 const PICTURE_HOLD_KEYS := ["web_picture_quality", "web_picture_sharpness", "web_picture_denoise"]
+const DEPTH_HOLD_KEYS := ["strength", "position", "foreground"]
 var _picture_nodes: Array[Node3D] = []
+## The open popup's nodes (picture or settings), which a hold clears.
+var _hold_nodes: Array[Node3D] = []
 var _picture_hold := {}
 func _sync_picture_hold() -> void:
+	if effect_controls and effect_controls.rail_holding(): return # the rail's hold owns the popup
 	var capture: Dictionary = depth_choices.capture
 	var item: Dictionary = capture.get("item", {})
-	if not picture_settings or capture.is_empty() or str(item.get("key", "")) not in PICTURE_HOLD_KEYS:
+	var keys: Array = PICTURE_HOLD_KEYS if picture_settings else DEPTH_HOLD_KEYS if depth_settings else []
+	if capture.is_empty() or str(item.get("key", "")) not in keys:
 		_picture_hold.clear(); _show_picture_menu([]); return
 	if _picture_hold.get("hand") != capture.hand or _picture_hold.get("target") != capture.target:
 		_picture_hold = {"hand": capture.hand, "target": capture.target, "since": Time.get_ticks_msec()}
@@ -777,7 +807,7 @@ func _sync_picture_hold() -> void:
 		if depth_choices.targets.get(int(button.target), {}).get("key", "") == item.key: keep.append(button.node)
 	_show_picture_menu(keep)
 func _show_picture_menu(keep: Array) -> void:
-	for node in _picture_nodes:
+	for node in _hold_nodes:
 		if is_instance_valid(node): node.visible = keep.is_empty() or keep.has(node)
 
 ## Open choice lists over the settings or picture popup's own fields.

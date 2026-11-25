@@ -31,7 +31,28 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
         fun cancel() { cancelled.set(true); process?.destroyForcibly(); probe?.close() }
         fun check() { check(!cancelled.get() && !Thread.currentThread().isInterrupted) { "Extraction cancelled" } }
     }
-    private class ExtractionFailure(val code: String) : Exception()
+    private class ExtractionFailure(val code: String, val capture: JSONObject? = null) : Exception()
+
+    /** Summarize only the request candidates already bound to this media snapshot. */
+    private fun unavailableCapture(step: String, media: JSONObject): ExtractionFailure {
+        val source = media.optString("source")
+        val kind = when {
+            media.optBoolean("blob") -> "blob"
+            WebBrowserNetworkMedia.address(source) != null -> "http"
+            else -> "none"
+        }
+        val summary = JSONObject().put("step", step).put("source_kind", kind)
+            .put("file", 0).put("hls", 0).put("dash", 0)
+        var sourceMatches = 0
+        val requests = WebBrowserNetworkMedia.candidates(media)
+        for (i in 0 until requests.length()) {
+            val request = requests.getJSONObject(i)
+            val type = request.getString("kind")
+            if (type in setOf("file", "hls", "dash")) summary.put(type, summary.getInt(type) + 1)
+            if (source == request.getString("url") || source == request.getString("original_url")) sourceMatches++
+        }
+        return ExtractionFailure("browser_playback_required", summary.put("source_matches", sourceMatches))
+    }
 
     companion object {
         internal fun failureCode(error: Exception, stage: String): String {
@@ -99,7 +120,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     attempt.stage = "browser_capture"
                     if (selection.isEmpty() || media == null || media.optString("capture_identity") != selection)
                         throw ExtractionFailure("browser_page_changed")
-                    val descriptor = WebVideoDirectFile.descriptor(url, media) ?: throw ExtractionFailure("browser_playback_required")
+                    val descriptor = WebVideoDirectFile.descriptor(url, media) ?: throw unavailableCapture("file_descriptor", media)
                     val latest = currentMedia() ?: throw ExtractionFailure("browser_page_changed")
                     if (latest.optString("capture_identity") != selection ||
                         WebBrowserDirectFile.resource(latest)?.optString("url") != descriptor.video.url.toString())
@@ -180,6 +201,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                         readBrowserResource(uri, headers, false, attempt, deadline)
                     }
                 } else null
+                var networkFormatsFound = false
                 val (info, initial) = if (bilibiliEnabled) {
                     val captured = WebVideoBilibiliCapture.formats(page, media)
                         ?: throw ExtractionFailure(WebVideoBilibiliCapture.unavailableReason(media))
@@ -216,7 +238,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     else if(niconicoEnabled) WebVideoNiconicoCapture.resolve(page,media,network)
                     else if (youkuEnabled) WebVideoYoukuCapture.resolve(page,media,network)
                     else if (iqiyiEnabled) WebVideoIqiyiCapture.resolve(page,media,network)
-                    else if (networkEnabled) network.resolve(page, media)
+                    else if (networkEnabled) network.resolve(page, media).also { networkFormatsFound = it != null }
                     else legacy?.takeIf { page.site in setOf("weibo", "tiktok", "instagram", "facebook", "twitter", "reddit") || !media?.optString("layout").isNullOrEmpty() }
                 }, {
                     attempt.check()
@@ -225,6 +247,8 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     if (browserQuality || publicPage == null) {
                         if (douyinEnabled && network.inspectedFiles > 0 && network.videoFiles > 0 && network.audioFiles == 0)
                             throw ExtractionFailure("browser_audio_missing")
+                        if (page.site == "browser" && media != null)
+                            throw unavailableCapture(if (networkFormatsFound) "format_selection" else "network_capture", media)
                         throw ExtractionFailure("browser_playback_required")
                     }
                     route = "extractor"
@@ -239,8 +263,10 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                 }, capabilities, attempt::check, preserveTransportFailure = streamableEnabled, legacyFallback = {
                     if (browserQuality) null else legacy?.also { route = "browser_direct" }
                 })
-                if (browserQuality && !WebVideoNetworkCapture.keepsQuality(initial.video, media))
+                if (browserQuality && !WebVideoNetworkCapture.keepsQuality(initial.video, media)) {
+                    if (page.site == "browser") throw unavailableCapture("quality", media)
                     throw ExtractionFailure("browser_playback_required")
+                }
                 if (pgc && kotlin.math.abs(initial.durationSeconds - media!!.getDouble("duration")) > maxOf(2.0, initial.durationSeconds * .01))
                     throw ExtractionFailure("browser_playback_required")
                 var selected = initial
@@ -349,6 +375,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                         state = JSONObject().put("id", id).put("state", "error")
                             .put("error", "Video extraction failed. Try the web page or another video.")
                             .put("error_code", code).put("stage", attempt.stage)
+                        (error as? ExtractionFailure)?.capture?.let { state.put("capture", it) }
                     }
                 }
             } finally { attempt.process?.destroyForcibly(); attempt.process = null }

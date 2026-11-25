@@ -89,7 +89,11 @@ static func message(report: Dictionary) -> String:
 	var video := _video_text(report)
 	if reason == "resolution_unsupported" and not video.is_empty():
 		return I18n.t("Video %s is larger than the player supports (up to %s).") % [video, PLAYER_LIMIT]
-	if reason == "decoder_capacity_exceeded" and not video.is_empty():
+	# The report keeps an observed output error when only the frame rate exceeds the advertised
+	# limit; the user is still told the limit, since reopening the same video cannot help.
+	var decoder_info = report.get("decoder", {})
+	var over_limit: bool = decoder_info is Dictionary and decoder_info.get("exceeded", false) == true 		and reason in ["output_timeout", "video_output_failed"]
+	if (reason == "decoder_capacity_exceeded" or over_limit) and not video.is_empty():
 		var limit := _limit_text(report.get("decoder", {}))
 		if limit.is_empty(): return I18n.t("This device has no hardware decoder for video %s.") % video
 		return I18n.t("Video %s exceeds this device's hardware decoding (up to %s).") % [video, limit]
@@ -117,12 +121,16 @@ static func clean(report: Dictionary) -> Dictionary:
 		if report.has(key): result[key] = safe_detail(str(report[key]))
 	for key in ["http_status", "mpv_code", "session_id", "logical_session_id", "generation"]:
 		if report.has(key): result[key] = int(report[key])
-	for key in ["video", "decoder", "media_server"]:
+	for key in ["video", "decoder", "media_server", "cloud", "output_wait"]:
 		var section = report.get(key)
 		if not section is Dictionary: continue
 		var kept := {}
 		for field in section:
 			var value = section[field]
+			if key == "output_wait":
+				if field == "paused_for_cache" and value is bool: kept[field] = value
+				elif field in ["cache_seconds", "cache_bytes_per_second"] and (value is int or value is float): kept[field] = value
+				continue
 			if value is bool or value is int or value is float: kept[str(field)] = value
 			elif value is String: kept[str(field)] = safe_detail(value).left(64)
 		result[key] = kept
@@ -138,7 +146,7 @@ static func clean_source_diagnostic(report: Dictionary, session_id: int) -> Dict
 			var kept := {}
 			for field in value:
 				var inner = value[field]
-				if inner is Array and str(field) == "recent_modules":
+				if inner is Array and str(field) in ["recent_modules", "core_recent_modules"]:
 					kept[field] = inner.slice(0, 8).filter(func(m): return m is String).map(func(m): return safe_detail(m).left(24))
 				elif _scalar(inner) != null: kept[str(field)] = _scalar(inner)
 			result[str(key)] = kept

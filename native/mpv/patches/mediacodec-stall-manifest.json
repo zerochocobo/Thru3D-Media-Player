@@ -1,0 +1,17 @@
+{
+  "purpose": "Bound the MediaCodec feed loop so a decoder returning no frame cannot freeze the MPV core",
+  "priority_patch_sha256": "df1b36c3dcdf97ce273f0ef13adffe3d565c99ce8f94334acb1533f6b271ee11",
+  "base_files_sha256": {
+    "libavcodec/mediacodecdec.c": "9694eccdaa9ae8a07f6c86fc20168c99e1b1ecd102255c1f8e5823a11919dfa9"
+  },
+  "patched_files_sha256": {
+    "libavcodec/mediacodecdec.c": "3cde45e5ca91bc4e6c4e781bcb754b704143c615c24524baca32d78636cbd79b"
+  },
+  "patch_sha256": "bcaad46528971fb17d84ec08cc6fb18a56ca3b646c59873a7143e8f0c5706a63",
+  "inputs_sha256": {
+    "tools/environment/mpv-linux/create_mediacodec_stall_patch.py": "839e9899ffe69a616318e9596bcf17155531105dbadb19aba010707cc67e38d2"
+  },
+  "reference_inputs_sha256": {
+    "tools/environment/mpv-linux/create_mediacodec_stall_patch.py": "51798f5250bca3df731afdf383d8ebbfd7ec7cef13971d170db72b51a7bf9a6e"
+  }
+}

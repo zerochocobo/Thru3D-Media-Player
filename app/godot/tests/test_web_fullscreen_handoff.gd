@@ -94,7 +94,8 @@ func run() -> void:
 		"Explicit Beta still pauses before resolving while the website is fullscreen")
 	platform.browser.playing = false; platform.browser.videos[0].playing = false; poll()
 	check(platform.beta_requests == 1 and menu.web_video.pending > 0, "Only the clicked Beta starts its native resolver")
-	menu.web_browser._cancel_handoff(); platform.browser.bilibili_beta_available = false
+	check_transfer_failure("beta")
+	platform.browser.bilibili_beta_available = false
 	var main := ProbeMain.new(); var video := ReturnVideo.new()
 	main.recent_menu = menu; main.video = video
 	await manual_return_checks(main, video)
@@ -127,6 +128,25 @@ func direct_file_checks() -> void:
 	platform.browser.videos[0].selection = "doc:video:2"; poll()
 	check(not menu.web_browser.handoff, "Changed source cancels the pending direct open")
 	platform.browser.erase("direct_selection")
+	for direct in [true, false]:
+		menu.visible = true; menu.section = Menu.Section.WEB
+		platform.browser.merge({"url": "https://115vod.com/", "active": true, "playing": false, "pause_confirmed": true,
+			"direct_selection": "fixture" if direct else "", "videos": [{"id": "1", "selection": "fixture" if direct else "",
+			"network_media": true, "direct_ready": direct}]}, true)
+		menu.web_browser.open(platform.browser.url); poll()
+		menu.web_browser.action(menu.web_browser.BASE + 6); poll()
+		if direct: check_transfer_failure("captured_file", {"step": "file_descriptor", "source_kind": "http", "file": 1})
+		else: check_transfer_failure("legacy", {"step": "network_capture", "source_kind": "blob", "hls": 1})
+
+func check_transfer_failure(entry: String, capture: Dictionary = {}) -> void:
+	check(menu.web_video.pending > 0, "A resolver request is pending for " + entry)
+	platform.web_state = {"id": menu.web_video.pending, "state": "error", "error_code": "browser_playback_required"}
+	if not capture.is_empty(): platform.web_state.capture = capture
+	menu.web_video.next_poll = 0; menu.web_video.tick(); poll()
+	var report: Dictionary = menu.web_browser.handoff_error.get("report", {})
+	var expected: Dictionary = JSON.parse_string(JSON.stringify(capture))
+	check(report.get("entry") == entry and report.get("capture", {}) == expected and not report.get("waiting_pause", true),
+		"The failure report keeps the resolver entry and request summary for %s: %s" % [entry, report])
 
 func server_play_checks() -> void:
 	var origins := ["http://192.168.1.20:8096/web/index.html#!/videoosd", "http://192.168.1.20:8096/jellyfin/web/#/video",

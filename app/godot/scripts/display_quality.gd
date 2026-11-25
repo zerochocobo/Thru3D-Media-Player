@@ -115,10 +115,11 @@ static func load_output_choice(settings: ConfigFile) -> int:
 	return value if value == AUTO_OUTPUT or value in [0, 5760, 4096] else AUTO_OUTPUT
 
 ## low_end: an XR2 Gen1 class GPU or the memory saver. QIYU has no compositor video layer, so every
-## video is shader-drawn and the 4096 cap halved 8K (user, 2026-11-20: hair blurred next to MoonVR).
+## video is shader-drawn: Auto keeps it at 4096 for frame rate and 5760 or the source width stay a choice
+## (user, 2026-11-25; 8K in the eye buffer ran 18-31 FPS on A091).
 static func output_width(choice: int, low_end: bool, qiyu: bool = false) -> int:
 	if choice != AUTO_OUTPUT: return choice
-	return LOW_END_OUTPUT_WIDTH if low_end and not qiyu else 0
+	return LOW_END_OUTPUT_WIDTH if low_end or qiyu else 0
 
 ## Memory: the saver holds AI passthrough's waiting frames as compact copies instead of decoded
 ## frames, keeps a smaller network cache with AI and caps Auto output at 4096. Quest 3, 8K 10 bit:

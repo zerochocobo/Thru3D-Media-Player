@@ -103,3 +103,7 @@ Picture Quality Mode is off by default and applies sharpening/denoising immediat
 ## 0.18.9 display fixes
 
 Webpage 2D-to-3D retains stereo output while a new page frame and depth upload are coordinated. The Douyin webpage purple-video fix restores the original video display in the affected WebGL page path; the release record names Quest 3 verification and does not establish all-device or all-format acceptance. Flat frame edges is an optional video/page control, off by default.
+
+## 0.18.10 browser and external playback
+
+Douyin uses the original video audio path to avoid affected page loudness processing. The pinned YouTube extractor is updated; signed-in extraction still needs headset verification. OpenXR account web login retains the app keyboard when focus changes. Explicit failure logs may include a sanitized public page address/media IDs; public-source remote upload remains disabled and local export/Wi-Fi sharing remain available. Android app shares can open a single compatible video, with range-reading compatibility for affected NAS sources.

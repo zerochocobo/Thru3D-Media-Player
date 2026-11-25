@@ -185,6 +185,14 @@
     ]
   },
   {
+    "id": "anime4k",
+    "name": "Anime4K (picture quality plugin)",
+    "license": "MIT",
+    "assets": [
+      "player-licenses/anime4k.txt"
+    ]
+  },
+  {
     "id": "mrtk3",
     "name": "Mixed Reality Toolkit 3 (hand pinch and ray algorithms)",
     "license": "BSD-3-Clause",

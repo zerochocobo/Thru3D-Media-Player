@@ -7,6 +7,7 @@ import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import org.json.JSONObject
 import java.net.URI
 import org.vrpassthroughplayer.plugin.MediaServerClientTest.Fixture
 import org.vrpassthroughplayer.plugin.MediaServerClientTest.Reply
@@ -86,6 +87,63 @@ class ExternalPlaybackRequestTest {
         }
         assertEquals("TestPlayer", redirected.get()["user-agent"])
         assertFalse(redirectedPath.get().contains("api_key"))
+    }
+
+    @Test fun externalNasOpensAndSeeksWithCallerHeadersAndTheOriginalSignedTarget() {
+        val bytes = ByteArray(4096) { (it % 251).toByte() }
+        val target = "/play/%E7%89%87%20%E5%90%8D?sign=a%2Bb%2Fc%3D&part=1&part=2"
+        Fixture { line, headers, _ ->
+            val allowed = line.split(' ')[1] == target && headers["cookie"] == "session=fixture-secret"
+            val range = LocalStreamServer.parseRange(headers["range"], bytes.size.toLong())
+            if (!allowed) Reply(403, body = byteArrayOf())
+            else if (range == null) Reply(416, body = byteArrayOf())
+            else Reply(206, "Content-Range: bytes ${range.first}-${range.second}/${bytes.size}\r\n",
+                bytes.copyOfRange(range.first.toInt(), range.second.toInt() + 1))
+        }.use { origin -> LocalStreamServer().use { local -> ExternalPlaybackStreams { local }.use { streams ->
+            fun deliver(pairs: List<Pair<String, String>>): JSONObject {
+                val headers = ExternalPlaybackContract.headers(pairs)
+                val request = ExternalPlaybackRequest.parse(view, origin.url + target, mime = "video/mp4", headers = headers.accepted)
+                return JSONObject(streams.receive(request, 0))
+            }
+            val denied = deliver(emptyList())
+            val failure = assertThrows(MediaServerFailure::class.java) { streams.playable(denied.getString("uri")) }
+            assertEquals(403, failure.httpStatus)
+            val delivery = deliver(listOf("Cookie" to "session=fixture-secret"))
+            assertEquals("http", delivery.getString("source_scheme"))
+            assertEquals("VIEW", delivery.getString("action"))
+            assertFalse(delivery.toString().contains("fixture-secret"))
+            assertFalse(delivery.toString().contains("sign="))
+            val url = java.net.URL(streams.playable(delivery.getString("uri"))!!)
+            for (start in listOf(0, 3072, 128)) {
+                val connection = url.openConnection() as java.net.HttpURLConnection
+                connection.setRequestProperty("Range", "bytes=$start-${start + 31}")
+                try {
+                    assertEquals(206, connection.responseCode)
+                    assertArrayEquals(bytes.copyOfRange(start, start + 32), connection.inputStream.use { it.readBytes() })
+                } finally { connection.disconnect() }
+            }
+        } } }
+    }
+
+    @Test fun sharedVideoKeepsItsContentGrantTargetBehindATemporaryHandle() {
+        val send = android.content.Intent.ACTION_SEND
+        val locator = "content://com.ugreen.pro.fileprovider_ydc/cache/test%20video.mp4"
+        for (mime in listOf("video/*", "video/mp4")) {
+            val request = ExternalPlaybackRequest.parse(send, locator, mime = mime)
+            ExternalPlaybackStreams { error("A shared document must use its provider") }.use { streams ->
+                val delivery = JSONObject(streams.receive(request, 0))
+                assertEquals("SEND", delivery.getString("action"))
+                assertEquals("content", delivery.getString("source_scheme"))
+                assertTrue(delivery.getBoolean("temporary"))
+                assertFalse(delivery.toString().contains("fileprovider"))
+                assertEquals(locator, streams.playable(delivery.getString("uri")))
+            }
+        }
+        for ((uri, mime) in listOf(locator to "text/plain", locator to null, "https://example.org/" to "video/mp4",
+                "file:///private/video.mp4" to "video/mp4", null to "video/*")) {
+            assertThrows(IllegalArgumentException::class.java) { ExternalPlaybackRequest.parse(send, uri, mime = mime) }
+        }
+        assertThrows(IllegalArgumentException::class.java) { ExternalPlaybackRequest.parse(android.content.Intent.ACTION_SEND_MULTIPLE, locator, mime = "video/*") }
     }
 
     @Test fun privateFilesAreRejectedAfterDecodingAndCanonicalizationButNeighborsAreNot() {

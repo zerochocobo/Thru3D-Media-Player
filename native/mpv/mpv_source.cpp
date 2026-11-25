@@ -127,6 +127,11 @@ void set_decoder_rate(mpv_handle* core) {
     char reject[PROP_VALUE_MAX] = {};
     if (__system_property_get("debug.vrpp.mpv.reject_hints", reject) > 0 && reject[0] == '1') setenv("THRU3D_MEDIACODEC_REJECT_HINTS", "1", 1);
     else unsetenv("THRU3D_MEDIACODEC_REJECT_HINTS");
+    // FFmpeg patch 0009 then never takes an output buffer: the decoder fills up without a frame,
+    // exercising the feed-stall bound and MPV's fallback.
+    char stall[PROP_VALUE_MAX] = {};
+    if (__system_property_get("debug.vrpp.mpv.emulate_decoder_stall", stall) > 0 && stall[0] == '1') setenv("THRU3D_MEDIACODEC_EMULATE_STALL", "1", 1);
+    else unsetenv("THRU3D_MEDIACODEC_EMULATE_STALL");
 #endif
     if (rate > 0) options += ",operating_rate=" + std::to_string(rate);
     mpv_set_property_string(core, "file-local-options/vd-lavc-o", options.c_str());
@@ -174,7 +179,7 @@ bool extension_available() {
     auto version = reinterpret_cast<uint32_t (*)()>(dlsym(RTLD_DEFAULT, "mpv_quest_source_frame_api_version"));
     return version && version() == QUEST_MPV_SOURCE_FRAME_API_VERSION;
 }
-enum class Phase { free, rendering, ready, acquired, retiring };
+using Phase = quest::SourceSlotPhase;
 struct Slot {
     GLuint color = 0, fbo = 0;
     GLsync fence = nullptr;
@@ -193,6 +198,11 @@ struct Slot {
 void drop_image(Slot& slot) {
     if (slot.image) AImage_delete(slot.image);
     slot.image = nullptr; slot.buffer = nullptr; slot.buffer_width = slot.buffer_height = 0;
+}
+bool slot_fence_complete(const Slot& slot) {
+    const auto result = glClientWaitSync(slot.fence, 0, 0);
+    require(result != GL_WAIT_FAILED, "MPV source slot fence poll failed");
+    return result == GL_ALREADY_SIGNALED || result == GL_CONDITION_SATISFIED;
 }
 
 // MPV ordinary APIs belong exclusively to control_thread. Render APIs and all
@@ -233,6 +243,8 @@ struct Source final {
     std::atomic<uint64_t> dimensions{0}, last_epoch{0}, epoch_floor{0};
     std::atomic<int> source_rotation{0}; // output-frame rotation; RGBA bakes it once, decoder images do not
     std::atomic<uint64_t> rendered{0}, skipped{0}, published{0}, acquired{0}, released{0};
+    std::atomic<uint64_t> superseded_decoder_images{0}, decoder_recycle_waits{0};
+    std::atomic<uint64_t> producer_render_us{0}, producer_slow_renders{0}; // frame renders on the producer thread
     std::atomic<uint64_t> seeks_started{0}, seeks_completed{0}, invalid_frames{0};
     std::atomic<uint64_t> listening_cache_refreshes{0};
     // The last rejected ticket, so a source that never publishes can be diagnosed.
@@ -253,6 +265,13 @@ struct Source final {
     // MediaCodec decoders that opened with Profile 5 RPU parsing (one per decoder init).
     std::atomic<int> dolby_rpu_decoders{0};
     quest::LogModuleTrail log_modules;
+    // A second client reads the core's log on its own thread: when the control thread is stuck in a
+    // libmpv call, this still shows the module the core thread stopped in (names and milestones only).
+    quest::LogModuleTrail core_log;
+    quest::ControlCall control_call;
+    mpv_handle* watch = nullptr;
+    std::thread watch_thread;
+    std::atomic<bool> watch_stop{false};
     // Once HDR is observed, keep MPV's full color pass for this source session.
     // This also covers HDR10, HLG and the HDR-compatible base of Dolby Profile 8.
     std::atomic<bool> hdr_source{false};
@@ -768,6 +787,7 @@ struct Source final {
     }
     void control() noexcept {
         mpv_handle* core = nullptr;
+        control_call.enter("setup", startup_us());
         try {
             core = mpv_create(); require(core != nullptr, "MPV source create failed");
             auto option = [&](const char* key, const char* value) { checked(mpv_set_option_string(core, key, value), key); };
@@ -900,6 +920,18 @@ struct Source final {
 #endif
             checked(mpv_request_log_messages(core, "debug"), "MPV source log subscription");
             checked(mpv_initialize(core), "MPV source initialize");
+            watch = mpv_create_client(core, "thru3d_watch");
+            if (watch && mpv_request_log_messages(watch, "v") >= 0) {
+                watch_thread = std::thread([this] {
+                    while (!watch_stop.load()) {
+                        const auto* event = mpv_wait_event(watch, 0.25);
+                        if (event->event_id == MPV_EVENT_SHUTDOWN) break;
+                        if (event->event_id != MPV_EVENT_LOG_MESSAGE) continue;
+                        const auto* log = static_cast<const mpv_event_log_message*>(event->data);
+                        core_log.observe(log->prefix, log->text, startup_us());
+                    }
+                });
+            }
             checked(mpv_hook_add(core, kDecoderRateHook, "on_preloaded", 0), "MPV decoder rate hook");
             capture_owner.store(quest::live::source_open(core));
             auto pgs_api = reinterpret_cast<uint32_t (*)()>(dlsym(RTLD_DEFAULT, "mpv_quest_pgs_api_version"));
@@ -944,6 +976,7 @@ struct Source final {
                 return mpv_command(core, command.data());
             });
             while (!closing.load() && !render_failed.load()) {
+                control_call.enter("commands", startup_us());
                 configure_color_conversion(core);
                 bool set_play = false, play = false, set_audio = false, muted = false, set_subtitle = false, seek_exact = true, set_speed = false;
                 double speed = 1.0, subtitle_delay = 0.0;
@@ -1124,11 +1157,13 @@ struct Source final {
                     debug_steps_applied.fetch_add(1);
                 }
 #endif
+                control_call.enter("wait_event", startup_us());
                 auto* event = mpv_wait_event(core, 0.01);
+                control_call.enter("event", startup_us());
                 require(event != nullptr, "MPV source event unavailable");
                 if (event->event_id == MPV_EVENT_LOG_MESSAGE) {
                     const auto* log = static_cast<const mpv_event_log_message*>(event->data);
-                    log_modules.observe(log->prefix, startup_us());
+                    log_modules.observe(log->prefix, log->text, startup_us());
                     if (!playback_privacy.load()) __android_log_print(ANDROID_LOG_INFO, "QuestMpvSource", "[%s] %s", log->prefix, log->text);
                     if (loaded && audio && !network_interleave_compat && !interleave_suspect.load() &&
                         (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0) &&
@@ -1148,6 +1183,11 @@ struct Source final {
                         software_decoder = true;
                     if (std::string_view(log->text).rfind("Thru3D Profile 5 RPU enabled", 0) == 0)
                         dolby_rpu_decoders.fetch_add(1);
+                    // FFmpeg patch 0009 gave up on a decoder holding every input without a frame. Fixed
+                    // text, logged even under playback privacy, so exported logs show the bound fired.
+                    if (std::string_view(log->prefix) == "ffmpeg/video" &&
+                        std::string_view(log->text).find("giving up on this decoder") != std::string_view::npos)
+                        __android_log_print(ANDROID_LOG_WARN, "QuestMpvSource", "MediaCodec feed stalled; MPV moves to the next decoder");
                     if (quest::layer_video_chain_failed(layer(), software_layer, log->log_level <= MPV_LOG_LEVEL_ERROR,
                                                        log->prefix, log->text)) {
                         software_fallback.store(true);
@@ -1159,12 +1199,14 @@ struct Source final {
                         source_failure = quest::playback_log_failure(log->prefix, log->text);
                     }
                 } else if (event->event_id == MPV_EVENT_HOOK && event->reply_userdata == kDecoderRateHook) {
+                    control_call.enter("decoder_rate_hook", startup_us());
                     // The file is open and its decoders do not exist yet.
                     set_decoder_rate(core);
                     mpv_hook_continue(core, static_cast<const mpv_event_hook*>(event->data)->id);
                 } else if (event->event_id == MPV_EVENT_PROPERTY_CHANGE && event->reply_userdata >= 41 && event->reply_userdata <= 44) {
                     next_snapshot = std::chrono::steady_clock::now();
                 } else if (event->event_id == MPV_EVENT_FILE_LOADED) {
+                    control_call.enter("file_loaded", startup_us());
                     source_failure = {}; // Opening recovered; ignore later sidecar warnings.
                     if (!loaded && (iso_input || (software_layer && !live_mirror))) {
                         // The main demuxer has copied these options. Later lavf
@@ -1287,10 +1329,12 @@ struct Source final {
                 if (layer() && loaded && !awaiting_seek_event &&
                     std::chrono::steady_clock::now() - layer_published_at >= std::chrono::milliseconds(200)) {
                     double position = 0;
+                    control_call.enter("layer_position", startup_us());
                     if (mpv_get_property(core, "time-pos", MPV_FORMAT_DOUBLE, &position) >= 0 && std::isfinite(position) &&
                         std::abs(position - layer_published_position) >= 0.001) publish_layer(core, false);
                 }
                 if (std::chrono::steady_clock::now() >= next_snapshot) {
+                    control_call.enter("snapshot", startup_us());
                     if (loaded && dimensions.load() == 0) {
                         if (layer() && !software_layer && !software_fallback.load() && property(core, "hwdec-current") == "no")
                             software_fallback.store(true);
@@ -1316,6 +1360,12 @@ struct Source final {
             set_state("failed", failure.what(), 0, diagnosis.reason, diagnosis.stage);
         }
         note_close_requested(); closing.store(true); wake.notify_all();
+        control_call.enter("closing", startup_us());
+        // The watch client must go before the core: termination waits for every client.
+        watch_stop.store(true);
+        if (watch) mpv_wakeup(watch);
+        if (watch_thread.joinable()) watch_thread.join();
+        if (watch) { mpv_destroy(watch); watch = nullptr; }
         // Rendering disposes its context before this ordinary API destroys the core.
         close_stage.store("render_join");
         if (render_thread.joinable()) render_thread.join();
@@ -1340,18 +1390,37 @@ struct Source final {
                 "MPV shared RGBA8 slot allocation failed");
     }
     void poll_retirements() {
-        for (auto& slot : slots) if (slot.phase == Phase::retiring) {
-            const auto result = glClientWaitSync(slot.fence, 0, 0);
-            require(result != GL_WAIT_FAILED, "MPV consumer retirement fence failed");
-            if (result == GL_ALREADY_SIGNALED || result == GL_CONDITION_SATISFIED) {
-                glDeleteSync(slot.fence); slot.fence = nullptr; slot.phase = Phase::free;
-                drop_image(slot); // the consumer's last GPU read of the decoder image completed
-            }
+        for (auto& slot : slots) if (slot.phase == Phase::retiring && slot_fence_complete(slot)) {
+            glDeleteSync(slot.fence); slot.fence = nullptr; slot.phase = Phase::free;
+            drop_image(slot); // the producer or last consumer has finished reading the image
         }
     }
-    bool consumer_holds() {
+    bool outstanding_leases() {
         for (auto& slot : slots) if (slot.phase == Phase::acquired || slot.phase == Phase::retiring) return true;
         return false;
+    }
+    // Called on the sole producer. If its previous read of a decoder image is still in
+    // flight, leave the ready slot claimable and retry without holding the XR thread's lock.
+    Slot* reserve_render_slot() {
+        bool waiting = false;
+        while (!closing.load() && !seek_in_progress.load()) {
+            {
+                std::lock_guard<std::mutex> lock(frames_mutex);
+                const bool retry = waiting;
+                if (retry) poll_retirements();
+                if (auto* target = quest::writable_source_slot(slots, slot_fence_complete, waiting)) {
+                    if (target->fence) { glDeleteSync(target->fence); target->fence = nullptr; }
+                    drop_image(*target);
+                    target->phase = Phase::rendering;
+                    return target;
+                }
+                if (!waiting) return nullptr;
+                if (!retry) decoder_recycle_waits.fetch_add(1);
+            }
+            std::unique_lock<std::mutex> lock(wait_mutex);
+            wake.wait_for(lock, std::chrono::milliseconds(2));
+        }
+        return nullptr;
     }
     void render(mpv_handle* core) noexcept {
         EGLContext context = EGL_NO_CONTEXT; EGLSurface surface = EGL_NO_SURFACE;
@@ -1386,7 +1455,7 @@ struct Source final {
                     std::lock_guard<std::mutex> lock(frames_mutex); poll_retirements();
                     if (!core_eof.load() || final_ticket.source_epoch < epoch_floor.load()) final_ticket = {};
                     resolve_final = core_eof.load() && final_ticket.frame_id == 0;
-                    if (closing.load() && (abandoned.load() || !consumer_holds())) break;
+                    if (closing.load() && (abandoned.load() || !outstanding_leases())) break;
                 }
                 if (render_pending.exchange(false)) needs_frame |= (mpv_render_context_update(renderer) & MPV_RENDER_UPDATE_FRAME) != 0;
                 const bool texture_redraw = force_texture_redraw.load();
@@ -1461,27 +1530,10 @@ struct Source final {
                 const int rotation = source_rotation.load();
                 const auto color_size = quest::frame_color_size(width, height, rotation, max_output_width.load());
                 int out_width = color_size.width, out_height = color_size.height;
-                Slot* target = nullptr;
-                {
-                    std::lock_guard<std::mutex> lock(frames_mutex);
-                    if (!closing.load()) {
-                        // Only unclaimed ready images can be replaced. Acquired colors
-                        // cannot be touched until the consumer-context fence completes.
-                        for (auto& slot : slots) if (slot.phase == Phase::free) { target = &slot; break; }
-                        if (!target) for (auto& slot : slots) if (slot.phase == Phase::ready && (!target || slot.token < target->token)) target = &slot;
-                        if (target) {
-                            if (target->fence) {
-                                // An unclaimed direct image is only read by MPV's own render: let it finish.
-                                if (target->image) glClientWaitSync(target->fence, GL_SYNC_FLUSH_COMMANDS_BIT, 50000000);
-                                glDeleteSync(target->fence); target->fence = nullptr;
-                            }
-                            drop_image(*target);
-                            target->phase = Phase::rendering;
-                        }
-                    }
-                }
+                Slot* target = reserve_render_slot();
                 needs_frame = false;
                 if (!target) {
+                    if (seek_in_progress.load()) { needs_frame = true; continue; }
                     if (final_render || waiting_seek_frame) {
                         // MPV may produce only one frame while it is paused for a seek.
                         needs_frame = true;
@@ -1516,7 +1568,13 @@ struct Source final {
                     {MPV_RENDER_PARAM_QUEST_SPATIAL_METADATA, &spatial},
                     {direct_render ? MPV_RENDER_PARAM_QUEST_EXPORT : MPV_RENDER_PARAM_INVALID, &exported},
                     {MPV_RENDER_PARAM_INVALID, nullptr}};
+                const int64_t render_start_us = startup_us();
                 const int render_result = mpv_render_context_render(renderer, frame);
+                const int64_t render_us = startup_us() - render_start_us;
+                // Includes the wait for the frame's target time (at most one source frame). Longer calls
+                // stall in decoder image mapping or GL submission, which caps the unique frames per second.
+                producer_render_us.fetch_add(static_cast<uint64_t>(std::max<int64_t>(0, render_us)));
+                if (render_us > 33000) producer_slow_renders.fetch_add(1);
                 mpv_render_context_report_swap(renderer);
                 if (ticket.flags & QUEST_MPV_DOVI_PROFILE5) {
                     dolby_profile5.store(true);
@@ -1609,12 +1667,17 @@ struct Source final {
         }
         render_stage.store("render_free");
         if (renderer) { mpv_render_context_set_update_callback(renderer, nullptr, nullptr); mpv_render_context_free(renderer); }
-        // Closing after failure also waits for any previously issued consumer leases.
+        // No more frames can be claimed. A normal close can interrupt a producer fence wait:
+        // return these queued decoder images only after the same fences signal.
         if (context != EGL_NO_CONTEXT && eglGetCurrentContext() == context) {
             render_stage.store("consumer_wait");
+            {
+                std::lock_guard<std::mutex> lock(frames_mutex);
+                quest::retire_superseded_decoder_images(slots, token_sequence + 1);
+            }
             while (!abandoned.load()) {
                 bool held = false;
-                try { std::lock_guard<std::mutex> lock(frames_mutex); poll_retirements(); held = consumer_holds(); }
+                try { std::lock_guard<std::mutex> lock(frames_mutex); poll_retirements(); held = outstanding_leases(); }
                 catch (...) { render_failed.store(true); break; }
                 if (!held) break;
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -1668,15 +1731,14 @@ struct Source final {
         for (auto& slot : slots) if (slot.phase == Phase::ready && slot.token > last_acquired_token &&
                                     slot.ticket.source_epoch >= epoch_floor.load() &&
                                     (slot.allow_repeat || slot.ticket.frame_id != last_acquired_id || slot.ticket.source_epoch != last_acquired_epoch)) {
-            const auto result = glClientWaitSync(slot.fence, 0, 0);
-            require(result != GL_WAIT_FAILED, "MPV shared producer fence cannot be observed by Godot");
-            if ((result == GL_ALREADY_SIGNALED || result == GL_CONDITION_SATISFIED) &&
-                (!newest || slot.token > newest->token)) newest = &slot;
+            if (slot_fence_complete(slot) && (!newest || slot.token > newest->token)) newest = &slot;
         }
         if (!newest) return "";
         glDeleteSync(newest->fence); newest->fence = nullptr;
         require(glIsTexture(newest->color), "MPV shared texture is invisible in Godot context");
         newest->phase = Phase::acquired; last_acquired_token = newest->token; acquired.fetch_add(1);
+        const auto superseded = quest::retire_superseded_decoder_images(slots, last_acquired_token);
+        if (superseded) superseded_decoder_images.fetch_add(superseded);
 #ifndef NDEBUG
         if ((last_acquired_id != newest->ticket.frame_id || last_acquired_epoch != newest->ticket.source_epoch) &&
             debug_step_active.exchange(false)) debug_step_images.fetch_add(1);
@@ -1777,8 +1839,9 @@ struct Source final {
         return "{\"stage\":" + quote(stage) + ",\"render_stage\":" + quote(layer() ? "none" : render_stage.load()) +
             ",\"closing_ms\":" + std::to_string(requested < 0 ? -1 : (startup_us() - requested) / 1000) +
             ",\"layer\":" + (layer() ? "true" : "false") + ",\"hardware\":" + (hardware ? "true" : "false") +
-            ",\"decoder\":" + quote(hardware_decoding.load() ? "hardware" : "software") +
-            log_modules.json_fields(startup_us()) + "}";
+            ",\"layer_software_fallback\":" + (software_fallback.load() ? "true" : "false") +
+            log_modules.json_fields(startup_us()) + control_call.json_fields(startup_us()) +
+            core_log.json_fields(startup_us(), "core_") + "}";
     }
     std::string status() {
         std::string snapshot, state_copy, error_copy, reason_copy, stage_copy, render_error_copy, final_copy = "null";
@@ -1801,6 +1864,10 @@ struct Source final {
             ",\"rendered\":" + std::to_string(rendered.load()) + ",\"published\":" + std::to_string(published.load()) +
             ",\"skipped\":" + std::to_string(skipped.load()) + ",\"acquired\":" + std::to_string(acquired.load()) +
             ",\"released\":" + std::to_string(released.load()) + ",\"held_slots\":" + std::to_string(held) +
+            ",\"superseded_decoder_images\":" + std::to_string(superseded_decoder_images.load()) +
+            ",\"decoder_recycle_waits\":" + std::to_string(decoder_recycle_waits.load()) +
+            ",\"producer_render_us\":" + std::to_string(producer_render_us.load()) +
+            ",\"producer_slow_renders\":" + std::to_string(producer_slow_renders.load()) +
             ",\"last_source_epoch\":" + std::to_string(last_epoch.load()) + ",\"epoch_floor\":" + std::to_string(epoch_floor.load()) +
             ",\"seeks_started\":" + std::to_string(seeks_started.load()) + ",\"seeks_completed\":" + std::to_string(seeks_completed.load()) +
             ",\"seek_mode\":" + quote(last_seek_exact.load() ? "exact" : "speed") +

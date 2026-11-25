@@ -12,7 +12,10 @@ internal object MpvSourceDiagnostics {
     private val schemes = setOf("file", "content", "usb", "smb", "dlna", "http", "https", "cloud", "medialib",
         "webvideo", "externalvideo", "airplayvideo")
     private val nativeFields = listOf("stage", "render_stage", "closing_ms", "layer", "hardware", "decoder",
-        "recent_modules", "last_log_ms")
+        "recent_modules", "last_log_ms", "mediacodec_started_ms", "decoder_observed_ms", "layer_software_fallback",
+        // The step the control thread is in, and the core's own log trail read on a separate client.
+        "control_call", "control_call_ms", "core_recent_modules", "core_last_log_ms", "core_decoder",
+        "core_decoder_observed_ms", "core_mediacodec_started_ms")
 
     fun scheme(uri: String): String = uri.substringBefore(':', "").lowercase().takeIf { it in schemes } ?: "other"
 

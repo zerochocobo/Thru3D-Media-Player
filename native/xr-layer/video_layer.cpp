@@ -35,6 +35,8 @@
 #include "layer_extensions.h"
 #include "pip_shader_sources.h"
 #include "picture_glsl.h"
+#include "layer_copy.h"
+#include "anime4k.h"
 
 namespace {
 constexpr int kMaxLayers = 16; // hard storage bound; the caller also budgets every runtime/provider layer
@@ -1200,10 +1202,13 @@ bool ensure_pass(GLuint& texture, GLuint& framebuffer, int& held_width, int& hel
 // across from one eye's picture into the other's. The rest is for the browser's page: region (x0, y0, x1,
 // y1 in each eye's UV, rows as the frame's) is the part enhanced, the rest passes through as it is;
 // keep_alpha carries the frame's alpha (a portrait cut out of the page); to_window draws to framebuffer
-// 0 (the thread's EGL surface) in place of a target texture, rows as they are.
+// 0 (the thread's EGL surface) in place of a target texture, rows as they are. networks: Anime4K in place
+// of the denoising and EASU (the target then is the size its doublings make), its result kept for
+// [frame] (-1: none) so the same frame drawn again with other sharpening or grading does not run them.
 struct EnhanceSource { GLuint texture = 0; bool external = false; int width = 0, height = 0; float scale_x = 1.0f, scale_y = 1.0f;
                        int eyes_across = 1, eyes_down = 1;
-                       float region[4] = {0.0f, 0.0f, 1.0f, 1.0f}; bool keep_alpha = false, to_window = false; };
+                       float region[4] = {0.0f, 0.0f, 1.0f, 1.0f}; bool keep_alpha = false, to_window = false;
+                       anime4k::Settings networks; long long frame = -1; };
 struct Enhance;
 extern Enhance enhance; // Godot's context: photos, fisheye, software and eye-buffer frames
 bool enhance_frame(Enhance& e, GLuint target, int width, int height, bool linear_output, const EnhanceSource& from, float sharpen,
@@ -1602,7 +1607,10 @@ namespace {
  * RCAS and grade run here, on Godot's context, over the whole of their small picture. */
 struct Enhance {
     // Programs by source: [0] a GL_TEXTURE_2D frame, [1] the decoder's external image.
-    GLuint easu[2] = {0, 0}, finish[2] = {0, 0}, denoise[2] = {0, 0};
+    GLuint easu[2] = {0, 0}, finish[2] = {0, 0}, denoise[2] = {0, 0}, import[2] = {0, 0};
+    // Anime4K's networks on this context (made the first time they run).
+    anime4k::State* networks = nullptr;
+    bool networks_refused = false;
     GLuint sampler = 0, enlarged = 0, framebuffer = 0;
     int width = 0, height = 0;
     GLuint denoised = 0, denoised_framebuffer = 0;
@@ -1615,8 +1623,8 @@ Enhance enhance;
 bool ensure_enhance_programs(Enhance& e, bool external) {
     const int k = external ? 1 : 0;
     if (e.easu[k] && glIsProgram(e.easu[k]) && e.finish[k] && glIsProgram(e.finish[k])
-        && e.denoise[k] && glIsProgram(e.denoise[k])) return true;
-    e.easu[k] = e.finish[k] = e.denoise[k] = 0;
+        && e.denoise[k] && glIsProgram(e.denoise[k]) && e.import[k] && glIsProgram(e.import[k])) return true;
+    e.easu[k] = e.finish[k] = e.denoise[k] = e.import[k] = 0;
     // Rows as glCopyImageSubData lays them: the texture's row r lands on the image's row r.
     static const char* vertex = "#version 300 es\n"
         "out vec2 uv;\n"
@@ -1663,6 +1671,9 @@ bool ensure_enhance_programs(Enhance& e, bool external) {
         "vec3 near(vec2 offset) { return encoded(texture(frame, eye_clamp(uv + offset * step, margin) * frame_scale).rgb); }\n"
         DENOISE_GLSL
         "void main() { result = vec4(inside() ? denoised(tolerance) : near(vec2(0.0)), alpha()); }\n";
+    // The frame as Anime4K's networks read it: display-encoded, at its own size.
+    const std::string import = head +
+        "void main() { result = vec4(encoded(texture(frame, uv * frame_scale).rgb), 1.0); }\n";
     const auto link = [&](const std::string& fragment) -> GLuint {
         const GLuint vs = compile(GL_VERTEX_SHADER, vertex), fs = compile(GL_FRAGMENT_SHADER, fragment.c_str());
         if (!vs || !fs) { if (vs) glDeleteShader(vs); if (fs) glDeleteShader(fs); return 0; }
@@ -1673,8 +1684,8 @@ bool ensure_enhance_programs(Enhance& e, bool external) {
         if (!ok) { log(ANDROID_LOG_WARN, "picture enhance program does not link"); glDeleteProgram(id); return 0; }
         return id;
     };
-    e.easu[k] = link(easu); e.finish[k] = link(finish); e.denoise[k] = link(denoise);
-    if (!e.easu[k] || !e.finish[k] || !e.denoise[k]) return false;
+    e.easu[k] = link(easu); e.finish[k] = link(finish); e.denoise[k] = link(denoise); e.import[k] = link(import);
+    if (!e.easu[k] || !e.finish[k] || !e.denoise[k] || !e.import[k]) return false;
     // The frame's own filtering is its owner's: a sampler object gives this draw bilinear, clamped reads.
     if (!e.sampler || !glIsSampler(e.sampler)) {
         glGenSamplers(1, &e.sampler);
@@ -1722,10 +1733,44 @@ bool enhance_frame(Enhance& e, GLuint target, int width, int height, bool linear
         glActiveTexture(GL_TEXTURE0);
         if (from.external) glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &previous_external);
         if (!ensure_enhance_programs(e, from.external) || !ensure_enhance_programs(e, false)) return false;
-        const bool enlarge = width > from.width || height > from.height;
         const float split_x = from.eyes_across == 2 ? 2.0f : 1.0f, split_y = from.eyes_down == 2 ? 2.0f : 1.0f;
+        // Anime4K's result, when its networks run: the frame the passes after it read, at its own size.
+        GLuint restored = 0;
+        int restored_width = 0, restored_height = 0;
+        if (from.networks.active() && !e.networks_refused) {
+            if (!e.networks) e.networks = anime4k::create();
+            restored = anime4k::kept(*e.networks, from.frame, from.networks, from.width, from.height, restored_width, restored_height);
+            GLuint input_framebuffer = 0;
+            if (!restored && anime4k::input(*e.networks, from.width, from.height, input_framebuffer)) {
+                const GLuint program = e.import[from.external ? 1 : 0];
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, input_framebuffer);
+                glViewport(0, 0, from.width, from.height);
+                glDisable(GL_BLEND); glDisable(GL_SCISSOR_TEST); glDisable(GL_DEPTH_TEST);
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(from.external ? GL_TEXTURE_EXTERNAL_OES : GL_TEXTURE_2D, from.texture); glBindSampler(0, e.sampler);
+                GLint import_linear = 0;
+                if (!from.external) {
+                    GLint format = 0; glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &format);
+                    import_linear = format == GL_SRGB8_ALPHA8 || format == GL_SRGB8 ? 1 : 0;
+                }
+                glUseProgram(program);
+                glUniform1i(glGetUniformLocation(program, "frame"), 0);
+                glUniform2f(glGetUniformLocation(program, "frame_scale"), from.scale_x, from.scale_y);
+                glUniform1i(glGetUniformLocation(program, "linear_source"), import_linear);
+                glBindVertexArray(0);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+                restored = anime4k::run(*e.networks, from.networks, restored_width, restored_height);
+                if (restored) anime4k::keep(*e.networks, from.frame, from.networks, from.width, from.height);
+            }
+            if (!restored && !anime4k::pending(*e.networks)) {
+                e.networks_refused = true; log(ANDROID_LOG_WARN, "Anime4K could not run on the picture layer");
+            }
+        }
+        // What the passes after the networks read: their result in place of the frame.
+        const int source_width = restored ? restored_width : from.width, source_height = restored ? restored_height : from.height;
+        const bool enlarge = width > source_width || height > source_height;
         if (enlarge && !ensure_pass(e.enlarged, e.framebuffer, e.width, e.height, width, height)) return false;
-        const bool denoise = denoise_tolerance > 0.0f;
+        const bool denoise = denoise_tolerance > 0.0f && !restored;
         if (denoise && !ensure_pass(e.denoised, e.denoised_framebuffer, e.denoised_width, e.denoised_height,
                                     from.width, from.height)) return false;
         glDisable(GL_BLEND); glDisable(GL_SCISSOR_TEST); glDisable(GL_DEPTH_TEST);
@@ -1743,6 +1788,12 @@ bool enhance_frame(Enhance& e, GLuint target, int width, int height, bool linear
         if (!from.external) {
             GLint format = 0; glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &format);
             linear_source = format == GL_SRGB8_ALPHA8 || format == GL_SRGB8 ? 1 : 0;
+        }
+        if (restored) {
+            // The networks' result holds encoded values, as the denoised frame does.
+            if (from.external) glBindTexture(GL_TEXTURE_EXTERNAL_OES, static_cast<GLuint>(previous_external));
+            glBindTexture(GL_TEXTURE_2D, restored); glBindSampler(0, 0);
+            linear_source = 0; k = 0; scale_x = scale_y = 1.0f;
         }
         if (denoise) {
             const GLuint program = e.denoise[k];
@@ -1772,7 +1823,7 @@ bool enhance_frame(Enhance& e, GLuint target, int width, int height, bool linear
             glUniform1i(glGetUniformLocation(program, "frame"), 0);
             glUniform2f(glGetUniformLocation(program, "frame_scale"), scale_x, scale_y);
             glUniform1i(glGetUniformLocation(program, "linear_source"), linear_source);
-            glUniform2f(glGetUniformLocation(program, "source"), static_cast<float>(from.width), static_cast<float>(from.height));
+            glUniform2f(glGetUniformLocation(program, "source"), static_cast<float>(source_width), static_cast<float>(source_height));
             glUniform4f(glGetUniformLocation(program, "window"), 0.5f, 0.5f, 0.0f, 0.0f);
             glUniform3f(glGetUniformLocation(program, "eyes"), 1.0f, 1.0f, 0.0f);
             glUniform2f(glGetUniformLocation(program, "split"), split_x, split_y);
@@ -1802,7 +1853,7 @@ bool enhance_frame(Enhance& e, GLuint target, int width, int height, bool linear
             glUniform1f(glGetUniformLocation(program, "amount"), sharpen < 1.0f ? (sharpen > 0.0f ? sharpen : 0.0f) : 1.0f);
             glUniform1f(glGetUniformLocation(program, "boost"), sharpen > 1.0f ? sharpen - 1.0f : 0.0f);
             glUniform2f(glGetUniformLocation(program, "split"), split_x, split_y);
-            glUniform2f(glGetUniformLocation(program, "margin"), 0.5f / (enlarge ? width : from.width), 0.5f / (enlarge ? height : from.height));
+            glUniform2f(glGetUniformLocation(program, "margin"), 0.5f / (enlarge ? width : source_width), 0.5f / (enlarge ? height : source_height));
             glUniform4fv(glGetUniformLocation(program, "region"), 1, from.region);
             glUniform1i(glGetUniformLocation(program, "keep_alpha"), from.keep_alpha ? 1 : 0);
             const bool graded = grade != nullptr;
@@ -1848,6 +1899,108 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_enhanceTexture(JNIEnv* env,
     from.eyes_across = eyes_across; from.eyes_down = eyes_down;
     return enhance_frame(enhance, target->acquired, target->width, target->height, true, from, sharpen, graded ? values : nullptr,
                          denoise_step, denoise_tolerance) ? JNI_TRUE : JNI_FALSE;
+}
+
+/** enhanceTexture with Anime4K ([plugin]: its mode, tier and doublings) in place of the denoising and
+ * EASU; its result is kept for [frame] (-1: none), so the frame drawn again does not run the networks. */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_enhanceTexturePlugin(JNIEnv* env, jclass, jint slot, jint texture,
+        jint source_width, jint source_height, jint eyes_across, jint eyes_down, jfloat sharpen, jfloatArray grade,
+        jfloat denoise_step, jfloat denoise_tolerance, jfloatArray plugin, jlong frame) {
+    std::lock_guard<std::mutex> lock(mutex);
+    Picture* target = picture(slot);
+    if (!target || !target->acquired || texture <= 0) return JNI_FALSE;
+    jfloat values[11];
+    const bool graded = grade && env->GetArrayLength(grade) >= 11;
+    if (graded) env->GetFloatArrayRegion(grade, 0, 11, values);
+    EnhanceSource from;
+    from.texture = static_cast<GLuint>(texture); from.width = source_width; from.height = source_height;
+    from.eyes_across = eyes_across; from.eyes_down = eyes_down;
+    if (plugin && env->GetArrayLength(plugin) >= 3) {
+        jfloat settings[3]; env->GetFloatArrayRegion(plugin, 0, 3, settings);
+        from.networks = anime4k::from(settings);
+        from.frame = frame;
+    }
+    return enhance_frame(enhance, target->acquired, target->width, target->height, true, from, sharpen, graded ? values : nullptr,
+                         denoise_step, denoise_tolerance) ? JNI_TRUE : JNI_FALSE;
+}
+
+/** The last picture-layer draw went without Anime4K while its networks are being linked: draw the frame again. */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_anime4kPicturePending(JNIEnv*, jclass) {
+    std::lock_guard<std::mutex> lock(mutex);
+    return enhance.networks && anime4k::pending(*enhance.networks) ? JNI_TRUE : JNI_FALSE;
+}
+
+/** Anime4K could not run on Godot's context: the picture layer's frames go on without it. */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_anime4kPictureRefused(JNIEnv*, jclass) {
+    std::lock_guard<std::mutex> lock(mutex);
+    return enhance.networks_refused ? JNI_TRUE : JNI_FALSE;
+}
+
+/** Frame interpolation for 2D->3D: keeps a copy of the stereo pair [texture] (width x height, both eyes
+ * side by side) under [id] and estimates the motion from the pair kept as [before] (-1: none) to it. */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_interpPairPush(JNIEnv*, jclass, jint texture, jint width, jint height, jlong id, jlong before) {
+    std::lock_guard<std::mutex> lock(mutex);
+    return texture > 0 && frame_interp::pair_push(static_cast<GLuint>(texture), width, height, id, before) ? JNI_TRUE : JNI_FALSE;
+}
+
+/** enhanceTexture for the moment [phase] (0..1) between two kept pairs: the picture in between (or a
+ * pair's own copy, at 0 and 1) drawn into the whole acquired image of [slot], each eye on its own. */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_interpPairDraw(JNIEnv* env, jclass, jint slot, jlong before, jlong after, jfloat phase,
+        jint source_width, jint source_height, jfloat sharpen, jfloatArray grade, jfloat denoise_step, jfloat denoise_tolerance) {
+    std::lock_guard<std::mutex> lock(mutex);
+    Picture* target = picture(slot);
+    if (!target || !target->acquired) return JNI_FALSE;
+    const GLuint texture = frame_interp::pair_picture(before, after, phase);
+    if (!texture) return JNI_FALSE;
+    jfloat values[11];
+    const bool graded = grade && env->GetArrayLength(grade) >= 11;
+    if (graded) env->GetFloatArrayRegion(grade, 0, 11, values);
+    EnhanceSource from;
+    from.texture = texture; from.width = source_width; from.height = source_height; from.eyes_across = 2;
+    return enhance_frame(enhance, target->acquired, target->width, target->height, true, from, sharpen, graded ? values : nullptr,
+                         denoise_step, denoise_tolerance) ? JNI_TRUE : JNI_FALSE;
+}
+
+/** interpPairPush with the kept copy drawn by picture quality mode (denoised, sharpened, graded; no
+ * enlarging), for pairs shown at their own size: interpPairShow then needs no draw of the mode's. */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_interpPairPushEnhanced(JNIEnv* env, jclass, jint texture, jint width, jint height, jlong id, jlong before,
+        jfloat sharpen, jfloatArray grade, jfloat denoise_step, jfloat denoise_tolerance) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (texture <= 0) return JNI_FALSE;
+    const GLuint copy = frame_interp::pair_slot(width, height, id);
+    if (!copy) return JNI_FALSE;
+    jfloat values[11];
+    const bool graded = grade && env->GetArrayLength(grade) >= 11;
+    if (graded) env->GetFloatArrayRegion(grade, 0, 11, values);
+    EnhanceSource from;
+    from.texture = static_cast<GLuint>(texture); from.width = width; from.height = height; from.eyes_across = 2;
+    if (!enhance_frame(enhance, copy, width, height, false, from, sharpen, graded ? values : nullptr, denoise_step, denoise_tolerance)) {
+        frame_interp::pair_forget(id);
+        return JNI_FALSE;
+    }
+    return frame_interp::pair_estimate(id, before) ? JNI_TRUE : JNI_FALSE;
+}
+
+/** The picture [phase] of the way between two pairs kept by interpPairPushEnhanced, straight into the
+ * whole acquired image of [slot] (the pairs' size). */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_interpPairShow(JNIEnv*, jclass, jint slot, jlong before, jlong after, jfloat phase) {
+    std::lock_guard<std::mutex> lock(mutex);
+    Picture* target = picture(slot);
+    if (!target || !target->acquired) return JNI_FALSE;
+    return frame_interp::pair_show(target->acquired, before, after, phase) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_interpPairRelease(JNIEnv*, jclass) {
+    std::lock_guard<std::mutex> lock(mutex);
+    frame_interp::pair_release();
 }
 
 /** Picture quality mode for the eye buffers: the frame on show ([texture]: a GL_TEXTURE_2D, or the
@@ -1906,7 +2059,8 @@ extern "C" JNIEXPORT void JNICALL
 Java_org_vrpassthroughplayer_plugin_VideoLayerNative_destroyEnhancer(JNIEnv*, jclass, jlong handle) {
     Enhance* e = reinterpret_cast<Enhance*>(handle);
     if (!e) return;
-    for (int k = 0; k < 2; k++) for (GLuint program : {e->easu[k], e->finish[k], e->denoise[k]}) if (program) glDeleteProgram(program);
+    for (int k = 0; k < 2; k++) for (GLuint program : {e->easu[k], e->finish[k], e->denoise[k], e->import[k]}) if (program) glDeleteProgram(program);
+    anime4k::destroy(e->networks);
     if (e->sampler) glDeleteSamplers(1, &e->sampler);
     for (GLuint framebuffer : {e->framebuffer, e->denoised_framebuffer, e->shown_framebuffer}) if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
     for (GLuint texture : {e->enlarged, e->denoised, e->shown}) if (texture) glDeleteTextures(1, &texture);

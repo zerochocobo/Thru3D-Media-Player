@@ -86,8 +86,8 @@ func _run() -> void:
 	tap(menu, video_group_target(menu, "output"))
 	tap(menu, video_group_target(menu, "depth"))
 	check(setting_row(menu, "depth_render").compact
-		and menu.rows.slice(4, 7).map(func(row): return row.key) == ["video_auto_3d", "depth_render", "depth_position_default"],
-		"2D to 3D groups automatic conversion, edge treatment and position")
+		and menu.rows.slice(4, 10).map(func(row): return row.key) == ["video_auto_3d", "depth_render", "depth_edge_steady", "depth_edge_fade", "depth_position_default", "depth_foreground_default"],
+		"2D to 3D groups automatic conversion, edge treatment, convergence and foreground scale")
 	tap(menu, video_group_target(menu, "depth"))
 	var alpha_point := origin(menu, video_group_target(menu, "alpha"))
 	menu.press_pointer("left_hand", alpha_point, -menu.global_basis.z, true)

@@ -1,9 +1,9 @@
 {
-  "version": "2026.11.16.232655",
+  "version": "2026.11.23.232705",
   "channel": "nightly",
-  "source_commit": "8f9e23a47eb68816a639096aecfb9d802f83c0a5",
-  "url": "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/download/2026.11.16.232655/yt-dlp",
-  "sha256": "300fac815767e71daf5445a54325505a8074a199490e2ac50e9c2d9a5bd106b0",
-  "bytes": 3073481,
+  "source_commit": "696c0673e9e06bf50514a11e6796644771ce330e",
+  "url": "https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/download/2026.11.23.232705/yt-dlp",
+  "sha256": "e5e36eda175ae4e0f747d2609c0eba4b99bf775e83b994adc07d538e88c6827d",
+  "bytes": 3073138,
   "android_runtime": "io.github.junkfood02.youtubedl-android:library:0.18.1"
 }

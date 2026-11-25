@@ -127,6 +127,10 @@ const META_LATCH_LEAD_NS := 16_000_000
 var latch_lead_ns := META_LATCH_LEAD_NS
 ## Measured on the Meta compositor only; other runtimes release as before until calibrated.
 var cadence_supported := false
+## Frame interpolation's copy thread draws for the same latches. Where they are not measured (PICO...) it
+## still gets the display times, with Meta's lead as a guess, and MPV keeps releasing at its own targets:
+## the user opened it there as a Beta for PICO users to try and send logs from (2026-11-25).
+var copy_cadence := false
 ## The compositor shows an HDR10/HLG decoder surface as SDR itself: Quest 3, 2026-11-13, close to the
 ## SDR reference and better than MPV's conversion. PICO shows it washed out (user report).
 var hdr_surface := false
@@ -151,7 +155,7 @@ func set_cadence_enabled(enabled: bool) -> void:
 	if not enabled and PlatformMethods.supports(platform, "set_mpv_vsync"): platform.set_mpv_vsync(0, 0, 0)
 
 func sync_cadence(active: bool) -> void:
-	if not active or not cadence_enabled or not cadence_supported or not _api or not bound: return
+	if not active or not cadence_enabled or not (cadence_supported or copy_cadence) or not _api or not bound: return
 	var now := Time.get_ticks_msec()
 	if now - _cadence_ms < CADENCE_INTERVAL_MS: return
 	_cadence_ms = now
@@ -159,8 +163,27 @@ func sync_cadence(active: bool) -> void:
 	var rate := xr.display_refresh_rate if xr and xr.is_initialized() else 0.0
 	var display := _api.get_predicted_display_time()
 	if rate < 30.0 or display <= 0: return
+	if not cadence_supported:
+		# Refused only for a refresh rate or lead out of reach; display times on another clock are converted.
+		if not PlatformMethods.supports(platform, "set_copy_vsync") or not platform.set_copy_vsync(display, roundi(1e9 / rate), latch_lead_ns):
+			copy_cadence = false
+			DiagnosticLog.record("copy_cadence_refused", {"display": display, "rate": rate})
+		return
 	if not PlatformMethods.supports(platform, "set_mpv_vsync") or not platform.set_mpv_vsync(display, roundi(1e9 / rate), latch_lead_ns):
 		cadence_supported = false
+
+## The display time (ns on the runtime's clock) of the frame Godot is drawing, and the refresh period;
+## 0 where the runtime gives none. 2D->3D's frame interpolation places its pictures by them.
+func predicted_display_ns() -> int:
+	return _api.get_predicted_display_time() if _api and bound else 0
+
+func refresh_period_ns() -> int:
+	var xr := XRServer.find_interface("OpenXR") as OpenXRInterface
+	var rate := xr.display_refresh_rate if xr and xr.is_initialized() else 0.0
+	return roundi(1e9 / rate) if rate >= 30.0 else 0
+
+func frame_timed() -> bool:
+	return predicted_display_ns() > 0 and refresh_period_ns() > 0
 
 ## Normal playback can use layers on this runtime (session bound, swapchain functions present).
 func available() -> bool:
@@ -246,6 +269,7 @@ func update_session() -> void:
 	var driver := RenderingServer.get_current_rendering_driver_name()
 	_surface_flip = _surface_vertical_flip(runtime_name, driver, pico_build, system_name)
 	cadence_supported = cadence_runtime(runtime_name, pico_build)
+	copy_cadence = not cadence_supported
 	hdr_surface = hdr_surface_runtime(runtime_name, pico_build)
 	picture_quality = true
 	_sent_count = -1

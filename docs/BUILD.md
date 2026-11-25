@@ -176,10 +176,14 @@ This source follows the fixed release input records, not temporary channel overr
 
 ## Dated release archives
 
-Release APK archives default to the build completion date. Use the optional PowerShell parameter -ReleaseDate YYYYMMDD with Release builds to choose the archive date. Standard 0.18.9 Android source uses versionCode 124 and the PICO China store build uses 125.
+Release APK archives default to the build completion date. Use the optional PowerShell parameter -ReleaseDate YYYYMMDD with Release builds to choose the archive date. Standard 0.18.10 Android source uses versionCode 126 and the PICO China store build uses 127.
 
 Public-source builds support saving diagnostic logs locally and sharing them on Wi-Fi. Remote diagnostic upload is disabled in this export.
 
 ## Optional Gecko diagnostics
 
 Normal builds retain the pinned official GeckoView artifact. The optional -DouyinPlaybackLog -GeckoProbeAar build requires a separately rebuilt ARM64 AAR and the published [probe source and staging helper](GECKOVIEW_DIAGNOSTICS.md). It is a diagnostic tool, not a supported browser color fix or device-acceptance claim.
+
+## Anime4K source generation
+
+The pinned MIT Anime4K shaders, their license and embedded coefficients are source, not an external model payload. Run tools/anime4k/Generate-Anime4kGlsl.ps1 to recreate native/xr-layer/anime4k_glsl.h. The converter and optional numerical/GPU harnesses use user-supplied images/frames; no test media, model binary or benchmark capture is included. The project GPL license and upstream MIT notice remain separate.

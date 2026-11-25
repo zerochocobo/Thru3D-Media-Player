@@ -1,0 +1,83 @@
+--- a/libavcodec/mediacodecdec.c
++++ b/libavcodec/mediacodecdec.c
+@@ -32,6 +32,7 @@
+ #include "libavutil/opt.h"
+ #include "libavutil/intreadwrite.h"
+ #include "libavutil/pixfmt.h"
++#include "libavutil/time.h"
+ #include "libavutil/internal.h"
+ 
+ #include "avcodec.h"
+@@ -65,7 +66,14 @@
+     // Ref. MediaFormat KEY_PRIORITY (Thru3D patch 0007): -1 unspecified, 0 real time, 1 best effort
+     int priority;
+     QuestDoviContext quest_dovi;
++    // Thru3D patch 0009: the decoder held every input buffer without a frame past the limit.
++    int quest_stalled;
++    int quest_emulate_stall;
+ } MediaCodecContext;
++
++// Thru3D patch 0009: the feed loop in mediacodec_receive_frame() runs on the caller's thread (MPV's
++// core). A decoder that holds every input buffer and never returns a frame would block it for good.
++#define QUEST_FEED_STALL_US INT64_C(3000000)
+ 
+ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
+ {
+@@ -510,6 +518,8 @@
+ {
+     MediaCodecContext *s = avctx->priv_data;
+     int ret = mediacodec_decode_init_once(avctx);
++    // Device probes only (Debug builds set it): never take an output buffer, so the codec fills up.
++    s->quest_emulate_stall = getenv("THRU3D_MEDIACODEC_EMULATE_STALL") != NULL;
+     if (ret < 0 && avctx->codec_type == AVMEDIA_TYPE_VIDEO && (s->operating_rate > 0 || s->priority >= 0)) {
+         av_log(avctx, AV_LOG_WARNING, "MediaCodec rejected operating rate %d / priority %d; "
+                "retrying without them\n", s->operating_rate, s->priority);
+@@ -532,6 +542,10 @@
+     MediaCodecContext *s = avctx->priv_data;
+     int ret;
+     ssize_t index;
++    int64_t stall_start = 0;
++
++    if (s->quest_stalled)
++        return AVERROR_EXTERNAL;
+ 
+     /* In delay_flush mode, wait until the user has released or rendered
+        all retained frames. */
+@@ -542,7 +556,7 @@
+     }
+ 
+     /* poll for new frame */
+-    ret = quest_mediacodec_receive(avctx, s, frame, false);
++    ret = s->quest_emulate_stall ? AVERROR(EAGAIN) : quest_mediacodec_receive(avctx, s, frame, false);
+     if (ret != AVERROR(EAGAIN))
+         return ret;
+ 
+@@ -553,15 +567,26 @@
+             index = ff_AMediaCodec_dequeueInputBuffer(s->ctx->codec, 0);
+             if (index < 0) {
+                 /* no space, block for an output frame to appear */
+-                ret = quest_mediacodec_receive(avctx, s, frame, true);
++                ret = s->quest_emulate_stall ? AVERROR(EAGAIN) : quest_mediacodec_receive(avctx, s, frame, true);
+                 /* Try again if both input port and output port return EAGAIN.
+                  * If no data is consumed and no frame in output, it can make
+                  * both avcodec_send_packet() and avcodec_receive_frame()
+                  * return EAGAIN, which violate the design.
+                  */
+                 if (ff_AMediaCodec_infoTryAgainLater(s->ctx->codec, index) &&
+-                    ret == AVERROR(EAGAIN))
++                    ret == AVERROR(EAGAIN)) {
++                    int64_t now = av_gettime_relative();
++                    if (!stall_start) {
++                        stall_start = now;
++                    } else if (now - stall_start > QUEST_FEED_STALL_US) {
++                        av_log(avctx, AV_LOG_ERROR, "MediaCodec returned no frame for %" PRId64 " ms "
++                               "with every input buffer queued; giving up on this decoder\n",
++                               (now - stall_start) / 1000);
++                        s->quest_stalled = 1;
++                        return AVERROR_EXTERNAL;
++                    }
+                     continue;
++                }
+                 return ret;
+             }
+             s->ctx->current_input_buffer = index;

@@ -267,11 +267,12 @@ func draw_header() -> void:
 
 func draw_folder_header(compact: bool) -> void:
 	var location: Dictionary = menu.archives.favorite_location() if menu.archives.browsing else Location.capture(menu, {})
-	var toolbar_left := Vector2(-0.40, 0.445)
+	var toolbar := Vector2(-0.40, 0.445)
 	if not location.is_empty() and not menu._crumbs().is_empty():
 		var selected: bool = store != null and store.contains(Location.folder_uri(location))
 		var locked: bool = store != null and store.locked
-		menu._button(FAVORITE_FOLDER, "", Vector2(0.39, 0.36) if compact else toolbar_left, Vector2(0.075, 0.065), store != null and not store.busy, "lock" if locked else "star_filled" if selected else "star")
+		# Full size joins the folder tools, which the menu then aligns right.
+		menu._button(FAVORITE_FOLDER, "", Vector2(0.39, 0.36) if compact else toolbar, Vector2(0.075 if compact else 0.09, 0.065), store != null and not store.busy, "lock" if locked else "star_filled" if selected else "star")
 		menu._tips[FAVORITE_FOLDER] = menu.I18n.t("Unlock favorites" if locked else "Remove favorite" if selected else "Favorite this location")
 	if not home_return.is_empty():
 		menu._button(RETURN_HOME, "", Vector2(0.12, -0.365) if compact else Vector2(-0.52, menu._header_y()), Vector2(0.075, 0.065), true, "history")

@@ -19,6 +19,12 @@ class CloudDiagnosticsTest {
         assertNull(mount.cause)
         val root = CloudLoginFailure(Stage.ROOT, CloudFailure(detail = "private filename", apiCode = 500))
         assertEquals("AUTH-ROOT API 500", root.code)
+        val member = assertThrows(CloudLoginFailure::class.java) {
+            CloudLoginFailure.at(Stage.ROOT) { CloudDiagnostics.checkCore(JSONObject().put("code", 500)
+                .put("message", "Cloud request failed").put("error_detail", "directory.list\nguangya membership required (430)"), "/directory") }
+        }
+        assertEquals("AUTH-ROOT MEMBER API 500", member.code)
+        assertEquals("cloud_membership_required", member.reason)
         val exchange = CloudLoginFailure(Stage.EXCHANGE, SocketTimeoutException("private provider URL"))
         assertEquals("AUTH-EXCHANGE TIMEOUT", exchange.code)
     }

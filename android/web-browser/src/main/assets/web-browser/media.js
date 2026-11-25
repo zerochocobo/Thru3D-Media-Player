@@ -954,7 +954,10 @@
   let douyinEnabled = typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.documentPage(location.href), douyinData = [];
   let douyinPlaybackLog = false;
   // At document_start, ahead of the player's own scripts.
-  if (douyinEnabled && typeof window !== 'undefined') Thru3DDouyin.installVideoCanvasBypass(window);
+  if (douyinEnabled && typeof window !== 'undefined') {
+    Thru3DDouyin.installVideoCanvasBypass(window);
+    Thru3DDouyin.installAudioGraphBypass(window);
+  }
   let douyinDiagnostics = false, douyinObservation = {};
   let douyinApiPaths = [], douyinDomAt = 0, douyinDomPage = '', douyinDom = {};
   const douyinDomCounts = () => {

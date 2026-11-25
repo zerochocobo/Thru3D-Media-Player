@@ -213,7 +213,8 @@ func _process(_delta: float) -> void:
 	if layer.stereo:
 		var current: Dictionary = menu.browser.window_state(window_id)
 		var issue: String = layer.configure_effect(menu.depth.strength, menu.depth.position,
-			str(current.get("tab_id", 0)) + ":" + str(current.get("navigation", 0)), menu.depth.render_mode == "fill", menu.depth.enabled)
+			str(current.get("tab_id", 0)) + ":" + str(current.get("navigation", 0)), menu.depth.render_mode == "fill", menu.depth.enabled,
+			menu.depth.Foreground.scale(menu.depth.foreground))
 		if menu.depth.state != layer.effect_state:
 			menu.depth.state = layer.effect_state; menu.refresh()
 		if not issue.is_empty():

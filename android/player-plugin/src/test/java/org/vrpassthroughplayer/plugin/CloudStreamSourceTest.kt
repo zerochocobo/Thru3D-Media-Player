@@ -343,6 +343,45 @@ class CloudStreamSourceTest {
         } finally {upstream.stop(0)}
     }
 
+    @Test fun aFailedReadReportsItsStepKindTimingAndEarlierSuccess() {
+        val upstream=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
+        upstream.createContext("/good") { exchange ->
+            exchange.responseHeaders.add("Content-Range","bytes 0-9/10")
+            exchange.sendResponseHeaders(206,10);runCatching { exchange.responseBody.write(ByteArray(10)) };exchange.close()
+        }
+        upstream.createContext("/bad") { exchange ->
+            exchange.responseHeaders.add("X-Thru3D-Read-Step","link")
+            exchange.responseHeaders.add("X-Thru3D-Read-Error","dns")
+            exchange.sendResponseHeaders(502,0);exchange.close()
+        }
+        upstream.createContext("/odd") { exchange ->
+            exchange.responseHeaders.add("X-Thru3D-Read-Step","https://private.invalid/token")
+            exchange.responseHeaders.add("X-Thru3D-Read-Error","no such host cdn.private.invalid")
+            exchange.sendResponseHeaders(500,0);exchange.close()
+        }
+        upstream.start()
+        fun source(path: String) = CloudStreamSource(10,{CloudLink("http://127.0.0.1:${upstream.address.port}$path") {emptyMap()}},::localConnection)
+            .also { it.provider = "quark" }
+        fun failure(path: String) = source(path).use { source -> source.open().use { reader ->
+            try { reader.read(0,ByteArray(10),10); fail("failure accepted"); throw AssertionError() }
+            catch (error: PlaybackFailureException) { error.failure }
+        } }
+        try {
+            source("/good").use { it.open().use { reader -> assertEquals(10,reader.read(0,ByteArray(10),10)) } }
+            val failed=failure("/bad")
+            assertEquals(502,failed.httpStatus)
+            val cloud=failed.json().getJSONObject("cloud")
+            assertEquals("quark",cloud.getString("provider"))
+            assertEquals("link",cloud.getString("step")); assertEquals("dns",cloud.getString("error"))
+            assertEquals(2,cloud.getInt("attempts")); assertTrue(cloud.getBoolean("from_start"))
+            assertTrue(cloud.getLong("elapsed_ms") in 0..5000)
+            assertTrue(cloud.getInt("sources_ok")>=1); assertTrue(cloud.getLong("since_ok_s") in 0..60)
+            val odd=failure("/odd").cloud!!
+            assertEquals("",odd.getString("step")); assertEquals("",odd.getString("error"))
+            assertEquals(1,odd.getInt("attempts"))
+        } finally {upstream.stop(0)}
+    }
+
     @Test fun revokedSourceDoesNotSendTheGatewayRetry() {
         val requests=AtomicInteger()
         val upstream=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)

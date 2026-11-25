@@ -15,6 +15,8 @@
 #include <list>
 #include <string>
 #include <vector>
+#include "anime4k.h"
+#include "layer_copy.h"
 #include "picture_glsl.h"
 
 namespace {
@@ -68,6 +70,9 @@ int upscaled_width = 0, upscaled_height = 0;
 GLuint denoise_program = 0, easu_texture_program = 0;
 GLuint denoised = 0, denoised_fbo = 0;
 int denoised_width = 0, denoised_height = 0;
+// Anime4K (the plugins tab): its networks' result takes the place of the denoised or enlarged texture.
+anime4k::State* anime4k_state = nullptr;
+bool anime4k_refused = false; // this GL could not run them (no half-float targets, a program refused)
 // GPU time of one copy (GL_EXT_disjoint_timer_query), read a frame or more later without waiting.
 struct Timer {
     typedef void (*Result)(GLuint, GLenum, GLuint64*);
@@ -459,6 +464,14 @@ Packed* ensure_packed(int slot, int width, int height) {
 
 } // namespace
 
+namespace layer_copy {
+GLuint texture(AHardwareBuffer* buffer) { return api().ready() ? texture_for(buffer) : 0; }
+void forget(AHardwareBuffer* buffer) {
+    for (auto it = cache.begin(); it != cache.end(); ++it) if (it->buffer == buffer) { drop(*it); cache.erase(it); return; }
+}
+GLuint linked(const char* vertex, const char* fragment) { return link(vertex, fragment); }
+}
+
 /** The compositor surface's buffers at the video's own size, before the copy's EGL surface: RGBA8, or
  * 10 bits a channel ([deep]) for 10-bit sources. */
 extern "C" JNIEXPORT jboolean JNICALL
@@ -487,21 +500,29 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_setWindowDataSpace(JNIEnv* 
  * quality: picture quality mode. Inside window (the whole frame without one) it denoises (denoise_step
  * source pixels between the samples, denoise_tolerance above 0), enlarges with EASU when the output is
  * larger, and sharpens (sharpen above 0); a negative sharpen holds all three back (no direction to
- * centre the window on yet). The grade applies to the whole frame. */
-extern "C" JNIEXPORT jboolean JNICALL
-Java_org_vrpassthroughplayer_plugin_VideoLayerNative_blitBuffer(JNIEnv* env, jclass, jobject hardware_buffer, jint width, jint height,
+ * centre the window on yet). The grade applies to the whole frame. plugin: Anime4K's mode, tier and
+ * doublings (null or mode 0: none), which take the place of the denoising and EASU over the whole frame;
+ * frame names the picture, whose networks' result is kept for drawing it again (-1: run them anyway). */
+bool layer_copy::blit(JNIEnv* env, AHardwareBuffer* buffer, jint width, jint height,
         jint buffer_width, jint buffer_height, jint out_width, jint out_height, jboolean flip, jboolean quality, jfloat sharpen, jfloatArray window, jfloatArray grade,
-        jfloat denoise_step, jfloat denoise_tolerance) {
-    if (!hardware_buffer || width <= 0 || height <= 0 || buffer_width < width || buffer_height < height ||
-        out_width <= 0 || out_height <= 0 || !api().ready()) return JNI_FALSE;
-    AHardwareBuffer* buffer = AHardwareBuffer_fromHardwareBuffer(env, hardware_buffer);
+        jfloat denoise_step, jfloat denoise_tolerance, jfloatArray plugin, jlong frame) {
+    if (!buffer || width <= 0 || height <= 0 || buffer_width < width || buffer_height < height ||
+        out_width <= 0 || out_height <= 0 || !api().ready()) return false;
     const bool picture = quality == JNI_TRUE;
-    // Work inside the window: any of the three, each on its own.
+    anime4k::Settings networks;
+    if (picture && plugin && env->GetArrayLength(plugin) >= 3 && !anime4k_refused) {
+        jfloat values[3]; env->GetFloatArrayRegion(plugin, 0, 3, values);
+        networks = anime4k::from(values);
+    }
+    bool plugged = networks.active();
+    // Work inside the window: any of the three, each on its own. Anime4K works on the whole frame, with
+    // or without a direction.
     const bool larger = out_width > width || out_height > height;
-    const bool sharp = picture && sharpen >= 0.0f && (sharpen > 0.0f || denoise_tolerance > 0.0f || larger);
-    if (!buffer || !(picture ? ensure_sharp_program() : ensure_program())) return JNI_FALSE;
+    if (plugged && sharpen < 0.0f) sharpen = 0.0f;
+    const bool sharp = picture && sharpen >= 0.0f && (sharpen > 0.0f || denoise_tolerance > 0.0f || larger || plugged);
+    if (!(picture ? ensure_sharp_program() : ensure_program())) return false;
     const GLuint texture = texture_for(buffer);
-    if (!texture) return JNI_FALSE;
+    if (!texture) return false;
     while (glGetError() != GL_NO_ERROR) {}
     if (!timer.checked) {
         timer.checked = true;
@@ -533,6 +554,7 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_blitBuffer(JNIEnv* env, jcl
     jfloat area[8] = {0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f};
     if (sharp && window && env->GetArrayLength(window) >= 8) env->GetFloatArrayRegion(window, 0, 8, area);
     Box inner[4], outer[16]; int boxes = 0, around = 0;
+    if (plugged) area[2] = area[3] = 0.0f;
     if (sharp && area[2] > 0.0f && area[3] > 0.0f) {
         // The window's box in each eye's picture; a 360 degree window across the seam takes the full width.
         const int across = area[4] > 1.5f ? 2 : 1, down = area[5] > 1.5f ? 2 : 1;
@@ -558,8 +580,36 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_blitBuffer(JNIEnv* env, jcl
     const float reach = 1.0f + 0.5f * (sharpen > 0.0f ? sharpen : 0.0f);
     // The passes before the surface, each into its own texture, so the surface is drawn in one pass
     // afterwards: the denoised picture at the source's size, then EASU's at the output's.
-    bool denoise = sharp && denoise_tolerance > 0.0f, enlarge = sharp && larger;
-    if ((denoise || enlarge) && !ensure_upscale_programs()) denoise = enlarge = false;
+    bool denoise = sharp && !plugged && denoise_tolerance > 0.0f, enlarge = sharp && !plugged && larger;
+    if ((denoise || enlarge || plugged) && !ensure_upscale_programs()) denoise = enlarge = plugged = false;
+    GLuint restored = 0;
+    if (plugged) {
+        // The decoder's frame as the networks read it (rows as the picture's, like the denoised texture),
+        // unless this picture's result is kept from its last draw.
+        if (!anime4k_state) anime4k_state = anime4k::create();
+        int result_width = 0, result_height = 0;
+        restored = anime4k::kept(*anime4k_state, frame, networks, width, height, result_width, result_height);
+        if (!restored) {
+            GLuint input_framebuffer = 0;
+            if (anime4k::input(*anime4k_state, width, height, input_framebuffer)) {
+                glBindFramebuffer(GL_FRAMEBUFFER, input_framebuffer);
+                glViewport(0, 0, width, height);
+                glUseProgram(part_program);
+                glUniform2f(part_scale, sx, sy); glUniform1i(part_flip, 0);
+                set_grade(part_grade, nullptr);
+                draw_box(part_rect, Box{0.0f, 0.0f, 1.0f, 1.0f});
+                restored = anime4k::run(*anime4k_state, networks, result_width, result_height);
+                glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture);
+            }
+            if (restored) anime4k::keep(*anime4k_state, frame, networks, width, height);
+            else if (!anime4k::pending(*anime4k_state)) {
+                anime4k_refused = true; log(ANDROID_LOG_WARN, "Anime4K could not run: plain picture quality from now on");
+            }
+        }
+        plugged = restored != 0;
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, out_width, out_height);
+    }
     if (denoise && !ensure_target(denoised, denoised_fbo, denoised_width, denoised_height, width, height)) denoise = false;
     if (enlarge && !ensure_target(upscaled, upscaled_fbo, upscaled_width, upscaled_height, out_width, out_height)) enlarge = false;
     if (denoise) {
@@ -602,7 +652,7 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_blitBuffer(JNIEnv* env, jcl
         if (!sharp) draw_box(part_rect, Box{0.0f, 0.0f, 1.0f, 1.0f});
         for (int index = 0; index < around; ++index) draw_box(part_rect, outer[index]);
     }
-    if (sharp && (enlarge || denoise)) {
+    if (sharp && (enlarge || denoise || plugged)) {
         // The finishing program reads whichever texture the passes ended in.
         glUseProgram(finish_program);
         glUniform2f(finish_scale, sx, sy); glUniform1i(finish_flip, flip == JNI_TRUE ? 1 : 0);
@@ -615,7 +665,7 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_blitBuffer(JNIEnv* env, jcl
         glUniform3f(finish_eyes, area[4], area[5], area[6]);
         glUniform1f(finish_tint, area[7]);
         set_grade(finish_grade, grading ? graded : nullptr);
-        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, enlarge ? upscaled : denoised); glActiveTexture(GL_TEXTURE0);
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, plugged ? restored : enlarge ? upscaled : denoised); glActiveTexture(GL_TEXTURE0);
         for (int index = 0; index < boxes; ++index) draw_box(finish_rect, inner[index]);
     } else if (sharp) {
         glUseProgram(sharp_program);
@@ -636,9 +686,28 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_blitBuffer(JNIEnv* env, jcl
     }
     if (timed) { glEndQuery(kTimeElapsed); timer.pending = true; }
     const GLenum error = glGetError();
-    if (error != GL_NO_ERROR) { log(ANDROID_LOG_WARN, "blit GL error " + std::to_string(error)); return JNI_FALSE; }
-    return JNI_TRUE;
+    if (error != GL_NO_ERROR) { log(ANDROID_LOG_WARN, "blit GL error " + std::to_string(error)); return false; }
+    return true;
 }
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_blitBuffer(JNIEnv* env, jclass, jobject hardware_buffer, jint width, jint height,
+        jint buffer_width, jint buffer_height, jint out_width, jint out_height, jboolean flip, jboolean quality, jfloat sharpen, jfloatArray window, jfloatArray grade,
+        jfloat denoise_step, jfloat denoise_tolerance, jfloatArray plugin, jlong frame) {
+    if (!hardware_buffer) return JNI_FALSE;
+    return layer_copy::blit(env, AHardwareBuffer_fromHardwareBuffer(env, hardware_buffer), width, height, buffer_width, buffer_height,
+        out_width, out_height, flip, quality, sharpen, window, grade, denoise_step, denoise_tolerance, plugin, frame) ? JNI_TRUE : JNI_FALSE;
+}
+
+/** The last draw went without Anime4K while its networks are being linked: draw the frame on show again. */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_anime4kPending(JNIEnv*, jclass) {
+    return anime4k_state && anime4k::pending(*anime4k_state) ? JNI_TRUE : JNI_FALSE;
+}
+
+/** Anime4K could not run on the copy thread's GL: its draws went on without it. */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_anime4kRefused(JNIEnv*, jclass) { return anime4k_refused ? JNI_TRUE : JNI_FALSE; }
 
 /** Smoothed GPU time of one copy in milliseconds (0 until the driver has reported one). */
 extern "C" JNIEXPORT jdouble JNICALL
@@ -699,6 +768,9 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_drawPacked(JNIEnv*, jclass,
 /** The copy thread's GL objects, before its context goes. */
 extern "C" JNIEXPORT void JNICALL
 Java_org_vrpassthroughplayer_plugin_VideoLayerNative_releaseBlit(JNIEnv*, jclass) {
+    frame_interp::release();
+    anime4k::destroy(anime4k_state);
+    anime4k_refused = false;
     for (auto& entry : cache) drop(entry);
     cache.clear();
     for (auto& entry : packed) drop(entry);

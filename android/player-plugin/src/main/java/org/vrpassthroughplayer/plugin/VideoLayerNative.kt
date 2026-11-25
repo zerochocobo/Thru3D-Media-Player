@@ -76,10 +76,45 @@ internal object VideoLayerNative {
      * one eye's UV, eyes across and down, 1 when longitude wraps, 1 to tint the window (debug); [grade] is
      * the colour grade: gain, gamma and offset per channel, contrast, saturation. A [denoiseTolerance]
      * above 0 denoises first, its samples [denoiseStep] source pixels apart; a negative [sharpen] holds
-     * the window's work back while no direction is known. */
+     * the window's work back while no direction is known. [plugin]: Anime4K's mode, tier and doublings
+     * (null: none), over the whole frame in place of the denoising and EASU; its result is kept for
+     * [frame] (-1: none), so the frame drawn again does not run the networks again. */
     @JvmStatic external fun blitBuffer(buffer: android.hardware.HardwareBuffer, width: Int, height: Int, bufferWidth: Int, bufferHeight: Int,
                                        outWidth: Int, outHeight: Int, flip: Boolean, quality: Boolean, sharpen: Float,
-                                       window: FloatArray?, grade: FloatArray?, denoiseStep: Float, denoiseTolerance: Float): Boolean
+                                       window: FloatArray?, grade: FloatArray?, denoiseStep: Float, denoiseTolerance: Float,
+                                       plugin: FloatArray?, frame: Long): Boolean
+    /** Anime4K could not run on the copy thread's GL (no half-float targets, a program refused). */
+    @JvmStatic external fun anime4kRefused(): Boolean
+    /** The last [blitBuffer] went without Anime4K while its networks are being linked on another thread. */
+    @JvmStatic external fun anime4kPending(): Boolean
+    /** Frame interpolation (copy thread): estimates the motion between two decoder frames, each known by an
+     * id that stays with the frame, unless that pair is already estimated. False where the GPU cannot
+     * (no half-float render targets, or its driver refuses the shaders). */
+    @JvmStatic external fun interpEstimate(before: android.hardware.HardwareBuffer, after: android.hardware.HardwareBuffer, beforeId: Long, afterId: Long,
+                                           width: Int, height: Int, bufferWidth: Int, bufferHeight: Int): Boolean
+    /** [blitBuffer] for the picture [phase] (0..1) of the way from [before] to [after]. */
+    @JvmStatic external fun interpBlit(before: android.hardware.HardwareBuffer, after: android.hardware.HardwareBuffer, beforeId: Long, afterId: Long,
+                                       phase: Float, width: Int, height: Int, bufferWidth: Int, bufferHeight: Int, outWidth: Int, outHeight: Int,
+                                       flip: Boolean, quality: Boolean, sharpen: Float, window: FloatArray?, grade: FloatArray?,
+                                       denoiseStep: Float, denoiseTolerance: Float): Boolean
+    /** Smoothed GPU milliseconds of one pair's estimate ([which] 0) or one picture in between (1). */
+    @JvmStatic external fun interpGpuMs(which: Int): Double
+    /** Frame interpolation for 2D->3D (Godot's render thread): keeps a copy of the stereo pair [texture]
+     * (both eyes side by side, [width] x [height]) under [id] and estimates the motion from the pair kept as
+     * [before] (-1: none) to it. The four pairs pushed last are kept. False when this GL cannot interpolate. */
+    @JvmStatic external fun interpPairPush(texture: Int, width: Int, height: Int, id: Long, before: Long): Boolean
+    /** [enhanceTexture] for the moment [phase] (0..1) between two kept pairs: the picture in between (a
+     * pair's own copy at 0 and 1) into the whole acquired image of [slot]. */
+    @JvmStatic external fun interpPairDraw(slot: Int, before: Long, after: Long, phase: Float, sourceWidth: Int, sourceHeight: Int,
+                                           sharpen: Float, grade: FloatArray?, denoiseStep: Float, denoiseTolerance: Float): Boolean
+    /** [interpPairPush] with the kept copy drawn by picture quality mode (denoised, sharpened, graded), for
+     * pairs shown at their own size; [interpPairShow] then draws each refresh's picture straight into the
+     * acquired image of [slot], one pass over the picture instead of two. */
+    @JvmStatic external fun interpPairPushEnhanced(texture: Int, width: Int, height: Int, id: Long, before: Long,
+                                                   sharpen: Float, grade: FloatArray?, denoiseStep: Float, denoiseTolerance: Float): Boolean
+    @JvmStatic external fun interpPairShow(slot: Int, before: Long, after: Long, phase: Float): Boolean
+    /** Frees the kept pairs and what was made for them (Godot's render thread). */
+    @JvmStatic external fun interpPairRelease()
     /** Smoothed GPU milliseconds of one [blitBuffer]; 0 without a timer or before its first result. */
     @JvmStatic external fun blitGpuMs(): Double
     /** Memory saver: copies a decoder buffer into packed [slot] (luma + half-size chroma) at [outWidth] x
@@ -95,6 +130,15 @@ internal object VideoLayerNative {
      * pairs; [eyesAcross] x [eyesDown] eye pictures, which no pass reads across. */
     @JvmStatic external fun enhanceTexture(slot: Int, texture: Int, sourceWidth: Int, sourceHeight: Int, eyesAcross: Int, eyesDown: Int,
                                            sharpen: Float, grade: FloatArray?, denoiseStep: Float, denoiseTolerance: Float): Boolean
+    /** [enhanceTexture] with Anime4K ([plugin]: its mode, tier and doublings) in place of the denoising and
+     * EASU, the image being the size its doublings make; its result is kept for [frame] (-1: none). */
+    @JvmStatic external fun enhanceTexturePlugin(slot: Int, texture: Int, sourceWidth: Int, sourceHeight: Int, eyesAcross: Int, eyesDown: Int,
+                                                 sharpen: Float, grade: FloatArray?, denoiseStep: Float, denoiseTolerance: Float,
+                                                 plugin: FloatArray?, frame: Long): Boolean
+    /** Anime4K could not run on Godot's context: the picture layer's frames go on without it. */
+    @JvmStatic external fun anime4kPictureRefused(): Boolean
+    /** The last [enhanceTexturePlugin] went without Anime4K while its networks are being linked. */
+    @JvmStatic external fun anime4kPicturePending(): Boolean
     @JvmStatic external fun releaseImage(slot: Int, mipmaps: Boolean): Boolean
     @JvmStatic external fun runtimeExtensions(): String
     /** Layers can carry a colour scale/bias (the colour grade) instead of leaving the compositor. */

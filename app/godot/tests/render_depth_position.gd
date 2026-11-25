@@ -20,6 +20,7 @@ func run() -> void:
 		menu.state_provider = func(): return state.duplicate()
 		viewport.add_child(menu); menu.toggle(); menu.set_process(false)
 		menu.section = 1
+		menu._depth_expanded = true # the convergence and foreground scale sit under the 2D to 3D header
 		for language in ["zh","en","ja"]:
 			I18n.use(language)
 			state.depth_position = 100 if language == "en" else (-100 if language == "ja" else 0)

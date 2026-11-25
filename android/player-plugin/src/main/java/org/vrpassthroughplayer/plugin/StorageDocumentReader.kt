@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
 import android.os.RemoteException
+import android.provider.OpenableColumns
 import java.io.Closeable
 import java.io.FileNotFoundException
 import java.io.IOException
@@ -45,6 +46,14 @@ internal class StorageDocumentRead<T : Closeable>(val descriptor: T, private val
 
 internal object StorageDocumentReader {
     const val IMPLEMENTATION = "provider_openfile_trace_v1"
+
+    /** Some streaming providers implement openFile but do not provide document metadata. */
+    fun displayName(resolver: ContentResolver, uri: Uri): String? = try {
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            val column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (column >= 0 && cursor.moveToFirst()) cursor.getString(column) else null
+        }
+    } catch (_: Exception) { null }
 
     /** Fixed route and exception class only; never a URI, label, media name or exception message. */
     private fun trace(stage: String, error: Exception? = null) {

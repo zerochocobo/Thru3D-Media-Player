@@ -66,7 +66,12 @@ func run() -> void:
 	host.release_pointer("left",resize_start,page_direction,true)
 	host.page_size=old_size;host.global_transform=old_pose;host.refresh();footer.sync()
 	host._activate(browser.BASE + 17)
-	check(host.depth_settings and host.depth_choices.sliders.size() == 1, "Settings retain position; strength lives outside")
+	check(host.depth_settings and not host.depth_expanded and host.depth_choices.sliders.is_empty()
+		and host.depth_choices.targets.values().all(func(item): return item.key == "web_clarity"), "Settings open with the 2D to 3D group collapsed")
+	host._activate(host.DEPTH_GROUP)
+	check(host.depth_expanded and host.depth_choices.sliders.values().size() == 3
+		and host.depth_choices.sliders.keys().map(func(t): return host.depth_choices.targets[t].key) == ["strength", "position", "foreground"],
+		"The 2D to 3D group holds strength, convergence and foreground scale")
 	var dialog_close: Dictionary = host._buttons.filter(func(b): return b.target == browser.BASE + 17 and b.node.position.z > 0.03)[0]
 	var close_icon: MeshInstance3D = dialog_close.node.get_children().filter(func(n): return n is MeshInstance3D)[0]
 	check(close_icon.material_override.render_priority > dialog_close.node.material_override.render_priority, "Settings X draws above its button surface")
@@ -88,6 +93,47 @@ func run() -> void:
 	check(not host.has_pointer_capture(), "Slider release clears capture")
 	check(host.depth.position > 0.0 and host.depth.position <= 100.0, "Dragging the production rail changes position")
 	check(platform.browser.url == original_url, "Adjustments preserve the browser page")
+	# Held past a tap, a 3D slider clears the settings popup down to its own row.
+	var foreground_target := -1
+	for target in host.depth_choices.sliders:
+		if host.depth_choices.targets[target].key == "foreground": foreground_target = target
+	check(foreground_target >= 0, "Foreground scale rail has a live input target")
+	host.depth_choices.capture = {"hand": "left", "target": foreground_target, "item": host.depth_choices.targets[foreground_target].duplicate(true), "moved": false}
+	host._sync_picture_hold()
+	check(host._hold_nodes.all(func(node): return node.visible), "A press shorter than a hold keeps the settings")
+	host._picture_hold.since = Time.get_ticks_msec() - 1000
+	host._sync_picture_hold()
+	var held_row: Array = host._buttons.filter(func(b): return int(b.target) == foreground_target)
+	var row_nodes: Array = host._buttons.filter(func(b): return host.depth_choices.targets.get(int(b.target), {}).get("key", "") == "foreground").map(func(b): return b.node)
+	var shown: Array = host._hold_nodes.filter(func(node): return node.visible)
+	check(held_row.size() == 1 and held_row[0].node.visible and not shown.is_empty() and shown.all(func(node): return row_nodes.has(node)),
+		"A held 3D slider keeps only its row")
+	host.depth_choices.capture.clear(); host._sync_picture_hold()
+	check(host._hold_nodes.all(func(node): return node.visible), "Letting go brings the settings back")
+	host._depth_preview("foreground", 40)
+	check(host.depth.foreground == 40, "A dragged foreground scale shows before it is saved")
+	host._depth_changed("foreground", 40)
+	var reloaded: RefCounted = preload("res://scripts/web_browser_depth.gd").new(); reloaded.config_path = host.depth.config_path; reloaded.load_preferences()
+	check(reloaded.foreground == 40 and reloaded.position == host.depth.position, "The browser keeps its own foreground scale")
+	# The footer's strength rail, held, clears the footer and the open settings down to the rail.
+	footer.set_strength_open(true); footer.refresh()
+	var rail: Array = footer._buttons.filter(func(b): return b.target == footer.STRENGTH)
+	check(rail.size() == 1 and not footer._rail_nodes.is_empty(), "Strength rail drawn under the page")
+	if rail.size() == 1:
+		# The footer only reveals for a nearby ray; take the rail's capture as its press does.
+		footer.capture_hand = "left"; footer._rail_pressed_ms = Time.get_ticks_msec()
+		footer.sync()
+		var before_hold: Array = footer.get_children().filter(func(n): return n is Node3D and n.visible)
+		check(host._hold_nodes.all(func(node): return node.visible), "A rail press shorter than a hold keeps the settings")
+		footer._rail_pressed_ms -= 1000
+		footer.sync(); host._process(0)
+		var others: Array = footer.get_children().filter(func(n): return n is Node3D and n != footer._backdrop and not footer._rail_nodes.has(n))
+		check(host._hold_nodes.all(func(node): return not node.visible) and others.all(func(node): return not node.visible)
+			and footer._rail_nodes.all(func(node): return node.visible), "A held rail keeps only itself")
+		footer.finish_drag(); footer.sync(); host._process(0)
+		check(host._hold_nodes.all(func(node): return node.visible) and before_hold.filter(func(node): return is_instance_valid(node)).all(func(node): return node.visible),
+			"Letting go of the rail brings everything back")
+	footer.set_strength_open(false)
 	var fill_target := -1
 	for target in host.depth_choices.targets:
 		var item: Dictionary = host.depth_choices.targets[target]

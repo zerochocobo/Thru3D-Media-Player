@@ -32,10 +32,11 @@ class ExternalPlaybackProbeActivity : Activity() {
                 val roots = listOfNotNull(app.dataDir, app.filesDir, app.cacheDir, app.noBackupFilesDir, app.codeCacheDir,
                     app.createDeviceProtectedStorageContext().dataDir) +
                     app.getExternalFilesDirs(null).filterNotNull() + app.externalCacheDirs.filterNotNull()
-                val parsed = ExternalPlaybackRequest.parse(intent.action, intent.dataString, reader.title(), intent.type,
+                val uri = requireNotNull(reader.mediaUri())
+                val parsed = ExternalPlaybackRequest.parse(intent.action, uri.toString(), reader.title(), intent.type,
                     reader.headers().accepted, roots)
                 // The source may not use our own providers to expose private/cache files.
-                require(parsed.scheme != "content" || app.packageManager.resolveContentProvider(intent.data!!.authority!!, 0)
+                require(parsed.scheme != "content" || app.packageManager.resolveContentProvider(uri.authority!!, 0)
                     ?.applicationInfo?.uid != app.applicationInfo.uid) { "OWN_PROVIDER_DENIED" }
                 parsed
             } catch (failure: Exception) {
@@ -52,7 +53,7 @@ class ExternalPlaybackProbeActivity : Activity() {
                 .addCategory("org.khronos.openxr.intent.category.IMMERSIVE_HMD")
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             if (request?.scheme == "content" && intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0) {
-                launch.clipData = ClipData.newRawUri("video", intent.data)
+                launch.clipData = ClipData.newRawUri("video", android.net.Uri.parse(request.uri))
                 launch.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             // Never copy the source Bundle, command_line_params, new_launch_requested or task flags.
@@ -68,6 +69,6 @@ class ExternalPlaybackProbeActivity : Activity() {
     private companion object {
         val rejectCodes = setOf("UNSUPPORTED_ACTION", "INVALID_URI", "UNSUPPORTED_SCHEME", "URI_CREDENTIALS_NOT_SUPPORTED",
             "INVALID_FILE_URI", "PRIVATE_FILE_DENIED", "UNSUPPORTED_HEADER", "INVALID_HEADER", "DUPLICATE_HEADER",
-            "OWN_PROVIDER_DENIED")
+            "OWN_PROVIDER_DENIED", "INVALID_SHARED_VIDEO")
     }
 }
