@@ -74,6 +74,39 @@ func _run() -> void:
 	check(Thumbnails.usage().x == 1 and Thumbnails.usage().y > 0, "Usage counts the file")
 	var wide := Image.create(800, 200, false, Image.FORMAT_RGB8)
 	check(Thumbnails.fit(wide).get_size() == Thumbnails.SIZE, "Covers of any shape fill the tile")
+	# Cropped by default: every picture fills the tile from its centre, an upright one too.
+	var landscape := Image.create(400, 300, false, Image.FORMAT_RGB8)
+	landscape.fill(Color(0, 0, 1)); landscape.fill_rect(Rect2i(0, 0, 400, 30), Color(1, 0, 0))
+	var cropped := Thumbnails.fit(landscape)
+	check(cropped.get_pixel(160, 2).b > 0.8 and cropped.get_pixel(2, 90).b > 0.8, "A landscape picture still fills the tile by its centre")
+	var upright := Image.create(300, 600, false, Image.FORMAT_RGB8)
+	upright.fill(Color(0, 1, 0)); upright.fill_rect(Rect2i(0, 0, 300, 60), Color(1, 0, 0)); upright.fill_rect(Rect2i(0, 540, 300, 60), Color(0, 0, 1))
+	check(not Thumbnails.whole, "Previews are cropped unless the setting says otherwise")
+	var middle := Thumbnails.fit(upright)
+	check(middle.get_pixel(160, 4).g > 0.8 and middle.get_pixel(160, 175).g > 0.8 and middle.get_pixel(4, 90).g > 0.8, "An upright cover is cropped to its middle by default")
+	# A panorama is cropped like the rest: no margin above or below.
+	var panorama := Image.create(800, 400, false, Image.FORMAT_RGB8)
+	panorama.fill(Color(0, 1, 0)); panorama.fill_rect(Rect2i(0, 0, 40, 400), Color(1, 0, 0)); panorama.fill_rect(Rect2i(760, 0, 40, 400), Color(0, 0, 1))
+	var filled := Thumbnails.fit(panorama)
+	check(filled.get_pixel(160, 2).g > 0.8 and filled.get_pixel(160, 177).g > 0.8 and filled.get_pixel(3, 90).g > 0.8, "A 2:1 panorama fills the tile without margins")
+	# Whole pictures (the setting): nothing is cropped.
+	Thumbnails.whole = true
+	check(not Thumbnails.shown_whole(Vector2i(1920, 1080)) and Thumbnails.shown_whole(Vector2i(8192, 4096)), "The tile's own shape is never framed")
+	var ends := Thumbnails.fit(panorama)
+	check(ends.get_pixel(4, 90).r > 0.8 and ends.get_pixel(315, 90).b > 0.8, "A whole panorama shows both its ends")
+	var above := ends.get_pixel(160, 3)
+	check(above.g > 0.15 and above.g < 0.7 and ends.get_pixel(160, 12).g > 0.8, "Its margin above is 10 of 180 pixels of darkened picture: %s" % above)
+	var whole := Thumbnails.fit(upright)
+	check(whole.get_size() == Thumbnails.SIZE, "An upright cover keeps the tile size")
+	check(whole.get_pixel(160, 4).r > 0.8 and whole.get_pixel(160, 175).b > 0.8 and whole.get_pixel(160, 90).g > 0.8, "An upright cover shows its top, middle and bottom")
+	check(whole.get_pixel(120, 90).g > 0.8 and whole.get_pixel(199, 90).g > 0.8, "It is as wide as its shape allows (90 of 320 pixels)")
+	var side := whole.get_pixel(40, 90)
+	check(side.g > 0.15 and side.g < 0.7 and side.r < 0.3 and side.b < 0.3, "Its sides are a darkened copy of the picture, not bars: %s" % side)
+	var square := Image.create(500, 500, false, Image.FORMAT_RGB8)
+	square.fill(Color(0, 1, 0)); square.fill_rect(Rect2i(0, 0, 500, 50), Color(1, 0, 0))
+	check(Thumbnails.fit(square).get_pixel(160, 4).r > 0.8, "A square cover is shown whole too")
+	check(Thumbnails.fit(landscape).get_pixel(160, 2).r > 0.8 and Thumbnails.fit(landscape).get_pixel(4, 90).b < 0.7, "A 4:3 picture keeps its top and gets side margins")
+	Thumbnails.whole = false
 
 	# Library tiles use the picture; DLNA covers only come from the server's URL.
 	var menu := Menu.new()
@@ -147,7 +180,7 @@ func _run() -> void:
 	menu.refresh()
 	var recent_tile: Dictionary = menu._buttons.filter(func(b): return b.target == menu.ROW_BASE)[0]
 	var recent_area: MeshInstance3D = recent_tile.node.get_child(1)
-	check(recent_area.material_override.albedo_texture == Thumbnails.texture(uri), "Actual recent card binds the screenshot when its DLNA cover is absent")
+	check(recent_area.material_override.get_shader_parameter("picture") == Thumbnails.texture(uri), "Actual recent card binds the screenshot when its DLNA cover is absent")
 	menu._cancel_covers()
 	Thumbnails.store(cover, wide)
 	var server_picture := menu._picture(menu.rows[0])

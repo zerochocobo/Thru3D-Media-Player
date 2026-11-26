@@ -18,6 +18,8 @@ var scenery_rotation := Vector3.ZERO
 var video_layer := false
 var menu_layers := false
 var browser_layer := false
+## The reading mode's pages lie on layers beneath the eye buffer too.
+var book_layers := false
 var backdrop: MeshInstance3D
 var _panorama_backdrop: ShaderMaterial
 var _spatial_backdrop: ShaderMaterial
@@ -46,6 +48,11 @@ func set_video_layer(active: bool) -> void:
 func set_menu_layers(active: bool) -> void:
 	if active == menu_layers: return
 	menu_layers = active
+	if environment: _set_background(applied_passthrough)
+
+func set_book_layers(active: bool) -> void:
+	if active == book_layers: return
+	book_layers = active
 	if environment: _set_background(applied_passthrough)
 
 func set_browser_layer(active: bool) -> void:
@@ -122,7 +129,7 @@ func _apply_requested_mode() -> bool:
 
 func _set_background(transparent: bool) -> void:
 	# Browser pages remain native underlays when their entire menu is hidden.
-	var layer := (video_layer or menu_layers or browser_layer) and not preview
+	var layer := (video_layer or menu_layers or browser_layer or book_layers) and not preview
 	viewport.transparent_bg = transparent or layer
 	environment.sky = null if transparent or layer else scenery
 	environment.sky_rotation = scenery_rotation
@@ -293,6 +300,20 @@ static func video_refresh_rate(fps: float, available: Array, cap: float) -> floa
 		var repeats := roundf(rate / fps)
 		if repeats >= 1.0 and absf(rate - repeats * fps) <= rate * 0.005: return rate
 	return rates[-1] if cap > 90.5 and not rates.is_empty() else 0.0
+
+## Playback above 90 Hz that the app cannot fill is worse than a slower panel: Quest 3 at 120 Hz with
+## passthrough, a sharpening picture copy and 1.25 render scale drew 62-72 frames a second, 50 with the
+## control bar up (22 on a user's headset), and a steady 72 at 72 Hz (2026-11-26). A second counts as
+## slow below 80% of the rate, with a menu up or not: plain passthrough playback measured 108-111 of 120
+## and stays, its 88-92 with the control bar up (46 late frames a second) moves the file to 72 Hz.
+## A switch blanks the panel for a moment and the file keeps the slower rate, so a control bar that
+## only waits out its 5 idle seconds does not count: a slow run that had a menu up in any of its
+## seconds takes 10 of them (the frame counter still reads low for a second after the bar hides).
+const REFRESH_SLOW_RATIO := 0.8
+const REFRESH_SLOW_SECONDS := 5
+const REFRESH_SLOW_MENU_SECONDS := 10
+static func refresh_slow(fps: float, rate: float) -> bool:
+	return rate > 90.5 and fps < rate * REFRESH_SLOW_RATIO
 
 ## Display refresh rate; unsupported rates are ignored.
 func set_refresh_rate(rate: float) -> bool:

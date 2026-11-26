@@ -48,7 +48,8 @@ func run() -> void:
 			menu._set_subtitle_detail("" if mode in ["collapsed", "files"] else ("narration" if mode == "language" or mode.begins_with("narration") else ("appearance" if mode.begins_with("appearance") else "listening"))); menu.refresh()
 			if mode == "language": menu.choices.opened = "narration_language"; menu.refresh()
 			for entry in menu._buttons:
-				if not entry.node.is_visible_in_tree(): continue
+				# Text-only targets (the footer status entry) carry no caption label.
+				if not entry.node.is_visible_in_tree() or entry.node.get_child_count() == 0 or not entry.node.get_child(0) is Label3D: continue
 				var text: Label3D = entry.node.get_child(0)
 				check(menu.text_width(text.text, text.font_size / menu.TEXT_RASTER_SCALE) <= entry.rect.size.x + 0.01, "Button text fits " + language + " / " + text.text)
 				if entry.node.position.y > 0.285:

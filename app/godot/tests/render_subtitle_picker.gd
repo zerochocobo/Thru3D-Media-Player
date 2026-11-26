@@ -12,7 +12,8 @@ func check(ok: bool, label: String) -> void:
 
 func panel_height(menu: Node) -> float:
 	for decoration in menu._decorations:
-		if decoration is MeshInstance3D and decoration.mesh is QuadMesh and is_equal_approx(decoration.mesh.size.x, 1.10) and decoration.mesh.size.y > 0.15:
+		# The subtitle list is a panel-layer plate (width follows the side-panel layout).
+		if decoration is MeshInstance3D and decoration.mesh is QuadMesh and decoration.material_override is ShaderMaterial and decoration.material_override.render_priority == 10 and decoration.mesh.size.y > 0.15:
 			return decoration.mesh.size.y
 	return -1
 

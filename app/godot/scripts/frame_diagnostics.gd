@@ -19,6 +19,7 @@ var _timed := false
 
 ## One call per frame. Returns the event details of a slow window, or {}.
 func tick(viewport: Viewport, refresh: float, context: Dictionary) -> Dictionary:
+	if viewport == null: return {}
 	var now := Time.get_ticks_usec()
 	# The first frame, or back from a pause: a new window.
 	if _last == 0 or now - _last > 1000000:

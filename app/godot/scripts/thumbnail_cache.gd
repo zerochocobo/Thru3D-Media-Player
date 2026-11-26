@@ -333,7 +333,7 @@ static func _remove_file(name: String) -> bool:
 	if _read_key == digest: _read_discard = true
 	return true
 
-## Fills SIZE (centre crop, no bars) and stores it as the picture of [key].
+## Fills SIZE (see fit) and stores it as the picture of [key].
 static func store(key: String, image: Image, speculative: bool = false) -> bool:
 	if clearing() or key.is_empty() or (Privacy.vault != null and Privacy.vault.protected and Privacy.vault.locked) or not image or image.is_empty():
 		return false
@@ -446,6 +446,15 @@ static func _evict(bytes: int, speculative_only: bool, keep: String, max_images:
 		if path == keep or _protected.has(path) or (speculative_only and record.quality != "speculative"): continue
 		if _remove_file(name): bytes -= int(record.bytes)
 
+## Fills SIZE. Cropped (the default), every picture fills the tile from its centre, panoramas too.
+## With [member whole] (Settings, "Preview shape") nothing is cropped: an upright poster or folder
+## cover stands in the middle of the tile, a panorama keeps its ends. A whole picture lies over a
+## blurred and darkened copy of itself instead of bars in a colour no theme agrees on (the user's
+## choices, 2026-11-26). LocalThumbnailPrefetch.encode does the same for the pictures made natively.
+static var whole := false
+static func shown_whole(size: Vector2i) -> bool:
+	return whole and size.x * SIZE.y != size.y * SIZE.x
+
 static func fit(image: Image) -> Image:
 	var picture := image.duplicate() as Image
 	if picture.is_compressed():
@@ -455,9 +464,21 @@ static func fit(image: Image) -> Image:
 	var cropped := Vector2i(
 		clampi(roundi(original.y * float(SIZE.x) / SIZE.y), 1, original.x),
 		clampi(roundi(original.x * float(SIZE.y) / SIZE.x), 1, original.y))
-	picture = picture.get_region(Rect2i((original - cropped) / 2, cropped))
-	picture.resize(SIZE.x, SIZE.y, Image.INTERPOLATE_BILINEAR)
-	return picture
+	var filled := picture.get_region(Rect2i((original - cropped) / 2, cropped))
+	filled.resize(SIZE.x, SIZE.y, Image.INTERPOLATE_BILINEAR)
+	if not shown_whole(original): return filled
+	filled.resize(BACKDROP.x, BACKDROP.y, Image.INTERPOLATE_BILINEAR)
+	filled.resize(SIZE.x, SIZE.y, Image.INTERPOLATE_CUBIC)
+	filled.adjust_bcs(BACKDROP_BRIGHTNESS, 1.0, 1.0)
+	var scale := minf(float(SIZE.x) / original.x, float(SIZE.y) / original.y)
+	var inner := Vector2i(clampi(roundi(original.x * scale), 1, SIZE.x), clampi(roundi(original.y * scale), 1, SIZE.y))
+	picture.resize(inner.x, inner.y, Image.INTERPOLATE_LANCZOS)
+	filled.blit_rect(picture, Rect2i(Vector2i.ZERO, inner), (SIZE - inner) / 2)
+	return filled
+
+## A whole picture's surround: the filled picture through this few pixels, at this brightness.
+const BACKDROP := Vector2i(16, 9)
+const BACKDROP_BRIGHTNESS := 0.45
 
 ## Files and bytes in the cache.
 static func usage(include_metadata: bool = false) -> Vector2i:

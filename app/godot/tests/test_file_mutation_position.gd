@@ -62,6 +62,8 @@ func respond_delete(menu: Node3D) -> void:
 func rename_selected(menu: Node3D, title: String) -> void:
 	menu._activate(Actions.Rename.OPEN)
 	menu.file_actions.rename.name = title.get_basename()
+	# Opening rename focuses the name field; the typed text is what Check changes reads.
+	if menu.system_text_input.active("file_rename"): menu.system_text_input.editor.text = title.get_basename()
 	menu._activate(Actions.Rename.PREVIEW)
 	var old_uri := str(menu.file_actions.target.uri)
 	menu.platform.respond(menu.platform.calls.size(), "ready", {"preview": true, "plan": "fixture-plan", "moves": [{"from": str(menu.file_actions.target.title), "to": title}]})

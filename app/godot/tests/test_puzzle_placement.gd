@@ -69,7 +69,7 @@ func _run() -> void:
 		model.random_rotation=false
 		var previous: Vector3=piece.position
 		point+=model.frame_pose.basis.y*0.035; aim(app,hand,point); host.tick(0.016)
-		host.reference_preview.pinned=true
+		host.reference_preview.pinned=true; host.reference_preview.visible=true
 		host.reference_preview.global_transform=Transform3D(Basis.looking_at(app.rays.right_hand[1]),hand+app.rays.right_hand[1]*0.5)
 		check(host._ray_menu(hand,app.rays.right_hand[1])==host.reference_preview,"The fixture places the reference across the owning hand's aiming ray")
 		point+=model.frame_pose.basis.y*0.025; aim(app,hand,point); host.tick(0.016)

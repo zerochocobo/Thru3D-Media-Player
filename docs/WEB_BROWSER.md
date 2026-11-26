@@ -107,3 +107,7 @@ Webpage 2D-to-3D retains stereo output while a new page frame and depth upload a
 ## 0.18.10 browser and external playback
 
 Douyin uses the original video audio path to avoid affected page loudness processing. The pinned YouTube extractor is updated; signed-in extraction still needs headset verification. OpenXR account web login retains the app keyboard when focus changes. Explicit failure logs may include a sanitized public page address/media IDs; public-source remote upload remains disabled and local export/Wi-Fi sharing remain available. Android app shares can open a single compatible video, with range-reading compatibility for affected NAS sources.
+
+## 0.18.11 URL-based handoff
+
+Pause web video while resolving is off by default. With it enabled, the URL-based route pauses first and starts native playback at that position. Reloading the same video element no longer causes a false video-changed error on that route. Strict capture/source checks for captured-stream handoff remain. Current Quest 3 validation does not establish ad-account, Quest 2 or PICO acceptance.

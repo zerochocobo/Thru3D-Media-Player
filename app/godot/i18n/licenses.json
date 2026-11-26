@@ -60,6 +60,7 @@
     "name": "Thru3D / MPV / FFmpeg",
     "license": "GPL-3.0",
     "assets": [
+      "thru3d/LICENSE",
       "mpv/dependency-notices/mpv.txt",
       "mpv/LICENSE.GPL",
       "mpv/LICENSE.LGPL",
@@ -190,6 +191,43 @@
     "license": "MIT",
     "assets": [
       "player-licenses/anime4k.txt"
+    ]
+  },
+  {
+    "id": "frame-interpolation",
+    "name": "Thru3D frame interpolation",
+    "license": "GPL-3.0",
+    "assets": [
+      "thru3d/FRAME-INTERPOLATION.txt",
+      "thru3d/LICENSE"
+    ]
+  },
+  {
+    "id": "fidelityfx-fsr",
+    "name": "AMD FidelityFX Super Resolution 1 (EASU / RCAS)",
+    "license": "MIT",
+    "assets": [
+      "fidelityfx-fsr/NOTICE.md",
+      "fidelityfx-fsr/LICENSE.txt"
+    ]
+  },
+  {
+    "id": "pinyin-simp",
+    "name": "Rime Simplified Chinese pinyin dictionary",
+    "license": "Apache-2.0",
+    "assets": [
+      "pinyin_simp/NOTICE.md",
+      "pinyin_simp/AUTHORS",
+      "pinyin_simp/LICENSE"
+    ]
+  },
+  {
+    "id": "assetstudio",
+    "name": "AssetStudio (Unity scene import)",
+    "license": "MIT",
+    "assets": [
+      "unity-scene/NOTICE.txt",
+      "unity-scene/AssetStudio-LICENSE.txt"
     ]
   },
   {
@@ -377,7 +415,7 @@
   },
   {
     "id": "yt-dlp",
-    "name": "yt-dlp 2026.10.26 / EJS 0.8.0",
+    "name": "yt-dlp 2026.11.23.232705 / EJS 0.8.0",
     "license": "Unlicense / ISC / MIT",
     "assets": [
       "web-video/RUNTIME-NOTICE.txt",
@@ -592,8 +630,7 @@
     "assets": [
       "player-licenses/java/jackson-annotations-2.11.1.txt",
       "player-licenses/java/jackson-core-2.11.1.txt",
-      "player-licenses/java/jackson-databind-2.11.1.txt",
-      "narration/LICENSE.sentencepiece"
+      "player-licenses/java/jackson-databind-2.11.1.txt"
     ]
   },
   {

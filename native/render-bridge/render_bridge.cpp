@@ -1053,6 +1053,10 @@ struct Slot {
     GLuint portrait_mask_pbo = 0;
     bool portrait_mask_staged = false;
     GLuint portrait = 0, portrait_mips = 0; // Shape and private mip source, leased with this exact color/Alpha.
+    // Opaque (normal) playback, when asked: 2x box reductions of this color (1/2, 1/4, ...), written before
+    // the copy fence. Godot keeps a borrowed texture to its base level, so each level is a texture of its own.
+    std::array<GLuint, 4> levels{{0, 0, 0, 0}};
+    int level_count = 0;
     bool portrait_valid = false;
     // Borrowed color: the producer's own immutable texture, kept leased by the owner until this
     // slot retires, instead of a full-resolution copy into `color` (allocated only when copying).
@@ -1091,7 +1095,8 @@ struct Bridge final {
     // Memory saver: captures use only the first slot_limit slots (each holds a full-size color).
     size_t slot_limit = 7;
     Slot* free_slot() {
-        for (size_t i = 0; i < std::min(slot_limit, slots.size()); ++i) if (slots[i].phase == Phase::free) return &slots[i];
+        // Every capture path starts here; only an opaque texture capture adds reductions again.
+        for (size_t i = 0; i < std::min(slot_limit, slots.size()); ++i) if (slots[i].phase == Phase::free) { slots[i].level_count = 0; return &slots[i]; }
         return nullptr;
     }
     uint64_t copies = 0, opaque_copies = 0, opaque_uploads = 0, alpha_uploads = 0;
@@ -1100,6 +1105,8 @@ struct Bridge final {
     bool zero_copy = false;
     bool edge_fill = false; // 2D->3D: letterbox in the model input repeats the content edge
     bool borrow = false; // capture_texture keeps the producer texture instead of copying it
+    int color_levels = 0; // reductions each opaque capture adds (Slot::levels), 0 = none
+    uint64_t level_builds = 0;
     uint64_t borrows = 0, decoder_captures = 0;
     std::array<SharedImage, 2> zc_scout_out; // one scout runs at a time; read on the CPU right after
     uint64_t zero_copy_commits = 0;
@@ -1221,6 +1228,7 @@ struct Bridge final {
             glDeleteBuffers(2, slot.pbo.data()); glDeleteTextures(1, &slot.color); glDeleteTextures(1, &slot.alpha);
             glDeleteTextures(1, &slot.portrait);
             glDeleteTextures(1, &slot.portrait_mips);
+            for (GLuint level : slot.levels) if (level) glDeleteTextures(1, &level);
             glDeleteBuffers(1, &slot.shot_pbo);
             glDeleteBuffers(1, &slot.portrait_mask_pbo);
             if (slot.warp) glDeleteTextures(1, &slot.warp);
@@ -1345,6 +1353,8 @@ struct Bridge final {
             if (inputs) throw std::runtime_error("Opaque capture cannot stage inference inputs");
             opaque_mask(*free);
         }
+        // Godot asks for reductions only where its shader reads them (flat QIYU, flat shader-parallax 2D->3D).
+        build_levels(*free, color_levels);
         free->scout_staged = false;
         if (scout) {
             if (!inputs || opaque) throw std::runtime_error("ROI scout requires staged inference inputs");
@@ -1358,6 +1368,23 @@ struct Bridge final {
             free->scout_staged = true;
         }
         return stage(*free, token, inputs, window ? window : content_rect.data());
+    }
+    // Each level samples the one above it once, between four texels: an exact 2x2 box for even sizes.
+    // A free slot is reused only after Godot dropped it, so its levels can be rewritten or deleted here.
+    void build_levels(Slot& slot, int count) {
+        slot.level_count = 0;
+        for (size_t k = static_cast<size_t>(std::max(count, 0)); k < slot.levels.size(); ++k)
+            if (slot.levels[k]) { glDeleteTextures(1, &slot.levels[k]); slot.levels[k] = 0; }
+        if (count <= 0) return;
+        glUseProgram(copy_2d); glUniform1i(glGetUniformLocation(copy_2d, "source"), 0);
+        for (int k = 0; k < count; ++k) {
+            const int w = std::max(1, width >> (k + 1)), h = std::max(1, height >> (k + 1));
+            if (!slot.levels[k]) { image(slot.levels[k], w, h); check_gl("Render bridge level allocation"); }
+            target(slot.levels[k], w, h);
+            glBindTexture(GL_TEXTURE_2D, k == 0 ? slot.source() : slot.levels[k - 1]);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
+        slot.level_count = count; level_builds++;
     }
     // MPV direct mode: the pair shows the decoder's buffer (the owner keeps its MPV lease until this
     // slot retires); the model input is scaled straight from it, YUV sampled as RGB by the GPU.
@@ -2832,6 +2859,30 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_texture(JNIEnv* env, jcla
         return slot.decoder_texture ? slot.decoder_texture : slot.source();
     } catch (const std::exception& e) { error(env, e.what()); return 0; }
 }
+// Reductions every later opaque texture capture adds (0..4); slots already captured keep theirs.
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_setColorLevels(JNIEnv* env, jclass, jlong id, jint count) {
+    try {
+        if (count < 0 || count > 4) throw std::runtime_error("Color level count out of range");
+        std::lock_guard<std::mutex> guard(registry_mutex); find(id).color_levels = count;
+    } catch (const std::exception& e) { error(env, e.what()); }
+}
+// The held color's reductions, largest first; empty when it has none.
+extern "C" JNIEXPORT jintArray JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_levelTextures(JNIEnv* env, jclass, jlong id, jlong token) {
+    try {
+        std::lock_guard<std::mutex> guard(registry_mutex); auto& slot = find(id).find(token);
+        if (slot.phase != Phase::held) throw std::runtime_error("Render bridge color not ready");
+        const int count = slot.decoder_texture ? 0 : slot.level_count;
+        auto result = env->NewIntArray(count);
+        if (result && count > 0) {
+            std::array<jint, 4> names{};
+            for (int k = 0; k < count; ++k) names[k] = static_cast<jint>(slot.levels[k]);
+            env->SetIntArrayRegion(result, 0, count, names.data());
+        }
+        return result;
+    } catch (const std::exception& e) { error(env, e.what()); return nullptr; }
+}
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_captureOpaqueTexture(JNIEnv* env, jclass, jlong id, jint texture) {
     try {
@@ -2861,7 +2912,7 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_stats(JNIEnv* env, jclass
         std::lock_guard<std::mutex> guard(registry_mutex); auto& b = find(id);
         std::array<int, 4> phases{};
         for (const auto& s : b.slots) phases[static_cast<size_t>(s.phase)]++;
-        auto json = "{\"copies\":" + std::to_string(b.copies) + ",\"opaque_copies\":" + std::to_string(b.opaque_copies) +
+        auto json = "{\"copies\":" + std::to_string(b.copies) + ",\"opaque_copies\":" + std::to_string(b.opaque_copies) + ",\"level_builds\":" + std::to_string(b.level_builds) +
             ",\"opaque_initial_uploads\":" + std::to_string(b.opaque_uploads) + ",\"regular_alpha_uploads\":" + std::to_string(b.alpha_uploads) +
             ",\"input_stages\":" + std::to_string(b.input_stages) + ",\"copy_pending_polls\":" + std::to_string(b.copy_pending_polls) +
             ",\"retire_pending_polls\":" + std::to_string(b.retire_pending_polls) + ",\"slot_exhaustions\":" + std::to_string(b.slot_exhaustions) + ",\"borrowed_captures\":" + std::to_string(b.borrows) + ",\"decoder_captures\":" + std::to_string(b.decoder_captures) +

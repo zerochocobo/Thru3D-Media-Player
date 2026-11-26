@@ -10,7 +10,11 @@ class PlaybackMain extends "res://scripts/main.gd":
 class Viewer extends Node3D:
 	var platform: Object
 	var cast_token := 0
+	var cast_navigation := {}
 	var cast_state := {}
+	var local_uri := ""
+	var loop_enabled := false
+	var requested_play := false
 	func has_pointer_capture() -> bool: return false
 	func refresh() -> void: pass
 	var source_location := {}
@@ -146,7 +150,7 @@ func layout_checks(menu: Node3D, store: RefCounted, recent: RefCounted) -> void:
 	tap(menu, menu.collections.SELECT_ROW); menu._activate(menu.FILTER_BASE + 1)
 	check(menu.collections.selection.is_empty(), "Changing filters clears the previous selection")
 	menu._activate(menu.NAV_BASE + menu.Section.SETTINGS)
-	check(not menu.SETTING_TABS.has("Privacy") and menu.SETTING_ORDER.size() == 6, "Privacy does not occupy a top tab")
+	check(not menu.SETTING_TABS.has("Privacy") and menu.SETTING_ORDER.size() == 5, "Privacy does not occupy a top tab")
 	check(menu.rows.any(func(row):return row.get("group_header", false)) and not menu.rows.any(func(row):return row.get("key") == "privacy_mode"), "General starts with a collapsed Privacy group")
 	for compact in [false, true]:
 		menu.set_compact(compact); menu.collections.privacy_expanded = false; menu.scroll = 0; menu.refresh()

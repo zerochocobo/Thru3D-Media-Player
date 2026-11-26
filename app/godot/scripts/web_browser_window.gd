@@ -669,7 +669,7 @@ func _depth_preview(key: String, value: Variant) -> void:
 
 func _depth_changed(key: String, value: Variant) -> void:
 	if key in ["web_picture_sharpness", "web_picture_denoise"]: browser.picture_preview = {}
-	if key in ["web_clarity", "web_picture_quality", "web_picture_sharpness", "web_picture_denoise"]:
+	if key in ["web_clarity", "web_pause_on_handoff", "web_picture_quality", "web_picture_sharpness", "web_picture_denoise"]:
 		browser.menu.setting_changed.emit(key, value); refresh(); return
 	depth.change(key, float(value) / 100.0 if key == "strength" else value)
 	if key == "auto_3d_hidden":
@@ -685,7 +685,8 @@ func _draw_depth_settings() -> void:
 	var first_node := get_child_count()
 	const PITCH := 0.11
 	var group_y := 0.20
-	var clarity_y := group_y - PITCH * (6 if depth_expanded else 1) - 0.02
+	var pause_y := group_y - PITCH * (6 if depth_expanded else 1) - 0.02
+	var clarity_y := pause_y - PITCH
 	var bottom := clarity_y - 0.13
 	var panel := _quad(Vector2(0.98, 0.375 - bottom), Vector3(0.13, (0.375 + bottom) / 2, 0.028), PANEL, 30)
 	add_child(panel); _decorations.append(panel); _pointer_panels.append(panel)
@@ -719,6 +720,14 @@ func _draw_depth_settings() -> void:
 			for button in _buttons.slice(first):
 				button.node.position.z += 0.038
 				_depth_overlay_priority(button.node)
+	var pause_title := _label(I18n.t("Pause page while opening player"), Vector3(-0.30, pause_y, 0.04), 20)
+	pause_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; pause_title.render_priority = 32
+	var pause_first := _buttons.size()
+	depth_choices.field(null, {"key": "web_pause_on_handoff", "value": browser.pause_on_handoff, "switch": true,
+		"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}],
+		"hint": "Pause the page's video as soon as you choose Play in player, instead of when the player is ready."}, Vector2(0.50, pause_y), 0.09, 0.055)
+	for button in _buttons.slice(pause_first):
+		button.node.position.z += 0.038; _depth_overlay_priority(button.node)
 	var clarity_title := _label(I18n.t("Page clarity"), Vector3(-0.30, clarity_y, 0.04), 20)
 	clarity_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; clarity_title.render_priority = 32
 	var clarity_first := _buttons.size()

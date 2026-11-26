@@ -249,6 +249,7 @@ const PICTURE_UPSCALE_HINT := "Shows low-resolution video enlarged, with cleaner
 const PICTURE_UPSCALE_LEVELS := {1: "Balanced: this video is shown enlarged from %d×%d to %d×%d, twice its size at most. Cleaner edges at a lighter load than Maximum.", 2: "Maximum: this video is shown enlarged from %d×%d to %d×%d. The cleanest edges; uses more battery and the headset runs warmer."}
 const PICTURE_DENOISE_HINT := "Evens out compression noise and blotches before sharpening; suits old and low-bitrate video. Set too high it wipes out fine detail such as skin and fabric."
 const PICTURE_INTERPOLATION_HINT := "Draws the pictures between a film's frames, so 24 to 30 fps video moves smoothly. Fast motion and text over moving pictures can smear. Uses more battery and the headset runs warmer."
+const PICTURE_UPSCALE_STOPPED := "The headset could not keep up, so super resolution stopped for this video. Choose a level to try again."
 const PICTURE_INTERPOLATION_STOPPED := "The headset could not keep up, so frame interpolation stopped. Turn it on to try again."
 const PICTURE_INTERPOLATION_BLOCKERS := {
 	"fps": "This video already runs above 30 fps: there is nothing to add between its frames.",
@@ -965,7 +966,7 @@ func _drop_replaced_picture_controls() -> bool:
 func _picture_key() -> Array:
 	return [_state.get("picture_quality"), _state.get("picture_quality_supported"), _state.get("picture_quality_available"),
 		_state.get("picture_quality_blocker"), _state.get("grade_curves_locked"), _state.get("picture_upscale_sizes"),
-		_state.get("picture_upscale_available"), _state.get("picture_denoise"), _state.get("picture_upscale"),
+		_state.get("picture_upscale_available"), _state.get("picture_denoise"), _state.get("picture_upscale"), _state.get("picture_upscale_blocker"),
 		_state.get("picture_interpolation"), _state.get("picture_interpolation_blocker"),
 		_state.get("picture_anime4k"), _state.get("picture_anime4k_mode"), _state.get("picture_anime4k_tier"), _state.get("picture_anime4k_blocker"), _state.get("picture_anime4k_tiers"),
 		_state.get("picture_source"), _state.get("picture_clear_available"), _state.get("reuse_last_picture"), _state.get("picture_inherit_available")]
@@ -1000,7 +1001,7 @@ func _draw_picture_panel() -> void:
 	add_child(panel); _decorations.append(panel)
 	_block_rays(panel, size)
 	_picture_drawn = _picture_key()
-	_label(I18n.t("Picture quality & color"), Vector3(x, top - 0.039, 0.004), TEXT_TITLE)
+	_label(I18n.t("Picture quality & color"), Vector3(x, top - 0.039, 0.004), TEXT_TITLE).font = ui_bold_font()
 	_glyph(PICTURE_CLOSE, "close", Vector2(x + 0.33, top - 0.039), 0.054, true, I18n.t("Close"))
 	var source: String = _state.get("picture_source", "")
 	if source in ["file", "last"]:
@@ -1055,9 +1056,9 @@ func _draw_picture_color(x: float, y: float, keys: Array) -> void:
 	set_label_size(_buttons.back().node.get_child(0), TEXT_AUX)
 	if _picture_advanced:
 		_button(GRADE_PAGE_RESET, I18n.t("Reset page"), Vector2(x + 0.011, last), Vector2(0.176, 0.05), _grade_page_needs_reset())
-		set_label_size(_buttons.back().node.get_child(0), TEXT_AUX)
+		_fit_caption(_buttons.back(), TEXT_AUX)
 		_button(440, I18n.t("Reset custom"), Vector2(x + 0.225, last), Vector2(0.224, 0.05))
-		set_label_size(_buttons.back().node.get_child(0), TEXT_AUX)
+		_fit_caption(_buttons.back(), TEXT_AUX)
 
 func _settings_open() -> bool:
 	return _failure_open or section != 0 or not _adjustment.is_empty()
@@ -2682,15 +2683,17 @@ func _picture_quality_rows(y: float) -> void:
 	var fits: bool = _state.get("picture_upscale_available", true)
 	var sizes: Dictionary = _state.get("picture_upscale_sizes", {})
 	var source: Vector2i = sizes.get("source", Vector2i.ZERO)
-	var levels: Array = [{"value": 0, "label": "Off", "hint": PICTURE_UPSCALE_HINT}]
+	# Stopped for the load, it shows off and stays open: a level chosen again (after easing the load) retries.
+	var stopped := str(_state.get("picture_upscale_blocker", "")) == "load"
+	var levels: Array = [{"value": 0, "label": "Off", "hint": PICTURE_UPSCALE_STOPPED if stopped else PICTURE_UPSCALE_HINT}]
 	for level in [1, 2]:
 		var target: Vector2i = sizes.get("moderate" if level == 1 else "maximum", Vector2i.ZERO)
 		levels.append({"value": level, "label": "Balanced" if level == 1 else "Maximum",
-			"hint": I18n.t(PICTURE_UPSCALE_LEVELS[level]) % [source.x, source.y, target.x, target.y] if source.x > 0 and target.x > source.x else PICTURE_UPSCALE_HINT})
+			"hint": PICTURE_UPSCALE_STOPPED if stopped else I18n.t(PICTURE_UPSCALE_LEVELS[level]) % [source.x, source.y, target.x, target.y] if source.x > 0 and target.x > source.x else PICTURE_UPSCALE_HINT})
 	var full := I18n.t(PICTURE_UPSCALE_FULL[bool(sizes.get("vr", false))]) % [source.x, source.y] if on and not fits else ""
 	# Anime4K enlarges and cleans the picture in their place.
 	var replaced := I18n.t(PICTURE_ANIME4K_REPLACES) if on and _anime4k_on() else ""
-	_picture_choice_row("Super resolution", "picture_upscale", int(_state.get("picture_upscale", 0)), levels, y - 0.064, on,
+	_picture_choice_row("Super resolution", "picture_upscale", 0 if stopped else int(_state.get("picture_upscale", 0)), levels, y - 0.064, on,
 		replaced if not replaced.is_empty() else full)
 	_picture_choice_row("Denoise", "picture_denoise", int(_state.get("picture_denoise", 0)),
 		[{"value": 0, "label": "Off"}, {"value": 1, "label": "Low"}, {"value": 2, "label": "Medium"}, {"value": 3, "label": "High"}].map(
@@ -2813,7 +2816,7 @@ func _settings_key() -> String:
 		_state.get("video_aspect_preset", "original"), _state.get("video_aspect_locked", false), _state.get("depth_requested", false),
 		_state.get("error", ""), _state.get("error_report", {}), _state.get("usb_takeover_offer", false), _state.get("diagnostic_upload", {}), _alpha_expanded, _depth_expanded,
 		_state.get("picture_quality", false), _state.get("picture_quality_available", false), _state.get("picture_quality_supported", false),
-		_state.get("picture_quality_blocker", ""), _state.get("picture_upscale", 0), _state.get("picture_denoise", 0), _state.get("picture_upscale_available", true),
+		_state.get("picture_quality_blocker", ""), _state.get("picture_upscale", 0), _state.get("picture_upscale_blocker", ""), _state.get("picture_denoise", 0), _state.get("picture_upscale_available", true),
 		_state.get("picture_interpolation", false), _state.get("picture_interpolation_blocker", ""),
 		_state.get("picture_upscale_sizes", {})])
 
@@ -2894,6 +2897,9 @@ func _refresh_progress() -> void:
 	var duration := maxi(0, int(_state.get("duration_ms", 0)))
 	var feedback: Dictionary = _state.get("seek_feedback", {})
 	var position := clampi(_seek_preview if _seek_preview >= 0 else int(feedback.get("target_ms", _state.get("position_ms", 0))), 0, duration)
+	# Playback moves the bar with the elapsed text, a whole second at a time: every status update moved
+	# the thumb a fraction of a pixel and repainted the menu layers four times a second.
+	if _seek_preview < 0 and feedback.is_empty() and position < duration: position -= position % 1000
 	var fraction := float(position) / duration if duration > 0 else 0.0
 	_progress.visible = fraction > 0
 	_progress.mesh.size.x = maxf(0.001, BAR_SEEK * fraction)
@@ -3308,6 +3314,15 @@ func _update_highlights() -> void:
 			button.node.get_child(1).material_override.albedo_color = ACCENT if active else button.foreground
 		if button.target == 111:
 			button.node.get_child(1).material_override.albedo_color = ACCENT if _audio_open else (button.foreground if button.enabled else MUTED)
+
+## A caption set to [size], scaled down just enough to keep the usual padding when a translation
+## runs longer than its button (Japanese "Reset page").
+func _fit_caption(button: Dictionary, size: int) -> void:
+	var caption: Label3D = button.node.get_child(0)
+	set_label_size(caption, size)
+	var room: float = button.rect.size.x - 0.025
+	var width := text_width(caption.text, size)
+	if width > room: caption.pixel_size *= room / width
 
 func _surface_color(button: Dictionary, color: Color) -> Color:
 	var hovered: bool = _hover.values().has(button.target)
@@ -3769,7 +3784,7 @@ func _draw_video_aspect(y: float) -> void:
 func _draw_adjustments() -> void:
 	if _adjustment == "bar_transparency":
 		var top := _settings_frame(0.27)
-		_label(I18n.t("Control bar transparency"), Vector3(0, top - 0.05, 0.004), TEXT_TITLE)
+		_label(I18n.t("Control bar transparency"), Vector3(0, top - 0.05, 0.004), TEXT_TITLE).font = ui_bold_font()
 		_adjustment_row(BAR_TRANSPARENCY, "bar_transparency", "Transparency", Vector3(0, 80, 1), top - 0.125)
 		_button(BAR_DONE, I18n.t("Done"), Vector2(0, top - 0.215), Vector2(0.24, 0.055))
 		_refresh_adjustments()

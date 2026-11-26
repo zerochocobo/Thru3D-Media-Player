@@ -233,6 +233,8 @@ func run() -> void:
 			main._update_controller_feedback(0.01)
 			check(main.controller_feedback.opacity(hand) == 0.0 and main.controller_feedback.hands[hand].nodes.is_empty(), "Production route keeps input visuals hidden without a panel")
 			for corner in 4:
+				# With the screen lock available its button takes the upper-left corner (2026-11-09).
+				if main.screen_edit_lock.applicable() and corner == preload("res://scripts/screen_edit_lock.gd").CornerControl.upper_left_corner(video): continue
 				menu.visible = true; menu.refresh()
 				video.set_screen_scale(1.0)
 				var target: Vector3 = video.panel.to_global(video.screen_corner(corner))
@@ -246,7 +248,7 @@ func run() -> void:
 				var plane: Variant = video.screen_point(eye, target - eye)
 				main.rays[hand][1] = (video.panel.to_global(plane * 1.4) - eye).normalized()
 				main._update_grab()
-				check(video.screen_scale > 1.0 and video.panel.global_position == centre and video.screen_distance == 2.0, "All four corners scale without moving centre or depth")
+				check(video.screen_scale > 1.0 and video.panel.global_position.is_equal_approx(centre) and absf(video.screen_distance - 2.0) < 0.0001, "All four corners scale without moving centre or depth")
 				main._on_controller_release("trigger_click", hand)
 				check(main._grab.is_empty() and menu.visible, "Corner resizing keeps its existing controls and pointing feedback")
 			# A same-hand chord takes over either a grip move or an already changing corner.

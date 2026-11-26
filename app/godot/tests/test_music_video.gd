@@ -13,6 +13,9 @@ class Video extends Node3D:
 	var requested_play := true
 	var audio_volume := 67.0
 	var audio_muted := false
+	var vr_passthrough := Passthrough.new()
+class Passthrough extends RefCounted:
+	func active() -> bool: return false
 class Platform extends RefCounted:
 	var commands: Array = []
 	var preview_commands: Array = []

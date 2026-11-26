@@ -10,6 +10,11 @@ class Reader extends Node3D:
 	var track_memory: RefCounted
 	var subtitle_timing: RefCounted
 	var whisper_memory: RefCounted
+	var picture_memory: RefCounted
+	var subtitle_layout_memory: RefCounted
+	var subtitle_encoding: RefCounted
+	var grade_memory: RefCounted
+	var listening := {"memory": null}
 	var narration := {"memory": null}
 	var bookmark_store: RefCounted
 	func close_video() -> void: closes += 1; local_uri = ""
@@ -69,6 +74,11 @@ func _initialize() -> void:
 	app.video.subtitle_timing = preload("res://scripts/file_subtitle_timing.gd").new(directory.path_join("folder"))
 	app.video.whisper_memory = preload("res://scripts/file_whisper_memory.gd").new(directory.path_join("folder"))
 	app.video.narration.memory = preload("res://scripts/file_narration_memory.gd").new(directory.path_join("folder"))
+	app.video.picture_memory = preload("res://scripts/file_picture_memory.gd").new(directory.path_join("folder"))
+	app.video.subtitle_layout_memory = preload("res://scripts/file_subtitle_layout_memory.gd").new(directory.path_join("folder"))
+	app.video.subtitle_encoding = preload("res://scripts/file_subtitle_encoding.gd").new(directory.path_join("folder"))
+	app.video.listening.memory = preload("res://scripts/file_listening_memory.gd").new(directory.path_join("folder"))
+	app.photo.grade_memory = preload("res://scripts/file_photo_grade_memory.gd").new(directory.path_join("folder-photo"))
 	app.video.bookmark_store = preload("res://scripts/bookmark_store.gd").new(directory.path_join("folder/bookmarks"))
 	app.photo.mode_memory = preload("res://scripts/file_mode_memory.gd").new(directory.path_join("folder-photo"))
 	app.video.recent_files.opened(child, "movie.mp4", false); app.video.recent_files.progress(child, 6000, 100000)

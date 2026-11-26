@@ -4,6 +4,20 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.18.11 — 2026-11-26
+
+- Added Preview shape. Library previews crop to fill by default. Choose Whole picture to show the full image in newly generated previews.
+- Added Pause web video while resolving, off by default. When enabled, the web video pauses before URL-based resolution, and the built-in player starts at that position.
+- Tap the grip button during playback to show that controller’s pointer ray. Use it to move the screen or resize it by dragging a corner. The ray fades after a short idle period.
+- Refined panel edges, selection styling and rounded thumbnails. Text is larger where space allows, and custom color schemes are supported. Library names align left under cover art and center under standalone icons.
+- Reduced rendering overhead for regular video playback and some flat 2D-to-3D modes. Comparison tests were completed on Quest 2.
+- Improved 120 Hz playback. The refresh rate steps down when playback persistently falls behind. Briefly showing the controls no longer triggers a step down, and the zero-parallax controls redraw less often.
+- When decoding falls behind, compatible H.264 and HEVC videos can skip some non-reference frames to limit audio and video drift. The original clip still needs retesting on the QIYU A091.
+- Fixed a false video-changed error on YouTube and other webpages when the same video reloads during URL-based handoff. Tested on Quest 3.
+- Fixed playback stopping when some spliced videos change resolution midstream. The player attempts to reload and continue.
+- Fixed some DLNA videos failing to open when the server returns empty metadata for the requested item. The player checks the item's parent folder when it is known.
+- Fixed the puzzle reference thumbnail floating above the picture when only the other controller is tracked.
+
 ## 0.18.10 — 2026-11-25
 
 - The picture panel adds a Plugins tab with Anime4K for 2D animation. Choose a mode and tier after enabling it. Settings are remembered per video. While Anime4K is enabled, the picture panel opens on Plugins. Anime4K turns off under excessive load and cannot run alongside frame interpolation.

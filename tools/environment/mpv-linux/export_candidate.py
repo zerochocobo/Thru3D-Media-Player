@@ -99,6 +99,7 @@ def main():
         'layer_cadence_patch_sha256': sha(ROOT/'native/mpv/patches/0006-mpv-layer-cadence.patch'),
         'mediacodec_priority_patch_sha256': sha(ROOT/'native/mpv/patches/0007-ffmpeg-mediacodec-priority.patch'),
         'mediacodec_stall_patch_sha256': sha(ROOT/'native/mpv/patches/0009-ffmpeg-mediacodec-stall.patch'),
+        'mediacodec_skip_patch_sha256': sha(ROOT/'native/mpv/patches/0010-ffmpeg-mediacodec-skip-nonref.patch'),
         'open_http_status_patch_sha256': sha(ROOT/'native/mpv/patches/0008-mpv-open-http-status.patch'),
         'dovi_rpu_patch_sha256': sha(ROOT/'native/mpv/patches/0002-ffmpeg-profile5-rpu.patch'),
         'architecture': 'arm64-v8a', 'elf_page_alignment': 16384,

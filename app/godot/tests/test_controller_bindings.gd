@@ -688,6 +688,7 @@ func video_triggers() -> void:
 	video.geometry = 0; video._apply_geometry(); video.panel.visible = true
 	var eye := Vector3(0, 1.6, 0)
 	main.rays.right_hand = [eye, (video.panel.to_global(video.screen_corner(1)) - eye).normalized()]
+	main._ray_reveal.clear() # An earlier grip tap's ray would fade after its idle deadline; no frames run here.
 	main._update_corner_hover()
 	check(video.hovered_corner == -1, "Hidden controls have no invisible corner affordance")
 	menu.visible = true; menu.refresh(); main._update_corner_hover()

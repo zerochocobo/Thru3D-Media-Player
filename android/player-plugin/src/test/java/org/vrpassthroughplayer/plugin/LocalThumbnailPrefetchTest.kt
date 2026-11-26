@@ -142,4 +142,16 @@ class LocalThumbnailPrefetchTest {
             PlaybackPrivacy.protectedFavorites = previousProtected
         }
     }
+
+    @Test fun previewsAreCroppedUnlessWholeIsAsked() {
+        assertFalse(LocalThumbnailPrefetch.shownWhole(600, 900, false))
+        assertFalse(LocalThumbnailPrefetch.shownWhole(8192, 4096, false))
+        assertTrue(LocalThumbnailPrefetch.shownWhole(8192, 4096, true))
+        assertTrue(LocalThumbnailPrefetch.shownWhole(600, 900, true))
+        assertFalse(LocalThumbnailPrefetch.shownWhole(1920, 1080, true))
+        assertEquals(120 to 180, LocalThumbnailPrefetch.wholeSize(600, 900))
+        assertEquals(180 to 180, LocalThumbnailPrefetch.wholeSize(500, 500))
+        assertEquals(320 to 160, LocalThumbnailPrefetch.wholeSize(8192, 4096))
+        assertEquals(320 to 80, LocalThumbnailPrefetch.wholeSize(800, 200))
+    }
 }

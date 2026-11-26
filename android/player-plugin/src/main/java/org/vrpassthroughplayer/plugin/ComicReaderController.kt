@@ -31,6 +31,10 @@ internal class ComicReaderController(private val context: ()->Context?,private v
     @Volatile var wantsAudio=false;private set
     @Volatile private var audioAllowed=false
     private var revision=0L
+    /** Utterances played to their end; a book reader advances on each one. */
+    private var finished=0L
+    /** Book pages are read in order: prepare their opening only, the reader asks for each next utterance. */
+    private var ordered=false
     private val pages=HashMap<Int,JSONObject>()
     private val pageKeys=HashMap<Int,String>()
     private val pageCache=ComicPageCache()
@@ -99,7 +103,7 @@ internal class ComicReaderController(private val context: ()->Context?,private v
     private fun schedulePageAudio()=synchronized(lock){
         if(closed||!allowed()||!speechEnabled||document==0L)return
         val requests=synchronized(lock){pages.toSortedMap().flatMap {(page,data)->val rows=data.optJSONArray("blocks") ?: JSONArray()
-            (0 until rows.length()).mapNotNull {selected(document,page,rows.getJSONObject(it).optInt("id",-1))}}.take(8)}
+            (0 until rows.length()).mapNotNull {selected(document,page,rows.getJSONObject(it).optInt("id",-1))}}.take(if(ordered)2 else 8)}
         for(request in requests)prefetch.prepare(request,false)
     }
     fun prepare(epoch: Long,page: Int,block: Int): Boolean {
@@ -109,6 +113,11 @@ internal class ComicReaderController(private val context: ()->Context?,private v
         prefetch.prepare(request,true);return true
     }
 
+    /** Queues a block behind current work, so the utterance being read keeps synthesizing. */
+    fun queue(epoch: Long,page: Int,block: Int): Boolean {
+        if(closed||!allowed()||!speechEnabled)return false
+        prefetch.prepare(selected(epoch,page,block) ?: return false,false);return true
+    }
     private fun speechStatus(value: String)=synchronized(lock){speechState=value;revision++}
     fun warm(){
         if(closed||!allowed())return
@@ -116,11 +125,14 @@ internal class ComicReaderController(private val context: ()->Context?,private v
         ocrWorker.execute {runCatching {ensureEngine { !closed&&allowed()&&ocrToken.get()==token }}}
         if(speechEnabled)prefetch.warm()
     }
-    fun begin(epoch: Long): Boolean {
+    /** [ocr] is false for documents whose text arrives through [text]; no recognizer is loaded for them. */
+    fun begin(epoch: Long,ocr: Boolean=true): Boolean {
         if(closed||!allowed()||epoch<=0)return false
         cancelSpeech();ocrWorker.queue.clear()
         synchronized(lock){document=epoch;routing.page(epoch);pages.clear();pageKeys.clear();requested.clear();aheadReady=0;aheadAudioKeys.clear();val token=ocrToken.incrementAndGet();ComicOcrNative.cancel(handle,token);state="recognizing";revision++}
         val token=ocrToken.get()
+        ordered=!ocr
+        if(!ocr){if(speechEnabled)prefetch.warm();return true}
         // Load/verify weights while Godot prepares the page pixels, not afterwards.
         ocrWorker.execute {runCatching {ensureEngine { !closed&&allowed()&&document==epoch&&ocrToken.get()==token }}}
         if(speechEnabled)prefetch.warm()
@@ -178,11 +190,30 @@ internal class ComicReaderController(private val context: ()->Context?,private v
         }
         return true
     }
+    /** A page whose blocks are already known. [key] identifies the page's text for the speech cache. */
+    fun text(epoch: Long,index: Int,key: String,json: String,ahead: Boolean=false): Boolean {
+        if(closed||!allowed()||epoch!=document||index !in 0..1||key.isEmpty())return false
+        val result=runCatching {JSONObject(json)}.getOrNull() ?: return false
+        synchronized(lock){
+            if(epoch!=document)return false
+            if(ahead){
+                val rows=result.optJSONArray("blocks") ?: JSONArray()
+                (0 until rows.length()).map {rows.getJSONObject(it)}.filter {speechEnabled&&!routing.translated&&it.optBoolean("eligible")}.take(2).forEach {row->
+                    val lang=ComicSpeechRouting.originalLanguage(language,row.getString("language"),row.getString("text"))
+                    prefetch.prepare(ComicSpeechPrefetch.Request(ComicPageCache.speechKey(key,row.getInt("id"),voice,lang),row.getString("text"),lang,voice),false)
+                }
+                return true
+            }
+            pageKeys[index]=key;pages[index]=result;state="ready";ordered=true;revision++
+        }
+        schedulePageAudio()
+        return true
+    }
     fun status(epoch: Long,known: Long): String=synchronized(lock){
         if(closed)return "{}"
         val cached=prefetch.snapshot()
         val keys=pages.flatMap {(page,data)->val rows=data.optJSONArray("blocks") ?: JSONArray();(0 until rows.length()).mapNotNull {selected(document,page,rows.getJSONObject(it).optInt("id",-1))?.key}}
-        val j=JSONObject().put("ready_audio",prefetch.readyCount(keys)).put("audio_bytes",cached.second).put("first_audio_ms",firstAudioMs).put("hover_audio_ms",hoverAudioMs).put("warm_hit",warmHit).put("epoch",document).put("revision",revision).put("state",state).put("speech",speechState)
+        val j=JSONObject().put("ready_audio",prefetch.readyCount(keys)).put("audio_bytes",cached.second).put("first_audio_ms",firstAudioMs).put("hover_audio_ms",hoverAudioMs).put("warm_hit",warmHit).put("epoch",document).put("revision",revision).put("state",state).put("speech",speechState).put("finished",finished)
         if(BuildConfig.DEBUG)j.put("preparation_error",prefetch.lastFailure).put("tts_runtime",runtime.stats())
             .put("ocr_cache_hits",cacheHits).put("ocr_cache_pages",pageCache.size()).put("ahead_ready",aheadReady).put("ahead_audio_ready",prefetch.readyCount(aheadAudioKeys)).put("all_ready_audio",cached.first)
             .put("ocr_preparation_ms",JSONObject().put("verify",ocrVerifyMs).put("load",ocrLoadMs))
@@ -216,7 +247,12 @@ internal class ComicReaderController(private val context: ()->Context?,private v
                 check(active());speechStatus("preparing")
                 val pcm=NarrationPcm(tempo)
                 try {
-                    VoicePreviewStream(::active,output(token,volume,::active),9600).use {stream->
+                    // Counted when playback reaches the end: closing the output releases audio focus, which cancels this token.
+                    val sink=output(token,volume,::active)
+                    val counted=object:VoicePreviewStream.Output by sink {
+                        override fun finish(samples: Int){sink.finish(samples);synchronized(lock){if(speechToken.get()==token)finished++}}
+                    }
+                    VoicePreviewStream(::active,counted,9600).use {stream->
                         fun drain(){
                             for(chunk in pcm.chunks){
                                 var at=0

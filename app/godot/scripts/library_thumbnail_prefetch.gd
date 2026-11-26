@@ -301,7 +301,7 @@ func _start(item: Dictionary, videos: Array, samples: int) -> void:
 	var request := {"uri": item.uri, "kind": item.kind, "visit": _visit_id,
 		"sample_limit": samples, "videos": videos, "size": item.get("size", -1),
 		"resource": item.get("resource", ""), "sidecar": item.get("sidecar", ""),
-		"sidecar_size": item.get("sidecar_size", -1)}
+		"sidecar_size": item.get("sidecar_size", -1), "whole": Cache.whole}
 	var id: int = menu.platform.local_thumbnail_request(JSON.stringify(request))
 	if id <= 0:
 		_note_status("worker_busy")

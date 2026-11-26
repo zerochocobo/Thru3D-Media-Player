@@ -221,7 +221,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     private val webBrowser = WebBrowser { activity }.apply {
         translate = { text -> activity?.applicationContext?.let { UiLanguage.tr(it, text, text) } ?: text }
     }
-    private val webVideoResolver = WebVideoResolver({ activity?.applicationContext }, sources::rememberWebVideo, webBrowser::cookiesForExtraction, webBrowser::mediaForExtraction, webBrowser::mediaForSelectedExtraction)
+    private val webVideoResolver = WebVideoResolver({ activity?.applicationContext }, sources::rememberWebVideo, webBrowser::cookiesForExtraction, webBrowser::mediaForExtraction, webBrowser::mediaForSelectedExtraction, webBrowser::pageForExtraction)
     private val bilibiliDanmaku = BilibiliDanmaku()
     @UsedByGodot fun web_browser_navigate(url: String) { if (!closed.get()) webBrowser.navigate(url) }
     @UsedByGodot fun web_browser_status(): String {
@@ -649,6 +649,9 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         SignalInfo("photo_depth_refined", Int::class.javaObjectType, String::class.java),
         SignalInfo("media_list", Int::class.javaObjectType, String::class.java),
         SignalInfo("archive_ready", Int::class.javaObjectType, String::class.java),
+        SignalInfo("book_ready", Int::class.javaObjectType, String::class.java),
+        SignalInfo("book_page", Int::class.javaObjectType, Int::class.javaObjectType, String::class.java),
+        SignalInfo("book_found", Int::class.javaObjectType, Int::class.javaObjectType, String::class.java),
         SignalInfo("local_video_selected", String::class.java),
         SignalInfo("local_video_access", Int::class.javaObjectType, String::class.java),
         SignalInfo("media_state", Int::class.javaObjectType, String::class.java),
@@ -1116,6 +1119,24 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun comic_reader_page(epoch: Long,page: Int,width: Int,height: Int,rgb: ByteArray): Boolean = !closed.get() && mpv.comicPage(epoch,page,width,height,rgb)
     @UsedByGodot fun comic_reader_ahead(epoch: Long,page: Int,width: Int,height: Int,rgb: ByteArray): Boolean = !closed.get() && mpv.comicAhead(epoch,page,width,height,rgb)
     @UsedByGodot fun comic_reader_warm() { if(!closed.get())mpv.comicWarm() }
+    /** Reading mode. A book is opened for the reader's type settings; its pages are drawn on request. */
+    private val books = BookBridge({ activity?.applicationContext },
+        { id, json -> if (!closed.get()) emitSignal("book_ready", id, json) },
+        { id, page, path -> if (!closed.get()) emitSignal("book_page", id, page, path) },
+        { id, token, json -> if (!closed.get()) emitSignal("book_found", id, token, json) })
+    @UsedByGodot fun book_open(uri: String, style: String): Int = if (closed.get()) -1 else books.open(sources.nextId(), uri, style)
+    @UsedByGodot fun book_render(session: Int, page: Int, edge: Int): Boolean = !closed.get() && books.render(session, page, edge)
+    @UsedByGodot fun book_discard(path: String) = books.discard(path)
+    @UsedByGodot fun book_close(session: Int) = books.close(session)
+    @UsedByGodot fun book_search(session: Int, query: String, token: Int): Boolean = !closed.get() && books.search(session, query, token)
+    @UsedByGodot fun book_excerpt(session: Int, at: String): String = if (closed.get()) "" else books.excerpt(session, at)
+    /** Books read their own text aloud through the shared reading voice, without recognition. */
+    @UsedByGodot fun book_reader_begin(epoch: Long): Boolean = !closed.get() && mpv.comicBegin(epoch,false)
+    @UsedByGodot fun book_reader_next(epoch: Long,page: Int,block: Int): Boolean = !closed.get() && mpv.comicQueue(epoch,page,block)
+    /** A page's read-aloud blocks as the reader follows them: ids, words and the paragraph's place on the page. */
+    @UsedByGodot fun book_text(session: Int, page: Int): String = if (closed.get()) "" else books.text(session, page) ?: ""
+    @UsedByGodot fun book_reader_page(epoch: Long,region: Int,session: Int,page: Int,ahead: Boolean): Boolean =
+        !closed.get() && (books.text(session,page)?.let { mpv.comicText(epoch,region,"book:$session:$page",it,ahead) } ?: false)
     @UsedByGodot fun comic_reader_status(epoch: Long,revision: Long): String = if(closed.get()) "{}" else mpv.comicStatus(epoch,revision)
     @UsedByGodot fun comic_reader_read(epoch: Long,page: Int,block: Int,voice: String,volume: Double): Boolean = !closed.get() && mpv.comicRead(epoch,page,block,voice,volume)
     @UsedByGodot fun comic_reader_stop() { if(!closed.get())mpv.comicStop() }
@@ -1138,6 +1159,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun get_mpv_subtitle_bitmap(id: Int, version: Long): ByteArray = if (closed.get()) ByteArray(0) else mpv.subtitleBitmap(id, version)
     @UsedByGodot fun get_mpv_subtitle_bitmap_tinted(id: Int, version: Long, rgb: Int): ByteArray = if (closed.get()) ByteArray(0) else mpv.subtitleBitmap(id, version, rgb, 1f)
     @UsedByGodot fun get_mpv_subtitle_bitmap_styled(id: Int, version: Long, rgb: Int, opacity: Float): ByteArray = if (closed.get()) ByteArray(0) else mpv.subtitleBitmap(id, version, rgb, opacity)
+    @UsedByGodot fun set_mpv_color_levels(id: Int, count: Int): Boolean =
+        !closed.get() && mpv.setColorLevels(id, count)
     @UsedByGodot fun set_mpv_depth_view(id: Int, shift: Double, convergence: Double): Boolean =
         !closed.get() && mpv.setDepthView(id, shift, convergence)
     @UsedByGodot fun set_mpv_depth_foreground(id: Int, scale: Double): Boolean =
@@ -1334,6 +1357,6 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         WebBrowserDepthBridge.closeAll()
         WebBrowserQualityBridge.closeAll()
         activity?.let { ExternalInputProbe.close(it); CaptureProbe.close(it) }
-        if (closed.compareAndSet(false, true)) { localThumbnails.close(); dlna_receiver_enable(false); airplayReceiver.close(); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); sceneFiles.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); backgroundImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
+        if (closed.compareAndSet(false, true)) { localThumbnails.close(); dlna_receiver_enable(false); airplayReceiver.close(); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); books.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); sceneFiles.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); backgroundImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

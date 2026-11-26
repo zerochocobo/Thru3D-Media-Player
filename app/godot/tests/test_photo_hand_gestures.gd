@@ -120,7 +120,7 @@ func check_main(origin: Vector3, left: Vector3) -> void:
 	for hand in main.hand_pointers:
 		main.hand_pointers[hand].source = "hand"
 		main.hand_pointers[hand].ray = [Vector3(0,1.6,0), Vector3.RIGHT]
-	check(photo.screen_curve == Photo.DEFAULT_CURVE and photo._flat.size.x > 3.0, "Fresh photo has a large slightly curved default screen")
+	check(absf(photo.screen_curve - Photo.DEFAULT_CURVE) < 0.01 and photo._flat.size.x > 3.0, "Fresh photo has a large slightly curved default screen")
 	for preferred in ["right_hand", "left_hand", "both"]:
 		main.controller_bindings.pinch_hand = preferred
 		for side in ["left_hand", "right_hand"]:

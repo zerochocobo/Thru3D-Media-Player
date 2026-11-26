@@ -35,6 +35,10 @@ internal object RenderBridgeNative {
     @JvmStatic external fun captureTexture(handle: Long, texture: Int, stageInputs: Boolean): Long
     /** Constant per-slot opaque R8 shares the color-copy fence; no inference readback. */
     @JvmStatic external fun captureOpaqueTexture(handle: Long, texture: Int): Long
+    /** 2x box reductions (0..4) each later opaque texture capture adds before its copy fence. */
+    @JvmStatic external fun setColorLevels(handle: Long, count: Int)
+    /** The held color's reductions, largest first; empty without them. */
+    @JvmStatic external fun levelTextures(handle: Long, token: Long): IntArray
     @JvmStatic external fun stats(handle: Long): String
     /** Frame GPU timestamps on the creating GL thread: 1 begin/poll, 0 end, -1 dispose.
      * Positive is a new measured ms value, zero is pending, negative is unavailable. */

@@ -18,6 +18,7 @@ func _run() -> void:
 	library._video_settings_expanded["depth"] = true
 	var menu := Menu.new(); menu.state_provider = func(): return state
 	camera.add_child(menu); menu.set_process(false); menu.position.y = -0.45; menu.section = 1
+	menu._depth_expanded = true # The setting sits in the folded 2D to 3D group of the player settings.
 	for language in ["zh", "zh_Hant", "ja", "en"]:
 		I18n.use(language)
 		for kind in ["library", "player"]:

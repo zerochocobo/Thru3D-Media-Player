@@ -106,7 +106,7 @@ const FAMILIES := {
 static var events := Events.new()
 static var current := DEFAULT
 static var revision := 0
-static var _colors: Dictionary = ORIGINAL
+static var _colors: Dictionary = _live(ORIGINAL)
 static var custom_data: Dictionary = {}
 
 static func normalize(value: Variant) -> String:
@@ -117,7 +117,7 @@ static func set_custom(value: Variant) -> bool:
 	if data == custom_data: return false
 	custom_data = data
 	if current == CUSTOM:
-		_colors = palette(CUSTOM); revision += 1; events.changed.emit()
+		_colors = _live(palette(CUSTOM)); revision += 1; events.changed.emit()
 	return true
 
 static func custom_seeds(data: Dictionary) -> Dictionary:
@@ -136,7 +136,7 @@ static func use(value: Variant) -> bool:
 	var id := normalize(value)
 	if current == id: return false
 	current = id
-	_colors = ORIGINAL if id == DEFAULT else palette(id)
+	_colors = _live(palette(id))
 	revision += 1
 	events.changed.emit()
 	return true
@@ -147,6 +147,54 @@ static func palette(value: Variant) -> Dictionary:
 	if id == DEFAULT: return result
 	if id == CUSTOM: return custom_palette(custom_data)
 	return _from_scheme(SCHEMES[id])
+
+## What the menus actually draw, for any palette including the viewer's own: controls stand a
+## little further off the panel, and the selected and hover fills are quiet tints of the accent,
+## so one selected look serves every theme. palette() stays the palette as designed.
+const TILE_LIFT := 1.55
+# Many choices (segmented picture options, switches) mark the selection by fill alone, with
+# white ink: the selected tint must stand clearly off the lifted controls around it.
+const SELECTED_TINT := 0.30
+const HOVER_TINT := 0.42
+static func _live(source: Dictionary) -> Dictionary:
+	var colors := source.duplicate()
+	var panel: Color = colors.panel
+	var accent: Color = colors.accent
+	var ink: Color = colors.text
+	# Text stays as readable on every derived surface as the palette made it on the panel.
+	var floor := minf(4.5, _contrast(ink, panel))
+	for role in FAMILIES.tile:
+		# The browser's address field keeps its tint: pushed further, a blue field turns loud.
+		if role == "web_input": continue
+		var tone: Color = colors[role]
+		var lift := TILE_LIFT
+		var moved := tone
+		while true:
+			moved = Color(panel.r + (tone.r - panel.r) * lift, panel.g + (tone.g - panel.g) * lift, panel.b + (tone.b - panel.b) * lift).clamp()
+			if lift <= 1.0 or _contrast(ink, moved) >= minf(floor, _contrast(ink, tone)): break
+			lift = maxf(1.0, lift - 0.11)
+		colors[role] = Color(moved, tone.a)
+	# Selection and hover never stand less clearly off a control than the palette designed them to.
+	var selected := _distinct(panel, accent, SELECTED_TINT, colors.tile, _contrast(source.selected, source.tile), ink, floor)
+	var hover := _distinct(panel, accent, HOVER_TINT, colors.tile, _contrast(source.hover, source.tile), ink, floor)
+	for role in FAMILIES.selected: colors[role] = Color(selected, colors[role].a)
+	for role in FAMILIES.hover: colors[role] = Color(hover, colors[role].a)
+	return colors
+
+## The panel tinted towards the accent from [amount] up, until it stands off [tile] at least as
+## much as [designed], while text on it stays readable.
+static func _distinct(panel: Color, accent: Color, amount: float, tile: Color, designed: float, ink: Color, floor: float) -> Color:
+	var tone := _tint(panel, accent, amount, ink, floor)
+	while _contrast(tone, tile) < designed and amount < 0.6:
+		amount += 0.03
+		var next := panel.lerp(accent, amount)
+		if _contrast(ink, next) < floor: break
+		tone = next
+	return tone
+
+static func _tint(panel: Color, accent: Color, amount: float, ink: Color, floor: float) -> Color:
+	while amount > 0.02 and _contrast(ink, panel.lerp(accent, amount)) < floor: amount *= 0.75
+	return panel.lerp(accent, amount)
 
 static func _from_scheme(scheme: Dictionary) -> Dictionary:
 	var result := ORIGINAL.duplicate()

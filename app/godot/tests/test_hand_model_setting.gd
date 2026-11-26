@@ -32,6 +32,9 @@ func run() -> void:
 	library.settings_provider = func(): return {"hand_model": "hide"}
 	library.section = Library.Section.SETTINGS; library.tab = Library.DISPLAY_TAB
 	library.show(); library.refresh()
+	# The hand model sits in the Interface and control bar group, which opens collapsed.
+	var group: int = library.rows.find_custom(func(item): return item.get("display_settings_group") == "interface")
+	if group >= 0: library._activate(Library.ROW_BASE + group)
 	var row: Dictionary = {}
 	for item in library.rows:
 		if item.get("key", "") == "hand_model": row = item

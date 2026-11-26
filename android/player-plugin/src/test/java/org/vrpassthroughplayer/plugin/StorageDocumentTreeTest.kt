@@ -46,7 +46,7 @@ class StorageDocumentTreeTest {
             provider.rows[uri(root) to true] = listOf(
                 StorageDocumentTree.Entry(root + "电影🎬.mkv", "电影🎬.mkv", false, 6_000_000_000L),
                 StorageDocumentTree.Entry(root + "Movies", "Movies", true),
-                StorageDocumentTree.Entry(root + "notes.txt", "notes.txt", false),
+                StorageDocumentTree.Entry(root + "notes.nfo", "notes.nfo", false),
                 StorageDocumentTree.Entry("other:outside.mp4", "outside.mp4", false))
         }
         val tree = StorageDocumentTree(provider)
@@ -70,7 +70,7 @@ class StorageDocumentTreeTest {
             StorageDocumentTree.Entry(root + "film.srt", "film.srt", false, 100))
         provider.rows[uri(root, root + "Subtitles") to true] = listOf(
             StorageDocumentTree.Entry(root + "Subtitles/字幕.ass", "字幕.ass", false, 100),
-            StorageDocumentTree.Entry(root + "Subtitles/notes.txt", "notes.txt", false, 100))
+            StorageDocumentTree.Entry(root + "Subtitles/notes.nfo", "notes.nfo", false, 100))
         val tree = StorageDocumentTree(provider)
         assertEquals(2, tree.root("1234-ABCD").length())
         val captions = SidecarSubtitles.directoryEntries(tree.filePath("/storage/1234-ABCD", "/storage/1234-ABCD", "1234-ABCD", false))

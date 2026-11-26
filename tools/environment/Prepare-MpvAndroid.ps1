@@ -38,6 +38,7 @@ if ($Candidate -eq 'SourceFrame') {
         $sourceManifest.layer_cadence_patch_sha256 -ne (Get-FileHash (Join-Path $workspace 'native\mpv\patches\0006-mpv-layer-cadence.patch')).Hash.ToLowerInvariant() -or
         $sourceManifest.mediacodec_priority_patch_sha256 -ne (Get-FileHash (Join-Path $workspace 'native\mpv\patches\0007-ffmpeg-mediacodec-priority.patch')).Hash.ToLowerInvariant() -or
         $sourceManifest.mediacodec_stall_patch_sha256 -ne (Get-FileHash (Join-Path $workspace 'native\mpv\patches\0009-ffmpeg-mediacodec-stall.patch')).Hash.ToLowerInvariant() -or
+        $sourceManifest.mediacodec_skip_patch_sha256 -ne (Get-FileHash (Join-Path $workspace 'native\mpv\patches\0010-ffmpeg-mediacodec-skip-nonref.patch')).Hash.ToLowerInvariant() -or
         $sourceManifest.open_http_status_patch_sha256 -ne (Get-FileHash (Join-Path $workspace 'native\mpv\patches\0008-mpv-open-http-status.patch')).Hash.ToLowerInvariant() -or
         $sourceManifest.dovi_rpu_patch_sha256 -ne (Get-FileHash (Join-Path $workspace 'native\mpv\patches\0002-ffmpeg-profile5-rpu.patch')).Hash.ToLowerInvariant() -or
         $sourceManifest.source_lock_sha256 -ne (Get-FileHash (Join-Path $workspace 'third_party\mpv\source-lock.json')).Hash.ToLowerInvariant() -or

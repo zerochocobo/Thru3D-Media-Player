@@ -60,7 +60,7 @@ func _run() -> void:
 		var model: Node=host.session; var id: String=host.game_id
 		check(model.pieces.all(func(p):return is_zero_approx(p.turn_angle)),"Every new fragment starts upright")
 		host.tick(0.016)
-		check(host.dock._buttons.size()==(6 if spherical else 5),"Reference, music and batch controls live beside the persistent menu button")
+		check(host.dock._buttons.filter(func(b):return int(b.target)!=host.dock.app_actions.STATUS and not host.dock.app_actions.is_action(int(b.target))).size()==(6 if spherical else 5),"Reference, music and batch controls live beside the persistent menu button")
 		var music_button: Dictionary=host.dock._buttons.filter(func(b):return b.target==6)[0]
 		check(host.dock._buttons.all(func(b):return b.node.position.x>=music_button.node.position.x),"Music is the leftmost persistent shortcut")
 		var reference_enabled: bool=host.reference_preview.enabled; host.dock._activate(5)

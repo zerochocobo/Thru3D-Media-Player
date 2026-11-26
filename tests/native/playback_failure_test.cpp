@@ -24,5 +24,10 @@ int main() {
     assert(playback_exception_failure(kSourceDimensionsExceeded).reason == "resolution_unsupported");
     assert(source_dimensions_supported(7680, 4320) && source_dimensions_supported(8192, 4320) && source_dimensions_supported(5760, 5760));
     assert(!source_dimensions_supported(7680, 7680) && !source_dimensions_supported(8200, 100) && !source_dimensions_supported(0, 1080));
-    std::cout << "Playback failure native checks passed: 18\n";
+    for (const char* change : {kSourceSizeChanged, kSourceRotationChanged, kSourceFrameFormatChanged})
+        assert(source_format_changed(change) && playback_exception_failure(change).reason == "source_format_changed");
+    assert(!source_format_changed("MPV immutable color render: something happened"));
+    assert(std::string(render_failure_reason(kSourceSizeChanged)) == "source_format_changed" && std::string(render_failure_reason(kSourceFrameLost)) == "source_frame_lost");
+    assert(std::string(render_failure_reason("MPV producer completion fence failed")) == "video_output_failed");
+    std::cout << "Playback failure native checks passed: 22\n";
 }

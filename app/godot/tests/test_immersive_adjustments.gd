@@ -73,7 +73,7 @@ func _run() -> void:
 	centre(main)
 	# Unmodified sticks retain seek and the original zoom direction.
 	main._process_stick_input(Vector2(.99, 0), Vector2.ZERO, .05)
-	check(main.seeks.size() == 1 and main.seeks[0][2] == 20000, "Bare left stick retains forward seek")
+	check(main.seeks.size() == 1 and main.seeks[0][2] == preload("res://scripts/seek_step.gd").milliseconds(main.settings), "Bare left stick retains forward seek")
 	centre(main); main._process_stick_input(Vector2.ZERO, Vector2(0, 1), .05)
 	check(video.view_zoom > 0, "Bare right stick retains original zoom direction")
 	check(main._immersive_adjustment_sample()[0].key == "view_zoom", "Bare zoom shows its own gauge")

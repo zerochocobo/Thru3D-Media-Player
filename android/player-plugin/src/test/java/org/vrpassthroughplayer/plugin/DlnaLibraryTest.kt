@@ -175,6 +175,9 @@ class DlnaLibraryTest {
                         } else (if (mode == "removed_video") "" else video(directoryVideoId, parentCaptions, directoryResource)) +
                             if (includeOther) video(id = "other") else ""
                         val response = if (metadata && mode == "bad_count") soap(xml(entries), returned = 0)
+                            else if (metadata && mode == "declared_empty") soap(xml(""), returned = 1)
+                            else if (metadata && mode == "declared_empty_result") soap("", returned = 1)
+                            else if (metadata && mode == "declared_two_empty") soap(xml(""), returned = 2)
                             else soap(xml(entries))
                         MediaServerClientTest.Reply(body = response.toByteArray())
                     }
@@ -304,6 +307,56 @@ class DlnaLibraryTest {
         }
     }
 
+    @Test fun declaredButEmptyMetadataConfirmsTheObjectOnlyThroughAKnownParent() {
+        CaptionFixture().use { f ->
+            val library = f.library()
+            for (mode in listOf("declared_empty", "declared_empty_result")) {
+                // Without a known parent the original count failure stands and nothing else is requested.
+                library.clearPlaybackReferences()
+                f.mode = mode
+                f.requests.clear()
+                assertEquals("DLNA server unavailable", assertThrows(DlnaClient.EmptyMetadataResponse::class.java) {
+                    library.playable("dlna://id/v_1")
+                }.message)
+                assertEquals(listOf("metadata:v_1"), f.requests)
+
+                f.mode = "full"
+                f.browse(library)
+                f.mode = mode
+                f.directoryResource = "/movie.mp4?token=$mode"
+                f.requests.clear()
+                assertEquals(f.fixture.url + f.directoryResource, library.playable("dlna://id/v_1"))
+                assertEquals(listOf("metadata:v_1", "children:0"), f.requests)
+                f.directoryResource = "/movie.mp4"
+            }
+            f.mode = "declared_empty"
+            f.directoryVideoId = "different"
+            f.requests.clear()
+            assertEquals("DLNA item unavailable", assertThrows(IllegalStateException::class.java) {
+                library.playable("dlna://id/v_1")
+            }.message)
+            assertEquals(listOf("metadata:v_1", "children:0"), f.requests)
+            f.directoryVideoId = "v_1"
+            f.directoryResource = "file:///movie.mp4"
+            assertEquals("DLNA item unavailable", assertThrows(IllegalStateException::class.java) {
+                library.playable("dlna://id/v_1")
+            }.message)
+            f.directoryResource = "/movie.mp4"
+            f.parentAvailable = false
+            assertThrows(java.io.IOException::class.java) { library.playable("dlna://id/v_1") }
+            f.parentAvailable = true
+            // Other count mismatches keep failing before any parent request.
+            for (mode in listOf("declared_two_empty", "bad_count")) {
+                f.mode = mode
+                f.requests.clear()
+                assertEquals("DLNA server unavailable", assertThrows(IllegalStateException::class.java) {
+                    library.playable("dlna://id/v_1")
+                }.message)
+                assertEquals(listOf("metadata:v_1"), f.requests)
+            }
+        }
+    }
+
     @Test fun playbackDiagnosticsCompareTheServerResponseWithThePlayerMatch() {
         val previousLog = DlnaClient.log
         val previousMode = PlaybackPrivacy.mode
@@ -353,6 +406,13 @@ class DlnaLibraryTest {
                 assertThrows(IllegalStateException::class.java) { library.playable("dlna://id/v_1") }
                 assertTrue(messages.single().contains("phase=response_counts http=200 pages=1 didl_objects=1 page_declared=0 page_objects=1"))
                 assertTrue(messages.single().endsWith("parent=not_queried"))
+
+                f.mode = "declared_empty"
+                messages.clear()
+                assertEquals(f.fixture.url + f.directoryResource, library.playable("dlna://id/v_1"))
+                assertTrue(messages.single().startsWith("playback_lookup outcome=parent_selected metadata={phase=response_counts http=200"))
+                assertTrue(messages.single().contains("page_declared=1 page_objects=0"))
+                assertTrue(messages.single().endsWith("parsed_matches=1 parsed_videos=1 parsed_http_videos=1}"))
 
                 f.mode = "empty"
                 f.parentAvailable = false

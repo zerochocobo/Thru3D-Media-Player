@@ -50,6 +50,8 @@ func _run() -> void:
 	viewport.add_child(main)
 	main.set_process(false); main.video.set_process(false); main.photo.set_process(false); main.report_timer.stop()
 	main.xr_camera.fov = 70
+	# Open the library in front of the viewer as the app does; this harness starts with it closed.
+	if not main.recent_menu.visible: main._show_recent_menu()
 	await capture(viewport,main.xr_camera,main.recent_menu,"library-off")
 	main._on_session_control("follow")
 	main.xr_camera.transform = Transform3D(Basis.from_euler(Vector3(PI/2,.4,.6)),Vector3(2,.4,1))

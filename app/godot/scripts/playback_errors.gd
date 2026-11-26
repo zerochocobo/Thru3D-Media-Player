@@ -55,6 +55,8 @@ const REASONS := {
 	"decoder_capacity_exceeded": "The video exceeds this device's hardware decoding.",
 	"audio_output_failed": "Audio output could not be initialized.",
 	"video_output_failed": "Video output could not be initialized.",
+	"source_format_changed": "Video output could not be initialized.",
+	"source_frame_lost": "Video output could not be initialized.",
 	"output_timeout": "Video output timed out. Try opening the video again.",
 	"ai_gpu_unavailable": "AI passthrough GPU initialization failed. Turn it off to play the video.",
 	"ai_processing_failed": "AI passthrough failed. Turn it off to play the video."

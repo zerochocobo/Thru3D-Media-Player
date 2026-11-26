@@ -132,6 +132,11 @@ void set_decoder_rate(mpv_handle* core) {
     char stall[PROP_VALUE_MAX] = {};
     if (__system_property_get("debug.vrpp.mpv.emulate_decoder_stall", stall) > 0 && stall[0] == '1') setenv("THRU3D_MEDIACODEC_EMULATE_STALL", "1", 1);
     else unsetenv("THRU3D_MEDIACODEC_EMULATE_STALL");
+    // FFmpeg patch 0010 then skips non-reference pictures even while the decoder keeps up, so the
+    // skip can be checked on a headset whose decoder never falls behind.
+    char skip[PROP_VALUE_MAX] = {};
+    if (__system_property_get("debug.vrpp.mpv.skip_nonref", skip) > 0 && skip[0] == '1') setenv("THRU3D_MEDIACODEC_SKIP_NONREF", "1", 1);
+    else unsetenv("THRU3D_MEDIACODEC_SKIP_NONREF");
 #endif
     if (rate > 0) options += ",operating_rate=" + std::to_string(rate);
     mpv_set_property_string(core, "file-local-options/vd-lavc-o", options.c_str());
@@ -779,8 +784,8 @@ struct Source final {
         hardware_decoding.store(property(core, "hwdec-current").find("mediacodec") == 0);
         { std::lock_guard<std::mutex> lock(status_mutex); pixel_aspect = par; stereo_mode = stereo; }
         const auto previous = dimensions.load();
-        require(previous == 0 || previous == size, "MPV midstream size change requires a new format generation");
-        require(previous == 0 || source_rotation.load() == rotation, "MPV midstream rotation change requires a new format generation");
+        require(previous == 0 || previous == size, quest::kSourceSizeChanged);
+        require(previous == 0 || source_rotation.load() == rotation, quest::kSourceRotationChanged);
         source_rotation.store(rotation);
         dimensions.store(size); wake.notify_one();
         return true;
@@ -827,6 +832,16 @@ struct Source final {
             // sizes its clocks from observed load; a Quest 3 tester saw 8K60 stutter only in the
             // highest-bitrate motion (~40 Mbit/s) of a clip those players show smoothly.
             option("vd-lavc-o", "priority=0");
+            // Behind audio, let the decoder skip pictures nothing references (FFmpeg patch 0010 does
+            // it for MediaCodec), not only the VO drop decoded ones: a decoder slower than the source
+            // (Snapdragon 865 class at 8K 59.94) otherwise drifts further behind for good and shows
+            // a few frames a second.
+            const char* framedrop = "decoder+vo";
+#ifndef NDEBUG
+            char decoder_drop[PROP_VALUE_MAX] = {};
+            if (__system_property_get("debug.vrpp.mpv.decoder_framedrop", decoder_drop) > 0 && decoder_drop[0] == '0') framedrop = "vo";
+#endif
+            option("framedrop", framedrop);
             // Godot restores the per-eye display aspect. MPV must fill the packed FBO;
             // letterboxing here would change the eye rectangles before the VR shader splits them.
             option("keepaspect", "no");
@@ -1188,6 +1203,13 @@ struct Source final {
                     if (std::string_view(log->prefix) == "ffmpeg/video" &&
                         std::string_view(log->text).find("giving up on this decoder") != std::string_view::npos)
                         __android_log_print(ANDROID_LOG_WARN, "QuestMpvSource", "MediaCodec feed stalled; MPV moves to the next decoder");
+                    // FFmpeg patch 0010 skipped non-reference pictures to catch up. Only a count, so
+                    // logged under playback privacy too.
+                    long long skipped_pictures = 0;
+                    if (std::string_view(log->prefix) == "ffmpeg/video" &&
+                        std::sscanf(log->text, "Thru3D skipped %lld non-reference pictures", &skipped_pictures) == 1)
+                        __android_log_print(ANDROID_LOG_INFO, "QuestMpvSource", "Decoder skipped %lld non-reference pictures to catch up",
+                                            skipped_pictures);
                     if (quest::layer_video_chain_failed(layer(), software_layer, log->log_level <= MPV_LOG_LEVEL_ERROR,
                                                        log->prefix, log->text)) {
                         software_fallback.store(true);
@@ -1354,7 +1376,12 @@ struct Source final {
                     }
                 }
             }
-            if (render_failed.load()) set_state("failed", "Shared renderer failed; see render_error", 0, "video_output_failed", "output");
+            if (render_failed.load()) {
+                std::string cause;
+                { std::lock_guard<std::mutex> lock(frames_mutex); cause = render_error; }
+                set_state("failed", "Shared renderer failed; see render_error", 0,
+                    quest::render_failure_reason(cause), "output");
+            }
         } catch (const std::exception& failure) {
             const auto diagnosis = quest::playback_exception_failure(failure.what());
             set_state("failed", failure.what(), 0, diagnosis.reason, diagnosis.stage);
@@ -1641,7 +1668,7 @@ struct Source final {
                 const bool default_crop = ticket.crop_x0 == 0 && ticket.crop_y0 == 0 && ticket.crop_x1 == 0 && ticket.crop_y1 == 0;
                 const bool full_crop = ticket.crop_x0 == 0 && ticket.crop_y0 == 0 && ticket.crop_x1 == width && ticket.crop_y1 == height;
                 require(ticket.width == width && ticket.height == height && quest::frame_rotation(ticket.rotation_degrees) == rotation && (default_crop || full_crop),
-                        "MPV transformed source needs an explicit format mapping before publication");
+                        quest::kSourceFrameFormatChanged);
                 auto observed_epoch = last_epoch.load();
                 while (observed_epoch < ticket.source_epoch &&
                        !last_epoch.compare_exchange_weak(observed_epoch, ticket.source_epoch)) {}

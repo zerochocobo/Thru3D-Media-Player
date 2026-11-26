@@ -2,6 +2,117 @@
   "schema": 1,
   "entries": [
     {
+      "version": "0.18.11",
+      "date": "2026-11-26",
+      "title": {
+        "zh": "界面细化、预览显示与网页播放修正",
+        "zh_Hant": "介面細化、預覽顯示與網頁播放修正",
+        "en": "Interface refinements, preview options and web playback fixes",
+        "ja": "画面デザイン・プレビュー表示・ウェブ再生の改善"
+      },
+      "items": [
+        {
+          "id": "library-preview-shape",
+          "text": {
+            "zh": "新增「预览图形状」。资料库预览图默认裁剪填满，可切换为完整显示，对新生成的预览图生效。",
+            "zh_Hant": "新增「預覽圖形狀」。資料庫預覽圖預設裁切填滿，可切換為完整顯示，適用於新產生的預覽圖。",
+            "en": "Added Preview shape. Library previews crop to fill by default. Choose Whole picture to show the full image in newly generated previews.",
+            "ja": "「プレビューの形」を追加しました。ライブラリのプレビューは初期設定で枠いっぱいに切り抜かれます。画像全体の表示も選べ、新しく生成するプレビューに適用されます。"
+          }
+        },
+        {
+          "id": "web-pause-while-resolving",
+          "text": {
+            "zh": "新增「解析时暂停网页视频」，默认关闭。开启后，按网址解析前先暂停网页视频，内置播放器从暂停位置起播。",
+            "zh_Hant": "新增「解析時暫停網頁影片」，預設關閉。開啟後，依網址解析前先暫停網頁影片，內建播放器從暫停位置開始播放。",
+            "en": "Added Pause web video while resolving, off by default. When enabled, the web video pauses before URL-based resolution, and the built-in player starts at that position.",
+            "ja": "「解析中にウェブ動画を一時停止」を追加しました。初期設定はオフです。有効にすると、URLから再生情報を取得する前にウェブ動画を一時停止し、内蔵プレーヤーはその位置から再生します。"
+          }
+        },
+        {
+          "id": "grip-reveal-playback-ray",
+          "text": {
+            "zh": "播放时轻按握持键即可唤出手柄射线，直接拖动画面或拖动四角缩放，闲置后自动淡出。",
+            "zh_Hant": "播放時輕按握持鍵即可叫出控制器射線，直接拖曳畫面或拖曳四角縮放，閒置後自動淡出。",
+            "en": "Tap the grip button during playback to show that controller’s pointer ray. Use it to move the screen or resize it by dragging a corner. The ray fades after a short idle period.",
+            "ja": "再生中にグリップボタンを軽く押すと、そのコントローラーのレイが表示されます。画面を移動したり、四隅をドラッグして拡大・縮小したりできます。しばらく操作しないとレイは消えます。"
+          }
+        },
+        {
+          "id": "menu-visual-refinements",
+          "text": {
+            "zh": "细化面板边缘、选中状态和缩略图圆角，空间允许时放大控件文字，支持自定义配色。资料库有封面的卡片标题左对齐，纯图标条目标题居中。",
+            "zh_Hant": "細化面板邊緣、選取狀態與縮圖圓角，空間允許時放大控制項文字，支援自訂配色。資料庫有封面的卡片標題靠左對齊，純圖示項目的標題置中。",
+            "en": "Refined panel edges, selection styling and rounded thumbnails. Text is larger where space allows, and custom color schemes are supported. Library names align left under cover art and center under standalone icons.",
+            "ja": "パネルの縁、選択状態、サムネイルの角丸を整え、余裕がある箇所では文字を拡大しました。カスタム配色にも対応しています。ライブラリではカバー付き項目の名前を左揃え、アイコンだけの項目の名前を中央揃えにしました。"
+          }
+        },
+        {
+          "id": "video-rendering-efficiency",
+          "text": {
+            "zh": "降低普通视频和部分平面 2D 转 3D 的渲染开销，已在 Quest 2 完成对比测试。",
+            "zh_Hant": "降低一般影片與部分平面 2D 轉 3D 的渲染負擔，已在 Quest 2 完成對照測試。",
+            "en": "Reduced rendering overhead for regular video playback and some flat 2D-to-3D modes. Comparison tests were completed on Quest 2.",
+            "ja": "通常の動画再生と一部の平面動画の2D→3Dで描画負荷を削減しました。Quest 2で比較テストを実施しました。"
+          }
+        },
+        {
+          "id": "high-refresh-playback-protection",
+          "text": {
+            "zh": "改善 120 Hz 播放。视频持续跟不上时自动降档，避免控制栏短暂亮起就触发降档，并减少「无视差」控制栏的重复重绘。",
+            "zh_Hant": "改善 120 Hz 播放。影片持續跟不上時會自動降低更新率，避免控制列短暫出現就觸發降檔，並減少「無視差」控制列的重複繪製。",
+            "en": "Improved 120 Hz playback. The refresh rate steps down when playback persistently falls behind. Briefly showing the controls no longer triggers a step down, and the zero-parallax controls redraw less often.",
+            "ja": "120 Hzでの再生を改善しました。再生が継続して追いつかないときはリフレッシュレートを自動で下げます。操作バーが一時的に表示されても、それだけでは降下しなくなり、視差なしの操作バーの再描画も減らしました。"
+          }
+        },
+        {
+          "id": "decoder-non-reference-frame-skip",
+          "text": {
+            "zh": "兼容的 H.264 和 HEVC 片源在解码跟不上时可跳过部分非参考帧，减少音画持续偏离。奇遇 A091 原片待复测。",
+            "zh_Hant": "相容的 H.264 與 HEVC 片源在解碼跟不上時可略過部分非參考畫格，減少影音逐漸失去同步。奇遇 A091 的原始片源仍待複測。",
+            "en": "When decoding falls behind, compatible H.264 and HEVC videos can skip some non-reference frames to limit audio and video drift. The original clip still needs retesting on the QIYU A091.",
+            "ja": "デコードが追いつかない場合、対応するH.264とHEVCの動画で一部の非参照フレームをスキップし、映像と音声のずれが広がるのを抑えます。元の動画についてはQIYU A091での再確認が必要です。"
+          }
+        },
+        {
+          "id": "legacy-web-url-handoff-reload",
+          "text": {
+            "zh": "修复 YouTube 等网页按网址解析时，同一视频重新载入却误报「接管期间网页视频已变化」的问题。已在 Quest 3 测试。",
+            "zh_Hant": "修正 YouTube 等網頁依網址解析時，同一部影片重新載入卻被誤判為接管期間網頁影片已變更的問題。已在 Quest 3 測試。",
+            "en": "Fixed a false video-changed error on YouTube and other webpages when the same video reloads during URL-based handoff. Tested on Quest 3.",
+            "ja": "YouTubeなどでURLから再生情報を取得中に同じ動画が再読み込みされると、引き継ぎ中に動画が変更されたと誤判定する問題を修正しました。Quest 3でテスト済みです。"
+          }
+        },
+        {
+          "id": "playback-recover-after-format-change",
+          "text": {
+            "zh": "修复部分拼接视频中途切换分辨率时直接中断的问题。播放器会尝试重新载入并继续播放。",
+            "zh_Hant": "修正部分拼接影片在播放途中切換解析度時直接中斷的問題。播放器會嘗試重新載入並繼續播放。",
+            "en": "Fixed playback stopping when some spliced videos change resolution midstream. The player attempts to reload and continue.",
+            "ja": "一部のつなぎ合わせた動画で、再生途中に解像度が切り替わると再生が止まる問題を修正しました。プレーヤーは読み込み直して再生の続行を試みます。"
+          }
+        },
+        {
+          "id": "dlna-empty-metadata-parent-lookup",
+          "text": {
+            "zh": "修复部分 DLNA 视频因服务器返回空的单项信息而打不开的问题。有已知父目录时会回查该目录。",
+            "zh_Hant": "修正部分 DLNA 影片因伺服器傳回空白的單項資訊而無法開啟的問題。若已知上一層資料夾，會重新向該資料夾查詢。",
+            "en": "Fixed some DLNA videos failing to open when the server returns empty metadata for the requested item. The player checks the item's parent folder when it is known.",
+            "ja": "DLNAサーバーが項目のメタデータを空で返すと、一部の動画を開けない問題を修正しました。親フォルダーが分かっている場合は、そのフォルダーを再確認します。"
+          }
+        },
+        {
+          "id": "puzzle-reference-missing-controller",
+          "text": {
+            "zh": "修复只追踪到另一只手柄时，拼图参考缩略图悬在画面上方的问题。",
+            "zh_Hant": "修正只追蹤到另一支控制器時，拼圖參考縮圖懸浮在畫面上方的問題。",
+            "en": "Fixed the puzzle reference thumbnail floating above the picture when only the other controller is tracked.",
+            "ja": "反対側のコントローラーだけがトラッキングされていると、パズルの見本サムネイルが画面の上に浮いたままになる問題を修正しました。"
+          }
+        }
+      ]
+    },
+    {
       "version": "0.18.10",
       "date": "2026-11-25",
       "title": {

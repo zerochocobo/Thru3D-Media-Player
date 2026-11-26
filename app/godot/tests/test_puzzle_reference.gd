@@ -78,8 +78,10 @@ func _run() -> void:
 		pinned=preview.global_transform
 		click(app,preview,1); app.rays.clear(); host.tick(0.2)
 		check(not preview.pinned and preview.global_position.distance_to(pinned.origin)>0.05,"Follow resumes after unpinning")
+		app.poses.clear(); app.poses.right_hand=Transform3D(Basis.IDENTITY,head+Vector3(0.2,-0.25,-0.4)); host.tick(1.0)
+		check(not preview.visible and not preview.hand_attached,"With only the right controller the left-hand thumbnail hides instead of parking over the picture")
 		app.poses.clear(); host.tick(1.0)
-		check(preview.visible and not preview.hand_attached,"Missing hand tracking uses a fixed fallback instead of losing the reference")
+		check(preview.visible and not preview.hand_attached,"With no hand tracked at all the reference keeps its fixed fallback")
 		app.hand_pointers.left_hand.source="hand"
 		host.frame_input.samples={"left_hand":{"pose":Transform3D(Basis.IDENTITY,head+Vector3(-0.15,-0.2,-0.35))}}
 		host.tick(1.0); check(preview.hand_attached,"The same thumbnail follows a tracked optical hand")

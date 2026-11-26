@@ -67,7 +67,7 @@ func run() -> void:
 	host.page_size=old_size;host.global_transform=old_pose;host.refresh();footer.sync()
 	host._activate(browser.BASE + 17)
 	check(host.depth_settings and not host.depth_expanded and host.depth_choices.sliders.is_empty()
-		and host.depth_choices.targets.values().all(func(item): return item.key == "web_clarity"), "Settings open with the 2D to 3D group collapsed")
+		and host.depth_choices.targets.values().all(func(item): return item.key in ["web_clarity", "web_pause_on_handoff"]), "Settings open with the 2D to 3D group collapsed")
 	host._activate(host.DEPTH_GROUP)
 	check(host.depth_expanded and host.depth_choices.sliders.values().size() == 3
 		and host.depth_choices.sliders.keys().map(func(t): return host.depth_choices.targets[t].key) == ["strength", "position", "foreground"],

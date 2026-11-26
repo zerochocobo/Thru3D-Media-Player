@@ -293,6 +293,9 @@ internal class MpvVideoBridge(
         @Volatile var depthShift = 0.035f
         @Volatile var depthConvergence = 0.35f
         @Volatile var depthForeground = 0f // -1..1, near_foreground.h
+        /** Reductions Godot asked for (flat QIYU playback minifies the frame); sent to the renderer before a capture. */
+        @Volatile var colorLevels = 0
+        var colorLevelsSent = 0
         val depthViewQueued = AtomicBoolean(false)
         /** Both effects run a model on every presented frame and gate pairs through it. */
         val inference get() = alpha || depth
@@ -940,10 +943,12 @@ internal class MpvVideoBridge(
     fun comicTranslations(epoch: Long,mode: String,json: String)=comicController()?.translations(epoch,mode,json) ?: false
     fun comicPrepare(epoch: Long,page: Int,block: Int)=comicReader?.prepare(epoch,page,block) ?: false
     fun comicPreview(voice: String,language: String,volume: Double)=comicController()?.preview(voice,language,volume) ?: false
-    @Synchronized fun comicBegin(epoch: Long): Boolean {
+    @Synchronized fun comicBegin(epoch: Long,ocr: Boolean=true): Boolean {
         if(stopped||!foreground||!NarrationPolicy.FEATURE_ENABLED||!NarrationNative.supported())return false
-        return comicController()?.begin(epoch) ?: false
+        return comicController()?.begin(epoch,ocr) ?: false
     }
+    fun comicQueue(epoch: Long,page: Int,block: Int)=comicReader?.queue(epoch,page,block) ?: false
+    fun comicText(epoch: Long,page: Int,key: String,json: String,ahead: Boolean)=comicReader?.text(epoch,page,key,json,ahead) ?: false
     fun comicPage(epoch: Long,page: Int,width: Int,height: Int,rgb: ByteArray)=comicReader?.page(epoch,page,width,height,rgb) ?: false
     fun comicAhead(epoch: Long,page: Int,width: Int,height: Int,rgb: ByteArray)=comicReader?.page(epoch,page,width,height,rgb,true) ?: false
     fun comicWarm(){comicController()?.warm()}
@@ -1536,6 +1541,11 @@ internal class MpvVideoBridge(
             // A decoder image published for an earlier direct session: release it and wait for the next frame.
             if (buffer != 0L && !(session.borrow && (session.alpha || normalDirect(session)))) return true
             val plan = session.roi?.plan()
+            // 2x reductions of the copied frame (flat QIYU playback, flat shader-parallax 2D->3D): every texture capture.
+            if (buffer == 0L) {
+                val levels = session.colorLevels
+                if (levels != session.colorLevelsSent) { RenderBridgeNative.setColorLevels(session.renderer, levels); session.colorLevelsSent = levels }
+            }
             val token = if (buffer != 0L && !session.inference)
                 RenderBridgeNative.captureOpaqueBuffer(session.renderer, buffer, source.getInt("buffer_width"), source.getInt("buffer_height"))
             else if (buffer != 0L)
@@ -1732,6 +1742,8 @@ internal class MpvVideoBridge(
         // Use the same transport decision as submitShared/readInputs below, regardless of color source.
         val buffers = session.buffers.acquire(sharedAlpha = session.alpha && session.zeroCopy)
         pair.put("color_texture_id", texture).put("consumer_copy_fence_ready", true)
+        val levels = RenderBridgeNative.levelTextures(session.renderer, copying.second)
+        if (levels.isNotEmpty()) pair.put("color_level_ids", JSONArray(levels.toList()))
         val image = RenderBridgeNative.colorImage(session.renderer, copying.second)
         // A string: Godot's JSON parses numbers as doubles, which cannot hold a 64-bit (tagged) pointer.
         if (image != 0L) pair.put("color_target", "external").put("color_egl_image", image.toString()).put("color_uv_scale", JSONArray(listOf(
@@ -1961,6 +1973,13 @@ internal class MpvVideoBridge(
         if (!session.depth || !scale.isFinite() || scale !in -1.0..1.0) return false
         session.depthForeground = scale.toFloat()
         return setDepthView(id, session.depthShift.toDouble(), session.depthConvergence.toDouble())
+    }
+    /** Flat QIYU playback: [count] (0..4) 2x reductions per copied frame for the shader's minified taps. */
+    fun setColorLevels(id: Int, count: Int): Boolean {
+        val session = sessions[id] ?: return false
+        if (count !in 0..4) return false
+        session.colorLevels = count
+        return true
     }
     fun setDepthView(id: Int, shift: Double, convergence: Double): Boolean {
         val session = sessions[id] ?: return false

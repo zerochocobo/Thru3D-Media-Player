@@ -18,6 +18,7 @@
   "layer_cadence_patch_sha256": "fc2d1907643af88c949b430fc2dafb2c46a9b082021668716253bcc0bc18d448",
   "mediacodec_priority_patch_sha256": "df1b36c3dcdf97ce273f0ef13adffe3d565c99ce8f94334acb1533f6b271ee11",
   "mediacodec_stall_patch_sha256": "bcaad46528971fb17d84ec08cc6fb18a56ca3b646c59873a7143e8f0c5706a63",
+  "mediacodec_skip_patch_sha256": "6f8a167fe7f5e00555a733e78784642e665868cb4be2a4709480d6cb6084cfbe",
   "open_http_status_patch_sha256": "2d7f9777ab092f38dc250ed3c735117d26faaaba97149e5dc8fda908a82a89c9",
   "dovi_rpu_patch_sha256": "ac25f48b5dce159a0cdf5880500dbe13055b8b72bf03fd8763971ddd0367ad3a",
   "architecture": "arm64-v8a",
@@ -82,9 +83,9 @@
     },
     {
       "name": "libavcodec.so",
-      "sha256": "77896a0d264183cfd2d8c0d8e454e07e350ad487af6c418b939c3fec0fc44042",
-      "bytes": 12564360,
-      "built_sha256": "26365983ffd3047570ae53a14b46a1dd71a6f83f400f151245626cdf32fea6f9",
+      "sha256": "04d39d1c055262f2aa5859419b46873d1e306be39c21311db73df038fec59211",
+      "bytes": 12565416,
+      "built_sha256": "165e50c71667df78d14b97ee6dbb71ccec79fa4f1d541c3622b379813e1e8333",
       "needed": [
         "libswresample.so",
         "libavutil.so",
@@ -172,7 +173,7 @@
     }
   ],
   "host_packages_sha256": "0d42dd4ec021254111a439214a2681bf37ca44ba2af04a9d97af479f2bd1dd33",
-  "build_receipt_sha256": "d1a6cfb72e76f42a5a90c1fe46d60d04a6c99d1202cab1433cc002072bb4df21",
+  "build_receipt_sha256": "643054d561c581f92c6e3a11a5d9239da1155c4be7e35b79c5760004b6c10eaa",
   "meson": "1.11.0",
   "ninja": "1.11.1",
   "mvc_inputs_sha256": {

@@ -38,8 +38,12 @@ func _initialize() -> void:
 	var bridge := Bridge.new(); var video := make_video(bridge, "embedded-present.MKV")
 	video._maybe_capture_thumbnail(); video._maybe_capture_thumbnail()
 	check(bridge.covers == 1 and bridge.requests.is_empty(), "Await the cover once before reading a playback surface")
-	var image := Image.create(16, 24, false, Image.FORMAT_RGB8); image.fill(Color.DARK_RED)
-	bridge.cover_bytes = image.save_png_to_buffer(); bridge.cover_state = "ready"
+	var image := Image.create(16, 24, false, Image.FORMAT_RGBA8); image.fill(Color.DARK_RED)
+	# The native reader hands covers over as T3DI v2 rows (2026-11-09), not PNG.
+	var raw := "T3DI".to_ascii_buffer(); raw.resize(16)
+	raw.encode_u32(4, image.get_width()); raw.encode_u32(8, image.get_height()); raw.encode_u32(12, 2)
+	raw.append_array(image.get_data())
+	bridge.cover_bytes = raw; bridge.cover_state = "ready"
 	video._maybe_capture_thumbnail()
 	check(Thumbnails.has(video.local_uri) and video._thumbnail_result.get("source") == "embedded_cover", "Use the embedded image as the thumbnail")
 	check(not FileAccess.file_exists(Thumbnails.path_for(video.local_uri)), "Private viewing keeps artwork in memory")

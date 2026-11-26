@@ -527,12 +527,13 @@ func _visual_signature() -> int:
 	var values := []
 	var poses: Dictionary[int, Transform3D] = {}
 	for slot in slots:
-		if slot.used: _sign_nodes(slot.nodes, inverse, values, poses)
-	for kind in banded: _sign_nodes(banded[kind].nodes, inverse, values, poses)
+		if slot.used: _sign_nodes(slot.nodes, inverse, values, poses, _signature_poses)
+	for kind in banded: _sign_nodes(banded[kind].nodes, inverse, values, poses, _signature_poses)
 	_signature_poses = poses
 	return hash(values)
 
-func _sign_nodes(nodes: Array, inverse: Transform3D, values: Array, poses: Dictionary[int, Transform3D]) -> void:
+## [known] holds the poses of the caller's last signature (the zero-parallax capture keeps its own).
+func _sign_nodes(nodes: Array, inverse: Transform3D, values: Array, poses: Dictionary[int, Transform3D], known: Dictionary[int, Transform3D]) -> void:
 	for node in nodes:
 		if not is_instance_valid(node): values.append(0); continue
 		var visual := node as VisualInstance3D
@@ -541,7 +542,7 @@ func _sign_nodes(nodes: Array, inverse: Transform3D, values: Array, poses: Dicti
 		if not shown: continue
 		var pose := inverse * visual.global_transform
 		var id := visual.get_instance_id()
-		var previous: Transform3D = _signature_poses.get(id, pose)
+		var previous: Transform3D = known.get(id, pose)
 		# Keep a stable signature when only rounding in the global transforms changed.
 		if pose.is_equal_approx(previous): pose = previous
 		poses[id] = pose

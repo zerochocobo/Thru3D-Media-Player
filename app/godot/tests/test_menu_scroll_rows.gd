@@ -61,6 +61,9 @@ func run() -> void:
 	# Settings: one drawn list for the whole scroll.
 	library._activate(Library.NAV_BASE + Library.Section.SETTINGS)
 	library._activate(Library.TAB_BASE + Library.DISPLAY_TAB)
+	# The collapsed Display page fits on one screen.
+	var rendering_group := library.rows.find_custom(func(row): return row.get("display_settings_group") == "rendering")
+	library._activate(Library.ROW_BASE + rendering_group)
 	await frames(2); capture.update()
 	check(library._full_list() and library._max_scroll() > 0, "Display settings scroll as one full list")
 	var settings_list: Node3D = library._list

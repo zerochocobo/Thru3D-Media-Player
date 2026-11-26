@@ -91,8 +91,9 @@ func _check_controller_profiles(action_map: OpenXRActionMap) -> void:
 			var component: String = binding.binding_path
 			_check(not component.ends_with("/input/grip_surface/pose"), path + " must omit unused grip surface poses")
 			if component.ends_with("/input/system/click"):
-				_check(path == touch_profile and component == touch_system_menu and binding.action.resource_name == "menu_button",
-					"Only Touch uses a system-button path for an existing menu action")
+				# QIYU's Touch-compatible profile (2026-11-18) carries the Touch bindings unchanged.
+				_check(path in [touch_profile, "/interaction_profiles/qiyu/touch_controller"] and component == touch_system_menu and binding.action.resource_name == "menu_button",
+					"Only Touch and its QIYU twin use a system-button path for an existing menu action")
 	for path in ["/interaction_profiles/bytedance/pico_neo3_controller", "/interaction_profiles/khr/simple_controller",
 		"/interaction_profiles/bytedance/pico4_controller", "/interaction_profiles/bytedance/pico4s_controller",
 		touch_profile, generic_profile]:

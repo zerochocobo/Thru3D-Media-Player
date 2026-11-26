@@ -33,7 +33,7 @@ func run() -> void:
 	var decoded := Photo._decode(job)
 	check(not decoded.has("error") and decoded.get("magazine", false), "Production decoder composes PDF spread")
 	var bytes := FileAccess.get_file_as_bytes(job.magazine_path)
-	check(bytes.size() == 16 + 640 * 480 * 4 and bytes.slice(0, 4).get_string_from_ascii() == "T3DI" 		and bytes.decode_u32(4) == 640 and bytes.decode_u32(8) == 480 and bytes.decode_u32(12) == 1, "Native handoff is a T3DI header and RGBA rows")
+	check(bytes.size() == 16 + 640 * 480 * 4 and bytes.slice(0, 4).get_string_from_ascii() == "T3DI" 		and bytes.decode_u32(4) == 640 and bytes.decode_u32(8) == 480 and bytes.decode_u32(12) == 2, "Native handoff is a T3DI header and RGBA rows")
 	var registered := Image.create_from_data(640, 480, false, Image.FORMAT_RGBA8, bytes.slice(16))
 	check(registered.get_pixel(10,300).r > .98 and registered.get_pixel(400,80).b > .4, "White page background and page ordering survive the handoff")
 	var reopened := Photo._decode({"info":{"path":job.magazine_path, "raw_rgba":true, "decoded_width":640, "decoded_height":480}, "skip_thumbnail":true})

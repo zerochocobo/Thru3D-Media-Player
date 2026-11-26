@@ -210,11 +210,11 @@ func context_lost() -> void:
 func _show() -> void:
 	# Both surfaces borrow the same paused frame; only the exit briefly draws a panorama.
 	release_material = material.duplicate()
-	Binding._use_shader(release_material, fade_shader(material.shader))
+	Binding._use_shader(release_material, fade_shader(Binding.full_shader(material)))
 	_bind_color(release_material)
 	release_material.set_shader_parameter("separate_subtitles", true)
 	release_material.set_shader_parameter("temporary_opacity", 0.0)
-	Binding._use_shader(material, globe_shader(material.shader))
+	Binding._use_shader(material, globe_shader(Binding.full_shader(material)))
 	_bind_color(material)
 	material.set_shader_parameter("alpha_enabled", false)
 	material.set_shader_parameter("depth_enabled", false)

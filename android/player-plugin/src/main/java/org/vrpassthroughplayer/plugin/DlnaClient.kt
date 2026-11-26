@@ -125,6 +125,12 @@ internal object DlnaClient {
     private const val MAX_BROWSE_BYTES = 8 * 1024 * 1024
     private data class BrowsePage(val entries: JSONArray, val ids: List<String>, val total: Int?, val update: String?)
 
+    /**
+     * A valid BrowseMetadata reply that declares one object but carries no DIDL object. Callers that
+     * do not handle it see the usual count failure; playback may confirm the object in a known parent.
+     */
+    class EmptyMetadataResponse : IllegalStateException("DLNA server unavailable")
+
     /** Counts from the response before filtering, and from the rows used by the player. */
     class BrowseDiagnostics(private val targetId: String? = null) {
         var phase = "request"
@@ -292,6 +298,7 @@ internal object DlnaClient {
             diagnostics?.phase = "response_counts"
             val returned = count("NumberReturned")
             diagnostics?.pageDeclared = returned
+            if (metadata && returned == 1 && ids.isEmpty()) throw EmptyMetadataResponse()
             check(returned == null || returned == ids.size) { "DLNA server unavailable" }
             val total = count("TotalMatches")
             diagnostics?.phase = "classify_entries"

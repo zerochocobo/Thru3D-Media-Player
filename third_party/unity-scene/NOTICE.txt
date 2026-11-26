@@ -1,0 +1,13 @@
+AssetStudio reference used by Thru3D's Unity scene importer
+
+Upstream: https://github.com/Perfare/AssetStudio
+Reference: https://github.com/Perfare/AssetStudio/blob/d158e864b556b5970709c2a52e47944d53aa98a2/AssetStudio/CommonString.cs
+
+The matching part of Thru3D's embedded Unity type-tree common-string table
+(native/unity-scene/common_strings.inc) uses AssetStudio's public table as a
+reference. The original notice is in AssetStudio-LICENSE.txt.
+
+Thru3D's own scene unpacker follows the LZ4 block format and the public-domain
+LZMA reference decoder described in the LZMA SDK by Igor Pavlov.
+https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md
+https://www.7-zip.org/sdk.html

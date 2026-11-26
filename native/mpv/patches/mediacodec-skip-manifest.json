@@ -1,0 +1,17 @@
+{
+  "purpose": "Skip non-reference pictures before MediaCodec when MPV asks (falling behind, exact-seek pre-roll)",
+  "stall_patch_sha256": "bcaad46528971fb17d84ec08cc6fb18a56ca3b646c59873a7143e8f0c5706a63",
+  "base_files_sha256": {
+    "libavcodec/mediacodecdec.c": "3cde45e5ca91bc4e6c4e781bcb754b704143c615c24524baca32d78636cbd79b"
+  },
+  "patched_files_sha256": {
+    "libavcodec/mediacodecdec.c": "38af7dbd08343c685200d492d148ba4354ffbd98b27a6b4a53a86989ceb956ab"
+  },
+  "patch_sha256": "6f8a167fe7f5e00555a733e78784642e665868cb4be2a4709480d6cb6084cfbe",
+  "inputs_sha256": {
+    "tools/environment/mpv-linux/create_mediacodec_skip_patch.py": "0469c39b548d26a8a76db5e387f0ceaa6c299a0a236701dc712e15387f69a346"
+  },
+  "reference_inputs_sha256": {
+    "tools/environment/mpv-linux/create_mediacodec_skip_patch.py": "bf9434a8fdfd0abea62e931f53c86f6c01a279b758a035a80ed2d372b29ace44"
+  }
+}

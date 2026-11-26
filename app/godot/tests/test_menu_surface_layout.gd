@@ -41,10 +41,11 @@ func pointer_surfaces(menu: Node3D, name: String) -> void:
 		check(menu._pointers.right_hand.dot.visible, name + " keeps the dot at panel edge")
 
 func upper_check(menu: Node3D, surface: Node3D, eye: Vector3, name: String) -> void:
-	var rect: Rect2 = surface.get_meta("menu_surface_bounds")
+	# A popup with an anchor region (subtitles, picture) faces the eye at that region, so a side
+	# panel opening beside it does not turn the whole surface.
+	var rect: Rect2 = surface.get_meta("popup_anchor_bounds", surface.get_meta("menu_surface_bounds"))
 	var anchor: Vector3 = menu.panel_centre()
 	if name == "picture":
-		rect = menu._picture_panel_bounds
 		anchor.x += Player.PICTURE_PANEL_X
 	var centre := Vector3(rect.get_center().x, rect.get_center().y, 0)
 	var base := menu.to_global(anchor)

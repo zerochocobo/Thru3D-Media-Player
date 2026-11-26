@@ -122,13 +122,16 @@ def main():
     (mpv/".quest-frame-manifest.json").write_text(json.dumps(record, indent=2)+"\n")
     from mediacodec_priority_patch import unapply_priority_patch, apply_priority_patch
     from mediacodec_stall_patch import unapply_stall_patch, apply_stall_patch
-    # The priority option edits the Dolby-patched mediacodecdec.c and the stall bound edits that:
-    # lift both, newest first, before verifying 0002.
+    from mediacodec_skip_patch import unapply_skip_patch, apply_skip_patch
+    # The priority option edits the Dolby-patched mediacodecdec.c, the stall bound edits that and the
+    # non-reference skip edits that: lift all three, newest first, before verifying 0002.
+    unapply_skip_patch(base/'ffmpeg')
     unapply_stall_patch(base/'ffmpeg')
     unapply_priority_patch(base/'ffmpeg')
     apply_dovi_patch(base/'ffmpeg')
     apply_priority_patch(base/'ffmpeg')
     apply_stall_patch(base/'ffmpeg')
+    apply_skip_patch(base/'ffmpeg')
     from capture_patch import prepare_base, apply_capture_patch
     from pgs_patch import apply_pgs_patch
     from aaudio_patch import unapply_aaudio_patch, apply_aaudio_patch

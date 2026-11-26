@@ -51,14 +51,16 @@ func run() -> void:
 	var status_label := menu._status
 	video.listening.report = {"state": "preparing", "phase": "recognition", "buffer_progress": 75}
 	menu.refresh_values()
-	check(menu._status == status_label and menu._status.text.ends_with("75%"), "Measured preparation progress updates without rebuilding the controls")
+	# Recognition shows its stage, not the audio buffer as a percentage (2026-11-04).
+	var recognizing := I18n.t("Recognizing speech…")
+	check(menu._status == status_label and menu._status.text == recognizing, "Recognition progress updates without rebuilding the controls")
 	check(video.requested_play and video.media.state == "playing", "Preparation feedback preserves video playback and never opens a modal")
 	menu.state_provider = func():
 		var sample: Dictionary = main._menu_state()
 		sample.seek_feedback = {"phase": "done", "alpha": 0.05, "origin_ms": 0, "target_ms": 1000, "delta_ms": 1000}
 		return sample
 	menu.refresh_values()
-	check(menu._status.text.ends_with("75%") and is_equal_approx(menu._status.modulate.a, 1.0), "Seek feedback fading never hides active ASR preparation progress")
+	check(menu._status.text.ends_with(recognizing) and is_equal_approx(menu._status.modulate.a, 1.0), "Seek feedback fading never hides active ASR preparation progress")
 	menu.state_provider = main._menu_state
 	video.listening.set_option("listening_enabled", false); menu.refresh_values()
 	check(not menu._status.visible, "Closing listening in its menu immediately clears preparation feedback")
@@ -98,6 +100,8 @@ func run() -> void:
 	fps.set_shown(false); overlay.refresh()
 	check(overlay.visible and is_equal_approx(overlay.position.y, fps.position.y), "Status uses the FPS position when FPS is hidden")
 	main._show_player_menu(); overlay._process(Overlay.UPDATE_SECONDS)
+	# Frame-driven refreshes of the controls are spaced out; let the interval pass.
+	main._player_values_due = 0
 	video.media.playback = {}; video.changed.emit()
 	check(menu.visible and not menu._status.visible and not overlay.visible, "Recovery removes text without dismissing manually opened controls")
 	menu.dismiss(); video.media.playback = {"details": {"paused_for_cache": "yes"}}

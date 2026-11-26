@@ -6,11 +6,15 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.18.10** (Android versionCode **126**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.18.11** (Android versionCode **128**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
 ## Features
+
+- Library preview shape: crop to fill or preserve the whole picture in newly generated previews.
+- Optional pause before URL-based web video resolution, with playback starting at the paused position; off by default.
+- Grip-triggered playback pointer rays for moving or corner-resizing the screen, with idle fade.
 
 - Anime4K picture plugins for compatible 2D animation, with per-video modes/tiers and load protection. See [picture plugins](docs/PICTURE_PLUGINS.md).
 - Optional Frame Interpolation (Beta) for regular video and compatible 2D-to-3D, with source-size/frame-rate limits and automatic load/depth safeguards; mutually exclusive with Anime4K.

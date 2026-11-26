@@ -7,6 +7,10 @@ static func provider(name: String, fallback: String = "cloud") -> String:
 
 # Original vector glyphs, generated once and shared by both ray menus.
 const PATHS := {
+	"book_larger": '<rect x="8" y="8" width="8" height="8" rx="1"/><path d="M3 8V3H8M16 3H21V8M21 16V21H16M8 21H3V16"/>',
+	"book_smaller": '<rect x="9" y="9" width="6" height="6" rx="1"/><path d="M3 3L7 7M7 4V7H4M21 3L17 7M17 4V7H20M21 21L17 17M17 20V17H20M3 21L7 17M7 20V17H4"/>',
+	"book_nearer": '<rect x="7" y="2" width="10" height="7" rx="1"/><path d="M12 11V21M8 17L12 21 16 17"/>',
+	"book_farther": '<rect x="7" y="15" width="10" height="7" rx="1"/><path d="M12 13V3M8 7L12 3 16 7"/>',
 	"keyboard_shift": '<path d="M12 3L3 12H8V21H16V12H21Z" stroke-width="2.5"/>',
 	"keyboard_enter": '<path d="M21 3V11Q21 14 18 14H3M9 7L2 14 9 21" stroke-width="2.5"/>',
 	"keyboard_close": '<path d="M3 3L21 21M21 3L3 21" stroke-width="2.5"/>',

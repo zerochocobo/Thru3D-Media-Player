@@ -242,15 +242,15 @@ func _run() -> void:
 	state.subtitle_direction = 0
 	menu.refresh()
 	if menu._subtitle_ids.values() != [0, 1, 3, 8]: failures.append("Subtitle picker must show Off and real IDs")
-	if menu._subtitle_detail_group() != "appearance" or menu.choices.sliders.size() != 5:
+	if menu._subtitle_detail_group() != "appearance" or menu.choices.sliders.size() != 6:
 		failures.append("Selected authored subtitles open the appearance detail by default")
 	menu._activate(Menu.SUBTITLE_APPEARANCE)
 	if not menu.choices.sliders.is_empty(): failures.append("Explicitly folding appearance hides its controls")
 	menu._activate(Menu.SUBTITLE_APPEARANCE)
 	# Capture the complete expanded list, including its header and close control.
 	camera.fov = 75
-	if menu.choices.sliders.size() != 5:
-		failures.append("Expanded VR subtitle appearance must show position, distance and size")
+	if menu.choices.sliders.size() != 6:
+		failures.append("Expanded VR subtitle appearance must show delay, position, distance, size and transparency")
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	viewport.get_texture().get_image().save_png(output.path_join("subtitles-distance-popup.png"))
@@ -300,8 +300,8 @@ func _run() -> void:
 	await RenderingServer.frame_post_draw
 	viewport.get_texture().get_image().save_png(output.path_join("subtitles-pgs.png"))
 	if menu._subtitle_detail_group() != "appearance": menu._activate(Menu.SUBTITLE_APPEARANCE)
-	if menu.choices.sliders.size() != 3 or menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"):
-		failures.append("PGS must offer size and position without text color controls")
+	if menu.choices.sliders.size() != 4 or menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"):
+		failures.append("PGS must offer delay, position, size and transparency without text color controls")
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	viewport.get_texture().get_image().save_png(output.path_join("subtitles-pgs-adjustments.png"))

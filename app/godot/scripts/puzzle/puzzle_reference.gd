@@ -52,6 +52,8 @@ func place(app: Node, session: Node, samples: Dictionary, delta: float) -> void:
 		pose=samples.get(preferred_hand,{}).get("pose")
 		if not pose is Transform3D: pose=app._move_pose(preferred_hand)
 		if not point is Vector3 and pose is Transform3D and pose.is_finite(): point=pose.origin
+		# Playing with the other hand alone: nothing to follow, and parking it over the picture only gets in the way.
+		if not point is Vector3 and _hand_present(app,samples,"right_hand" if preferred_hand=="left_hand" else "left_hand"): visible=false; hand_attached=false; return
 	var next := Transform3D.IDENTITY
 	if point is Vector3 and point.is_finite() and point.distance_to(head.origin)>0.1 and point.distance_to(head.origin)<1.5:
 		var forward := -head.basis.z; forward.y=0
@@ -71,6 +73,11 @@ func place(app: Node, session: Node, samples: Dictionary, delta: float) -> void:
 			next=Transform3D(axes,head.origin+forward*0.9-axes.x*0.38-Vector3.UP*0.15)
 	global_position=next.origin if delta<=0 else global_position.lerp(next.origin,1.0-exp(-delta*14.0))
 	_face_viewer()
+
+func _hand_present(app: Node, samples: Dictionary, hand: String) -> bool:
+	var pose: Variant=samples.get(hand,{}).get("pose")
+	if not pose is Transform3D: pose=app._move_pose(hand)
+	return pose is Transform3D and pose.is_finite()
 
 func _face_viewer() -> void:
 	var direction := global_position-viewer.origin

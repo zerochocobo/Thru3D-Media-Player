@@ -172,6 +172,8 @@ func run() -> void:
 	# Large native pages and already-complete multi-page listings use the same filter.
 	var modern := ModernHost.new()
 	var big := Library.new(); big.platform = modern; root.add_child(big); big.visible = true; big.set_process(false)
+	# Saved locations take their drive from the saved account; an unknown drive pages by 48 rows (2026-11-24).
+	big.collections.source_accounts["cloud"] = {"saved": {"provider": "115_open"}}
 	big.cloud_pagination.preferences.path = ProjectSettings.globalize_path("res://../../build/output/subtitle-picker-filter-20261103/paging-%d.cfg" % Time.get_ticks_usec())
 	big.begin_subtitle_picker(cloud, "Film.mkv")
 	var large: Array = []

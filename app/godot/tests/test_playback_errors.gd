@@ -233,6 +233,28 @@ func _run() -> void:
 		video.media.begin(11); menu.dismiss()
 		video._on_error(11, JSON.stringify({"code": "MPV_FRAME_PIPELINE_FAILED", "message": detail}))
 		check(menu.visible and not video.media.error.is_empty(), "Ordinary video failure is visible: " + detail)
+	# A splice that changes the picture size mid-file reopens past it; the same spot a third time is a real failure.
+	video.local_uri = "smb://saved/spliced.ts"
+	var splice := JSON.stringify({"code": "MPV_FRAME_PIPELINE_FAILED", "reason": "source_format_changed"})
+	video.media.begin(30); video.media.frame_counter = 5; video.control.observed_position_ms = 28780; menu.dismiss()
+	video._on_error(30, splice)
+	check(video._recover and video._recover_ms == 29780 and not menu.visible, "A mid-file size change reopens one second later")
+	video._recover = false; video.media.begin(31); video.media.frame_counter = 5; video.control.observed_position_ms = 28780
+	video._on_error(31, splice)
+	check(video._recover and video._recover_ms == 32780 and not menu.visible, "The same splice again reopens further on")
+	video._recover = false; video.media.begin(32); video.media.frame_counter = 5; video.control.observed_position_ms = 28780
+	video._on_error(32, splice)
+	check(not video._recover and menu.visible and not video.media.error.is_empty(), "A splice that keeps failing is shown")
+	video.media.begin(33); video.media.frame_counter = 5; video.control.observed_position_ms = 300000; menu.dismiss()
+	video._on_error(33, splice)
+	check(video._recover and video._recover_ms == 301000, "A later splice in the same file starts over")
+	video._recover = false; video.local_uri = "smb://saved/odd.ts"; video.media.begin(34); menu.dismiss()
+	video._on_error(34, splice)
+	check(not video._recover and menu.visible, "A format the first frame already lacks is not retried")
+	video.local_uri = "smb://saved/restart.ts"; video.media.begin(35); video.media.frame_counter = 5; video.control.observed_position_ms = 28780; menu.dismiss()
+	video._on_error(35, JSON.stringify({"code": "MPV_FRAME_PIPELINE_FAILED", "reason": "source_frame_lost"}))
+	check(video._recover and video._recover_ms == 29780 and not menu.visible, "A decoder restart that loses queued frames reopens too")
+	video._recover = false; video.local_uri = "smb://saved/ordinary.mkv"
 	video.media.begin(12); video._waiting_first = true; video._output_deadline_ms = 500
 	video._check_playback_timeout(499)
 	check(video.media.error.is_empty(), "Output can still arrive before its deadline")

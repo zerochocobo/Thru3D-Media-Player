@@ -25,7 +25,8 @@ static func eye_sample(status: Dictionary, pair: Dictionary) -> Dictionary:
 	var sample := {"session": session, "epoch": epoch,
 		"external": pair.get("color_target", "") == "external",
 		"source": "%dx%d" % [int(pair.source_width), int(pair.source_height)],
-		"output": "%dx%d" % [int(pair.width), int(pair.height)]}
+		"output": "%dx%d" % [int(pair.width), int(pair.height)],
+		"levels": (pair.get("color_level_ids", []) as Array).size()}
 	for key in EYE_COUNTERS:
 		if status.has(key): sample[key] = int(status[key])
 	return sample
@@ -113,5 +114,6 @@ func _finish(now_ms: int) -> Dictionary:
 			if first.has(key) and last.has(key) and last[key] >= first[key]:
 				eye[key] = int(last[key]) - int(first[key])
 		for key in ["external", "source", "output"]: eye[key] = last[key]
+		eye["levels"] = last.get("levels", 0)
 		event["eye_output"] = eye
 	return event

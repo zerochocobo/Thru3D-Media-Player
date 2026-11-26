@@ -202,6 +202,7 @@ const CRUMB_BASE := 50
 const FILTER_BASE := 70
 const MEDIA_FILTERS := ["All", "Video", "Images"]
 const FOLDER_FILTER := 3 # Keep existing video/image filter IDs and saved positions stable.
+const BOOK_FILTER := 4 # Books open in the reading mode; they are their own kind of file.
 const ImageInfo := preload("res://scripts/image_info.gd")
 const DirectoryArtwork := preload("res://scripts/library_directory_artwork.gd")
 const ThumbnailPrefetch := preload("res://scripts/library_thumbnail_prefetch.gd")
@@ -2351,11 +2352,12 @@ func _rebuild_rows() -> void:
 	elif voice_picker_mode:
 		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("folder", false) or row.get("kind", "") == "folder" or _voice_sample_source(row)))
 	else:
-		rows.assign(rows.filter(func(row): return row.get("kind", "") not in ["audio", "scene"]))
+		var hidden := ["audio", "scene"] if preload("res://scripts/book_reader.gd").offered() else ["audio", "scene", "book"]
+		rows.assign(rows.filter(func(row): return row.get("kind", "") not in hidden))
 	if media_filter == FOLDER_FILTER and _favorite_folder_filter():
 		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "") == "folder"))
 	elif not audio_import_mode and not subtitle_picker_mode and not voice_picker_mode and media_filter > 0 and section not in [Section.SETTINGS, Section.MEDIA_SERVER]:
-		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "") == "folder" or row.get("kind", "video") in (["image", "archive", "pdf"] if media_filter == 2 and not image_picker_mode else ["image", "pdf"] if media_filter == 2 else ["video"])))
+		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "") == "folder" or row.get("kind", "video") in (["image", "archive", "pdf"] if media_filter == 2 and not image_picker_mode else ["image", "pdf"] if media_filter == 2 else ["book", "pdf"] if media_filter == BOOK_FILTER else ["video"])))
 	if not subtitle_picker_mode: subtitle_filter.filter_rows()
 	file_actions.sort_rows()
 	file_actions.reconcile()
@@ -2522,6 +2524,8 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 	var row := {"title": str(entry.title), "detail": _size(entry), "kind": "image" if photo else "video", "icon": "image" if photo else "video", "uri": str(entry.get("uri", ""))}
 	if archives.named(str(entry.get("uri", "")), str(entry.title)):
 		row.kind = "pdf" if preload("res://scripts/pdf_pages.gd").named(str(entry.get("uri", "")), str(entry.title)) else "archive"; row.icon = "folder"
+	if entry.get("kind", "") == "book" or preload("res://scripts/book_reader.gd").named(str(entry.get("uri", "")), str(entry.title)):
+		row.kind = "book"; row.icon = "bookmark"
 	if entry.get("kind", "") == "audio" or AudioCatalog.supported(str(entry.title)):
 		row.kind = "audio"; row.icon = "music"
 	if entry.get("kind", "") == "scene" or preload("res://scripts/scene_import/scene_import_library.gd").supported(str(entry.title)):
@@ -2571,7 +2575,7 @@ func video_queue() -> Array[Dictionary]:
 	for row in source:
 		var uri := str(row.get("uri", ""))
 		var title := str(row.get("title", ""))
-		if uri.is_empty() or row.get("kind", "") in ["image", "archive", "pdf", "audio", "subtitle"] or ImageInfo.is_image(uri, title): continue
+		if uri.is_empty() or row.get("kind", "") in ["image", "archive", "pdf", "book", "audio", "subtitle"] or ImageInfo.is_image(uri, title): continue
 		if row.get("container", false) or row.has("folder") or row.get("kind", "") == "folder": continue
 		var metadata: Dictionary = row.duplicate(true)
 		metadata.location = preload("res://scripts/media_location.gd").capture(self, row)
@@ -2865,9 +2869,10 @@ func _activate(target: int) -> void:
 		_go_to(target - CRUMB_BASE)
 	elif target in [SIBLING_PREVIOUS, SIBLING_NEXT]:
 		_open_sibling(-1 if target == SIBLING_PREVIOUS else 1)
-	elif target >= FILTER_BASE and target <= FILTER_BASE + FOLDER_FILTER:
+	elif target >= FILTER_BASE and target <= FILTER_BASE + BOOK_FILTER:
 		if image_picker_mode or voice_picker_mode: return
 		if target == FILTER_BASE + FOLDER_FILTER and not _favorite_folder_filter(): return
+		if target == FILTER_BASE + BOOK_FILTER and not preload("res://scripts/book_reader.gd").offered(): return
 		_change_media_filter(target - FILTER_BASE)
 	elif _row_target(target):
 		var index := _row_index(target - ROW_BASE)
@@ -3789,12 +3794,12 @@ func _draw() -> void:
 		pass # Account actions draw their own title and back target below.
 	elif subtitle_queue_open and section == Section.SETTINGS and tab == VIDEO_TAB:
 		_button(BACK, "", Vector2(-0.52, 0.46), Vector2(0.09, 0.07), true, "back")
-		_label(I18n.t("Subtitle pre-generation tasks"), Vector3(0.13, 0.46, 0.004), 24)
+		_label(I18n.t("Subtitle pre-generation tasks"), Vector3(0.13, 0.46, 0.004), 24).font = ui_bold_font()
 	elif crumbs.is_empty():
 		var tabs: Array = SETTING_TABS if section == Section.SETTINGS else []
 		if section == Section.SETTINGS and tab == ABOUT_TAB and _about_page != 0:
 			tabs = []
-			_label(I18n.t("Open source licenses" if _about_page == 3 else "Credits"), Vector3(0.13, 0.46, 0.004), 24)
+			_label(I18n.t("Open source licenses" if _about_page == 3 else "Credits"), Vector3(0.13, 0.46, 0.004), 24).font = ui_bold_font()
 		for position in (SETTING_ORDER.size() if not tabs.is_empty() else 0):
 			var i: int = SETTING_ORDER[position]
 			_button(TAB_BASE + i, I18n.t(tabs[i]), Vector2(.13 + (position - (SETTING_ORDER.size()-1)*.5)*.20, .46), Vector2(0.19, 0.07))
@@ -3805,6 +3810,7 @@ func _draw() -> void:
 			return
 		if section in [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD, Section.WEB]:
 			var title := _label(web_browser.library.title() if web_browser.library.active() else I18n.t(NAV[section]), Vector3(-0.42, _header_y(), 0.004), 24)
+			title.font = ui_bold_font()
 			title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	else:
 		var inset := _folder_header_inset()
@@ -3910,11 +3916,13 @@ func _draw() -> void:
 		_audio_storage_labels = AudioStorageView.draw(self, background_audio_provider.call() if background_audio_provider.is_valid() else {}, Vector2(0.13, -0.61), 1.26, true)
 		_place_device_status(Vector2(0.13, -0.79))
 	elif section not in [Section.SETTINGS, Section.WEB] and not cloud_managing and not subtitle_picker_mode and not image_picker_mode and not voice_picker_mode:
-		var filters := [0, FOLDER_FILTER, 1, 2] if _favorite_folder_filter() else [0, 1, 2]
+		var filters := [0, FOLDER_FILTER, 1, 2, BOOK_FILTER] if _favorite_folder_filter() else [0, 1, 2, BOOK_FILTER]
+		if not preload("res://scripts/book_reader.gd").offered(): filters.erase(BOOK_FILTER)
 		for position in filters.size():
 			var i: int = filters[position]
-			_button(FILTER_BASE + i, I18n.t("Folders" if i == FOLDER_FILTER else MEDIA_FILTERS[i]), Vector2(0.72 - (filters.size() - 1 - position) * 0.18, -0.515), Vector2(0.17, 0.06), true, "", media_filter == i)
+			_button(FILTER_BASE + i, I18n.t("Folders" if i == FOLDER_FILTER else "Books" if i == BOOK_FILTER else MEDIA_FILTERS[i]), Vector2(0.72 - (filters.size() - 1 - position) * 0.18, -0.515), Vector2(0.17, 0.06))
 			set_label_size(_buttons.back().node.get_child(0), 17)
+			_lit(media_filter == i)
 	var cloud_paging := not archives.browsing and section == Section.CLOUD and not _cloud_stack.is_empty()
 	var cloud_page_y := -0.59 if file_actions.has_selection() else -0.515
 	if not archives.browsing and section == Section.RECENT:
@@ -4115,8 +4123,7 @@ func _draw_row(i: int) -> void:
 		_decorate_audio_selection(row)
 		if row.get("group_header", false):
 			var heading: Dictionary = _buttons.back()
-			heading.enabled = true; heading.base_color = Color(TILE, 0)
-			heading.node.material_override.set_shader_parameter("surface_color", Color(TILE, 0))
+			heading.enabled = true
 			set_label_size(heading.node.get_child(0), TEXT_TITLE)
 			heading.node.get_child(0).font = ui_bold_font()
 			if row.get("subgroup", false):
@@ -4362,7 +4369,10 @@ func _thumbnail_prefetch_rows() -> Array[Dictionary]:
 	var amounts := ThumbnailPrefetch.LIMITS.map(func(count): return {"value": count, "label": str(count)})
 	var amount_row := _choice_row("Prefetch limit", "library_thumbnail_limit", thumbnail_prefetch.limit, amounts)
 	amount_row.info = "Maximum number of files and folders checked for previews per folder visit."
-	entries.append_array([local_row, smb_row, dlna_row, protection_row, amount_row])
+	var shape_row := _choice_row("Preview shape", "library_thumbnail_fit", "whole" if Thumbnails.whole else "crop",
+		[{"value": "crop", "label": "Crop to fill"}, {"value": "whole", "label": "Whole picture"}])
+	shape_row.info = "Crop to fill: centred. Whole picture: never cropped. Applies to new previews; clear the library thumbnails to redo existing ones."
+	entries.append_array([local_row, smb_row, dlna_row, protection_row, amount_row, shape_row])
 	return entries
 
 ## Report a problem, last in General (About links to it): upload the diagnostic log to the developer
@@ -4632,24 +4642,28 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 	set_label_size(name, 18)
 	name.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 	name.width = (TILE_SIZE.x - 0.03) / name.pixel_size
-	name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	name.vertical_alignment = VERTICAL_ALIGNMENT_TOP
-	name.position = Vector3(0, -0.06, 0.004)
 	var folder_art := row.has("folder_thumb_scope")
 	var picture := icon in ["video", "image"] or folder_art
+	# A picture card gives the name a left edge to line up with. A bare glyph (servers, drives,
+	# accounts, plain folders) has no card, so its name stays centred under it.
+	name.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT if picture else HORIZONTAL_ALIGNMENT_CENTER
+	name.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	name.position = Vector3(-(TILE_SIZE.x - 0.03) * 0.5 + 0.005 if picture else 0.0, -0.06, 0.004)
 	var area := _quad(Vector2(TILE_SIZE.x - 0.02, 0.165), Vector3(0, 0.04, 0.003), UiTheme.color("placeholder") if picture else Color(TILE, 0.0), 12)
 	node.add_child(area)
 	var shown: Texture2D = _picture(row) if picture else null
 	if picture:
 		button.thumbnail_row = row
 		button.thumbnail_area = area
+		button.thumbnail_blank = area.material_override
+		area.material_override.set_shader_parameter("corner_radius", THUMBNAIL_RADIUS)
+		area.material_override.set_shader_parameter("rim", 0.10)
+		area.material_override.set_shader_parameter("sheen", 0.10)
 	if shown:
-		var frame := _material(Color.WHITE, 12)
-		frame.albedo_texture = shown
-		area.material_override = frame
+		area.material_override = _thumbnail_frame(area, shown)
 		if section == Section.MEDIA_SERVER and row.has("scene") and not archives.browsing:
 			button["artwork"] = server_browser.artwork.binding(server_browser.cover_node(row), area, shown)
-	var glyph := _icon(icon, Vector3(0, 0.04, 0.005), 0.065 if picture and not folder_art else 0.1, FOLDER if folder_art else MUTED if picture else UiTheme.color("text"), node)
+	var glyph := _icon(icon, Vector3(0, 0.04, 0.005), 0.081 if picture and not folder_art else 0.125 if folder_art else 0.1, FOLDER if folder_art else MUTED if picture else UiTheme.color("text"), node)
 	glyph.material_override.render_priority = 13
 	glyph.visible = shown == null
 	if picture: button.thumbnail_placeholder = glyph
@@ -4672,6 +4686,20 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 		badge.render_priority = 14
 		badge.modulate = MUTED
 
+## A tile's picture, cut to the same corners as its empty plate.
+const THUMBNAIL_RADIUS := 0.016
+const THUMBNAIL := preload("res://shaders/menu_thumbnail.gdshader")
+func _thumbnail_frame(area: MeshInstance3D, picture: Texture2D) -> ShaderMaterial:
+	var frame := ShaderMaterial.new()
+	frame.shader = THUMBNAIL
+	frame.render_priority = 12
+	frame.set_shader_parameter("picture", picture)
+	frame.set_shader_parameter("surface_size", area.mesh.size)
+	frame.set_shader_parameter("corner_radius", THUMBNAIL_RADIUS)
+	# Pictures are captured at the menu layers' density, as the textured material was.
+	area.set_meta("menu_capture_detail", true)
+	return frame
+
 ## The current choice is lit by colour (dark green tile, accent text), not a solid accent fill.
 func _lit(selected: bool) -> void:
 	if not selected:
@@ -4680,6 +4708,8 @@ func _lit(selected: bool) -> void:
 	button.base_color = SELECTED
 	button.foreground = ACCENT
 	button.node.get_child(0).modulate = ACCENT
+	# Shown at once, not only after the next highlight pass.
+	button.node.material_override.set_shader_parameter("surface_color", SELECTED)
 
 ## A played video's frame, or the cover a DLNA server offers (fetched once, then cached).
 ## Never reads a video to make one.
@@ -4708,10 +4738,15 @@ func _update_thumbnail_buttons(loaded: String = "") -> void:
 		var row: Dictionary = button.thumbnail_row
 		if not loaded.is_empty() and not _thumbnail_matches(row, loaded): continue
 		var shown := _picture(row, false)
-		if shown:
+		if shown and button.has("thumbnail_blank"):
+			button.thumbnail_area.material_override = _thumbnail_frame(button.thumbnail_area, shown)
+		elif shown:
 			var frame := _material(Color.WHITE, 12)
 			frame.albedo_texture = shown
 			button.thumbnail_area.material_override = frame
+		elif button.has("thumbnail_blank"):
+			button.thumbnail_area.material_override = button.thumbnail_blank
+			button.thumbnail_area.set_meta("menu_capture_detail", false)
 		elif not bool(button.get("thumbnail_list", false)):
 			button.thumbnail_area.material_override = _material(UiTheme.color("placeholder"), 12)
 		button.thumbnail_area.visible = shown != null or not bool(button.get("thumbnail_list", false))
@@ -4784,7 +4819,7 @@ func _cancel_covers() -> void:
 
 ## Recent entries of the kinds the active video/image filter lists, on every page.
 func _filtered_history() -> Array:
-	var kinds := ["image", "archive", "pdf"] if media_filter == 2 else ["video"]
+	var kinds := ["image", "archive", "pdf"] if media_filter == 2 else ["book", "pdf"] if media_filter == BOOK_FILTER else ["video"]
 	return collections.home_rows().filter(func(row): return row.has("uri") and row.get("kind", "video") in kinds)
 
 func _recent_page_count() -> int:
@@ -4865,16 +4900,27 @@ func _row_button(target: int, title: String, detail: String, icon: String, centr
 		info.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT if two_lines else HORIZONTAL_ALIGNMENT_RIGHT
 		info.modulate = MUTED
 
+## Entries of the side column draw as a rounded pill inside the area that takes the ray.
+func _side_pill(button: Dictionary) -> void:
+	var node: MeshInstance3D = button.node
+	var size := Vector2(node.mesh.size.x - 0.03, minf(node.mesh.size.y, 0.078))
+	node.mesh.size = size
+	node.material_override.set_shader_parameter("surface_size", size)
+	node.material_override.set_shader_parameter("corner_radius", 0.022)
+
 ## Navigation entry on the angled column: the current one is lit by colour, not a solid fill.
 func _nav_button(target: int, text: String, icon: String, centre: Vector2, selected: bool, badge: String = "", height: float = 0.11) -> void:
 	_button(target, text, centre, Vector2(0.36, height), true, "", false, _side)
 	var button: Dictionary = _buttons.back()
 	button.base_color = SELECTED if selected else Color(TILE, 0.0)
+	_side_pill(button)
 	var node: MeshInstance3D = button.node
 	var label: Label3D = node.get_child(0)
 	label.position.x = -0.08
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	label.modulate = ACCENT if selected else button.foreground
+	label.font_size = roundi(label.font_size * CAPTION_GROW)
+	button["caption_grown"] = true
 	if not badge.is_empty():
 		var status := _label(badge, Vector3(0, 0, 0.004), 14, node)
 		status.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -4944,6 +4990,7 @@ func _draw_editor() -> void:
 	if compact_input: _set_backdrop(Vector2(1.46, 0.52), Vector2(0.13, 0.30))
 	var fields := _editor_fields()
 	var title := _label("DLNA" if dlna_editor else "SMB", Vector3(-0.42, 0.46, 0.004), 24)
+	title.font = ui_bold_font()
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	for i in fields.size():
 		var value := str(_editor[fields[i]])

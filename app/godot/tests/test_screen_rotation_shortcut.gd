@@ -48,7 +48,8 @@ func run() -> void:
 	main._update_screen_rotation_control()
 	check(not control.visible, "No permanent button or mark while the pointer is away")
 	menu.visible = true; menu.section = 1; menu._adjustment = "screen"; menu.refresh()
-	check(not menu.text_snapshot().contains("Rotation button") and not menu._buttons.any(func(button): return button.target == 617), "Rotation switch is removed entirely")
+	# Target 617 now belongs to the video aspect lock; the old switch is recognised by its caption and tip.
+	check(not menu.text_snapshot().contains("Rotation button") and not menu._tips.values().any(func(tip): return str(tip).contains("Rotation button")), "Rotation switch is removed entirely")
 	check(menu._adjust_rows[452].span == Vector3(-180, 180, 1), "Flat rotation slider still includes upside-down")
 	check(menu._tips.get(452, "") == Menu.I18n.t("Point at the screen's lower-left corner to show the curved arrows; hold either end to keep turning, or drag to rotate, then release to snap to the nearest 90°."), "Screen rotation slider explains the lower-left corner hold and drag gestures")
 	menu.dismiss()

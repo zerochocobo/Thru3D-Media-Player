@@ -98,11 +98,12 @@ func opened(uri: String, title: String, persisted: bool, kind: String = "video")
 		return false
 	var old := lookup(uri)
 	entries[key] = {"uri": uri, "title": title.replace("\n", " ").replace("\r", " ").replace("\t", " ").left(256),
-		"kind": kind if kind in ["image", "archive", "pdf"] else "video",
+		"kind": kind if kind in ["image", "archive", "pdf", "book"] else "video",
 		"persisted": persisted, "position_ms": int(old.get("position_ms", 0)),
 		"duration_ms": int(old.get("duration_ms", -1)), "opened": sequence + 1, "opened_at": Time.get_unix_time_from_system()}
 	if valid_cover(old.get("cover", "")): entries[key]["cover"] = old.cover
 	if old.has("location"): entries[key].location = old.location.duplicate(true)
+	if old.get("book_at") is String: entries[key].book_at = old.book_at
 	# Reserve room for the checksummed JSON envelope and its escaped payload.
 	while entries.size() > RECENT_LIMIT or JSON.stringify(entries).to_utf8_buffer().size() > MAX_BYTES / 3:
 		var oldest: String = str(entries.keys()[0])
@@ -193,6 +194,14 @@ func resume_position(uri: String) -> int:
 	var position := int(value.position_ms)
 	var duration := int(value.duration_ms)
 	return position if duration < 0 or position < maxi(0, duration - 2000) else 0
+
+## Where reading stopped, as "chapter/block/character". It follows the history policy: it exists only
+## on an entry that policy allowed.
+func set_book_position(uri: String, at: String) -> void:
+	var key := key_for(uri)
+	if at.is_empty() or at.length() > 48 or not entries.has(key) or not Privacy.record_allowed(uri): return
+	if entries[key].get("book_at", "") != at:
+		entries[key].book_at = at; dirty = true
 
 func set_location(uri: String, location: Dictionary) -> void:
 	var entry := lookup(uri)

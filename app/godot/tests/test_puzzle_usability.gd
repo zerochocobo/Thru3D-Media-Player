@@ -163,7 +163,7 @@ func _run() -> void:
 			check((host.session.board.mesh.size-host.session.board_size).is_equal_approx(Vector2.ONE*0.12),"The completed picture retains a visible white border on all four edges")
 			var layers := Composition.new(); root.add_child(layers); layers.configure(app.xr_origin,app.xr_camera,app.display,[],false,true); layers.set_process(false)
 			layers.register_menu(host.dock); layers.register_menu(host.reference_preview); layers.update()
-			check(layers.active==host.dock and layers.slots.any(func(slot):return slot.nodes.has(host.reference_preview.picture)) and layers.slots.any(func(slot):return slot.nodes.has(host.dock._buttons[0].node)),"Real dock and off-hand reference enter the same HD compositor update")
+			check(layers.active==host.dock and layers.slots.any(func(slot):return slot.nodes.has(host.reference_preview.picture)) and layers.slots.any(func(slot):return slot.nodes.has(host.dock._buttons.filter(func(b):return int(b.target)!=host.dock.app_actions.STATUS and not host.dock.app_actions.is_action(int(b.target)))[0].node)),"Real dock and off-hand reference enter the same HD compositor update")
 			layers.unregister_menu(host.reference_preview); layers.unregister_menu(host.dock); layers.queue_free(); await process_frame
 		host.show_panel(true); host.panel._activate(28)
 		check(host.active and host.panel.mode=="exit_confirm","Only the explicit Exit action opens exit confirmation")

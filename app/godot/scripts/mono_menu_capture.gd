@@ -29,6 +29,21 @@ var submit: SubViewport
 var copy: ColorRect
 var layer: OpenXRCompositionLayerEquirect
 var hole: MeshInstance3D
+## The layer capture is redrawn when the menu changed or the head moved this far across it, not every
+## frame: two 2304 px targets a frame took 8K 120 Hz playback from 117 to 65 frames a second on Quest 3
+## with a still control bar (2026-11-26). 1 mm at the bar's 1.4 m is under two layer pixels; between
+## captures the layer and its mask follow the head. Changes arrive as in MenuComposition: its dirty
+## flags from the menus' signals, and a signature check every KEEPALIVE_MS for the silent ones.
+const EYE_TOLERANCE := 0.001
+const KEEPALIVE_MS := 250
+var captures := 0
+var _captured_eye := Vector3.INF
+var _captured_basis := Basis.IDENTITY
+var _captured_centre := Vector2.ZERO
+var _signature := 0
+var _signature_poses: Dictionary[int, Transform3D] = {}
+var _checked_ms := 0
+var _tail := 0
 
 func configure(viewer: Camera3D, compositor: Node, provider: Callable, low: bool, host_capture: bool = false) -> void:
 	eye = viewer; composition = compositor; source_provider = provider; low_end = low
@@ -44,8 +59,8 @@ func configure(viewer: Camera3D, compositor: Node, provider: Callable, low: bool
 	# See MenuComposition: a session stop must not leave the layer's render target for the next one.
 	if native_supported and not xr.session_stopping.is_connected(_renew_submit):
 		xr.session_stopping.connect(_renew_submit)
-	if not RenderingServer.frame_post_draw.is_connected(_restore_visual_planes):
-		RenderingServer.frame_post_draw.connect(_restore_visual_planes)
+	if not RenderingServer.frame_post_draw.is_connected(_frame_drawn):
+		RenderingServer.frame_post_draw.connect(_frame_drawn)
 	process_priority = 99 # after input, before the existing compositor
 
 ## PICO 4 user report (0.17.4): a VR180 control bar on the infinite-radius equirect layer stayed
@@ -119,6 +134,7 @@ func update() -> void:
 			if resume_composition: composition.set_active(false)
 			eye_mask = eye.cull_mask; eye.cull_mask &= ~BIT
 			if not raw: _create()
+			_captured_eye = Vector3.INF
 	if not active: return
 	# Picking follows the same centre-eye angular position as the visible beam tip.
 	# Keeping finite hand-origin intersections would leave the rendered zero-disparity
@@ -133,26 +149,64 @@ func update() -> void:
 	var rect := projected_bounds(nodes, pose)
 	if not rect.has_area():
 		_park(); return
+	if not _uses_layer():
+		# The eye-buffer fallback draws its surface every frame anyway.
+		_frame(rect, pose)
+		surface.global_transform = pose * Transform3D(Basis.IDENTITY, Vector3(_captured_centre.x, _captured_centre.y, -1.0))
+		surface.visible = true
+		raw.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		return
+	if _capture_due(nodes, pose):
+		_frame(rect, pose)
+		var angles := capture_angles(rect.grow(0.02))
+		copy.material.set_shader_parameter("angles", angles)
+		if layer:
+			layer.central_horizontal_angle = angles.x
+			layer.upper_vertical_angle = angles.y; layer.lower_vertical_angle = angles.z
+		_captured_eye = active.global_transform.affine_inverse() * eye.global_position
+		_captured_basis = pose.basis
+		# As MenuComposition: the capture renders once, the copy for the two drawn frames of its tail
+		# (counted after each draw: update() also runs outside the frame's own process step).
+		raw.render_target_update_mode = SubViewport.UPDATE_ONCE
+		submit.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		_tail = 2; captures += 1
+	# The picture keeps the directions it was captured in; the layer and its mask stay on the head.
+	var held := Transform3D(_captured_basis, eye.global_position)
+	surface.global_transform = held * Transform3D(Basis.IDENTITY, Vector3(_captured_centre.x, _captured_centre.y, -1.0))
+	surface.visible = not native_supported
+	hole.global_transform = surface.global_transform; hole.visible = native_supported
+	if layer: layer.global_transform = held
+	if native_supported and composition.display: composition.display.set_menu_layers(true)
+
+## The capture camera and the square it fills, for the menu as it stands from [pose].
+func _frame(rect: Rect2, pose: Transform3D) -> void:
 	# One square target allocated per session; changing menus never resizes an XR swapchain.
 	var size := maxf(rect.size.x, rect.size.y) + 0.04
 	var centre := rect.get_center()
 	camera.global_transform = pose
 	camera.set_frustum(size * 0.05, centre * 0.05, 0.05, 100.0)
 	if surface.mesh.size != Vector2.ONE * size: surface.mesh.size = Vector2.ONE * size
-	surface.global_transform = pose * Transform3D(Basis.IDENTITY, Vector3(centre.x, centre.y, -1.0))
-	surface.visible = not native_supported
-	raw.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	if _uses_layer():
-		var angles := capture_angles(rect.grow(0.02))
-		copy.material.set_shader_parameter("capture_rect", Vector4(centre.x, centre.y, size, size))
-		copy.material.set_shader_parameter("angles", angles)
-		submit.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-		hole.global_transform = surface.global_transform; hole.visible = native_supported
-		if layer:
-			layer.global_transform = pose
-			layer.central_horizontal_angle = angles.x
-			layer.upper_vertical_angle = angles.y; layer.lower_vertical_angle = angles.z
-		if native_supported and composition.display: composition.display.set_menu_layers(true)
+	_captured_centre = centre
+	if copy: copy.material.set_shader_parameter("capture_rect", Vector4(centre.x, centre.y, size, size))
+
+## Whether the layer needs a new picture: the menu changed, or the head moved across it.
+func _capture_due(nodes: Array[VisualInstance3D], pose: Transform3D) -> bool:
+	var now := Time.get_ticks_msec()
+	# MenuComposition is parked in this mode; its flags still collect the menus' change signals.
+	var changed: bool = composition.dirty or composition.geometry_dirty or not composition._partial.is_empty()
+	var check: bool = composition._verify or now - _checked_ms >= KEEPALIVE_MS
+	composition.dirty = false; composition.geometry_dirty = false; composition._verify = false; composition._partial.clear()
+	var moved := not _captured_eye.is_finite() or not pose.basis.is_equal_approx(_captured_basis) 		or (active.global_transform.affine_inverse() * eye.global_position).distance_to(_captured_eye) > EYE_TOLERANCE
+	if not changed and not check: return moved
+	_checked_ms = now
+	var values := []
+	var poses: Dictionary[int, Transform3D] = {}
+	composition._sign_nodes(nodes, active.global_transform.affine_inverse(), values, poses, _signature_poses)
+	_signature_poses = poses
+	var signature := hash(values)
+	changed = changed or signature != _signature
+	_signature = signature
+	return changed or moved
 
 static func capture_angles(rect: Rect2) -> Vector3:
 	# Latitude is atan(y / sqrt(1+x*x)); x=0 conservatively contains every corner.
@@ -164,6 +218,7 @@ func _park() -> void:
 	if submit: submit.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	if surface: surface.hide()
 	if hole: hole.hide()
+	_tail = 0
 	if layer:
 		# Never hide/detach/resize a live viewport swapchain (see MenuComposition).
 		layer.central_horizontal_angle = 0.00001
@@ -172,7 +227,7 @@ func _park() -> void:
 
 func snapshot() -> Dictionary:
 	return {"active": active != null, "native": native_supported, "reserved_layers": layer_reservation(),
-		"path": "infinite_equirect" if native_supported else "eye_buffer_fallback",
+		"path": "infinite_equirect" if native_supported else "eye_buffer_fallback", "captures": captures,
 		"pixels": [raw.size.x, raw.size.y] if raw else []}
 
 static func projected_bounds(nodes: Array[VisualInstance3D], pose: Transform3D) -> Rect2:
@@ -214,6 +269,14 @@ func _mask(node: Node, nodes: Array[VisualInstance3D], plane: Node3D = null) -> 
 		originals.append(saved)
 	for child in node.get_children(): _mask(child, nodes, plane)
 
+func _frame_drawn() -> void:
+	_restore_visual_planes()
+	if _tail == 0: return
+	_tail -= 1
+	if _tail == 0 and _uses_layer() and submit:
+		raw.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		submit.render_target_update_mode = SubViewport.UPDATE_DISABLED
+
 func _restore_visual_planes() -> void:
 	# Restore before the next input/update frame. Logical hit geometry never moves.
 	for saved in visual_planes:
@@ -238,6 +301,6 @@ func stop() -> void:
 	active = null; resume_composition = false
 
 func _exit_tree() -> void:
-	if RenderingServer.frame_post_draw.is_connected(_restore_visual_planes):
-		RenderingServer.frame_post_draw.disconnect(_restore_visual_planes)
+	if RenderingServer.frame_post_draw.is_connected(_frame_drawn):
+		RenderingServer.frame_post_draw.disconnect(_frame_drawn)
 	stop()

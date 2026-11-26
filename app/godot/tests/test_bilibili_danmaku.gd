@@ -135,8 +135,7 @@ func _run() -> void:
 	_check(space.active_count() == 0, "Changing mode lays the comments out again")
 	for frame in range(8): danmaku.tick(video, 0.0)
 	var drop: Dictionary = {} if space._comments.is_empty() else space._comments[0]
-	_check(not drop.is_empty() and "
-" in drop.label.text, "Rain stacks characters vertically")
+	_check(not drop.is_empty() and "\n" in drop.label.text, "Rain stacks characters vertically")
 	if not drop.is_empty():
 		var middle: Vector3 = space.point(drop, drop.time)
 		var later: Vector3 = space.point(drop, drop.time + 2000)

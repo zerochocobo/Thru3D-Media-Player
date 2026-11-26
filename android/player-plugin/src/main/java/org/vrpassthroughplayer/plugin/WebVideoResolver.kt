@@ -15,7 +15,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class WebVideoResolver(private val context: () -> Context?, private val ready: (WebVideoDescriptor) -> Unit,
     private val cookies: (String) -> org.json.JSONArray = { org.json.JSONArray() },
     private val browserMedia: (String) -> JSONObject? = { null },
-    private val selectedMedia: (String, String) -> JSONObject? = { _, _ -> null }) : Closeable {
+    private val selectedMedia: (String, String) -> JSONObject? = { _, _ -> null },
+    private val browserPage: () -> Pair<Int, String>? = { null }) : Closeable {
     private val executor = Executors.newSingleThreadExecutor { Thread(it, "WebVideoResolver") }
     private var job: Future<*>? = null
     private var active: Attempt? = null
@@ -55,6 +56,14 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
     }
 
     companion object {
+        /** A page resolved from its address never plays the page's own stream, so the site
+         * restarting its video element (an ad ending, a quality switch) is not a change.
+         * Another tab, another video or newly protected playback still is. Returns the failure. */
+        internal fun addressChange(page: WebVideoPage, tab: Int, current: Pair<Int, String>?, latest: JSONObject?): String? = when {
+            current == null || current.first != tab || runCatching { WebVideoPage.parse(current.second) }.getOrNull() != page -> "browser_page_changed"
+            latest?.optBoolean("protected") == true -> "protected_content"
+            else -> null
+        }
         internal fun failureCode(error: Exception, stage: String): String {
             if (error is ExtractionFailure) return error.code
             if (error is MediaServerFailure) {
@@ -102,6 +111,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                         }
                 } else currentMedia()
                 if (media?.optBoolean("protected") == true) throw ExtractionFailure("protected_content")
+                val startTab = if (media != null && selection.isEmpty()) browserPage()?.first else null
                 if (publicPage?.site == "bilibili_live") {
                     if (!bilibiliBeta || directFile || selection.isEmpty()) throw ExtractionFailure("browser_playback_required")
                     attempt.stage = "browser_capture"
@@ -290,7 +300,10 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     selected.durationSeconds, projection = projection, silent = selected.silent, bilibiliCid = bilibiliCid)
                 // EME or SPA replacement can arrive while network probes run. Never publish an
                 // old representation after the page switched content or acquired MediaKeys.
-                if (media != null) {
+                if (media != null && route == "extractor" && !pgc && startTab != null) {
+                    val current = browserPage()
+                    addressChange(page, startTab, current, current?.let { browserMedia(it.second) })?.let { throw ExtractionFailure(it) }
+                } else if (media != null) {
                     val latest = currentMedia() ?: throw ExtractionFailure("browser_page_changed")
                     if (latest.optBoolean("protected")) throw ExtractionFailure("protected_content")
                     if (latest.optString("capture_identity") != media.optString("capture_identity") || latest.optBoolean("network_enabled") != networkEnabled)

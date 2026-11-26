@@ -73,7 +73,9 @@ func run() -> void:
 		"Closing settings returns to the bar slot without its grown rectangle")
 	# Subtitle appearance edits rebuild the popup while video playback remains active.
 	var fixed_sizes: Array = capture.slots.map(func(slot): return slot.raw.size)
-	player._activate(110); player._activate(Player.SUBTITLE_APPEARANCE)
+	player._activate(110)
+	# Subtitles open on their appearance group; a second press would fold it.
+	if player._subtitle_detail_group() != "appearance": player._activate(Player.SUBTITLE_APPEARANCE)
 	for style in player.SubtitleStyle.PRESETS:
 		state.subtitle_style = style.value; state.subtitle_size = 150.0
 		player.refresh(); await settle(capture)

@@ -7,7 +7,7 @@ import org.junit.Test
 
 class CloudSearchTest {
     @Test fun subtitleSearchKeepsAllTextFormatsAndNormalMediaSearchStillExcludesThem() {
-        val names = listOf("Film.zh.SRT", "Film.en.ass", "Film.ssa", "Film.vtt", "Film.smi", "Film.sami", "Film.sub", "Film.sup", ".Film.srt", "Film.mp4", "Film.txt")
+        val names = listOf("Film.zh.SRT", "Film.en.ass", "Film.ssa", "Film.vtt", "Film.smi", "Film.sami", "Film.sub", "Film.sup", ".Film.srt", "Film.mp4", "Film.nfo")
         val directory = Directory(names.mapIndexed { index, name -> CloudFile(name, false, 128, "$index") } + CloudFile("Film", true, 0, "folder"))
         val search = CloudDirectorySearch()
         val result = search.search("a", "id", directory, "/media", "film", "subtitle", "", false)
@@ -50,7 +50,7 @@ class CloudSearchTest {
     }
     @Test fun currentDirectorySearchIncludesUnseenPagesWithoutCrawlingAndPagingIsLocal() {
         val files = (0 until 60).map { CloudFile("旅行 $it.mp4", false, 128, "$it") } +
-            CloudFile("旅行.heic", false, 128, "photo") + CloudFile("旅行", true, 0, "folder") + CloudFile("旅行.txt", false, 20, "text")
+            CloudFile("旅行.heic", false, 128, "photo") + CloudFile("旅行", true, 0, "folder") + CloudFile("旅行.nfo", false, 20, "text")
         val directory = Directory(files); val search = CloudDirectorySearch()
         val first = search.search("account", "identity", directory, "/media", "旅行", "all", "", false)
         assertEquals(48, first.getJSONArray("content").length()); assertEquals(2, directory.reads)

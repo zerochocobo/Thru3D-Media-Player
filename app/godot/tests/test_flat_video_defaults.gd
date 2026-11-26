@@ -132,7 +132,9 @@ func run() -> void:
 	video._apply_geometry(); main._place_screen(true)
 	menu.toggle(); menu._activate(Menu.SCREEN_SETTINGS)
 	check(click(menu, Menu.SLIDER_RESET_BASE + 450) and click(menu, Menu.SLIDER_RESET_BASE + 451), "Existing per-slider resets restore factory dimensions")
-	check(pair(video).is_equal_approx(Vector2(2, 1)) and click(menu, Menu.SCREEN_SET_DEFAULT), "Factory values can be saved as the default pair: " + str(pair(video)))
+	# Saved settings is one side of a two-way choice: picking it again while chosen does nothing, so new
+	# values are saved by going through Latest settings.
+	check(pair(video).is_equal_approx(Vector2(2, 1)) and click(menu, Menu.SCREEN_AUTO_DEFAULT) and click(menu, Menu.SCREEN_SET_DEFAULT), "Factory values can be saved as the default pair: " + str(pair(video)))
 	check(main._flat_video_defaults().is_equal_approx(Vector2(2, 1)), "Factory defaults persist through explicit save")
 	main._apply_screen_preset("giant22")
 	var latest_cinema := pair(video)
@@ -152,7 +154,7 @@ func run() -> void:
 	check(is_equal_approx(video.screen_scale, 2.3), "Further adjustments after unlocking become the next recenter values")
 	check(click(menu, Menu.SCREEN_SET_DEFAULT), "Automatic mode can be locked again")
 	main._on_playback_adjustment("screen_scale", 270.0)
-	check(click(menu, Menu.SCREEN_SET_DEFAULT), "Clicking fixed settings again replaces the locked values")
+	check(click(menu, Menu.SCREEN_AUTO_DEFAULT) and click(menu, Menu.SCREEN_SET_DEFAULT), "Choosing saved settings again replaces the saved values")
 	main._on_playback_adjustment("screen_scale", 310.0); main._save_playback_adjustments(); main._on_menu_action("recenter")
 	check(is_equal_approx(video.screen_scale, 2.7) and main._menu_state().screen_default_locked, "Replaced lock restores its new value despite later edits")
 	menu.dismiss()

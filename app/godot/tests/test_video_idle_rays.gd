@@ -116,6 +116,40 @@ func run() -> void:
 			for input in ["by_button", "trigger_click", "grip_click"]: main._on_controller_release(input, hand)
 			check(not menu.visible, "Releasing a hidden chord cannot open the controls")
 	main.controller_bindings.restore_all()
+	# A plain grip tap with no panel reveals only that hand's ray until it idles (2026-11-26).
+	video.geometry = 0; video._apply_geometry(); video.panel.visible = true; menu.dismiss()
+	var eye := Vector3(0, 1.6, 0)
+	for hand in main.ControllerBindings.HANDS: main.rays[hand] = [eye, Vector3.UP]
+	main._on_controller_button("grip_click", "right_hand"); main._update_controller_feedback(0.01)
+	check(main.controller_feedback.opacity("right_hand") == 0.0, "Holding a grip that misses stays invisible until released")
+	main._on_controller_release("grip_click", "right_hand"); main._update_controller_feedback(0.01)
+	check(not menu.visible and main.controller_feedback.opacity("right_hand") == 1.0 and main.controller_feedback.opacity("left_hand") == 0.0, "A grip tap reveals only its own ray without opening controls")
+	check(main.controller_feedback.hands.right_hand.nodes.line.visible, "The revealed ray is drawn into the scene")
+	main.rays.right_hand = [eye, (video.panel.to_global(video.screen_corner(1)) - eye).normalized()]
+	main._update_corner_hover()
+	check(video.hovered_corner == 1, "A revealed ray shows the corner resize bracket")
+	var scale_before: float = video.screen_scale
+	main._on_controller_button("trigger_click", "right_hand")
+	check(main._grab.get("resize_only", false), "Trigger on a corner resizes from the revealed ray without a panel")
+	main.rays.right_hand = [eye, (video.panel.to_global(video.screen_corner(1) * 1.2) - eye).normalized()]
+	main._update_grab(); main._on_controller_release("trigger_click", "right_hand"); main._update_controller_feedback(0.01)
+	check(not menu.visible and main._grab.is_empty() and not is_equal_approx(video.screen_scale, scale_before), "Corner resize finishes without opening controls")
+	for frame in 560: main._update_controller_feedback(0.01)
+	check(main.controller_feedback.opacity("right_hand") == 0.0 and not main._ray_reveal.has("right_hand"), "An idle revealed ray fades and ends the reveal")
+	main._update_corner_hover()
+	check(video.hovered_corner == -1, "Corners hide again once the revealed ray idles")
+	main._on_controller_button("trigger_click", "right_hand"); main._on_controller_button("grip_click", "right_hand")
+	main._on_controller_release("grip_click", "right_hand"); main._on_controller_release("trigger_click", "right_hand"); main._update_controller_feedback(0.01)
+	check(main.controller_feedback.opacity("right_hand") == 0.0, "Trigger-first grip is a chord and reveals nothing")
+	menu.dismiss()
+	main._on_controller_button("grip_click", "left_hand"); main._on_controller_button("trigger_click", "left_hand")
+	main._on_controller_release("trigger_click", "left_hand"); main._on_controller_release("grip_click", "left_hand"); main._update_controller_feedback(0.01)
+	check(not main._ray_reveal.has("left_hand"), "Grip-first chord reveals nothing either")
+	menu.dismiss(); main.controller_bindings.reset_inputs()
+	main._on_controller_button("grip_click", "right_hand"); main._on_controller_release("grip_click", "right_hand")
+	main._show_player_menu(); main._update_controller_feedback(0.01); menu.dismiss(); main._update_controller_feedback(0.01)
+	check(not main._ray_reveal.has("right_hand"), "Opening the controls ends a grip reveal")
+	main.controller_bindings.restore_all()
 	# Gesture recognition uses its existing input route while presentation is hidden.
 	var pointer := main.HandPointer.new(); pointer.source = "hand"; pointer.ray = main.rays.right_hand
 	main.hand_pointers.right_hand = pointer

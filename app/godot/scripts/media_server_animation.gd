@@ -46,7 +46,8 @@ func _show(slot: Dictionary, value: Texture2D, restoring: bool = false) -> void:
 	_owner.get_ref().menu.composition_nodes_changed.emit([slot.surface])
 
 func stop() -> void:
-	var platform: Object = _owner.get_ref().menu.platform
+	# Untyped: a platform freed first (teardown) must reach the validity checks below, not fail on assignment.
+	var platform: Variant = _owner.get_ref().menu.platform
 	if _request > 0 and is_instance_valid(platform): platform.media_server_cancel(_request)
 	if _session > 0 and is_instance_valid(platform): platform.media_artwork_stop(_session)
 	if _texture != null and not active.is_empty(): _show(active, active.poster, true)

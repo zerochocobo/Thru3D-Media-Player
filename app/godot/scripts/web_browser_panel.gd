@@ -132,6 +132,8 @@ var pause_started := 0
 var last_pause_token := 0
 var handoff_start_ms := 0
 var handoff_beta := false
+## The legacy button pauses the page before it resolves, instead of once the player is ready.
+var pause_on_handoff := false
 var beta_button_seen := {}
 var handoff_waiting_pause := false
 var handoff_started_ms := 0
@@ -345,7 +347,7 @@ func tick() -> void:
 			handoff_start_ms = _playhead(true)
 			handoff_context.position_ms = _playhead()
 			if handoff_context.get("direct", false): menu.web_video.open_captured(str(handoff_context.selection))
-			else: menu.web_video.resolve(true, str(handoff_context.get("selection", "")))
+			else: menu.web_video.resolve(handoff_beta, str(handoff_context.get("selection", "")))
 			if menu.web_video.pending == 0: _handoff_failed()
 		elif Time.get_ticks_msec() - pause_started > 5000:
 			menu.web_video.result = {"error_code": "browser_pause_timeout"}
@@ -618,7 +620,7 @@ func _begin_handoff(beta: bool = false, selection: String = "") -> void:
 		"was_playing": data.get("videos", []).any(func(item): return (selection.is_empty() or str(item.get("selection", "")) == selection) and item.get("playing", false))}
 	handoff_context.position_ms = _playhead()
 	menu.web_video.address = str(data.get("url", ""))
-	if beta or direct:
+	if beta or direct or pause_on_handoff:
 		# The selected button always uses its current, explicitly selected source.
 		if menu.web_video.pending > 0: menu.web_video.close()
 		menu.web_video.result = {}

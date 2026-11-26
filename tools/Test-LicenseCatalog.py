@@ -10,10 +10,10 @@ def main():
     catalog = json.loads((ROOT / 'app/godot/i18n/licenses.json').read_text(encoding='utf-8'))
     import subprocess
     public_files = set(subprocess.check_output(['git', 'ls-files'], cwd=ROOT, text=True).splitlines())
-    ids, assets = set(), set()
+    entries, assets = {}, set()
     for entry in catalog:
-        assert entry['id'] not in ids, f'Duplicate license ID: {entry["id"]}'
-        ids.add(entry['id'])
+        assert entry['id'] not in entries, f'Duplicate license ID: {entry["id"]}'
+        entries[entry['id']] = entry
         assert entry['name'] and entry['license']
         assert entry['assets'] or entry['id'] in ('godot', 'godot-third-party')
         for asset in entry['assets']:
@@ -46,8 +46,26 @@ def main():
         'web-video/runtime.json': 'yt-dlp',
         'geckoview/runtime.json': 'geckoview',
     }.items():
-        assert (ROOT / 'third_party' / manifest).is_file() and license_id in ids, manifest
-    print(f'About catalog: {len(ids)} entries, {len(assets)} readable assets, {len(provenance["files"])} verified notice sources')
+        assert (ROOT / 'third_party' / manifest).is_file() and license_id in entries, manifest
+
+    for license_id, required_assets in {
+        'anime4k': {'player-licenses/anime4k.txt'},
+        'frame-interpolation': {'thru3d/FRAME-INTERPOLATION.txt', 'thru3d/LICENSE'},
+        'fidelityfx-fsr': {'fidelityfx-fsr/NOTICE.md', 'fidelityfx-fsr/LICENSE.txt'},
+        'pinyin-simp': {'pinyin_simp/NOTICE.md', 'pinyin_simp/AUTHORS', 'pinyin_simp/LICENSE'},
+        'assetstudio': {'unity-scene/NOTICE.txt', 'unity-scene/AssetStudio-LICENSE.txt'},
+        'project': {'thru3d/LICENSE'},
+    }.items():
+        assert license_id in entries and required_assets.issubset(entries[license_id]['assets']), license_id
+
+    project_license = (ROOT / 'LICENSE').read_text(encoding='utf-8')
+    assert (ROOT / 'third_party/thru3d/LICENSE').read_text(encoding='utf-8') == project_license
+    anime4k_license = (ROOT / 'third_party/anime4k/LICENSE').read_text(encoding='utf-8').strip()
+    anime4k_notice = (ROOT / 'third_party/player-licenses/anime4k.txt').read_text(encoding='utf-8').strip()
+    assert anime4k_notice.endswith(anime4k_license), 'About notice must include the complete Anime4K license'
+    web_runtime = json.loads((ROOT / 'third_party/web-video/runtime.json').read_text(encoding='utf-8'))
+    assert entries['yt-dlp']['name'].startswith(f"yt-dlp {web_runtime['version']} / "), 'Stale yt-dlp version in About'
+    print(f'About catalog: {len(entries)} entries, {len(assets)} readable assets, {len(provenance["files"])} verified notice sources')
 
 
 if __name__ == '__main__':

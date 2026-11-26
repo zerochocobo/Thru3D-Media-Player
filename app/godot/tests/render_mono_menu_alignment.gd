@@ -69,6 +69,25 @@ func run() -> void:
 		for saved in originals:
 			check(saved.node.transform.is_equal_approx(saved.pose),"Original button and ink transforms restored after drawing")
 	view.get_texture().get_image().save_png(output.path_join("mono-aligned.png"))
+	# The layer picture is redrawn for a menu change or head movement, not every frame.
+	for settle in 2: mono._checked_ms = 0; mono.update()
+	var drawn: int = mono.captures
+	mono.update()
+	check(mono.captures == drawn, "A still menu and head keep the captured picture")
+	var held: Vector3 = mono.hole.global_position - eye.global_position
+	eye.position += Vector3(0.0004, 0, 0); mono.update()
+	check(mono.captures == drawn, "Head motion inside the tolerance keeps it")
+	check((mono.hole.global_position - eye.global_position).is_equal_approx(held), "The layer mask stays on the head between captures")
+	eye.position += Vector3(0.002, 0, 0); mono.update()
+	check(mono.captures == drawn + 1, "Head motion across the menu redraws it")
+	menu.composition_changed.emit(); mono.update()
+	check(mono.captures == drawn + 2, "A menu change redraws it")
+	menu._elapsed.text = "09:59"; mono._checked_ms = 0; mono.update()
+	check(mono.captures == drawn + 3, "The signature check catches a change without a signal")
+	check(mono.submit.render_target_update_mode == SubViewport.UPDATE_ALWAYS, "A capture copies to the layer")
+	await frames(); mono.update()
+	check(mono.captures == drawn + 3 and mono.submit.render_target_update_mode == SubViewport.UPDATE_DISABLED
+		and mono.raw.render_target_update_mode == SubViewport.UPDATE_DISABLED, "After the capture's tail nothing is drawn")
 	# Cinema toggles while a mono capture is active must not cache its temporary shader.
 	menu.set_scene_overlay(true)
 	mono.update(); mono.stop()

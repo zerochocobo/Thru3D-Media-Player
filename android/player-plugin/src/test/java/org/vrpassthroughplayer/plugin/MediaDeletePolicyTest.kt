@@ -13,7 +13,7 @@ class MediaDeletePolicyTest {
             assertTrue(MediaDeletePolicy.regular(file))
             val photo = root.resolve("照片 [Album] EXC#95_LRF_Full_SBS.jpg").apply { writeText("fixture") }
             assertEquals(photo, MediaDeletePolicy.local(photo, listOf(root)))
-            assertThrows(IllegalArgumentException::class.java) { MediaDeletePolicy.local(root.resolve("photo.jpg#notes.txt"), listOf(root)) }
+            assertThrows(IllegalArgumentException::class.java) { MediaDeletePolicy.local(root.resolve("photo.jpg#notes.nfo"), listOf(root)) }
             assertThrows(IllegalArgumentException::class.java) { MediaDeletePolicy.local(file, listOf(root.resolve("other"))) }
             assertThrows(IllegalArgumentException::class.java) { MediaDeletePolicy.local(root, listOf(root)) }
             assertThrows(IllegalArgumentException::class.java) { MediaDeletePolicy.local(root.resolve("../escape.mp4"), listOf(root)) }
@@ -27,7 +27,7 @@ class MediaDeletePolicyTest {
     }
     @Test fun rejectsSmbShareAndDangerousPaths() {
         assertEquals("Video/旅行.mp4", MediaDeletePolicy.smbPath("Video/旅行.mp4"))
-        for (path in listOf("Video", "Video/../other.mp4", "Video//a.mp4", "Video/a\\b.mp4", "Video/a?.mp4", "Video/a*.mp4", "Video/a.srt", "Video/image.jpg#notes.txt"))
+        for (path in listOf("Video", "Video/../other.mp4", "Video//a.mp4", "Video/a\\b.mp4", "Video/a?.mp4", "Video/a*.mp4", "Video/a.srt", "Video/image.jpg#notes.nfo"))
             assertThrows(IllegalArgumentException::class.java) { MediaDeletePolicy.smbPath(path) }
     }
 

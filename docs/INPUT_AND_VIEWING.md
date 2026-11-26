@@ -75,3 +75,7 @@ Flat frame edges is off by default and eases left/right video or webpage depth t
 ## 0.18.10 stereo controls and recovery
 
 3D Position is now 3D Convergence; Foreground Scale controls nearer depth. Video, web and global settings provide both. Holding and dragging the video/web strength, convergence or foreground slider temporarily hides its menu. The previous picture settings can survive restarts, with icons separating saved-per-file from carried values. Boosted playback restores system volume when it ends and can attempt recovery on the next launch after an interrupted exit. Feature availability follows the current video and runtime.
+
+## 0.18.11 preview and interaction changes
+
+New library previews can crop to fill (default) or preserve the whole picture. Grip briefly reveals a playback pointer for moving/corner-resizing the screen, then fades when idle. Panel edges, selections, thumbnail rounding and text adapt to the current palette. Render-path, 120 Hz recovery and zero-parallax control redraw changes preserve the release's stated device scope; QIYU A091 decoder behavior still requires the recorded retest.

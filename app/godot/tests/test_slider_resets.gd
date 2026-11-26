@@ -109,7 +109,9 @@ func run() -> void:
 	menu = Menu.new(); root.add_child(menu); menu.set_process(false); menu.state_provider = func(): return state
 	var settings_events: Array = []
 	menu.setting_requested.connect(func(key, value): state[key] = value; settings_events.append([key, value]))
-	menu.toggle(); menu._activate(110); menu._activate(Menu.SUBTITLE_APPEARANCE)
+	menu.toggle(); menu._activate(110)
+	# Subtitles open on their appearance group; a second press would fold it.
+	if menu._subtitle_detail_group() != "appearance": menu._activate(Menu.SUBTITLE_APPEARANCE)
 	for key in ["subtitle_vertical_position", "subtitle_distance", "subtitle_size"]:
 		var reset_target: int = menu.choices.targets.keys().filter(func(target): return menu.choices.targets[target].get("kind") == "reset" and menu.choices.targets[target].key == key)[0]
 		var button: Dictionary = menu._buttons.filter(func(item): return item.target == reset_target)[0]

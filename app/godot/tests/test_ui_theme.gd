@@ -73,7 +73,9 @@ func _run() -> void:
 	Palette.use("default")
 	check(Palette.OPTIONS.size() == 6 and Palette.SCHEMES.size() == 5, "Original plus five named schemes")
 	check(Palette.color("panel") == Color(0.065, 0.075, 0.095, 0.98), "Original panel float values are unchanged")
-	check(Palette.color("tile") == Color(0.105, 0.12, 0.15, 1.0), "Original button float values are unchanged")
+	check(Palette.palette("default").tile == Color(0.105, 0.12, 0.15, 1.0), "Original button float values are unchanged")
+	check(Palette.color("tile") != Palette.ORIGINAL.tile and Color(Palette.color("selected"), 1).is_equal_approx(Color(Palette.color("panel").lerp(Palette.color("accent"), Palette.SELECTED_TINT), 1)),
+		"Live controls stand further off the panel and selection is a tint of the accent")
 	check(Palette.color("accent") == Color(0.54, 0.93, 0.77), "Original accent float values are unchanged")
 	check(Palette.color("label") == Color.WHITE and Palette.color("knob") == Color.WHITE, "Original label and knob white unchanged")
 	var covered: Array = []
@@ -159,6 +161,8 @@ func _run() -> void:
 	var menu := States.Widgets.new(); root.add_child(menu); menu.toggle()
 	menu.device_status.clock_provider = func(): return {"hour": 10, "minute": 8}
 	menu.device_status.refresh(true)
+	# Captions settle to their final size once the layout that drew them is complete.
+	await frames()
 	menu._hover = {"right_hand": 1}; menu._update_highlights()
 	var original := snapshot(menu)
 	var pose := menu.transform
@@ -193,7 +197,7 @@ func _run() -> void:
 	menu.toggle(); await frames()
 	check(not menu._theme_pending and menu._backdrop.material_override.get_shader_parameter("surface_color") == Palette.color("panel"), "Reopening hidden menu uses current theme")
 	var fresh := States.Widgets.new(); root.add_child(fresh); fresh.toggle()
-	check(fresh._buttons[0].node.get_child(0).modulate == Palette.color("text"), "New windows inherit current theme")
+	check(fresh._buttons.filter(func(b): return b.target == 1)[0].node.get_child(0).modulate == Palette.color("text"), "New windows inherit current theme")
 	fresh.free(); menu.free()
 
 	var held := HeldMenu.new(); root.add_child(held); held.toggle(); held.held = true

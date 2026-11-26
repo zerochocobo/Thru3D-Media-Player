@@ -39,7 +39,8 @@ func _run() -> void:
 		menu._choose(folders[0]); await create_timer(0.01).timeout
 		check(menu.media_filter==0 and has_video(menu),"Opening a child does not hide its videos "+str(source))
 		menu._activate(Menu.FILTER_BASE+2); menu._go_back(); await process_frame
-		check(menu.media_filter==0 and has_video(menu),"Going back clears the child filter instead of restoring a hidden global one")
+		# Each folder keeps the filter it was left with (2026-10-22): the parent had images chosen.
+		check(menu.media_filter==2 and not has_video(menu),"Going back restores the filter the parent folder was left with")
 		menu._activate(Menu.FILTER_BASE+2); menu.dismiss(); menu.toggle()
 		check(menu.media_filter==0 and has_video(menu),"Reopening the browser shows all files again")
 		menu._activate(Menu.FILTER_BASE+2); menu.remember_playback_context(); menu.dismiss(); menu.show_playback_files(true)

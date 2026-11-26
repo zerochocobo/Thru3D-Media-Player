@@ -192,6 +192,8 @@ func _quad(size: Vector2, location: Vector3, color: Color, priority: int) -> Mes
 	surface.render_priority = priority
 	surface.set_shader_parameter("surface_color", color)
 	surface.set_shader_parameter("surface_size", size)
+	if priority == 10:
+		surface.set_shader_parameter("rim", Menu.PANEL_RIM); surface.set_shader_parameter("sheen", Menu.PANEL_SHEEN)
 	node.material_override = surface
 	add_child(node)
 	return node

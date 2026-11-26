@@ -39,7 +39,8 @@ func run() -> void:
 func snapshot(viewport: SubViewport, camera: Camera3D, menu: Node3D, name: String) -> void:
 	await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 	for button in menu._buttons:
-		if not button.node.is_visible_in_tree(): continue
+		# Text-only targets (the footer status entry) have no plate to measure.
+		if not button.node.is_visible_in_tree() or not button.node is MeshInstance3D: continue
 		var mesh_size: Vector2 = button.node.mesh.size
 		for x in [-0.5,0.5]:
 			for y in [-0.5,0.5]:

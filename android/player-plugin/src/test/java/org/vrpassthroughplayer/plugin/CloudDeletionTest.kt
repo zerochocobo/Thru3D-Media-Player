@@ -62,7 +62,7 @@ class CloudDeletionTest {
             assertTrue(CloudDeletion(client).run("/"+f.name, request(f), false, false).getBoolean("deleted"))
             assertEquals(1, client.writes); assertTrue(client.reads.isEmpty())
         }
-        val document = item("photo.jpg#notes.txt", "5")
+        val document = item("photo.jpg#notes.nfo", "5")
         val client = Fake().apply { folders["/"]!!.add(document) }
         rejected { CloudDeletion(client).run(document.id, request(document), false, false) }
         assertEquals(0, client.writes)
@@ -118,7 +118,7 @@ class CloudDeletionTest {
         val folder = item("旅行", "1", true)
         val client = Fake().apply {
             folders["/"]!!.add(folder)
-            folders["/旅行"] = (0 until 55).map { item("note-$it.txt", (100+it).toString()) }.toMutableList()
+            folders["/旅行"] = (0 until 55).map { item("note-$it.nfo", (100+it).toString()) }.toMutableList()
             folders["/旅行"]!!.add(item(".hidden.srt", "2"))
             folders["/旅行"]!!.add(item("配音", "3", true))
             folders["/旅行/配音"] = mutableListOf(item("travel.m4a", "4"))

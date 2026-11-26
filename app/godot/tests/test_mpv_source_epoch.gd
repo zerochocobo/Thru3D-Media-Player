@@ -53,8 +53,9 @@ func _initialize() -> void:
 	var freeze: int = video._freeze_request
 	video._on_state(10, report(10, 4))
 	video._on_frozen_pair(10, JSON.stringify({"request_id": freeze, "state": "failed", "error": "allocation failed"}))
-	check(bridge.revisions.back() == [10, -1] and video.media.session_id == 11,
-		"A failed seek snapshot still performs the mandatory source reset without retrying the rejected seek")
+	# Since 2026-11-18 a failed capture no longer drops the seek: it goes ahead unfrozen with the reset.
+	check(bridge.revisions.back() == [10, 23000] and video.media.session_id == 11,
+		"A failed seek snapshot still performs the mandatory source reset and goes ahead with the seek unfrozen")
 	check(not video.requested_play and video._waiting_first and video._pending_revision.is_empty(),
 		"Capture failure cannot strand a paused video behind the retired native source gate")
 	video.platform = null

@@ -962,8 +962,9 @@ func _cutout_grip(label: String) -> void:
 		var corner: Vector3 = main.video.panel.to_global(main.video.screen_corner(1))
 		main.rays.right_hand = [head.origin, (corner - head.origin).normalized()]
 		main._update_corner_hover()
-		check(main.video.hovered_corner == 1, "Retained cinema portrait exposes the existing resize corner")
-		check(main._try_corner_resize("right_hand") and main._grab.has("resize"), "Retained cinema portrait accepts corner resizing")
+		# Portrait cutouts show no corners since 2026-11-13; grip and stick resize them instead.
+		check(main.video.hovered_corner == -1, "Retained cinema portrait keeps its resize corners hidden")
+		check(not main._try_corner_resize("right_hand") and not main._grab.has("resize"), "Retained cinema portrait is not resized from a corner")
 		main._grab.clear(); main.video.set_corner_hover(-1); _close_menus()
 	main.rays.clear(); main.move_poses.clear()
 

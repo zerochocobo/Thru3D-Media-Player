@@ -6,8 +6,10 @@ render_mode unshaded, cull_disabled, depth_draw_never, blend_mix;
 uniform sampler2D color_texture : filter_linear, repeat_disable;
 uniform sampler2D alpha_texture : filter_linear, repeat_disable;
 uniform bool alpha_enabled = true;
-// QIYU eye-buffer playback (no compositor video layer): take the plain fast path in fragment().
+// Eye-buffer playback (no compositor video layer): take the plain fast path in fragment().
 uniform bool plain_fast_path = false;
+// Debug A/B (perf_tune plain_footprint_taps): the fast path's footprint taps per axis, 0 = one bilinear tap.
+uniform int plain_footprint_taps = 3;
 // The player's edge feather/shrink: mask values remapped from [x, y] to [0, 1] ((0, 1): unchanged).
 uniform vec2 alpha_edge = vec2(0.0, 1.0);
 float edge_alpha(float m) { return clamp((m - alpha_edge.x) / max(alpha_edge.y - alpha_edge.x, 0.001), 0.0, 1.0); }
@@ -46,11 +48,11 @@ vec3 clarity_sample(vec2 p, vec2 lo, vec2 hi, vec3 center) {
 // has no mipmaps, so one bilinear tap skips most of them and fine edges crawl. Box-filter the pixel's
 // footprint instead: each tap sits on a texel corner and so averages exactly 2x2 texels, and taps two
 // texels apart tile the box without gaps. dx/dy come from uniform control flow. Layers filter themselves.
-vec3 footprint_color(vec2 p, vec2 dx, vec2 dy, vec2 lo, vec2 hi, vec3 center) {
+vec3 footprint_taps_color(vec2 p, vec2 dx, vec2 dy, vec2 lo, vec2 hi, vec3 center, int max_taps) {
 	vec2 span = (abs(dx) + abs(dy)) * source_size;
 	// A wrap seam, not a footprint: its derivative spans a large part of the frame.
 	if (max(span.x, span.y) > 32.0) { return center; }
-	ivec2 taps = ivec2(clamp(ceil(span * 0.5), vec2(1.0), vec2(3.0)));
+	ivec2 taps = ivec2(clamp(ceil(span * 0.5), vec2(1.0), vec2(float(max_taps))));
 	if (taps.x * taps.y == 1 && max(span.x, span.y) < 1.5) { return center; }
 	vec2 corner = floor(p * source_size + 0.5);
 	vec3 sum = vec3(0.0);
@@ -61,6 +63,9 @@ vec3 footprint_color(vec2 p, vec2 dx, vec2 dy, vec2 lo, vec2 hi, vec3 center) {
 		}
 	}
 	return sum / float(taps.x * taps.y);
+}
+vec3 footprint_color(vec2 p, vec2 dx, vec2 dy, vec2 lo, vec2 hi, vec3 center) {
+	return footprint_taps_color(p, dx, dy, lo, hi, center, 3);
 }
 
 vec2 raw_eye_uv(vec2 displayed_uv) {
@@ -140,6 +145,44 @@ void vertex() {
 	}
 }
 
+// QIYU flat playback: the bridge's 2x box reductions of this frame (1/2 .. 1/16 size). A minified
+// picture then blends two levels near its pixel size (trilinear) instead of box-filtering many
+// full-size texels with most fetches missing the cache. Godot keeps a borrowed texture to its base
+// level, so each level is a texture of its own. Declared after vertex(): the PiP atlas leaves it out.
+uniform int color_levels = 0;
+uniform sampler2D color_level_1 : filter_linear, repeat_disable;
+uniform sampler2D color_level_2 : filter_linear, repeat_disable;
+uniform sampler2D color_level_3 : filter_linear, repeat_disable;
+uniform sampler2D color_level_4 : filter_linear, repeat_disable;
+// [lo, hi]: the eye's region of the frame. The bridge sizes level k as floor(size / 2^k).
+vec3 level_tap(int level, vec2 p, vec2 lo, vec2 hi) {
+	vec2 half_texel = 0.5 / max(floor(source_size / exp2(float(level))), vec2(1.0));
+	vec2 q = clamp(p, lo + half_texel, hi - half_texel);
+	if (level == 1) { return textureLod(color_level_1, q, 0.0).rgb; }
+	if (level == 2) { return textureLod(color_level_2, q, 0.0).rgb; }
+	if (level == 3) { return textureLod(color_level_3, q, 0.0).rgb; }
+	return textureLod(color_level_4, q, 0.0).rgb;
+}
+// A picture shown at [p] (this eye's texel-centre bounds [lo, hi], derivatives dx, dy): blended from the two
+// reductions nearest its pixel size where the bridge made them and it is minified 2x to 32x, otherwise
+// one bilinear tap box-filtered over its footprint (at most max_taps per axis; 0: the tap alone).
+// The plain path and the generated depth variant (PairTextureBinding.depth_code) draw with it.
+vec3 minified_color(vec2 p, vec2 dx, vec2 dy, vec2 lo, vec2 hi, int max_taps) {
+	vec2 span = (abs(dx) + abs(dy)) * source_size;
+	float texels = max(span.x, span.y);
+	if (color_levels > 0 && texels > 2.0 && texels <= 32.0) {
+		float lod = min(log2(texels), float(color_levels));
+		int level = min(int(lod), color_levels);
+		vec2 eye_lo = lo - 0.5 / source_size;
+		vec2 eye_hi = hi + 0.5 / source_size;
+		vec3 rgb = level_tap(level, p, eye_lo, eye_hi);
+		if (level < color_levels) { rgb = mix(rgb, level_tap(level + 1, p, eye_lo, eye_hi), lod - float(level)); }
+		return rgb;
+	}
+	vec3 center = texture(color_texture, p).rgb;
+	return max_taps > 0 ? footprint_taps_color(p, dx, dy, lo, hi, center, max_taps) : center;
+}
+
 void fragment() {
 	// Plain playback (no mask, depth, PiP, packed Alpha, stream mesh or sharpening): projection, eye,
 	// alignment, footprint, grade and captions only. Quest 2 stand-in for QIYU A091, 8K VR180 in the eye
@@ -158,8 +201,9 @@ void fragment() {
 		} else if (stereo_sbs) {
 			plain_p.x = (plain_p.x + float(plain_eye)) * 0.5; plain_lo.x += float(plain_eye) * 0.5; plain_hi.x -= float(1 - plain_eye) * 0.5;
 		}
-		vec3 plain_rgb = texture(color_texture, plain_p).rgb;
-		plain_rgb = footprint_color(plain_p, dFdx(plain_p), dFdy(plain_p), plain_lo, plain_hi, plain_rgb);
+		vec2 plain_dx = dFdx(plain_p);
+		vec2 plain_dy = dFdy(plain_p);
+		vec3 plain_rgb = minified_color(plain_p, plain_dx, plain_dy, plain_lo, plain_hi, plain_footprint_taps);
 		ALBEDO = outside_lens(media_direction) || outside_alignment(plain_shown) ? vec3(0.0) : color_grade(plain_rgb, FRAGCOORD.xy);
 		ALPHA = 1.0;
 		if (!separate_subtitles) {

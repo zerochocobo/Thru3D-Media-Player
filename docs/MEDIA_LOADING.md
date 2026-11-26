@@ -26,3 +26,7 @@ GuangYaPan supports in-headset Web OAuth with PKCE, browsing and compatible medi
 ## 0.18.10 navigation and errors
 
 Supported local, SMB, DLNA and cloud lists expose previous/next sibling folders. DLNA image/audio opening and external NAS reads handle additional response shapes. GuangYaPan membership denial is distinguished from network failure. Decoder no-frame waits can time out and attempt fallback; excessive source frame rates have clearer device-limit messages. These checks do not establish all-server/media acceptance.
+
+## 0.18.11 recovery
+
+Supported spliced videos can reload after a midstream resolution change. When DLNA item metadata is empty and a parent is known, the player can look up the item there. Decoder non-reference-frame skipping and render changes follow the pinned source patches and their applicability; they are not a universal performance guarantee.

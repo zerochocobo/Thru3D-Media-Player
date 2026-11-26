@@ -28,6 +28,7 @@ static func draw_sidebar_toggle(menu: Node3D, state: Dictionary, parent: Node3D)
 	var button: Dictionary = menu._buttons.back()
 	button.base_color = Color(menu.TILE, 0.0)
 	button.node.material_override.set_shader_parameter("surface_color", button.base_color)
+	menu._side_pill(button)
 	var label: Label3D = button.node.get_child(0)
 	label.position.x = -0.092
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT

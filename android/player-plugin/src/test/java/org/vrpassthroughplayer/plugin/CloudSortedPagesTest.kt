@@ -83,7 +83,7 @@ class CloudSortedPagesTest {
     }
 
     @Test fun rawApiPageRetainsM4aSubtitlesDocumentsAndUnknownFutureTypes() {
-        val names = listOf("film.mp4", "film.srt", "film.si.mix.m4a", "notes.pdf", "notes.txt", "future.sidecar_new")
+        val names = listOf("film.mp4", "film.srt", "film.si.mix.m4a", "notes.pdf", "notes.nfo", "future.sidecar_new")
         val client = Client(names.map(::file))
         val page = CloudSortedPages().page(client, "/movies", 0, false, "name_asc")
         assertEquals(names, page.files.map { it.name })

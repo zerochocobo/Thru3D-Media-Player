@@ -8,14 +8,15 @@ import java.nio.file.LinkOption.NOFOLLOW_LINKS
 internal object PhotoCache {
     val lock = Any()
     private val photoNames = listOf("photos", "photo-preloads", "photo-gallery", "pip-images")
-    private val readingNames = listOf("comic-pages", "pdf-pages", "pdf-sources")
+    private val readingNames = listOf("comic-pages", "pdf-pages", "pdf-sources", "book-pages")
     // Kept between runs: the user's cache cleanup and its size count include them, the cleanup at start does not.
     private val lasting = listOf(PhotoDepthStore.NAME)
+    private val lastingReading = listOf("book-layouts")
 
     private fun directories(category: String, leftovers: Boolean = false): List<String> = when (category) {
         "photo" -> photoNames + lasting
-        "reading" -> readingNames
-        else -> photoNames + readingNames + if (leftovers) emptyList() else lasting
+        "reading" -> readingNames + lastingReading
+        else -> photoNames + readingNames + if (leftovers) emptyList() else lasting + lastingReading
     }
 
     fun usage(cache: File, category: String = ""): Pair<Long, Long> = synchronized(lock) {

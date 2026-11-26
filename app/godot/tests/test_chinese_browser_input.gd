@@ -6,6 +6,11 @@ const Fixture := preload("res://tests/test_web_browser_panel.gd")
 var checks := 0
 var failures: Array[String] = []
 func _initialize() -> void: call_deferred("run")
+## Other page commands (Beta visibility) can follow it, so find the latest keyboard mode.
+func keyboard_mode(platform: Object) -> Dictionary:
+	var modes: Array = platform.browser_commands.filter(func(command): return command.get("action", "") == "keyboard_mode")
+	return modes.back() if not modes.is_empty() else {}
+
 func check(ok: bool, label: String) -> void:
 	checks += 1
 	if not ok: failures.append(label)
@@ -108,21 +113,21 @@ func exercise_browser(quest: bool, language: String, selected: bool) -> void:
 	check(Chinese.active() and Chinese.popup.owner_id == "browser", "New webpage field still opens the Chinese keyboard")
 	I18n.use("en"); Chinese.configure(Chinese.selected); browser.tick()
 	if quest:
-		check(not Chinese.active() and platform.browser_commands.back().action == "keyboard_mode" and not platform.browser_commands.back().enabled, "Quest leaving Simplified Chinese restores native system mode")
+		check(not Chinese.active() and not keyboard_mode(platform).get("enabled", true), "Quest leaving Simplified Chinese restores native system mode")
 	else:
-		check(Chinese.active() and platform.browser_commands.back().enabled, "Generic OpenXR retains its visible fallback after language/configuration changes")
+		check(Chinese.active() and keyboard_mode(platform).get("enabled", false), "Generic OpenXR retains its visible fallback after language/configuration changes")
 		Chinese.configure(false); browser.tick()
 		check(Chinese.active(), "Turning Chinese preference off does not strand the browser focus lease")
 		old_action = Chinese.popup.dispatch
 		Chinese.configure_browser("system"); browser.tick()
-		check(not Chinese.active() and not platform.browser_commands.back().enabled, "System choice closes the popup and disables native custom input")
+		check(not Chinese.active() and not keyboard_mode(platform).get("enabled", true), "System choice closes the popup and disables native custom input")
 		count = platform.inputs.size()
 		check(not old_action.call("text", "stale") and platform.inputs.size() == count, "Switching backend rejects the old editing callback")
 		platform.browser.custom_keyboard = false; platform.browser.keyboard_epoch = 0; platform.browser.keyboard_visible = true
 		browser.next_poll = 0; browser.tick()
 		check(browser.keyboard_visible(1) and not Chinese.active(), "System mode follows native visibility without opening an app popup")
 		Chinese.configure_browser("builtin"); browser.tick()
-		check(platform.browser_commands.back().enabled and not Chinese.active(), "Returning to built-in requests native custom mode before opening a popup")
+		check(keyboard_mode(platform).get("enabled", false) and not Chinese.active(), "Returning to built-in requests native custom mode before opening a popup")
 		platform.browser.custom_keyboard = true; platform.browser.keyboard_epoch = 7
 		browser.next_poll = 0; browser.tick()
 		check(Chinese.active(), "Fresh native focus after returning to built-in opens the keyboard")

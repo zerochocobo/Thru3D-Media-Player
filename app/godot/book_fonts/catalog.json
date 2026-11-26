@@ -1,0 +1,132 @@
+{
+ "fonts": [
+  {
+   "id": "noto-serif-sc",
+   "name": "Noto Serif SC",
+   "name_zh": "思源宋体",
+   "name_zh_hant": "思源宋體",
+   "name_ja": "源ノ明朝 SC",
+   "languages": [
+    "zh"
+   ],
+   "file": "NotoSerifSC-Regular.otf",
+   "bytes": 11625800,
+   "sha256": "e8f396decc1f0963a016a989c3d8852e863d1350996f573860a80767c83a1cd3",
+   "license": "OFL-1.1",
+   "license_file": "noto-serif-sc-LICENSE.txt",
+   "source": "https://github.com/notofonts/noto-cjk/raw/main/Serif/SubsetOTF/SC/NotoSerifSC-Regular.otf"
+  },
+  {
+   "id": "lxgw-wenkai-lite",
+   "name": "LXGW WenKai Lite",
+   "name_zh": "霞鹜文楷",
+   "name_zh_hant": "霞鶩文楷",
+   "name_ja": "霞鶩文楷",
+   "languages": [
+    "zh"
+   ],
+   "file": "LXGWWenKaiLite-Regular.ttf",
+   "bytes": 13949472,
+   "sha256": "f799a538a3355877e597a0ae04050e897932c9ae7689eb9227c2953c5dd549ea",
+   "license": "OFL-1.1",
+   "license_file": "lxgw-wenkai-lite-LICENSE.txt",
+   "source": "https://github.com/lxgw/LxgwWenKai-Lite/releases/download/v1.530/LXGWWenKaiLite-Regular.ttf"
+  },
+  {
+   "id": "noto-serif-tc",
+   "name": "Noto Serif TC",
+   "name_zh": "思源宋体 繁",
+   "name_zh_hant": "思源宋體",
+   "name_ja": "源ノ明朝 TC",
+   "languages": [
+    "zh_hant"
+   ],
+   "file": "NotoSerifTC-Regular.otf",
+   "bytes": 7936104,
+   "sha256": "63515eb0622d589a2f4062e8757c598b3da3bffd053f69abd181c210158ef10c",
+   "license": "OFL-1.1",
+   "license_file": "noto-serif-tc-LICENSE.txt",
+   "source": "https://github.com/notofonts/noto-cjk/raw/main/Serif/SubsetOTF/TC/NotoSerifTC-Regular.otf"
+  },
+  {
+   "id": "lxgw-wenkai-tc",
+   "name": "LXGW WenKai TC",
+   "name_zh": "霞鹜文楷 繁",
+   "name_zh_hant": "霞鶩文楷",
+   "name_ja": "霞鶩文楷 TC",
+   "languages": [
+    "zh_hant"
+   ],
+   "file": "LXGWWenKaiTC-Regular.ttf",
+   "bytes": 15341148,
+   "sha256": "6662480a3f95b4a90c80b189c679617a48adce3a505118a6af63ce5a482b83fa",
+   "license": "OFL-1.1",
+   "license_file": "lxgw-wenkai-tc-LICENSE.txt",
+   "source": "https://github.com/lxgw/LxgwWenkaiTC/releases/download/v1.530/LXGWWenKaiTC-Regular.ttf"
+  },
+  {
+   "id": "noto-serif-jp",
+   "name": "Noto Serif JP",
+   "name_zh": "思源明朝 日文",
+   "name_zh_hant": "思源明朝 日文",
+   "name_ja": "源ノ明朝",
+   "languages": [
+    "ja"
+   ],
+   "file": "NotoSerifJP-Regular.otf",
+   "bytes": 6210492,
+   "sha256": "2c9a12dbd4f2408c4610c7ee84a108b62d7236c3775baed618c64d9cb44b2f04",
+   "license": "OFL-1.1",
+   "license_file": "noto-serif-jp-LICENSE.txt",
+   "source": "https://github.com/notofonts/noto-cjk/raw/main/Serif/SubsetOTF/JP/NotoSerifJP-Regular.otf"
+  },
+  {
+   "id": "klee-one",
+   "name": "Klee One",
+   "name_zh": "Klee 教科书体",
+   "name_zh_hant": "Klee 教科書體",
+   "name_ja": "クレー",
+   "languages": [
+    "ja"
+   ],
+   "file": "KleeOne-Regular.ttf",
+   "bytes": 8724204,
+   "sha256": "bf4063f030cc2ae6adf0a11424a1888e5c0eb4438f1f6d02f52294af868e9b3a",
+   "license": "OFL-1.1",
+   "license_file": "klee-one-LICENSE.txt",
+   "source": "https://github.com/google/fonts/raw/main/ofl/kleeone/KleeOne-Regular.ttf"
+  },
+  {
+   "id": "literata",
+   "name": "Literata",
+   "name_zh": "Literata",
+   "name_zh_hant": "Literata",
+   "name_ja": "Literata",
+   "languages": [
+    "en"
+   ],
+   "file": "Literata.ttf",
+   "bytes": 955132,
+   "sha256": "b41138c9373112f32abb589cc22e8674b06ed4048b0c513be922bdd26f274440",
+   "license": "OFL-1.1",
+   "license_file": "literata-LICENSE.txt",
+   "source": "https://github.com/google/fonts/raw/main/ofl/literata/Literata[opsz,wght].ttf"
+  },
+  {
+   "id": "atkinson-hyperlegible",
+   "name": "Atkinson Hyperlegible",
+   "name_zh": "Atkinson 易读体",
+   "name_zh_hant": "Atkinson 易讀體",
+   "name_ja": "Atkinson Hyperlegible",
+   "languages": [
+    "en"
+   ],
+   "file": "AtkinsonHyperlegible-Regular.ttf",
+   "bytes": 54348,
+   "sha256": "7fb917c89019896d0b52ee84b7cbb3304c18cb90b19a62f5e32712bd23e97669",
+   "license": "OFL-1.1",
+   "license_file": "atkinson-hyperlegible-LICENSE.txt",
+   "source": "https://github.com/google/fonts/raw/main/ofl/atkinsonhyperlegible/AtkinsonHyperlegible-Regular.ttf"
+  }
+ ]
+}

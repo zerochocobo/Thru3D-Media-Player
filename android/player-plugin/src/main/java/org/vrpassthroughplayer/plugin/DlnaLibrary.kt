@@ -135,7 +135,15 @@ internal class DlnaLibrary(
         var parentStatus = "not_queried"
         var outcome = "failed"
         try {
-            val metadata = media(DlnaClient.browse(endpoint, objectId, metadata = true, diagnostics = metadataDiagnostics), objectId)
+            // Some servers declare the item but send an empty DIDL. Only a known parent on this
+            // server may then confirm the exact object; without one the count failure stands.
+            val metadataEntries = try {
+                DlnaClient.browse(endpoint, objectId, metadata = true, diagnostics = metadataDiagnostics)
+            } catch (error: DlnaClient.EmptyMetadataResponse) {
+                if (knownParent(id, objectId, null) == null) throw error
+                JSONArray()
+            }
+            val metadata = media(metadataEntries, objectId)
             val parentId = metadata?.optString("parent_id")?.takeIf { it.isNotBlank() && it != objectId }
                 ?: knownParent(id, objectId, metadata?.optString("uri"))
             // Some servers list the stream only in BrowseDirectChildren. Use the saved parent

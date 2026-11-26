@@ -2,6 +2,7 @@
 // frames, estimated coarse to fine on small luma pictures, and the picture in between drawn along it.
 // The method follows MVTools (block matching through a pyramid with a coherence penalty, pictures from
 // both neighbours mixed by how well each matched); the code is written for fragment shaders.
+// See third_party/thru3d/FRAME-INTERPOLATION.txt for attribution and the project license.
 // tools/frame_interp/harness.py runs these same strings on a desktop GPU.
 //
 // The frames are decoder images (samplerExternalOES) on the layer copy's thread; 2D->3D's stereo pairs

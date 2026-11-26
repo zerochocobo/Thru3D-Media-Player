@@ -60,9 +60,14 @@ func run() -> void:
 			var name: String=("cinema" if cinema else "floating")+"-"+str(index)
 			await capture(host,texture,shader,name+"-select",Focus.FULL,samples)
 			host.release_pointer("right",point(full,b,.5),direction,true)
+			# The floating window takes the selection's shape; the distant cinema screen keeps the page's
+			# and fills around the selection with page. Either way the whole selection stays in view.
+			var crop: Rect2=host.focus_crop()
+			checks+=1
+			if not crop.grow(.0001).encloses(selected):failures.append("Focused view leaves out part of the selection "+name)
 			samples=[]
-			for uv in [Vector2(.13,.17),Vector2(.43,.59),Vector2(.81,.87)]:samples.append([uv,Focus.map_point(uv,selected)])
-			await capture(host,texture,shader,name+"-focused",host.focus_crop(),samples)
+			for uv in [Vector2(.13,.17),Vector2(.43,.59),Vector2(.81,.87)]:samples.append([uv,Focus.map_point(uv,crop)])
+			await capture(host,texture,shader,name+"-focused",crop,samples)
 	menu.free();platform.free();view.free()
 	for failure in failures:push_error(failure)
 	print("Browser focus render: %d checks, %d images, %d failures"%[checks,count,failures.size()])

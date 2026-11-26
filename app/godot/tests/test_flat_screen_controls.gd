@@ -56,6 +56,8 @@ func _run() -> void:
 		video.depth_requested = mode in ["depth", "warped_depth"]
 		video.depth_enabled = video.depth_requested
 		video._binding.warped = mode == "warped_depth"
+		# A warped picture always comes with the bridge pair that sized it.
+		video._binding.ticket = {"width": 1920, "height": 1080} if video._binding.warped else {}
 		for curve in [0.0, 60.0]:
 			video.screen_curve = curve
 			video.screen_distance = 2.0

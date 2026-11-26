@@ -306,6 +306,13 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         }
         return result.get(5, TimeUnit.SECONDS)
     }
+    /** The shown tab and its address, for handoffs resolved from the address rather than a captured stream. */
+    fun pageForExtraction(): Pair<Int, String>? {
+        check(Looper.myLooper() != Looper.getMainLooper())
+        val result = java.util.concurrent.CompletableFuture<Pair<Int, String>?>()
+        ui.post { result.complete(current()?.takeIf { !closed.get() && active }?.let { it.id to it.url }) }
+        return result.get(5, TimeUnit.SECONDS)
+    }
     fun cookiesForExtraction(url: String): JSONArray {
         check(Looper.myLooper() != Looper.getMainLooper())
         val started = java.util.concurrent.CompletableFuture<Unit>()

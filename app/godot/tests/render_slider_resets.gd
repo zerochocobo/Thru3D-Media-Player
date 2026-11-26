@@ -33,7 +33,9 @@ func snapshot(name: String) -> void:
 			check(menu.ray_hit(point, -button.node.global_basis.z).get("target") == button.target, name + ": preset ray target")
 		if menu.editing_picture() and button.target in [440, Menu.GRADE_PAGE_RESET]:
 			var label: Label3D = button.node.get_child(0)
-			check(menu.text_width(label.text, label.font_size / menu.TEXT_RASTER_SCALE) < button.rect.size.x - 0.025, name + ": page/whole reset caption fits")
+			# Long translations are scaled down to fit (pixel_size), so measure at the drawn size.
+			var drawn: float = menu.text_width(label.text, label.font_size / menu.TEXT_RASTER_SCALE) * label.pixel_size / menu.TEXT_PIXEL_SIZE
+			check(drawn <= button.rect.size.x - 0.025 + 0.0001, name + ": page/whole reset caption fits")
 		var reset: bool = button.has("reset_slider") or button.target == Menu.DEPTH_OFF or menu.choices.targets.get(button.target, {}).get("kind", "") == "reset"
 		if not reset: continue
 		var origin: Vector3 = button.node.to_global(Vector3(0, 0, 1))
@@ -43,7 +45,8 @@ func snapshot(name: String) -> void:
 			var extent: float = absf(point.x - Menu.PICTURE_PANEL_X) + button.rect.size.x * 0.5 if menu.editing_picture() else absf(point.x) + button.rect.size.x * 0.5
 			var width: float = Menu.PICTURE_PANEL_WIDTH if menu.editing_picture() else menu._backdrop.mesh.size.x
 			check(extent < width * 0.5, name + ": reset stays inside panel")
-		check(menu._tips.get(button.target) == I18n.t("Turn off 3D" if button.target == Menu.DEPTH_OFF else "Reset"), name + ": action tooltip is translated")
+		var tip := "Turn off 3D" if button.target == Menu.DEPTH_OFF else "Restore 1×" if button.target == Menu.SPEED_RESET else "Reset"
+		check(menu._tips.get(button.target) == I18n.t(tip), name + ": action tooltip is translated")
 	for slider in menu.choices.sliders.values():
 		check(menu.text_width(slider.label.text, 18) <= 0.125, name + ": subtitle/FPS value fits beside the reset icon")
 	check(viewport.get_texture().get_image().save_png(output.path_join(name + ".png")) == OK, "Save " + name)
@@ -68,8 +71,10 @@ func run() -> void:
 			menu._grade_page = page; menu.refresh(); await snapshot("color-%s-%d" % [language, page])
 		menu._adjustment = "stereo_view"; menu.refresh(); await snapshot("stereo-" + language)
 		menu._adjustment = ""; menu.section = 0; state.geometry = 1
-		menu.refresh(); menu._activate(110); menu._activate(Menu.SUBTITLE_APPEARANCE)
-		check(menu.choices.sliders.size() == 5, "Subtitle appearance actually shows all four slider fields")
+		menu.refresh(); menu._activate(110)
+		# Subtitles open on their appearance group; a second press would fold it.
+		if menu._subtitle_detail_group() != "appearance": menu._activate(Menu.SUBTITLE_APPEARANCE)
+		check(menu.choices.sliders.size() == 6, "Subtitle appearance actually shows all its slider fields")
 		await snapshot("subtitles-" + language)
 		state.geometry = 0
 	I18n.use("zh"); make_menu(); menu.section = 1; menu._adjustment = "screen"

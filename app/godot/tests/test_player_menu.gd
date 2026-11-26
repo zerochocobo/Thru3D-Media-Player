@@ -16,6 +16,9 @@ class InputMain extends "res://scripts/main.gd":
 
 class RecentStub extends "res://scripts/recent_menu.gd":
 	var web_browser := preload("res://scripts/web_browser_panel.gd").new(self)
+	# Read by controller diagnostics, as on the real library.
+	var section := 0
+	var tab := 0
 	func refresh_alpha_sizes() -> void: pass
 	func checkpoint_browse() -> void: pass
 
@@ -358,7 +361,7 @@ func _run() -> void:
 	check(click(menu, 104) and video.alpha_requested and video._pending_revision.alpha, "Alpha button requests same-source production revision")
 	menu.update_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, false)
 	var alpha_tile: Dictionary = menu._buttons.filter(func(b): return b.target == 104)[0]
-	check(alpha_tile.node.material_override.get_shader_parameter("surface_color") == Color(0.16, 0.31, 0.27), "Requested Alpha is shown on its bar button, not as status text")
+	check(alpha_tile.node.material_override.get_shader_parameter("surface_color") == preload("res://scripts/ui_theme.gd").color("selected"), "Requested Alpha is shown on its bar button, not as status text")
 	video.set_projection(3)
 	menu.refresh()
 	check(video.alpha_requested and video.stereo_sbs, "Switching from VR180 to 360 retains Alpha and source stereo")
@@ -402,6 +405,16 @@ func _run() -> void:
 	menu.refresh_values()
 	check(menu._elapsed.text == "00:16" and menu._thumb.position.x > -Menu.BAR_SEEK / 4,
 		"Timeline resumes advancing from the confirmed target")
+	var whole_second: float = menu._thumb.position.x
+	video.control.observe(16750, 60000)
+	menu.refresh_values()
+	check(menu._elapsed.text == "00:16" and is_equal_approx(menu._thumb.position.x, whole_second),
+		"Playback inside one second leaves the bar as drawn, so the menu layers are not repainted")
+	video.control.observe(17000, 60000)
+	menu.refresh_values()
+	check(menu._elapsed.text == "00:17" and menu._thumb.position.x > whole_second, "The thumb steps with the elapsed text")
+	video.control.observe(16000, 60000)
+	menu.refresh_values()
 	check(menu.press_pointer("right_hand", menu.to_global(Vector3(Menu.BAR_SEEK / 4, -0.08, 1)), -menu.global_basis.z, true), "Other ray starts a time preview")
 	menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
 	check(video.control.target_ms == 45000, "Other ray release seeks to 75 percent")

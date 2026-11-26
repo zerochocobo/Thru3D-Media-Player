@@ -189,6 +189,13 @@ var last_request := 0
 var android_report: Dictionary = {}
 var photo: Node3D
 var photo_active := false
+const BookReader := preload("res://scripts/book_reader.gd")
+var book: Node3D
+var _book_trigger := {}
+var _book_stick_ready := true
+var _book_reopening := false
+var _book_probe := {}
+var _book_hand := "right_hand"
 var video_menu: Node3D
 var photo_menu: Node3D
 var video: Node3D
@@ -217,6 +224,8 @@ var controller_presence := ControllerPresence.new()
 var photo_hands := PhotoHandGestures.new()
 var photo_swipe := PhotoPalmSwipe.new()
 var memory_swipe := preload("res://scripts/memory_swipe.gd").new()
+## A palm swept across in front of the book turns its page: the same trajectory test as the photo wall.
+var book_swipe := preload("res://scripts/memory_swipe.gd").new()
 var _gallery_save_after := 0
 var _gallery_saved_state := ""
 var _pip_image_target: WeakRef
@@ -519,6 +528,17 @@ func _ready() -> void:
 	photo.mode_lock_changed.connect(_on_mode_lock_changed.bind("photo"))
 	photo.restore_view_settings(settings)
 	add_child(photo)
+	# Reading mode owns its scene, input and controls; it only borrows history and settings.
+	book = BookReader.new()
+	book.name = "BookReader"
+	add_child(book)
+	book.catalog = video.recent_files
+	book.restore_settings(settings)
+	book.save_settings = func() -> void: settings.save(settings_path)
+	book.head_provider = _head_pose
+	book.closed.connect(_on_book_closed)
+	book.felt.connect(_on_book_felt)
+	book.library_requested.connect(_show_recent_menu)
 	photo.sharpness = Quality.load_sharpness(settings, low_end_gpu)
 	photo.view_camera = camera
 	photo.video_layer = video.video_layer # one compositor layer provider for both players
@@ -544,6 +564,7 @@ func _ready() -> void:
 	recent_menu.file_delete_preparing.connect(_prepare_file_delete)
 	recent_menu.file_deleted.connect(_forget_deleted_file)
 	recent_menu.settings_provider = _library_settings
+	ThumbnailCache.whole = str(settings.get_value("library", "thumbnail_fit", "crop")) == "whole"
 	recent_menu.thumbnail_prefetch.configure(bool(settings.get_value("library", "thumbnail_prefetch", true)),
 		int(settings.get_value("library", "thumbnail_limit", LibraryMenu.ThumbnailPrefetch.DEFAULT_LIMIT)),
 		bool(settings.get_value("library", "thumbnail_smb", true)), bool(settings.get_value("library", "thumbnail_dlna", true)),
@@ -682,6 +703,7 @@ func _ready() -> void:
 	menu_composition.eye_buffer_only = QiyuController.runtime
 	menu_composition.configure(origin, camera, display, [recent_menu, video_menu, photo_menu, music_menu, scenery_menu], low_end_gpu)
 	menu_composition.register_companion(vr_passthrough_menu)
+	if not display.preview: book.layers.configure(origin, display, low_end_gpu)
 	menu_composition.register_companion(ChineseInput.ensure(origin))
 	# Menus drawn into the eye buffer (QIYU's sharp menus, or no quad layers) met the scenery's depth
 	# and the web page's tile: seats hid them and the page covered the keyboard (QIYU user,
@@ -696,6 +718,7 @@ func _ready() -> void:
 	ChineseInput.on_open = _on_chinese_keyboard_opened
 	recent_menu.web_browser.configure_quality(low_end_gpu, str(settings.get_value("web", "clarity", "high" if QiyuController.runtime else "")))
 	recent_menu.web_browser.picture_quality = bool(settings.get_value("web", "picture_quality", false))
+	recent_menu.web_browser.pause_on_handoff = bool(settings.get_value("web", "pause_on_handoff", false))
 	# The browser keeps its own look where the player's old shared defaults were saved; videos no longer read it.
 	web_picture = Video.PictureMemory.new().load_defaults(settings)
 	recent_menu.web_browser.picture_provider = func() -> Variant: return web_picture
@@ -1032,8 +1055,10 @@ func _on_controller_release(action: String, hand: String = "") -> void:
 	controller_diagnostics.button(Time.get_ticks_msec(), hand, action, false, route, context)
 
 func _route_controller_release(action: String, hand: String = "") -> String:
+	if action == "trigger_click": _book_trigger.erase(hand)
 	if hand_lock.blocked(hand):
 		controller_bindings.cancel_hand(hand); return "blocked.hand_lock"
+	if action == "grip_click" and _grip_tap.erase(hand): _reveal_ray(hand)
 	if action == "trigger_click" and _beach_prop_release(hand):
 		controller_bindings.release(hand,action); return "handled.beach_prop_release"
 	if action == "trigger_click" and _trigger_move_release(hand):
@@ -1193,6 +1218,17 @@ func _route_controller_button(action: String, hand: String = "") -> String:
 	if action not in ControllerBindings.BUTTONS: return "ignored.touch_or_unknown"
 	if controller_bindings.blocked[hand].has(action): return "blocked.wait_button_release"
 	var first_press := controller_bindings.press(hand, action)
+	# A plain grip on a hidden panel reveals this hand's ray on release; any other key
+	# pressed with it (a chord) keeps playback input invisible as before.
+	if action == "grip_click":
+		if first_press and controller_bindings.down[hand].size() == 1 and _ray_reveal_allowed(): _grip_tap[hand] = true
+		elif first_press: _grip_tap.erase(hand)
+	elif controller_bindings.down[hand].has("grip_click"):
+		_grip_tap.erase(hand); _ray_reveal.erase(hand)
+	if book and book.active:
+		var book_route := _book_button(action, hand, first_press)
+		if not book_route.is_empty():
+			_controller_consumed[hand + "/" + action] = true; return book_route
 	if action == "primary_click" and controller_bindings.down[hand].has("grip_click") \
 		and not controller_bindings.down[hand].has("trigger_click") and _immersive_adjustment_context():
 		if first_press:
@@ -1220,6 +1256,7 @@ func _route_controller_button(action: String, hand: String = "") -> String:
 		_move_host().suspend(); _show_player_menu()
 		_controller_consumed[hand + "/" + action] = true; return "handled.cinema_menu"
 	if action == "grip_click" and first_press and _beach_screen_grab(hand):
+		_grip_tap.erase(hand)
 		_controller_consumed[hand + "/" + action] = true; return "handled.beach_screen_grab"
 	if first_press and action == "by_button" and hand == "right_hand" and video and not video.captures.recording.is_empty():
 		video.captures.stop()
@@ -1639,6 +1676,24 @@ func _update_interface_move() -> void:
 		if photo_active and photo.inspect:
 			photo.detail_placement = interface_move.placements.get("magnifier")
 			photo._update_inspect()
+	# A committed plain-grip drag shows where it holds the picture, panel or not.
+	if interface_move.capture.get("moved", false) and _grip_tap.has(str(interface_move.capture.hand)): _reveal_ray(str(interface_move.capture.hand))
+
+## Hands whose ray a plain grip revealed with no panel open; each fades on its own idle deadline.
+var _ray_reveal := {}
+## Grips pressed alone with no panel; another key or stick action on that hand drops the entry.
+var _grip_tap := {}
+
+## Watching a video with no panel: the only state where a grip-revealed ray applies.
+func _ray_reveal_allowed() -> bool:
+	if photo_active or video == null or video.local_uri.is_empty() or _active_menu() != null: return false
+	if not _input_focused() or _vr_passthrough_active() or _watch_owned or _cinema_interaction_owns(): return false
+	return not (puzzle_game and puzzle_game.active) and not (book and book.active)
+
+func _reveal_ray(hand: String) -> void:
+	if hand not in ControllerBindings.HANDS or not _ray_reveal_allowed(): return
+	_ray_reveal[hand] = true
+	if controller_feedback: controller_feedback.wake(hand)
 
 func _on_pointer_button(action: String, hand: String) -> void:
 	if hand_lock.press(action, hand): return
@@ -1681,6 +1736,10 @@ func _on_pointer_button(action: String, hand: String) -> void:
 		elif action == "ax_button":
 			_close_photo_inspect(false)
 			_show_recent_menu()
+		return
+	if book and book.active and action == "menu_button" and _active_menu() in [null, book.bar]:
+		if book.bar.visible: book.bar.dismiss()
+		else: book.bar.open()
 		return
 	if action == "menu_button":
 		_toggle_player_menu()
@@ -1781,6 +1840,7 @@ func _process(delta: float) -> void:
 			video.video_layer.reserved_layers = 2 + (menu_composition.layer_reservation() if menu_composition else 5)
 			if mono_menu_capture: video.video_layer.reserved_layers += mono_menu_capture.layer_reservation()
 			if airplay_session: video.video_layer.reserved_layers += airplay_session.layer_reservation()
+			if book: video.video_layer.reserved_layers += book.layers.layer_reservation()
 			video.video_layer.sync_cadence(video.video_layer_shown and not photo_active)
 		video.captures.tick()
 		if capture_overlay:
@@ -1833,6 +1893,7 @@ func _process(delta: float) -> void:
 	_update_screen_rotation_control()
 	_update_interface_move()
 	_update_pip_input()
+	if book and book.active: _book_tick(delta)
 	if photo and video:
 		var comic_voice: String = photo.comic.preferences.selected_voice()
 		photo.comic.tick(_comic_probe.rays(photo, [_ray("right_hand"), _ray("left_hand")]), photo_active and (_input_focused() or _comic_probe.active()) and not _active_menu() and _grab.is_empty() and photo_hands.owners.is_empty(), comic_voice, photo.comic.preferences.volume / 100.0, photo_active and _input_focused())
@@ -1889,7 +1950,8 @@ func _sync_display_policy() -> void:
 		if fps.is_valid_float():
 			# Eye-buffer video (shaped screens, packed masks) renders every refresh: at most 90 Hz.
 			var cap: float = Quality.load_refresh_cap(settings, low_end_gpu)
-			if not video.layer_capable() or video.fisheye_overloaded: cap = minf(cap, 90.0)
+			video.check_refresh_load(display.xr.display_refresh_rate if display.xr is OpenXRInterface and display.xr.is_initialized() else 0.0, _active_menu() != null)
+			if not video.layer_capable() or video.fisheye_overloaded or video.refresh_overloaded: cap = minf(cap, 90.0)
 			# The beach draws its whole world every refresh and measured 10 ms alone: 120 Hz halves the view.
 			if _beach_active(): cap = minf(cap, 72.0 if low_end_gpu else 90.0)
 			rate = display.video_refresh_rate(float(fps), display.available_refresh_rates(), cap)
@@ -1937,7 +1999,7 @@ func _playback_diagnostic_sample() -> Dictionary:
 		"container_fps": str(details.get("container_fps", "")), "seek_serial": video.server_playback.seek_serial,
 		"path": "L" if video.video_layer_shown else "E:" + video.layer_block_reason(),
 		"menu": "" if menu == null else "player" if menu == player_menu else "library" if recent_menu and recent_menu.visible else "other",
-		"menu_layers": display.menu_layers, "menu_layer_repaints": menu_composition.repaints if is_instance_valid(menu_composition) else 0,
+		"menu_layers": display.menu_layers, "menu_layer_repaints": (menu_composition.repaints if is_instance_valid(menu_composition) else 0) + (mono_menu_capture.captures if is_instance_valid(mono_menu_capture) else 0),
 		"refresh": display.xr.display_refresh_rate if display.xr is OpenXRInterface and display.xr.is_initialized() else 0.0,
 		"cap": Quality.load_refresh_cap(settings, low_end_gpu), "performance": display.performance_levels,
 		"foveation": display.foveation_level, "relief": display.scene_relief, "render_scale": display.render_scale,
@@ -2022,6 +2084,8 @@ func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> String
 		or (left if _flat_zoom_hand == "left_hand" else right).length() < 0.3): _finish_flat_zoom()
 	_update_seek_feedback(0.0)
 	var menu := _active_menu()
+	if book and book.active and (menu == null or (menu == book.bar and not book.bar.listing())):
+		return _book_sticks(left, right)
 	if menu:
 		_update_menu_pointer("left_hand")
 		_update_menu_pointer("right_hand")
@@ -2141,6 +2205,7 @@ func _process_immersive_sticks(left: Vector2, right: Vector2, delta: float) -> b
 		owned = owned or held
 		var action := immersive_sticks.poll(hand, left if hand == "left_hand" else right, held)
 		if action.is_empty() or not is_finite(delta) or delta <= 0.0: continue
+		_grip_tap.erase(hand) # Grip + stick adjusted the view; releasing it is not a tap.
 		if not interface_move.capture.is_empty(): interface_move.capture["vr_adjusting"] = true
 		var amount: float = float(action.amount) * minf(delta, 0.1)
 		if action.key == "stereo_horizontal":
@@ -2248,7 +2313,7 @@ func _controller_ray(hand: String) -> Variant:
 func _update_hand_input(delta: float) -> void:
 	var inputs := {}
 	for hand in ["left_hand", "right_hand"]: controller_presence.update(hand, delta)
-	var wave_enabled: bool = photo_active and photo.gallery.mode in [2, 3] and photo.gallery.focus < 0 and not photo.portrait_requested and not _active_menu() and _input_focused()
+	var wave_enabled: bool = (photo_active and photo.gallery.mode in [2, 3] and photo.gallery.focus < 0 and not photo.portrait_requested and not _active_menu() and _input_focused()) 		or _book_waving()
 	for hand in hand_pointers:
 		var sample := {}
 		var point: Variant = null
@@ -2433,6 +2498,7 @@ func _dispatch_hand_input(inputs: Dictionary, _delta: float = 1.0 / 72.0) -> voi
 	if _watch_owned and inputs.has("right_hand"):
 		inputs = inputs.duplicate(); inputs.erase("right_hand")
 	if not interface_move.capture.is_empty(): return
+	if book and book.active and _book_waves(inputs, _delta): return
 	if photo_active:
 		inputs = inputs.duplicate(true)
 		var overview_enabled: bool = (photo.gallery.overview() or (photo.gallery.focus >= 0 and photo.geometry == 0 and photo.panel.visible)) and not photo.inspect and not _active_menu() and _input_focused() and photo_hands.owners.is_empty()
@@ -2835,7 +2901,10 @@ func _update_controller_feedback(delta: float) -> void:
 			var corner: int = _viewer().corner_at(ray[0], ray[1])
 			if corner >= 0: point = _viewer().panel.to_global(_viewer().screen_corner(corner))
 		var world_pointer: bool = not (photo_active and photo.inspect) and not (_cinema_interaction_owns() and not menu)
-		if not photo_active and video and video.geometry != Geometry.Geometry.FLAT: world_pointer = captured
+		var revealed: bool = _ray_reveal.has(hand) and _ray_reveal_allowed() and pose != null
+		if _ray_reveal.has(hand) and not revealed: _ray_reveal.erase(hand)
+		if controller_bindings.down[hand].has("grip_click") and stick_controls.active_hands.has(hand.trim_suffix("_hand")): _grip_tap.erase(hand)
+		if not photo_active and video and video.geometry != Geometry.Geometry.FLAT: world_pointer = captured or revealed
 		elif not photo_active and stick_controls.active_hands.has(hand.trim_suffix("_hand")) and not captured: world_pointer = false
 		if _grab.has("rotate") or _screen_rotation_hit(ray) or screen_edit_lock.hit(ray):
 			world_pointer = false; engaged = true; pointer_engaged = true
@@ -2851,7 +2920,8 @@ func _update_controller_feedback(delta: float) -> void:
 		if screen_aim != null: point = screen_aim; world_pointer = true
 		alphas[hand] = controller_feedback.update_hand(hand, pose, ray, point, engaged, menu != null, delta,
 			world_pointer, ({"position": head.origin, "direction": -head.basis.z} if head is Transform3D else _controller_activity(hand)) if pose != null and feedback_visible else {}, false, pointer_engaged,
-			feedback_visible or screen_aim != null, photo_active or screen_aim != null)
+			feedback_visible or screen_aim != null or revealed, photo_active or screen_aim != null)
+		if revealed and not feedback_visible and float(alphas[hand]) <= 0.0: _ray_reveal.erase(hand)
 		if menu and not photo_active and pose != null:
 			_menu_touched_ms = maxi(_menu_touched_ms, Time.get_ticks_msec() - int(controller_feedback.activity_age(hand) * 1000.0))
 		if photo: photo.gallery.hide_pointer(hand)
@@ -2865,8 +2935,9 @@ func _update_controller_feedback(delta: float) -> void:
 		if watching:
 			for hand in ["left_hand", "right_hand"]: alphas[hand] = 1.0
 		var hidden_hands := {}
-		for hand in ["left_hand", "right_hand"]: hidden_hands[hand] = hand_lock.blocked(hand)
-		input_visuals.update_visibility(focused, alphas, feedback_visible or watching, hidden_hands, _hand_models_visible(),
+		var reveal_only: bool = not feedback_visible and not watching and not _ray_reveal.is_empty()
+		for hand in ["left_hand", "right_hand"]: hidden_hands[hand] = hand_lock.blocked(hand) or (reveal_only and not _ray_reveal.has(hand))
+		input_visuals.update_visibility(focused, alphas, feedback_visible or watching or reveal_only, hidden_hands, _hand_models_visible(),
 			{"left_hand": controller_presence.engaged("left_hand"), "right_hand": controller_presence.engaged("right_hand")})
 
 func _menu_pointer_owned(menu: Node3D, hand: String) -> bool:
@@ -2898,14 +2969,15 @@ func _update_corner_hover() -> void:
 		photo.set_corner_hover(-1); return
 	if not video or not _viewer().has_method("corner_at"):
 		return
-	if not _input_feedback_visible():
+	var all_visible := _input_feedback_visible()
+	if not all_visible and _ray_reveal.is_empty():
 		_viewer().set_corner_hover(-1); return
 	var corner := -1
 	if _grab.has("resize"):
 		corner = int(_grab.resize.corner)
 	elif _grab.is_empty() and interface_move.capture.is_empty() and not recent_menu.visible and not _viewer().local_uri.is_empty() and not (photo_active and photo.inspect):
 		for hand in ["right_hand", "left_hand"]:
-			if _is_photo_hand(hand): continue
+			if _is_photo_hand(hand) or (not all_visible and not _ray_reveal.has(hand)): continue
 			var ray: Variant = _ray(hand)
 			if ray != null and not (player_menu.visible and player_menu._hover.get(hand, -1) != -1):
 				if not photo_active and video.get("pip") and not video.pip.hit(ray[0], ray[1]).is_empty(): continue
@@ -2922,7 +2994,10 @@ func _try_corner_resize(hand: String) -> bool:
 	if not _grab.is_empty() or not interface_move.capture.is_empty() or not _has_open_media(): return false
 	if _viewer().geometry != Geometry.Geometry.FLAT or (photo_active and (photo.inspect or photo.gallery.overview())): return false
 	var menu := _active_menu()
-	if not menu or menu != player_menu or photo_active or not player_menu.allows_playback_sticks(): return false
+	# Corners resize from the playback panel, or from a ray a plain grip revealed.
+	if menu:
+		if menu != player_menu or photo_active or not player_menu.allows_playback_sticks(): return false
+	elif photo_active or not _ray_reveal.has(hand) or not _ray_reveal_allowed(): return false
 	var ray: Variant = _ray(hand)
 	if ray == null or _viewer().corner_at(ray[0], ray[1]) < 0: return false
 	if screen_edit_lock.deny(hand, "resize"): return true
@@ -3559,6 +3634,109 @@ func _finish_bar_appearance() -> void:
 func _viewer() -> Node3D:
 	return photo if photo_active and photo else video
 
+func _open_book(uri: String, title: String) -> void:
+	if video_directory: video_directory.cancel()
+	_cancel_video_queue_wait()
+	if photo_active and photo: photo.close_image()
+	photo_active = false
+	if video: video.close_video()
+	player_menu = video_menu
+	if player_menu: player_menu.dismiss()
+	if recent_menu: recent_menu.dismiss()
+	_grab = {}
+	stick_controls.suspend()
+	book.platform = platform_plugin
+	if not book.open(uri, title): _show_recent_menu()
+
+func _on_book_closed() -> void:
+	_book_trigger.clear()
+	if not _book_reopening: _show_recent_menu()
+
+## Wand buttons while a book is open and no other menu is up. Empty when the press is not the book's.
+func _book_button(action: String, hand: String, first: bool) -> String:
+	var menu := _active_menu()
+	if menu and menu != book.bar: return ""
+	match action:
+		"trigger_click":
+			if not first: return "ignored.duplicate_press"
+			if menu == book.bar and _update_menu_pointer(hand, true): return "routed.book_bar"
+			_book_trigger[hand] = true
+			return "routed.book_wand"
+		"ax_button":
+			# Turned off, the buttons still belong to the book: nothing else answers them while it is open.
+			if first and book.turns.buttons: book.turn(1 if hand == "right_hand" else -1)
+			return "routed.book_turn"
+		"by_button":
+			if first:
+				if book.bar.visible: book.bar.back()
+				else: book.bar.open()
+			return "routed.book_bar"
+	return ""
+
+func _book_tick(delta: float) -> void:
+	if OS.is_debug_build() and not _book_probe.is_empty():
+		if Time.get_ticks_msec() > int(_book_probe.until): _book_probe = {}; book.aim(null, null, false, delta, false); return
+		var head: Variant = _head_pose()
+		var eye: Transform3D = head if head is Transform3D else Transform3D(Basis.IDENTITY, Vector3(0, 1.5, 0))
+		var start: Vector3 = eye * Vector3(0.2, -0.2, -0.42)
+		var size: Vector2 = book.model.page_size
+		var spot: Vector3 = book.model.to_global(Vector3(_book_probe.aim.x * size.x, _book_probe.aim.y * size.y, 0))
+		book.aim(start, (spot - start).normalized(), bool(_book_probe.press), delta, true); return
+	# The hand holding a page keeps it; otherwise the right hand, then the left.
+	var hand := "left_hand" if _book_trigger.get("left_hand", false) and not _book_trigger.get("right_hand", false) else "right_hand"
+	var ray: Variant = _ray(hand)
+	if ray == null: hand = "left_hand" if hand == "right_hand" else "right_hand"; ray = _ray(hand)
+	_book_hand = hand
+	if ray == null or not _input_focused():
+		book.aim(null, null, false, delta, false); return
+	var menu := _active_menu()
+	# The wand works the book only where no menu, including the book's own, is under it.
+	var free: bool = menu == null or (menu == book.bar and not book.bar.listing() and book.bar.pointer_hit(ray[0], ray[1]).is_empty())
+	# The wand is held like a stick in the fist (the grip pose), not along the menu laser, and the pages
+	# answer where the wand itself points.
+	# A bare hand points along its pinch ray and holds no wand; pinching a page lifts it.
+	var bare: bool = hand_pointers.has(hand) and hand_pointers[hand].source == "hand"
+	var wand: Variant = null if bare else _book_wand_ray(hand)
+	if wand == null: wand = ray
+	book.aim(wand[0], wand[1], free and _book_trigger.get(hand, false), delta, free, bare)
+
+func _book_waving() -> bool:
+	return book != null and book.active and book.turns.get("palm", false) and _active_menu() == null and _input_focused()
+
+## Palm waves over the open book; true when one turned a page (the hands' other input waits a frame).
+func _book_waves(inputs: Dictionary, delta: float) -> bool:
+	var head := xr_camera.global_transform if xr_camera else Transform3D.IDENTITY
+	# A pinch in progress is carrying a page, not waving.
+	var busy: bool = not _book_trigger.is_empty() or inputs.values().any(func(input): return input.get("down", false))
+	var waves: Array = book_swipe.update(inputs, _book_waving(), busy, head, XRServer.world_scale, delta)
+	for detail in book_swipe.diagnostics: Log.record("book_wave", detail)
+	book_swipe.diagnostics.clear()
+	if waves.is_empty(): return false
+	book.turn(int(waves[0].direction))
+	return true
+
+func _book_wand_ray(hand: String) -> Variant:
+	var tracker := _hand_action_tracker(hand)
+	if tracker == null or not tracker.has_pose("grip"): return null
+	var grip := tracker.get_pose("grip")
+	if not grip.has_tracking_data or grip.tracking_confidence == XRPose.XR_TRACKING_CONFIDENCE_NONE: return null
+	var world := xr_origin.global_transform * grip.get_adjusted_transform()
+	if not world.is_finite(): return null
+	return [world.origin, -world.basis.z.normalized()]
+
+func _on_book_felt(strength: float) -> void:
+	var controller := left_controller if _book_hand == "left_hand" else right_controller
+	if controller is XRController3D: controller.trigger_haptic_pulse("haptic", 0.0, strength, 0.03, 0.0)
+
+func _book_sticks(left: Vector2, right: Vector2) -> String:
+	var push := right.x if absf(right.x) > absf(left.x) else left.x
+	if absf(push) < 0.3: _book_stick_ready = true
+	elif absf(push) > 0.65 and _book_stick_ready:
+		_book_stick_ready = false
+		if book.turns.stick: book.turn(1 if push > 0 else -1)
+	stick_controls.suspend()
+	return "routed.book_turn"
+
 func _prepare_cast_switch() -> void:
 	if recent_menu:
 		# Dropping only the Godot dictionary leaves the retained Gecko document pinned.
@@ -3606,8 +3784,14 @@ func _on_library_chosen(uri: String, title: String, retained_photo: Dictionary =
 	if recent_menu:
 		var selected: Dictionary = recent_menu.collections.selected_entry
 		recent_menu.web_browser.playback_selected(uri, selected.get("uri", "") == uri and selected.get("web_handoff", false))
+	# A PDF chosen among the books is read in the book; elsewhere it opens as pages to browse.
+	if recent_menu is LibraryMenu and recent_menu.media_filter == recent_menu.BOOK_FILTER and preload("res://scripts/pdf_pages.gd").named(uri, title):
+		_open_book(uri, title); return
 	if preload("res://scripts/archive_panel.gd").named(uri, title):
 		recent_menu.show(); recent_menu.archives.open({"uri":uri,"title":title}); return
+	if BookReader.named(uri, title) and BookReader.offered():
+		_open_book(uri, title); return
+	if book and book.active: _book_reopening = true; book.close_book(); _book_reopening = false
 	cast_session.local_selection()
 	if video_directory: video_directory.cancel()
 	if puzzle_game and puzzle_game.active:
@@ -4539,6 +4723,7 @@ func _active_menu() -> Node3D:
 	if puzzle_game:
 		var entry: Node3D=puzzle_game.photo_entry_menu()
 		if entry: return entry
+	if book and book.active and book.bar.visible: return book.bar
 	if player_menu and player_menu.visible:
 		return player_menu
 	return null
@@ -5101,6 +5286,10 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 					bool(settings.get_value("library", "thumbnail_smb", true)), bool(settings.get_value("library", "thumbnail_dlna", true)),
 					bool(settings.get_value("library", "thumbnail_frame_protection", true)))
 				recent_menu.refresh()
+		"library_thumbnail_fit":
+			ThumbnailCache.whole = str(value) == "whole"
+			settings.set_value("library", "thumbnail_fit", "whole" if ThumbnailCache.whole else "crop"); settings.save(settings_path)
+			if recent_menu: recent_menu.refresh()
 		"library_view_mode":
 			settings.set_value("library", "view_mode", recent_menu.Presentation.mode(value))
 			settings.save(settings_path)
@@ -5165,6 +5354,9 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 				browser.clarity = str(value)
 				settings.set_value("web", "clarity", browser.clarity); settings.save(settings_path)
 				for window in browser.windows.values(): window.refresh()
+		"web_pause_on_handoff":
+			settings.set_value("web", "pause_on_handoff", bool(value)); settings.save(settings_path)
+			if recent_menu: recent_menu.web_browser.pause_on_handoff = bool(value)
 		"web_picture_quality":
 			var browser: RefCounted = recent_menu.web_browser if recent_menu else null
 			if browser:
@@ -5554,6 +5746,7 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		if photo_active or not video: return
 		if not _picture_controls_current(): return
 		if key == "picture_interpolation" and bool(value): video.retry_interpolation()
+		if key == "picture_upscale" and int(value) > 0: video.retry_upscale()
 		video.preview_picture(key, value)
 		_commit_picture_adjustment()
 		return
@@ -5889,6 +6082,7 @@ func _menu_state() -> Dictionary:
 		"picture_quality_available": video.picture_quality_available(), "picture_quality_blocker": video.picture_quality_blocker(),
 		"picture_sharpness": roundf(video.picture_sharpness * 100.0),
 		"picture_upscale": video.picture_upscale, "picture_upscale_available": video.picture_upscale_available(),
+		"picture_upscale_blocker": video.picture_upscale_blocker(),
 		"picture_denoise": video.picture_denoise,
 		"picture_interpolation": video.picture_interpolation, "picture_interpolation_blocker": video.picture_interpolation_blocker(),
 		"picture_anime4k": video.picture_anime4k, "picture_anime4k_mode": video.picture_anime4k_mode, "picture_anime4k_tier": video.picture_anime4k_tier,
@@ -7201,6 +7395,7 @@ func _on_custom_background_saved(path: String, title: String, orientation: int) 
 	settings.save(settings_path)
 
 func _recenter(restore_defaults: bool = true) -> void:
+	if book and book.active: book.recenter()
 	if video: video.danmaku.recenter()
 	immersive_sticks.clear_feedback()
 	if restore_defaults: _clear_controls_locks()
@@ -7727,6 +7922,9 @@ func _save_fisheye_readback() -> void:
 	image.save_png("user://diagnostics/fisheye_readback.png")
 	Log.record("fisheye_readback", {"saved": true, "size": [width, height]})
 
+## Debug scene_nodes: nodes it hid, with their visibility before.
+var _debug_hidden := {}
+
 func _on_display_debug_command(_id: int, payload: String) -> void:
 	var command: Variant = JSON.parse_string(payload)
 	if not command is Dictionary: return
@@ -7855,6 +8053,49 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		photo.open_image("file://" + folder.path_join(str(command.get("name", ""))), str(command.get("name", "")), entries)
 		# Debug layout for this session only; the saved layout changes only through the menu.
 		if int(command.get("layout", -1)) >= 0: photo.set_layout_mode(int(command.layout))
+	elif operation == "book" and OS.is_debug_build():
+		# Reading-mode probes: open a book, turn, show controls, or script the wand over the pages
+		# ("aim": [page widths from the spine, page heights from the centre], "press", "ms").
+		if command.has("uri"): _open_book(str(command.uri), str(command.get("title", MediaUri.filename(str(command.uri)))))
+		if command.has("turn"): book.turn(int(command.turn))
+		if command.has("page"): book.go_to(int(command.page))
+		if command.has("font"): book.set_font(int(command.font))
+		if command.has("paper"): book.set_paper(int(command.paper))
+		if command.has("single"): book.set_single(bool(command.single))
+		if command.has("night"): book.set_night(bool(command.night))
+		if command.has("light"): book.set_light(int(command.light))
+		if command.has("warmth"): book.set_warmth(int(command.warmth))
+		if command.has("spacing"): book.set_spacing(int(command.spacing))
+		if command.has("paragraph"): book.set_paragraph(int(command.paragraph))
+		if command.has("measure"): book.set_measure(int(command.measure))
+		if command.has("auto_step"): book.set_auto_step(int(command.auto_step))
+		if command.has("auto"): book.set_auto(bool(command.auto))
+		if command.has("font_choice"): book.set_font_choice(str(command.font_choice))
+		if command.has("read_speed"): book.narration.set_speed(int(command.read_speed))
+		if command.has("read"): book.set_reading_aloud(bool(command.read))
+		if command.has("turns") and command.turns is Dictionary:
+			for way in command.turns: book.set_turn(str(way), bool(command.turns[way]))
+		if command.has("section"): book.bar.section = str(command.section)
+		if command.has("layer_order"): book.layers.debug_order(int(command.layer_order))
+		if bool(command.get("mark", false)): book.toggle_mark()
+		if command.has("search"):
+			book.bar.open("search"); book.bar.editor.cancel(); book.bar.query = str(command.search); book.bar._run_search()
+		# Device screenshots: the ring opens straight ahead, not where a controller on the desk points.
+		if bool(command.get("bar_front", false)): book.wand.visible = false
+		if command.has("bar"):
+			if str(command.bar) == "hide": book.bar.dismiss()
+			else: book.bar.open(str(command.bar))
+		if command.has("aim"):
+			_book_probe = {"aim": Vector2(float(command.aim[0]), float(command.aim[1])), "press": bool(command.get("press", false)),
+				"until": Time.get_ticks_msec() + clampi(int(command.get("ms", 3000)), 0, 20000)}
+		print("BOOK_PROBE ", JSON.stringify({"active": book.active, "pages": book.count, "page": book.page, "message": book.message,
+			"font": book.font, "single": book.single, "bar": book.bar.visible, "status": book.status_text(), "layers": book.layers.describe(), "marks": book.marks.size(), "bar_mode": book.bar.mode,
+			"paper": book.paper, "night": book.night(), "light": book.light, "warmth": book.warmth, "spacing": book.spacing,
+			"paragraph": book.paragraph, "measure": book.measure, "turns": book.turns, "auto": book.auto, "auto_step": book.auto_step,
+			"reading": {"on": book.narration.on, "page": book.narration.cursor, "block": book.narration.index, "blocks": book.narration.blocks.size(),
+				"voice": book.narration.voice(), "supported": book.narration.supported(), "speech": book.narration.speech_state},
+			"fonts": {"variant": book.variant(), "choice": book.font_choice(), "laid": book._laid_font.get_file(),
+				"state": book.fonts.state_of(book.font_choice()) if not book.font_choice().is_empty() else ""}}))
 	elif operation == "archive_open" and OS.is_debug_build():
 		# Comic archive/PDF probes: open the container (uri), later its [page]th image as the library does.
 		var archives = recent_menu.archives
@@ -7873,6 +8114,36 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		video._alpha_probe_uploaded = false
 	elif operation == "layer_order" and OS.is_debug_build() and video.video_layer and video.video_layer._provider:
 		video.video_layer._provider.debug_order = int(command.get("value", 0))
+	elif operation == "scene_nodes" and OS.is_debug_build():
+		# GPU breakdown of the scene around playback: record what is drawn, or hide/restore nodes by path.
+		for path in command.get("hide", []):
+			var hidden := get_node_or_null(NodePath(str(path)))
+			if hidden is Node3D:
+				if not _debug_hidden.has(hidden): _debug_hidden[hidden] = hidden.visible
+				hidden.visible = false
+		if command.get("restore", false):
+			for hidden in _debug_hidden:
+				if is_instance_valid(hidden): hidden.visible = _debug_hidden[hidden]
+			_debug_hidden.clear()
+		if command.get("list", false):
+			var head := xr_camera.global_position if xr_camera else Vector3.ZERO
+			var rows := []
+			for found in get_tree().root.find_children("*", "GeometryInstance3D", true, false):
+				var item := found as GeometryInstance3D
+				if not item.is_visible_in_tree(): continue
+				var material: Material = item.material_override
+				if material == null and item is MeshInstance3D and item.mesh and item.mesh.get_surface_count() > 0: material = item.get_active_material(0)
+				var shader := ""
+				if material is ShaderMaterial and material.shader: shader = material.shader.resource_path.get_file() if not material.shader.resource_path.is_empty() else material.shader.resource_name
+				elif material: shader = material.get_class()
+				var size := item.get_aabb().size * item.global_transform.basis.get_scale()
+				rows.append({"path": str(item.get_path()), "class": item.get_class(), "shader": shader, "size": [snappedf(size.x, 0.01), snappedf(size.y, 0.01), snappedf(size.z, 0.01)],
+					"distance": snappedf(item.global_position.distance_to(head), 0.01), "transparency": item.transparency, "cast_shadow": item.cast_shadow})
+			for start in range(0, rows.size(), 12): Log.record("scene_nodes", {"part": start / 12, "nodes": rows.slice(start, start + 12)})
+			Log.record("scene_nodes_info", {"visible": rows.size(), "hidden_by_debug": _debug_hidden.size(),
+				"draw_calls": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME),
+				"objects": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_OBJECTS_IN_FRAME),
+				"primitives": RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME)})
 	elif operation == "hide_menus" and OS.is_debug_build():
 		# Device captures of the scene itself (layers, subtitles) without menus in front.
 		recent_menu.dismiss(); player_menu.dismiss(); photo_menu.dismiss()
@@ -7925,8 +8196,12 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		if command.has("relight_look") and passthrough_relight: passthrough_relight.debug_look = command.relight_look
 		if command.has("relight_state") and passthrough_relight: DiagnosticLog.record("passthrough_relight_state", passthrough_relight.snapshot())
 		if command.has("relief_foveation"): display.debug_relief_foveation = int(command.relief_foveation); display._apply_foveation()
-		# Eye-buffer video cost: the plain-playback fast path on or off (QIYU turns it on).
+		# Eye-buffer video cost: the plain-playback fast path on or off (on by default).
 		if video and command.has("plain_fast_path"): video.material.set_shader_parameter("plain_fast_path", bool(command.plain_fast_path))
+		if command.has("plain_shader"): preload("res://scripts/pair_texture_binding.gd").plain_shader_enabled = bool(command.plain_shader)
+		if command.has("depth_shader"): preload("res://scripts/pair_texture_binding.gd").depth_shader_enabled = bool(command.depth_shader)
+		if video and command.has("plain_footprint_taps"): video.material.set_shader_parameter("plain_footprint_taps", int(command.plain_footprint_taps))
+		if command.has("color_levels"): preload("res://scripts/mpv_video_display.gd").debug_color_levels = int(command.color_levels)
 		if command.has("render_scale") and display.xr != null and "render_target_size_multiplier" in display.xr:
 			display.xr.render_target_size_multiplier = float(command.render_scale)
 		if video and video.video_layer:
@@ -8390,7 +8665,7 @@ func _clear_file_settings(network_only: bool) -> void:
 	if not network_only or not Privacy.is_local(video.local_uri): video.discard_file_settings()
 	video.clear_last_picture(network_only)
 	for memory in [video.mode_memory, video.picture_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.audio_timing,
-			video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory, photo.grade_memory, atmosphere.memory]:
+			video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory, photo.grade_memory, atmosphere.memory, book.mark_memory]:
 		var keys: Array = memory.entries.keys()
 		if network_only:
 			keys = keys.filter(func(key): return memory.entries[key].get("network", false))
@@ -8400,6 +8675,8 @@ func _clear_file_settings(network_only: bool) -> void:
 		_privacy_cleanup_failed(); return
 	if favorites and not favorites.clear_private_records(network_only, true): _privacy_cleanup_failed()
 	if photo_active: photo.restore_color_grade()
+	# The open book shows what is left of its bookmarks.
+	if book and book.active: book.reload_marks()
 
 func _privacy_cleanup_failed() -> void:
 	if recent_menu: recent_menu.status = I18n.t("Privacy cleanup failed")

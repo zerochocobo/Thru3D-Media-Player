@@ -33,7 +33,12 @@ func run() -> void:
 			material.set_shader_parameter("light_off_texture", texture(Color(.25 / 8, .25 / 8, .25 / 8).linear_to_srgb().r))
 		instance.material_override = material
 		for tint_value in ([1.0, .5] if shader == Hall else [1.0]):
-			if shader == Hall: material.set_shader_parameter("tint", Color(tint_value, tint_value, tint_value))
+			if shader == Hall:
+				# Set both, as the cinema loader does: the linear copy is decoded once on the CPU.
+				var tint := Color(tint_value, tint_value, tint_value)
+				var linear := tint.srgb_to_linear()
+				material.set_shader_parameter("tint", tint)
+				material.set_shader_parameter("linear_tint", Vector3(linear.r, linear.g, linear.b))
 			for mix_value in [0.0, .5, 1.0]:
 				material.set_shader_parameter("cinema_light_mix", mix_value)
 				await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw

@@ -44,7 +44,7 @@ internal class LocalThumbnailPrefetch(
 ) : Closeable {
     data class Request(val uri: String, val kind: String, val directoryLimit: Int,
         val visit: Int, val videoNames: List<String>, val size: Long = -1,
-        val resource: String = "", val sidecar: String = "", val sidecarSize: Long = -1)
+        val resource: String = "", val sidecar: String = "", val sidecarSize: Long = -1, val whole: Boolean = false)
 
     data class Result(val jpg: ByteArray, val uri: String, val size: Long = -1, val modified: Long = -1,
         val entry: JSONObject? = null)
@@ -112,7 +112,7 @@ internal class LocalThumbnailPrefetch(
         val names = json.optJSONArray("videos")
         val videos = if (names == null) emptyList() else (0 until minOf(names.length(), 16)).map { names.optString(it) }
         val request = Request(uri, kind, json.optInt("sample_limit").coerceIn(0, 32), json.optInt("visit"), videos,
-            json.optLong("size", -1), json.optString("resource"), json.optString("sidecar"), json.optLong("sidecar_size", -1))
+            json.optLong("size", -1), json.optString("resource"), json.optString("sidecar"), json.optLong("sidecar_size", -1), json.optBoolean("whole"))
         val job = Work(ids.incrementAndGet(), request)
         if (!work.compareAndSet(null, job)) return -1
         try { reader.execute { run(job) } }
@@ -619,9 +619,12 @@ internal class LocalThumbnailPrefetch(
             val height = minOf(upright.height, (upright.width.toLong() * 180 / 320).toInt().coerceAtLeast(1))
             val cropped = Bitmap.createBitmap(upright, (upright.width - width) / 2, (upright.height - height) / 2, width, height)
             try {
-                val scaled = Bitmap.createScaledBitmap(cropped, 320, 180, true)
+                var scaled = Bitmap.createScaledBitmap(cropped, 320, 180, true)
                 try {
                     job.checkActive()
+                    // As ThumbnailCache.fit: cropped unless the setting asks for whole pictures, which lie
+                    // over a blurred, darkened copy of themselves.
+                    if (shownWhole(upright.width, upright.height, job.request.whole)) scaled = whole(upright, scaled).also { if (scaled !== cropped && scaled !== it) scaled.recycle() }
                     val buffer = ByteArrayOutputStream()
                     return if (scaled.compress(Bitmap.CompressFormat.JPEG, 82, buffer)) buffer.toByteArray() else null
                 } finally { if (scaled !== cropped) scaled.recycle() }
@@ -629,7 +632,31 @@ internal class LocalThumbnailPrefetch(
         } finally { if (upright !== bitmap) upright.recycle() }
     }
 
+    private fun whole(upright: Bitmap, filled: Bitmap): Bitmap {
+        val result = Bitmap.createBitmap(320, 180, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(result)
+        val smooth = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+        val tiny = Bitmap.createScaledBitmap(filled, 16, 9, true)
+        canvas.drawBitmap(tiny, null, android.graphics.Rect(0, 0, 320, 180), smooth)
+        if (tiny !== filled) tiny.recycle()
+        canvas.drawColor(android.graphics.Color.argb(140, 0, 0, 0))
+        val (width, height) = wholeSize(upright.width, upright.height)
+        val picture = Bitmap.createScaledBitmap(upright, width, height, true)
+        canvas.drawBitmap(picture, ((320 - width) / 2).toFloat(), ((180 - height) / 2).toFloat(), null)
+        if (picture !== upright) picture.recycle()
+        return result
+    }
+
     companion object {
+        /** Whether a picture is shown whole in the 320x180 tile: only with [all], and not in the tile's own shape. */
+        fun shownWhole(width: Int, height: Int, all: Boolean): Boolean =
+            all && width.toLong() * 180 != height.toLong() * 320
+        /** The size of a picture shown whole in the 320x180 tile. */
+        fun wholeSize(width: Int, height: Int): Pair<Int, Int> {
+            val byHeight = (180L * width / height.coerceAtLeast(1)).toInt()
+            return if (byHeight <= 320) byHeight.coerceAtLeast(1) to 180
+            else 320 to (320L * height / width.coerceAtLeast(1)).toInt().coerceIn(1, 180)
+        }
         private const val LOCAL_IMAGE_BYTES = 32L * 1024 * 1024
         private const val LOCAL_VIDEO_BYTES = 8 * 1024 * 1024
         private const val NETWORK_IMAGE_BYTES = 4L * 1024 * 1024

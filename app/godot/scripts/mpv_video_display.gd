@@ -202,6 +202,9 @@ var depth_position := 0.0
 const DepthForeground := preload("res://scripts/depth_foreground.gd")
 var depth_foreground := 0.0
 var _depth_view_sent := ""
+## Debug A/B (perf_tune color_levels): -1 automatic, otherwise the reductions asked for (0..4).
+static var debug_color_levels := -1
+var _color_levels_sent := ""
 var _portrait_depth_sent := ""
 var _debug_portrait_shots: Array[Dictionary] = []
 var depth_strength := DepthStrength.VIDEO_DEFAULT
@@ -396,6 +399,9 @@ var _mode_recorded: Array = []
 var _fixture := -1
 var _recover := false
 var _recover_ms := 0
+const FORMAT_RECOVERY_STEPS_MS: Array[int] = [1000, 4000]
+const FORMAT_RECOVERY_NEAR_MS := 8000
+var _format_recovery: Array = ["", 0, 0] # uri, reopen position, attempts at that spot
 var _waiting_first := false
 const StallWatch := preload("res://scripts/playback_stall_watch.gd")
 var _stall_watch := StallWatch.new()
@@ -530,9 +536,26 @@ var _decoder_retry_uri := ""
 var _decoder_retries := 0
 var _decoder_retry_at := 0
 var fisheye_overloaded := false
+## Any layer playback the headset cannot hold above 90 Hz (see XrDisplay.refresh_slow): this file keeps
+## the 90 Hz cap while its picture quality mode stays as it is. Reopens of the file keep the decision.
+var refresh_overloaded := false
+var _refresh_overloaded_key := ""
+var _refresh_slow_seconds := 0
+var _refresh_slow_menu := false
+var _refresh_checked_ms := 0
 var _fisheye_overloaded_uri := ""
 var _fisheye_slow_seconds := 0
 var _fisheye_checked_ms := 0
+## Super resolution the headset cannot carry: a 60 fps 1080 x 1920 file enlarged to 1728 x 3840 held PICO 4
+## at 12-25 of 72 frames a second (log D7NHRSGV, 2026-11-26), which users see as a flashing picture. After
+## UPSCALE_SLOW_SECONDS in a row below UPSCALE_SLOW_RATIO of the refresh rate while it enlarges, this file
+## shows at its own size; choosing a level again tries once more. Reopens of the same file keep the decision.
+const UPSCALE_SLOW_RATIO := 0.75
+const UPSCALE_SLOW_SECONDS := 4
+var upscale_overloaded := false
+var _upscale_overloaded_uri := ""
+var _upscale_slow_seconds := 0
+var _upscale_checked_ms := 0
 
 func _init() -> void:
 	add_child(danmaku)
@@ -551,8 +574,10 @@ func _ready() -> void:
 	listening.memory.load_saved()
 	recent_files.load_saved()
 	initialize_surface(load("res://shaders/video_rvm_pair.gdshader"))
-	# QIYU draws every video in the eye buffer, where this path cut 8K GPU time by a third (Quest 2 stand-in).
-	material.set_shader_parameter("plain_fast_path", QiyuController.runtime)
+	# Plain playback in the eye buffers (all of it on QIYU; in-scene screens, PICO's shape path, 2D->3D's
+	# stereo pair off the layer elsewhere) draws with the generated plain shader: 8K VR180 cost a third less
+	# GPU on Quest 3 (2026-11-26). It draws what the full path draws; perf_tune plain_fast_path=false for A/B.
+	material.set_shader_parameter("plain_fast_path", true)
 	color_grade.apply(material)
 	caption = Label3D.new()
 	caption.name = "Subtitles"
@@ -1096,6 +1121,8 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	# Reopens of the same file (loop, seeks, mode changes) keep the decision: no retry, no switches.
 	if uri != _fisheye_overloaded_uri: fisheye_overloaded = false
 	_fisheye_slow_seconds = 0
+	if uri != _upscale_overloaded_uri: upscale_overloaded = false
+	_upscale_slow_seconds = 0
 	_layer_seek_hold = false
 	if layer: _layer_generation = video_layer.generation
 	_layer_requested = layer
@@ -1576,6 +1603,24 @@ func set_depth(enabled: bool) -> bool:
 	_request_revision()
 	changed.emit()
 	return true
+
+## Flat QIYU playback, and flat 2D->3D through the shader's own parallax (GPUs without the bridge's
+## stereo pair: Quest 2, PICO on Adreno 650), minify the frame in the eye buffer: the bridge adds 2x
+## reductions to each copied frame so the shader blends two small levels instead of many full-size texels.
+## Only the plain and depth variants read them; Alpha's frames never get them.
+func color_levels_wanted() -> int:
+	if debug_color_levels >= 0: return debug_color_levels
+	if geometry != Geometry.Geometry.FLAT or alpha_requested: return 0
+	if depth_requested: return 4 if depth_enabled and not _binding.warped else 0
+	return 4 if QiyuController.runtime else 0
+
+func _send_color_levels() -> void:
+	if media.session_id <= 0 or not platform: return
+	# JNISingleton.has_method() cannot see Java plugin methods. Only inspect host test doubles.
+	if not Engine.has_singleton("QuestPlayer") and not platform.has_method("set_mpv_color_levels"): return
+	var count := color_levels_wanted()
+	var key := "%d:%d" % [media.session_id, count]
+	if key != _color_levels_sent and platform.set_mpv_color_levels(media.session_id, count): _color_levels_sent = key
 
 ## The bridge renders the stereo pair: tell it the strength once per session and change.
 func _send_depth_view() -> void:
@@ -3290,6 +3335,17 @@ func _on_error(id: int, payload: String) -> void:
 	dual_subtitles.state.clear()
 	_recover = code == "MPV_GL_CONTEXT_RECREATED"
 	_recover_ms = control.observed_position_ms
+	if not _recover and str(report.get("reason", "")) in ["source_format_changed", "source_frame_lost"] and media.frame_counter > 0:
+		# A splice changed the picture size mid-file, or the decoder restarted there and dropped the
+		# frames waiting for display: reopen just past it. Reopening at the same spot twice means
+		# the cause is not behind the next keyframe, so the error stands.
+		var again: bool = _format_recovery[0] == local_uri and absi(_recover_ms - int(_format_recovery[1])) < FORMAT_RECOVERY_NEAR_MS
+		var attempt: int = int(_format_recovery[2]) + 1 if again else 1
+		if attempt <= FORMAT_RECOVERY_STEPS_MS.size():
+			_recover_ms += FORMAT_RECOVERY_STEPS_MS[attempt - 1]
+			_format_recovery = [local_uri, _recover_ms, attempt]
+			_recover = true
+			Log.record("source_format_reopen", {"session_id": id, "position_ms": _recover_ms, "attempt": attempt, "reason": report.get("reason", "")})
 	_unbind()
 	Log.record("mpv_error", {"session_id": id, "report": report})
 	_write_debug_report()
@@ -4104,6 +4160,8 @@ func playback_end_ready() -> bool:
 
 func _process(_delta: float) -> void:
 	if video_layer: video_layer.sync_qiyu_passthrough()
+	_send_color_levels()
+	_binding.refresh_plain()
 	server_playback.poll(self)
 	if vr_passthrough.active():
 		danmaku.suspend()
@@ -4143,6 +4201,7 @@ func _process(_delta: float) -> void:
 	_tick_subtitle_follow(_delta)
 	_poll_subtitles()
 	_update_layer()
+	check_upscale_load()
 	danmaku.tick(self, _delta)
 	mode_transition.finish_frame()
 	_maybe_capture_thumbnail()
@@ -4248,7 +4307,7 @@ func _picture_direction(forward: Vector3) -> Vector3:
 	return (seat + towards * (-along + sqrt(maxf(along * along - seat.length_squared() + 1.0, 0.0)))).normalized()
 
 func _apply_stereo_focus() -> void:
-	if not material: return
+	if not material or not panel: return
 	var focus := stereo_focus_shape()
 	var units := XRServer.world_scale / maxf((panel.global_basis if panel.is_inside_tree() else panel.basis).get_scale().x, 0.0001)
 	material.set_shader_parameter("focus_scale", _stereo_focus_scale())
@@ -4407,6 +4466,22 @@ func _show_fisheye_picture(origin: XROrigin3D, extras: Array) -> bool:
 static func fisheye_picture_size(source: Vector2i, span: Vector2, sbs: bool, top_bottom: bool, density: float) -> Vector2i:
 	return VideoLayer.fisheye_picture_size(source, span, sbs, top_bottom, density)
 
+## Once a second while a file plays: [rate] is the panel's rate now, [menu] whether a menu is up.
+func check_refresh_load(rate: float, menu: bool, now: int = Time.get_ticks_msec(), fps: float = Engine.get_frames_per_second()) -> void:
+	if now - _refresh_checked_ms < 1000: return
+	_refresh_checked_ms = now
+	var key := local_uri + ("|quality" if picture_quality else "")
+	if refresh_overloaded:
+		if key != _refresh_overloaded_key: refresh_overloaded = false
+		return
+	if not requested_play or media.state != "playing" or not XrDisplay.refresh_slow(fps, rate):
+		_refresh_slow_seconds = 0; _refresh_slow_menu = false; return
+	_refresh_slow_seconds += 1
+	_refresh_slow_menu = _refresh_slow_menu or menu
+	if _refresh_slow_seconds >= (XrDisplay.REFRESH_SLOW_MENU_SECONDS if _refresh_slow_menu else XrDisplay.REFRESH_SLOW_SECONDS):
+		refresh_overloaded = true; _refresh_overloaded_key = key; _refresh_slow_seconds = 0; _refresh_slow_menu = false
+		DiagnosticLog.record("refresh_overloaded", {"refresh": rate, "fps": fps, "menu": menu, "picture": picture_diagnostic()})
+
 func _check_fisheye_load() -> void:
 	var now := Time.get_ticks_msec()
 	if fisheye_overloaded or now - _fisheye_checked_ms < 1000: return
@@ -4418,6 +4493,36 @@ func _check_fisheye_load() -> void:
 	if _fisheye_slow_seconds >= FISHEYE_SLOW_SECONDS:
 		fisheye_overloaded = true; _fisheye_overloaded_uri = local_uri
 		DiagnosticLog.record("fisheye_overloaded", {"refresh": rate, "fps": Engine.get_frames_per_second()})
+
+## Once a second while super resolution enlarges a playing picture: see UPSCALE_SLOW_RATIO. [rate] is the
+## panel's refresh rate, [fps] the frames the app drew in the last second.
+func check_upscale_load(now: int = Time.get_ticks_msec(), rate: float = -1.0, fps: float = Engine.get_frames_per_second()) -> void:
+	if upscale_overloaded or now - _upscale_checked_ms < 1000: return
+	_upscale_checked_ms = now
+	if rate < 0.0:
+		var xr := XRServer.find_interface("OpenXR") as OpenXRInterface
+		rate = xr.display_refresh_rate if xr and xr.is_initialized() else 0.0
+	# Anime4K enlarges in its place and stops itself for its own load.
+	var enlarging := picture_quality and picture_upscale > Upscale.OFF and not _anime4k_running() and bool(shown_picture().upscaled)
+	if rate <= 0.0 or not enlarging or not requested_play or media.state != "playing" or fps >= rate * UPSCALE_SLOW_RATIO:
+		_upscale_slow_seconds = 0; return
+	_upscale_slow_seconds += 1
+	if _upscale_slow_seconds < UPSCALE_SLOW_SECONDS: return
+	upscale_overloaded = true; _upscale_overloaded_uri = local_uri; _upscale_slow_seconds = 0
+	Log.record("upscale_overloaded", {"refresh": rate, "fps": fps, "picture": picture_diagnostic(), "shown": shown_picture().size,
+		"source": [int(media.format.get("width", 0)), int(media.format.get("height", 0))],
+		"fps_source": str(media.playback.get("details", {}).get("container_fps", ""))})
+	changed.emit()
+
+## Choosing a super resolution level again after it stopped for the load tries once more.
+func retry_upscale() -> void:
+	if not upscale_overloaded: return
+	upscale_overloaded = false; _upscale_slow_seconds = 0
+	Log.record("upscale_retried", {"session_id": media.session_id})
+
+## Why super resolution does not run on the picture now, for the menu: "" or "load" (stopped for the load).
+func picture_upscale_blocker() -> String:
+	return "load" if upscale_overloaded else ""
 
 func _fisheye_fail(stage: String, size: Vector2i) -> bool:
 	_fisheye_failed = true
@@ -4830,7 +4935,7 @@ func picture_diagnostic() -> String:
 	var interpolation := "" if not picture_interpolation else " fi" if picture_interpolation_blocker().is_empty() else " fi:" + picture_interpolation_blocker()
 	var anime4k := "" if not picture_anime4k else " a4k%s%s%s" % ["ABC"[picture_anime4k_mode - 1], ["S", "M", "L", "VL"][picture_anime4k_tier],
 		"" if picture_anime4k_blocker().is_empty() else ":" + picture_anime4k_blocker()]
-	return "on up%d dn%d sh%.2f%s%s%s" % [picture_upscale, picture_denoise, picture_sharpness, interpolation, anime4k, "" if blocker.is_empty() else " blocked:" + blocker]
+	return "on up%d%s dn%d sh%.2f%s%s%s" % [picture_upscale, ":load" if upscale_overloaded else "", picture_denoise, picture_sharpness, interpolation, anime4k, "" if blocker.is_empty() else " blocked:" + blocker]
 
 func clear_current_picture() -> void:
 	if picture_source != "file" or not _picture_can_remember(): return
@@ -5049,7 +5154,7 @@ func _picture_values() -> PackedFloat32Array:
 	return PackedFloat32Array([sharpen_strength(picture_sharpness), 0.0 if color_grade.preset == "Original" else 1.0, gain.x, gain.y, gain.z,
 		p.red_gamma * p.gamma, p.green_gamma * p.gamma, p.blue_gamma * p.gamma,
 		p.red_offset, p.green_offset, p.blue_offset, p.contrast, p.saturation,
-		float(picture_upscale) if _layout_pending == null else 0.0, _upscale_kind(), 2.0 if stereo_sbs and not top_bottom else 1.0,
+		float(picture_upscale) if _layout_pending == null and not upscale_overloaded else 0.0, _upscale_kind(), 2.0 if stereo_sbs and not top_bottom else 1.0,
 		2.0 if stereo_sbs and top_bottom else 1.0, DENOISE[picture_denoise].x, DENOISE[picture_denoise].y,
 		1.0 if picture_interpolation and picture_interpolation_blocker().is_empty() else 0.0,
 		float(picture_anime4k_mode) if _anime4k_running() else 0.0, float(picture_anime4k_tier), anime4k_budget_ms()])

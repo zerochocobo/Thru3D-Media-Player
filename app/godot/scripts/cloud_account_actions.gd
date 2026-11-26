@@ -113,4 +113,5 @@ func draw() -> void:
 		var inset: float = menu._folder_header_inset()
 		menu._button(BACK, "", Vector2(-0.52 + inset, 0.46), Vector2(0.09, 0.07), request_id == 0, "up")
 		var label: Label3D = menu._label(I18n.t("Remove account"), Vector3(-0.42 + inset, 0.46, 0.004), 24)
+		label.font = menu.ui_bold_font()
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT

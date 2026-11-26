@@ -44,9 +44,9 @@ func _run() -> void:
 	root.add_child(menu)
 	menu.toggle()
 	menu._activate(110)
-	check(menu.choices.sliders.is_empty() and not menu._subtitle_appearance_open, "CC opens with appearance collapsed")
-	menu._activate(Menu.SUBTITLE_APPEARANCE)
-	check(menu.choices.sliders.size() == 5 and menu.choices.opened.is_empty(), "CC uses sync, both centre axes, distance and text-size sliders")
+	# Subtitles open on their details (2026-11-04); with no other group that is the appearance.
+	check(menu._subtitle_detail_group() == "appearance", "CC opens on its appearance details")
+	check(menu.choices.sliders.size() == 6 and menu.choices.opened.is_empty(), "CC uses sync, both centre axes, distance, text-size and transparency sliders")
 	for target in menu.choices.sliders.keys():
 		var slider: Dictionary = menu.choices.sliders[target]
 		var key: String = menu.choices.targets[target].key
@@ -81,8 +81,9 @@ func _run() -> void:
 	state.subtitle_options = []
 	for index in 8: state.subtitle_options.append({"id": index + 1, "title": "Track %d" % index, "codec": "hdmv_pgs_subtitle"})
 	menu.subtitle_requested.connect(func(id): state.subtitle_track = id)
-	menu.toggle(); menu._activate(110); menu._activate(Menu.SUBTITLE_APPEARANCE)
-	check(menu.choices.sliders.size() == 3 and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "PGS has sync, size and position with no text-only style")
+	menu.toggle(); menu._activate(110)
+	if menu._subtitle_detail_group() != "appearance": menu._activate(Menu.SUBTITLE_APPEARANCE)
+	check(menu.choices.sliders.size() == 4 and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "PGS has sync, size, position and transparency with no text-only style")
 	var pgs_targets := menu.choices.targets.keys().filter(func(id): return menu.choices.targets[id].get("key") == "subtitle_pgs_tint")
 	check(pgs_targets.size() == 5 and menu.choices.opened.is_empty(), "PGS has original and four inline tint swatches")
 	for target_id in pgs_targets:

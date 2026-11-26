@@ -7,6 +7,7 @@ var failures: Array[String] = []
 
 class PhotoBar extends Node3D:
 	var captured := false
+	var section := 0 # Read by controller diagnostics, as on the real photo menu.
 	func has_pointer_capture() -> bool: return captured
 
 func check(value: bool, message: String) -> void:

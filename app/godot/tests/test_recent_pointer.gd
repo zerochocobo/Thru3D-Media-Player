@@ -7,6 +7,16 @@ var failures: Array[String] = []
 var selected: Array[String] = []
 var opened := 0
 
+# Main now routes through the library's web browser first; this older list has none open.
+class ClosedBrowser extends RefCounted:
+	var windows := {}
+	func active() -> bool: return false
+
+class PointerMenu extends "res://scripts/recent_menu.gd":
+	var web_browser := ClosedBrowser.new()
+	var section := 0
+	var tab := 0
+
 class Catalog extends RefCounted:
 	func list_recent() -> Array[Dictionary]:
 		var entries: Array[Dictionary] = []
@@ -40,7 +50,10 @@ func check_panel_surfaces(menu: Node3D) -> void:
 	check_passive_pointer(menu, menu._backdrop, Vector3(0, 0.206, 0), "Row gap")
 	check_passive_pointer(menu, menu._backdrop, Vector3(-0.5, -0.415, 0), "Disabled previous button")
 	check_passive_pointer(menu, menu._backdrop, Vector3(0.73, 0, 0), "Panel margin")
-	check_passive_pointer(menu, menu.device_status._pill, Vector3.ZERO, "Battery and clock surface")
+	# The battery and clock card has opened the app actions since 2026-11-08: it is a control, not a passive surface.
+	var pill: MeshInstance3D = menu.device_status._pill
+	var pill_hit: Dictionary = menu.ray_hit(pill.global_position - pill.global_basis.z * -0.4, -pill.global_basis.z.normalized())
+	check(int(pill_hit.get("target", 0)) == menu.app_actions.STATUS and pill_hit.enabled, "Battery and clock card is the app actions entry")
 	var direction := -menu.global_basis.z
 	for point in [Vector3(0.774, 0.539, 1), Vector3(0.8, 0, 1)]:
 		var origin: Vector3 = menu.to_global(point)
@@ -65,7 +78,7 @@ func check_panel_surfaces(menu: Node3D) -> void:
 
 func _run() -> void:
 	preload("res://scripts/i18n.gd").use("en") # text checks are written in English
-	var menu := Menu.new()
+	var menu := PointerMenu.new()
 	menu.catalog = Catalog.new()
 	menu.chosen.connect(func(uri: String): selected.append(uri))
 	menu.choose_file.connect(func(): opened += 1)

@@ -35,6 +35,7 @@ class ListeningMemory extends RefCounted:
 class MigrationViewer extends Node3D:
 	var recent_files: RefCounted
 	var mode_memory := Memory.new()
+	var picture_memory := preload("res://scripts/file_picture_memory.gd").new()
 	var track_memory := Memory.new()
 	var subtitle_timing := Memory.new()
 	var subtitle_encoding := preload("res://scripts/file_subtitle_encoding.gd").new()

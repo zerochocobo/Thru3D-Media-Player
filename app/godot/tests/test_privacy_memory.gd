@@ -94,7 +94,9 @@ func run() -> void:
 	var photo := Photo.new(); main.photo = photo
 	main.atmosphere = preload("res://scripts/atmosphere/atmosphere_controller.gd").new()
 	main.add_child(main.atmosphere)
-	for memory in stores(main) + [photo.grade_memory, main.atmosphere.memory, video.recent_files, video.bookmark_store]: memory.directory = directory.path_join(str(memory.get_instance_id()))
+	# Reading mode's bookmarks are cleared with the other per-file settings (2026-11-26).
+	main.book = preload("res://scripts/book_reader.gd").new()
+	for memory in stores(main) + [photo.grade_memory, main.atmosphere.memory, main.book.mark_memory, video.recent_files, video.bookmark_store]: memory.directory = directory.path_join(str(memory.get_instance_id()))
 	root.add_child(video); video.set_process(false)
 	main.favorites = Favorites.new(directory.path_join("favorites"))
 	var menu := Library.new(); main.recent_menu = menu; root.add_child(menu); menu.set_process(false)

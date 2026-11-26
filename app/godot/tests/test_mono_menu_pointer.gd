@@ -290,7 +290,10 @@ func check_popup_gestures(eye: Camera3D) -> void:
 	for target in menu.choices.sliders.keys():
 		var slider: Dictionary = menu.choices.sliders[target]
 		var origin: Vector3 = eye.global_transform * Vector3(0.25, -0.2, -0.3)
-		var point: Vector3 = slider.node.to_global(Vector3(slider.left + slider.width * 0.5, 0, 0))
+		# Aim at the middle of a step: the slider's exact centre can fall on a rounding boundary.
+		var span: Vector3 = menu.choices.targets[target].span
+		var step: float = slider.width * span.z / (span.y - span.x) if span.z > 0.0 and span.y > span.x else 0.0
+		var point: Vector3 = slider.node.to_global(Vector3(slider.left + slider.width * 0.5 + step * 0.25, 0, 0))
 		var direction := aim(menu, eye.global_position, origin, point)
 		menu.press_pointer("right_hand", origin, direction, true)
 		var value: Variant = menu.choices.capture.get("value")

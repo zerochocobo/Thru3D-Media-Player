@@ -55,6 +55,7 @@ static var ACCENT: Color:
 static var MUTED: Color:
 	get: return UiTheme.color("muted")
 var _theme_pending := false
+var _captions_queued := false
 var _theme_queued := false
 ## Rasterize twice as large, then prefilter when projected into an eye buffer. The logical
 ## typography and physical dimensions stay the same, including labels resized after creation.
@@ -64,6 +65,11 @@ const TEXT_BODY := 18
 const TEXT_AUX := 16
 const TEXT_TITLE := 20
 const TEXT_PAGE_TITLE := 24
+## Captions on buttons and rows are set this much larger where the control has room for it.
+const CAPTION_GROW := 1.14
+const PANEL_RIM := 0.16
+const PANEL_SHEEN := 0.035
+const CONTROL_RIM := 0.07
 const BRACKET_FONT := preload("res://assets/fonts/cjk-brackets.otf")
 const POINTER_LINE_PRIORITY := 126
 const POINTER_DOT_PRIORITY := 127
@@ -558,6 +564,104 @@ func _button(target: int, text: String, centre: Vector2, size: Vector2, enabled:
 			foreground if enabled else MUTED, node)
 	_buttons.append({"target": target, "rect": Rect2(centre - size / 2, size), "enabled": enabled, "node": node,
 		"base_color": base, "foreground": foreground})
+	if not _captions_queued:
+		_captions_queued = true
+		_grow_captions.call_deferred()
+
+## Runs once the layout that added the buttons is complete, so it sees each control as its caller
+## left it. A full-width row sets all its captions larger, any other button its lone caption, each
+## by the largest step that still fits beside what is around it.
+func _grow_captions() -> void:
+	_captions_queued = false
+	var changed := false
+	for button in _buttons:
+		if button.has("caption_grown"): continue
+		button["caption_grown"] = true
+		var node: Node3D = button.node
+		if not is_instance_valid(node) or not node is MeshInstance3D or not node.mesh is QuadMesh: continue
+		var captions: Array[Label3D] = []
+		for child in node.get_children():
+			if child is Label3D and not child.text.is_empty(): captions.append(child)
+		if captions.is_empty() or captions[0].autowrap_mode != TextServer.AUTOWRAP_OFF: continue
+		var row: bool = node.mesh.size.x > 1.0
+		if not row and captions.size() != 1: continue
+		var neighbours := _caption_neighbours(button)
+		# The padding menus keep inside a control: 0.025 across both sides.
+		var half: float = node.mesh.size.x * 0.5 - 0.0125
+		for caption in captions:
+			if caption.autowrap_mode != TextServer.AUTOWRAP_OFF: continue
+			# The largest step that reaches nothing new: text is never cut to make room.
+			for grow: float in CAPTION_STEPS:
+				var moved := _caption_fits(caption, grow, neighbours, half, node)
+				if moved.is_empty(): continue
+				var before := _caption_box(caption, 1.0)
+				caption.font_size = roundi(caption.font_size * grow)
+				for mark: Node3D in moved.marks: mark.position.x += before.size.x * (grow - 1.0)
+				caption.set_meta("caption_grow", grow)
+				changed = true
+				break
+	if changed: composition_changed.emit()
+
+const CAPTION_STEPS := [CAPTION_GROW, 1.10, 1.07, 1.04]
+
+## {"marks": [...]} when [caption] set [grow] times larger stays inside its control and clear of
+## everything it did not already touch; empty when it does not fit. A small mark set just after a
+## left-aligned title (an info glyph) belongs to it and moves along.
+func _caption_fits(caption: Label3D, grow: float, neighbours: Array, half: float, node: Node3D) -> Dictionary:
+	var before := _caption_box(caption, 1.0)
+	var after := _caption_box(caption, grow)
+	# Only the added width can reach a neighbour; the line keeps its place in the row.
+	after = Rect2(after.position.x, before.position.y, after.size.x, before.size.y)
+	# Growth may not reach the control's edge, even for a caption that already sat close to it.
+	if (after.position.x < -half and after.position.x < before.position.x) or (after.end.x > half and after.end.x > before.end.x): return {}
+	# A caption its menu fitted to a width of its own (music_text_width) stays within it.
+	if caption.has_meta("music_text_width") and after.size.x > float(caption.get_meta("music_text_width")): return {}
+	var marks: Array[Node3D] = []
+	for item: Dictionary in neighbours:
+		if item.node == caption or not after.intersects(item.box) or before.intersects(item.box): continue
+		var gap: float = item.box.position.x - before.end.x
+		var mark: bool = item.node.get_parent() == node and item.node is MeshInstance3D and item.box.size.x < 0.06
+		if not mark or caption.horizontal_alignment != HORIZONTAL_ALIGNMENT_LEFT or gap < 0.0 or gap >= 0.03: return {}
+		marks.append(item.node)
+	# A moved mark must itself stay clear of the rest.
+	for mark in marks:
+		var shifted := Rect2(mark.position.x - mark.mesh.size.x * 0.5 + before.size.x * (grow - 1.0), mark.position.y - mark.mesh.size.y * 0.5, mark.mesh.size.x, mark.mesh.size.y)
+		if shifted.end.x > half: return {}
+		for item: Dictionary in neighbours:
+			if item.node != mark and item.node != caption and shifted.intersects(item.box) and not after.intersects(item.box): return {}
+	return {"marks": marks}
+
+## Everything a caption of this button could run into, in the button's own space: its other
+## children, and the controls, labels and marks laid over it by the same parent.
+func _caption_neighbours(button: Dictionary) -> Array:
+	var result: Array = []
+	var node: MeshInstance3D = button.node
+	for child in node.get_children():
+		if child is Label3D and not child.text.is_empty(): result.append({"node": child, "box": _caption_box(child, 1.0)})
+		elif child is MeshInstance3D and child.mesh is QuadMesh and child.visible:
+			result.append({"node": child, "box": Rect2(Vector2(child.position.x, child.position.y) - child.mesh.size * 0.5, child.mesh.size)})
+	var offset := Vector2(node.position.x, node.position.y)
+	for other in _buttons:
+		var peer: Node3D = other.node
+		if peer == node or not is_instance_valid(peer) or peer.get_parent() != node.get_parent(): continue
+		var size: Vector2 = other.rect.size
+		if size.x >= node.mesh.size.x: continue
+		result.append({"node": peer, "box": Rect2(Vector2(peer.position.x, peer.position.y) - offset - size * 0.5, size)})
+	for item: Node3D in _labels + _decorations:
+		if not is_instance_valid(item) or item.get_parent() != node.get_parent() or not item.visible: continue
+		if item is Label3D and not item.text.is_empty():
+			var box := _caption_box(item, 1.0)
+			result.append({"node": item, "box": Rect2(box.position - offset, box.size)})
+		elif item is MeshInstance3D and item.mesh is QuadMesh and item.mesh.size.x < node.mesh.size.x:
+			result.append({"node": item, "box": Rect2(Vector2(item.position.x, item.position.y) - offset - item.mesh.size * 0.5, item.mesh.size)})
+	return result
+
+static func _caption_box(caption: Label3D, grow: float) -> Rect2:
+	var size := caption.font.get_multiline_string_size(caption.text, HORIZONTAL_ALIGNMENT_LEFT, -1, caption.font_size) * caption.pixel_size * grow
+	var left := caption.position.x - size.x * 0.5
+	if caption.horizontal_alignment == HORIZONTAL_ALIGNMENT_LEFT: left = caption.position.x
+	elif caption.horizontal_alignment == HORIZONTAL_ALIGNMENT_RIGHT: left = caption.position.x - size.x
+	return Rect2(left, caption.position.y - size.y * 0.5, size.x, size.y)
 
 ## A ray hit area with no surface, material or empty caption. Only the supplied labels render.
 func _text_button(target: int, text: String, centre: Vector2, size: Vector2, enabled: bool = true,
@@ -748,6 +852,12 @@ func _quad(size: Vector2, location: Vector3, color: Color, priority: int) -> Mes
 	surface.set_shader_parameter("hover_border", Vector3(edge_color.r, edge_color.g, edge_color.b))
 	surface.set_shader_parameter("surface_size", size)
 	surface.set_shader_parameter("corner_radius", 0.028 if priority == 10 else 0.012)
+	# Panels get a rim and a sheen, controls a fainter rim. A plate painted in the panel's own
+	# colour is there to hide what is behind it, so it stays invisible.
+	if priority == 10:
+		surface.set_shader_parameter("rim", PANEL_RIM); surface.set_shader_parameter("sheen", PANEL_SHEEN)
+	elif not Color(color, 1.0).is_equal_approx(Color(PANEL, 1.0)):
+		surface.set_shader_parameter("rim", CONTROL_RIM)
 	node.material_override = surface
 	_apply_overlay_node(node)
 	return node

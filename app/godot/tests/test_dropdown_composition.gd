@@ -80,6 +80,9 @@ func fixture(attached: bool, low: bool, language: String, dropdown: bool = true)
 	library.set_process(false); library.visible = true; library.playback_expanded = attached
 	player.expanded_library = library
 	library.section = Library.Section.SETTINGS; library.tab = Library.DISPLAY_TAB; library.refresh()
+	# Render scale sits in the Rendering and performance group, which opens collapsed.
+	var rendering: int = library.rows.find_custom(func(row): return row.get("display_settings_group") == "rendering")
+	if rendering >= 0: library._activate(Library.ROW_BASE + rendering)
 	var capture := Capture.new(); world.add_child(capture)
 	capture.configure(world, camera, null, [library,player], low, true); capture.set_process(false)
 	var fixed_sizes: Array = capture.slots.map(func(slot): return slot.raw.size)

@@ -63,7 +63,9 @@ func run() -> void:
 	menu.state_provider = main._menu_state
 	menu.adjustment_requested.connect(main._on_playback_adjustment)
 	menu.setting_requested.connect(main._on_player_setting)
-	menu.toggle(); menu._activate(110); menu._activate(Menu.SUBTITLE_APPEARANCE)
+	menu.toggle(); menu._activate(110)
+	# Subtitles open on their appearance group; a second press would fold it.
+	if menu._subtitle_detail_group() != "appearance": menu._activate(Menu.SUBTITLE_APPEARANCE)
 	var sync := row(menu)
 	check(not sync.is_empty() and sync.slider.span == Vector3(-10, 10, 0.1), "Subtitle adjustment contains the bounded timing slider")
 	check(not sync.slider.reset.enabled and not sync.slider.reset.node.visible, "Zero timing hides its reset button")
@@ -115,8 +117,10 @@ func run() -> void:
 	check(is_equal_approx(saved.lookup(A).delay_seconds, 2.5) and is_equal_approx(saved.lookup(B).delay_seconds, -0.5), "Independent offsets survive another store instance")
 	video.media.playback = {"details": {"pgs_supported": true, "subtitle_tracks": [{"id": 1, "codec": "hdmv_pgs_subtitle"}]}}
 	video.subtitles.select(1)
-	menu.dismiss(); menu.toggle(); menu._activate(110); menu._activate(Menu.SUBTITLE_APPEARANCE)
-	check(row(menu).slider.label.text == "+2.5 s" and menu.choices.sliders.size() == 3, "PGS shares the per-video sync slider")
+	menu.dismiss(); menu.toggle(); menu._activate(110)
+	if menu._subtitle_detail_group() != "appearance": menu._activate(Menu.SUBTITLE_APPEARANCE)
+	var pgs := row(menu)
+	check(not pgs.is_empty() and pgs.slider.label.text == "+2.5 s" and menu.choices.sliders.size() == 4, "PGS shares the per-video sync slider")
 	check(not video.set_subtitle_delay(NAN) and not video.set_subtitle_delay(INF), "Non-finite UI requests cannot reach native playback")
 	video.close_video(); menu.free(); video.free(); main.free()
 	for failure in failures: push_error(failure)

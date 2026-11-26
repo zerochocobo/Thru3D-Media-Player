@@ -75,8 +75,9 @@ func run() -> void:
 		I18n.use(language)
 		for cinema in [false, true]:
 			state.screen_cinema = cinema; menu.refresh()
-			var targets := [Menu.SCREEN_CINEMA, Menu.SCREEN_CINEMA_OFF, Menu.SCREEN_SET_DEFAULT, Menu.SCREEN_AUTO_DEFAULT, 450, 451, Menu.SPATIAL_FOV, Menu.SETTINGS_CLOSE, 108,
-				Menu.SCREEN_CURVE, Menu.SCREEN_CURVE + 1, Menu.SCREEN_CURVE + 2, Menu.SCREEN_CURVE + 3]
+			var targets := [Menu.SCREEN_CINEMA, Menu.SCREEN_CINEMA_OFF, Menu.SCREEN_SET_DEFAULT, Menu.SCREEN_AUTO_DEFAULT, 450, 451, Menu.SPATIAL_FOV, Menu.SETTINGS_CLOSE, 108]
+			# Curvature is a continuous slider since 2026-11-07, not four preset buttons.
+			check(menu._adjust_rows.has(Menu.SCREEN_CURVE_SLIDER), "Screen settings offer the curvature slider")
 			if cinema: targets.append_array([Menu.SCREEN_PRESET, Menu.SCREEN_PRESET + 1, Menu.SCREEN_PRESET + 2, Menu.SCREEN_PRESET + 3, Menu.SCREEN_EYE_LEVEL, Menu.SCREEN_EYE_LEVEL + 1])
 			else: check(menu._buttons.filter(func(item): return item.target >= Menu.SCREEN_PRESET and item.target < Menu.SCREEN_PRESET + 4).is_empty(), "Free mode hides cinema presets")
 			for target in targets:

@@ -153,8 +153,9 @@ func _run() -> void:
 	root.add_child(menu); menu.toggle(); menu.set_process(false); menu._subtitle_open = true; menu._set_subtitle_detail("narration")
 	for kind in ["preset", "custom"]:
 		ui.narration_voice_kind = kind; ui.narration_enabled = false; menu.refresh()
-		check(menu.choices.targets.values().all(func(item): return item.get("key", "") == "narration_enabled"), "Off hides every narration setting in " + kind)
-		check(not menu._buttons.any(func(item): return item.target in [menu.NARRATION_PREVIEW, menu.NARRATION_VOICES, menu.NARRATION_CLONE_START]), "Off hides all narration actions in " + kind)
+		# Narration can be set up while off (2026-11-04): its settings stay available.
+		var keys: Array = menu.choices.targets.values().map(func(item): return item.get("key", ""))
+		check("narration_enabled" in keys and "narration_language" in keys and ("narration_custom_voice" if kind == "custom" else "narration_voice") in keys, "Off keeps narration settings available in " + kind)
 		menu._activate(menu.NARRATION_CLONE_START); check(not menu.clone_panel.opened, "Off rejects a stale clone entry")
 	ui.narration_enabled = true
 	ui.narration_voice_kind = "preset"; menu.refresh()

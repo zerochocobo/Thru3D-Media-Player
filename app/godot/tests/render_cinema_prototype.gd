@@ -30,9 +30,11 @@ func run() -> void:
 	check(not cinema.manifest.is_empty(), "Runtime GLB loads from file")
 	if cinema.manifest.is_empty(): quit(1); return
 	check(cinema.stats.runtime_glb and cinema.stats.seats == 336, "All 336 GT seats and runtime asset identity")
-	check(cinema.stats.triangles == 720770, "Committed baked GT asset triangle count")
+	check(cinema.stats.triangles == 728301, "Committed baked GT asset triangle count") # detail pass, 2026-10-25
 	var seats: MeshInstance3D = cinema.environment_root.find_child("Seats_01A_near", true, false)
-	check(seats != null and seats.get_active_material(0).vertex_color_use_as_albedo, "Runtime seat chunks retain baked vertex lighting")
+	# Seats read their baked light from vertex colours through the seat shader.
+	var seat_material: Material = seats.get_active_material(0) if seats else null
+	check(seat_material is ShaderMaterial and seat_material.shader == preload("res://shaders/cinema_baked_seat.gdshader"), "Runtime seat chunks retain baked vertex lighting")
 	check(cinema.motion.selected_seat == "I12", "Default central GT seat from manifest")
 	check(cinema.movie != null, "Real Theora motion clip is attached")
 	await create_timer(0.6).timeout

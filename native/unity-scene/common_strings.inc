@@ -1,4 +1,5 @@
 // Unity's built-in type-tree string table (offsets with the top bit set index into it).
+// The matching AssetStudio table and MIT notice are credited in third_party/unity-scene/NOTICE.txt.
     "AABB\0"
     "AnimationClip\0"
     "AnimationCurve\0"

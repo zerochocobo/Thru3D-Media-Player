@@ -5,6 +5,130 @@ extends RefCounted
 
 const PAIR_SHADER := preload("res://shaders/video_rvm_pair.gdshader")
 const DECODER_SHADER := preload("res://shaders/video_rvm_pair_oes.gdshader")
+static func _frame_shader(decoder: bool) -> Shader:
+	return DECODER_SHADER if decoder else PAIR_SHADER
+## Plain playback (the pair shaders' fast path conditions hold) draws with a shader generated from the
+## pair shader that holds only that path: the GPU then allocates registers for it alone instead of for
+## the whole body, which cut 8K VR180 eye-buffer cycles by about 30% on Quest 3 (2026-11-26). It draws
+## exactly what the branch draws. Everyone else still sees the pair shader (source_shader()).
+## perf_tune plain_shader turns it off for A/B.
+static var plain_shader_enabled := true
+static var _plain_variants := {}
+## Every generated variant (plain or depth) to the pair shader it came from.
+static var _plain_sources := {}
+const PLAIN_OFF := ["alpha_enabled", "depth_enabled", "pip_enabled", "packed_alpha", "projection_mesh", "projection_uv_packed"]
+## Mono 2D->3D through the shader's own parallax (GPUs without the bridge's stereo pair: Quest 2 and the
+## PICO headsets on Adreno 650) draws with the full path specialised to it: these switches become
+## constants, so the compiler drops the mask, packed Alpha, PiP, mesh and sharpening code and allocates
+## registers for parallax, footprint, grade and captions alone. Minified, it reads the bridge's 2x reductions
+## when the display asked for them (as the plain path does). perf_tune depth_shader turns it off.
+static var depth_shader_enabled := true
+static var _depth_variants := {}
+const FULL_FOOTPRINT := "rgb = footprint_color(color_p, color_dx, color_dy, lo, hi, rgb);"
+const DEPTH_FOOTPRINT := "rgb = minified_color(color_p, color_dx, color_dy, lo, hi, plain_footprint_taps);"
+const DEPTH_FIXED := {"alpha_enabled": "false", "depth_enabled": "true", "pip_enabled": "false", "packed_alpha": "false",
+	"projection_mesh": "false", "projection_uv_packed": "false", "stereo_sbs": "false"}
+
+## [code] with fragment() cut down to its plain fast path, or "" when the markers changed.
+static func plain_code(code: String) -> String:
+	code = code.replace("\r\n", "\n")
+	var fragment := code.find("void fragment() {\n")
+	var start := code.find("\tif (!alpha_enabled && !depth_enabled", fragment)
+	var full := code.find("\t} else { // Full path.", start)
+	if fragment < 0 or start < 0 or full < 0: return ""
+	var open := code.find("{\n", start) + 2
+	var lines := code.substr(open, full - open).split("\n")
+	for i in lines.size():
+		if lines[i].begins_with("\t"): lines[i] = lines[i].substr(1)
+	return code.substr(0, fragment) + "void fragment() {\n" + "\n".join(lines) + "}\n"
+
+## The plain variant of a pair shader (null when it cannot be cut).
+static func plain_variant(source: Shader) -> Shader:
+	if not _plain_variants.has(source):
+		var code := plain_code(source.code)
+		var shader: Shader = null
+		if not code.is_empty():
+			shader = Shader.new(); shader.code = code; shader.resource_name = source.resource_name + "_plain"
+			_plain_sources[shader] = source
+		_plain_variants[source] = shader
+	return _plain_variants[source]
+
+## [code] with fragment() cut down to its full path with DEPTH_FIXED (and sharpening off) as constants,
+## or "" when the markers changed.
+static func depth_code(code: String) -> String:
+	code = code.replace("\r\n", "\n")
+	var fragment := code.find("void fragment() {\n")
+	var full := code.find("\t} else { // Full path.", fragment)
+	var end := code.rfind("\t}\n}")
+	if fragment < 0 or full < 0 or end < full: return ""
+	var open := code.find("\n", full) + 1
+	var body := code.substr(open, end - open)
+	if body.count("sharpness > 0.0") != 1 or body.count(FULL_FOOTPRINT) != 1: return ""
+	body = body.replace("sharpness > 0.0", "false")
+	# Minified (4K on a flat screen) it reads the bridge's reductions where they exist, as the plain path does.
+	body = body.replace(FULL_FOOTPRINT, DEPTH_FOOTPRINT)
+	var word := RegEx.new()
+	for name in DEPTH_FIXED:
+		word.compile("\\b%s\\b" % name)
+		body = word.sub(body, DEPTH_FIXED[name], true)
+	return code.substr(0, fragment) + "void fragment() {\n" + body + "}\n"
+
+## The depth variant of a pair shader (null when it cannot be cut).
+static func depth_variant(source: Shader) -> Shader:
+	if not _depth_variants.has(source):
+		var code := depth_code(source.code)
+		var shader: Shader = null
+		if not code.is_empty():
+			shader = Shader.new(); shader.code = code; shader.resource_name = source.resource_name + "_depth"
+			_plain_sources[shader] = source
+		_depth_variants[source] = shader
+	return _depth_variants[source]
+
+## Whether the pair shader would run its parallax with nothing else of the full path in use.
+static func depth_ready(target: ShaderMaterial) -> bool:
+	if not depth_shader_enabled or not _parameter(target, "depth_enabled") or _parameter(target, "stereo_sbs"): return false
+	for name in PLAIN_OFF:
+		if name != "depth_enabled" and _parameter(target, name): return false
+	var sharpness: Variant = _parameter(target, "sharpness")
+	return sharpness != null and float(sharpness) <= 0.0
+
+## The pair (or other) shader a material shows, whether drawn front-faced, plain or depth.
+static func source_shader(shader: Shader) -> Shader:
+	shader = Facing.source(shader)
+	return _plain_sources.get(shader, shader)
+
+## The shader a material would have without the plain variant, facing kept.
+static func full_shader(target: ShaderMaterial) -> Shader:
+	return Facing.for_material(target, source_shader(target.shader))
+
+static func _parameter(target: ShaderMaterial, name: String) -> Variant:
+	var value: Variant = target.get_shader_parameter(name)
+	if value == null and target.shader: value = RenderingServer.shader_get_parameter_default(target.shader.get_rid(), name)
+	return value
+
+## Whether the pair shader would take its plain fast path with [target]'s parameters.
+static func plain_ready(target: ShaderMaterial) -> bool:
+	if not plain_shader_enabled or not _parameter(target, "plain_fast_path"): return false
+	for name in PLAIN_OFF:
+		if _parameter(target, name): return false
+	var sharpness: Variant = _parameter(target, "sharpness")
+	return sharpness != null and float(sharpness) <= 0.0
+
+## [canonical] (a pair shader) or its plain or depth variant, whichever [target] should draw with now.
+static func _draw_shader(target: ShaderMaterial, canonical: Shader) -> Shader:
+	if canonical != PAIR_SHADER and canonical != DECODER_SHADER: return canonical
+	var variant: Shader = null
+	if plain_ready(target): variant = plain_variant(canonical)
+	elif depth_ready(target): variant = depth_variant(canonical)
+	return variant if variant else canonical
+
+## Once a frame: parameters can change between frames (a paused video has none), so follow them.
+## Only a material showing a pair shader or one of its variants is touched.
+func refresh_plain() -> void:
+	if not material or layer: return
+	var source := source_shader(material.shader)
+	if source != PAIR_SHADER and source != DECODER_SHADER: return
+	_use_shader(material, _draw_shader(material, source))
 const PORTRAIT_SHADER := preload("res://shaders/video_portrait.gdshader")
 const PORTRAIT_DECODER_SHADER := preload("res://shaders/video_portrait_oes.gdshader")
 const Facing := preload("res://scripts/surface_facing.gd")
@@ -15,6 +139,8 @@ var color_rid := RID()
 var _decoder_color: ExternalTexture
 var alpha_rid := RID()
 var portrait_rid := RID()
+## The frame's 2x reductions (color_level_ids), largest first: flat QIYU playback samples them when minified.
+var level_rids: Array[RID] = []
 var ticket: Dictionary = {}
 ## 2D->3D: the bridge rendered this mono frame's stereo pair (side by side, warp_size); it is shown
 ## instead of the color, with no shader parallax.
@@ -53,9 +179,10 @@ func show_enhanced(name: int, size: Vector2i) -> bool:
 			Image.FORMAT_RGBA8, name, size.x, size.y, 1)
 		_enhanced_name = name; _enhanced_size = size
 	if not enhanced_rid.is_valid(): return false
-	_use_shader(material, PAIR_SHADER)
+	_use_shader(material, _draw_shader(material, PAIR_SHADER))
 	RenderingServer.material_set_param(material.get_rid(), "color_texture", enhanced_rid)
 	_enhanced = true
+	_show_levels(false)
 	return true
 
 ## Back to the frame as it was bound.
@@ -64,11 +191,12 @@ func show_original() -> void:
 	_enhanced = false
 	if not material or layer: return
 	var decoder := str(ticket.get("color_target", "")) == "external"
-	_use_shader(material, DECODER_SHADER if decoder else PAIR_SHADER)
+	_use_shader(material, _draw_shader(material, _frame_shader(decoder)))
 	if decoder:
 		var scale: Array = ticket.get("color_uv_scale", [1.0, 1.0])
 		material.set_shader_parameter("color_uv_scale", Vector2(float(scale[0]), float(scale[1])))
 	RenderingServer.material_set_param(material.get_rid(), "color_texture", color_texture())
+	_show_levels(true)
 
 ## Forgets the plugin's texture (it made another, or the mode is over). No material may still show it.
 func drop_enhanced() -> void:
@@ -90,7 +218,8 @@ func shared_parameters() -> Dictionary:
 		_shared_shader = material.shader; _shared_uniforms.clear(); _shared_values.clear()
 		for uniform in material.shader.get_shader_uniform_list():
 			var name := str(uniform.name)
-			if not name.begins_with("pip_") and not name.begins_with("subtitle_") and not name.begins_with("bitmap_subtitle_") and not name in ["color_texture", "alpha_texture", "separate_subtitles"]:
+			# The reductions belong to this material's own frame lease; consumers sample the frame itself.
+			if not name.begins_with("pip_") and not name.begins_with("subtitle_") and not name.begins_with("bitmap_subtitle_") and not name.begins_with("color_level") and not name in ["color_texture", "alpha_texture", "separate_subtitles"]:
 				_shared_uniforms.append(name)
 	var values := {}
 	for name in _shared_uniforms: values[name] = material.get_shader_parameter(name)
@@ -100,7 +229,7 @@ func share_with(target: ShaderMaterial, parameters: Dictionary = {}, portrait: b
 	if not material or layer: return
 	if not _consumers.has(target): _consumers.append(target)
 	if parameters.is_empty(): parameters = shared_parameters()
-	var canonical := Facing.source(material.shader)
+	var canonical := source_shader(material.shader)
 	var shader := (PORTRAIT_DECODER_SHADER if canonical == DECODER_SHADER else PORTRAIT_SHADER) if portrait else canonical
 	if shader_override: shader = shader_override
 	shader = Facing.for_material(target, shader)
@@ -146,6 +275,15 @@ func bind(target: ShaderMaterial, pair: Dictionary) -> bool:
 	elif not decoder:
 		color_rid = RenderingServer.texture_create_from_native_handle(RenderingServer.TEXTURE_TYPE_2D,
 			Image.FORMAT_RGBA8, int(pair.color_texture_id), int(pair.width), int(pair.height), 1)
+		var levels: Array = pair.get("color_level_ids", [])
+		for k in mini(levels.size(), 4):
+			# The bridge sizes level k+1 as the frame's size shifted right by k+1, at least 1.
+			var level := RenderingServer.texture_create_from_native_handle(RenderingServer.TEXTURE_TYPE_2D, Image.FORMAT_RGBA8,
+				int(levels[k]), maxi(1, int(pair.width) >> (k + 1)), maxi(1, int(pair.height) >> (k + 1)), 1)
+			if int(levels[k]) <= 0 or not level.is_valid():
+				if level.is_valid(): RenderingServer.free_rid(level)
+				break
+			level_rids.append(level)
 	alpha_rid = RenderingServer.texture_create_from_native_handle(RenderingServer.TEXTURE_TYPE_2D,
 		Image.FORMAT_R8, int(pair.alpha_texture_id), int(pair.alpha_width), int(pair.alpha_height), 1)
 	if int(pair.get("portrait_texture_id", 0)) > 0:
@@ -155,7 +293,7 @@ func bind(target: ShaderMaterial, pair: Dictionary) -> bool:
 		_free_wrappers()
 		return false
 	_enhanced = decoder and enhance_expected and enhanced_rid.is_valid()
-	_use_shader(target, DECODER_SHADER if decoder and not _enhanced else PAIR_SHADER)
+	_use_shader(target, _draw_shader(target, _frame_shader(decoder and not _enhanced)))
 	var rect: Array = pair.model_content_rect
 	material = target
 	ticket = pair.duplicate(true)
@@ -179,7 +317,16 @@ func bind(target: ShaderMaterial, pair: Dictionary) -> bool:
 	else:
 		RenderingServer.material_set_param(material.get_rid(), "color_texture", color_rid)
 	RenderingServer.material_set_param(material.get_rid(), "alpha_texture", alpha_rid)
+	_show_levels(not _enhanced)
 	return true
+
+## Lets the material sample this frame's reductions, or not (the enhanced picture has none).
+func _show_levels(shown: bool) -> void:
+	if not material: return
+	var count := level_rids.size() if shown else 0
+	material.set_shader_parameter("color_levels", count)
+	for k in 4:
+		RenderingServer.material_set_param(material.get_rid(), "color_level_%d" % (k + 1), level_rids[k] if k < count else null)
 
 ## The bound frame's colour texture (the decoder image in direct mode).
 func color_texture() -> RID:
@@ -195,6 +342,7 @@ func unbind() -> Dictionary:
 	if material:
 		RenderingServer.material_set_param(material.get_rid(), "color_texture", null)
 		RenderingServer.material_set_param(material.get_rid(), "alpha_texture", null)
+		_show_levels(false)
 	material = null
 	warped = false
 	layer = false
@@ -228,6 +376,8 @@ func _free_wrappers() -> void:
 	for rid in [color_rid, alpha_rid, portrait_rid]:
 		if rid.is_valid():
 			RenderingServer.free_rid(rid)
+	for rid in level_rids: RenderingServer.free_rid(rid)
+	level_rids.clear()
 	color_rid = RID()
 	alpha_rid = RID()
 	portrait_rid = RID()

@@ -1,0 +1,17 @@
+Thru3D frame interpolation
+Copyright (C) 2026 FFSky Studio and contributors.
+
+Thru3D implements motion-compensated frame interpolation in C++ and GLES 3
+fragment shaders (native/xr-layer/frame_interp.cpp and interp_glsl.h).
+It estimates motion in both directions using coarse-to-fine luma block
+matching, then synthesizes pictures for each display refresh. It also
+processes each eye independently for 2D-to-3D playback.
+
+Algorithm reference: MVTools for AviSynth, by the MVTools contributors.
+https://github.com/pinterf/mvtools
+Its motion-vector prediction and coherence penalty informed the shader design.
+The VapourSynth port of MVTools was used for offline sample generation and
+comparisons. The APK runs Thru3D's C++ code and GLES shaders.
+
+The Thru3D implementation is distributed under the GNU General Public License
+version 3. The full project license accompanies this notice.
