@@ -14,6 +14,7 @@ var _counters := [-1, -1, -1]
 
 func _ready() -> void:
 	position = HUD_POSITION
+	font = preload("res://scripts/ray_menu.gd").ui_font()
 	pixel_size = 0.0007
 	font_size = 32
 	outline_size = 8
@@ -33,11 +34,13 @@ func _process(delta: float) -> void:
 	_frames = frames
 	_elapsed = 0.0
 	var render := "XR %d" % roundi(Engine.get_frames_per_second())
+	var interpolation := str(sample.get("interpolation_caption", ""))
 	if not sample.get("active", false):
-		text = render + " FPS"
+		text = (interpolation + " · " if not interpolation.is_empty() else "") + render + " FPS"
 		return
 	var target := int(sample.get("target", 0))
-	text = "%s %.1f%s · %s FPS" % ["Alpha" if target > 0 else "Video", video, " / %d" % target if target > 0 else "", render]
+	var video_rate := "%s %.1f%s" % ["Alpha" if target > 0 else "Video", video, " / %d" % target if target > 0 else ""]
+	text = "%s · %s FPS" % [video_rate if interpolation.is_empty() else interpolation, render]
 	# Compositor layer (L) or eye buffers (E): the path decides most of the GPU cost.
 	if sample.has("path"): text += " " + str(sample.path)
 	# Second line: decoder drops / VO drops / late frames in this window, A/V offset, cache wait.

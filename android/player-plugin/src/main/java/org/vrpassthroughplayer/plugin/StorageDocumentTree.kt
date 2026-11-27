@@ -87,7 +87,7 @@ internal class StorageDocumentTree(private val provider: Provider) {
             val child = runCatching { StorageDocumentPolicy.id(row.id) }.getOrNull()
             child != null && at.document.contains(child) && child != at.document &&
                 child.path.substringBeforeLast('/', "") == at.document.path && validName(row.name) &&
-                !row.name.startsWith('.') && (row.directory || !mediaOnly || MediaKinds.supportedFileName(row.name))
+                !row.name.startsWith('.') && (row.directory || !mediaOnly || MediaKinds.listedFileName(row.name))
         }.sortedWith(compareBy({ !it.directory }, { it.name.lowercase() }))
         return JSONArray().apply { entries.forEach { put(row(at.tree, it)) } }
     }

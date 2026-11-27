@@ -104,6 +104,7 @@ func opened(uri: String, title: String, persisted: bool, kind: String = "video")
 	if valid_cover(old.get("cover", "")): entries[key]["cover"] = old.cover
 	if old.has("location"): entries[key].location = old.location.duplicate(true)
 	if old.get("book_at") is String: entries[key].book_at = old.book_at
+	if old.get("book_seconds") is float or old.get("book_seconds") is int: entries[key].book_seconds = maxi(0, int(old.book_seconds))
 	# Reserve room for the checksummed JSON envelope and its escaped payload.
 	while entries.size() > RECENT_LIMIT or JSON.stringify(entries).to_utf8_buffer().size() > MAX_BYTES / 3:
 		var oldest: String = str(entries.keys()[0])
@@ -202,6 +203,13 @@ func set_book_position(uri: String, at: String) -> void:
 	if at.is_empty() or at.length() > 48 or not entries.has(key) or not Privacy.record_allowed(uri): return
 	if entries[key].get("book_at", "") != at:
 		entries[key].book_at = at; dirty = true
+
+## Time spent reading this book, in whole seconds; kept with its history entry.
+func set_book_seconds(uri: String, seconds: int) -> void:
+	var key := key_for(uri)
+	if seconds <= 0 or not entries.has(key) or not Privacy.record_allowed(uri): return
+	if int(entries[key].get("book_seconds", 0)) != seconds:
+		entries[key].book_seconds = seconds; dirty = true
 
 func set_location(uri: String, location: Dictionary) -> void:
 	var entry := lookup(uri)

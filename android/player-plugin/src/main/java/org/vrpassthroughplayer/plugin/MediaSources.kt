@@ -178,7 +178,7 @@ internal class MediaSources(
             }
             if (!result.has("order")) result.put("order", order)
             result.put("source", "cloud").put("path", path).put("offset", offset).toString()
-        }, emit)
+        }, emit, path.trimStart('/').substringBefore('/'))
         return id
     }
     fun cloudCancel(id: Int) = cloudBrowseRequests.cancel(id)
@@ -191,7 +191,7 @@ internal class MediaSources(
             } catch (error: Exception) { JSONObject().put("state", "error").put("error", error.message ?: "Cloud search failed") }
             result.put("source", "cloud_search").put("path", path).put("query", query).put("scope", scope)
                 .put("kind", kind).put("cursor", cursor).toString()
-        }, emit)
+        }, emit, path.trimStart('/').substringBefore('/'))
         return id
     }
     fun cloudSearchResolve(path: String, token: String): Int {
@@ -202,7 +202,7 @@ internal class MediaSources(
                 JSONObject().put("entry", CloudLibrary.resolveSearch(path, token, cancellation)).put("state", "ready")
             } catch (error: Exception) { JSONObject().put("state", "error").put("error", error.message ?: "Cloud search failed") }
             result.put("source", "cloud_search_resolve").put("path", path).put("token", token).toString()
-        }, emit)
+        }, emit, path.trimStart('/').substringBefore('/'))
         return id
     }
     fun photoDirectoryPage(path: String, offset: Int, order: String): Int {
@@ -213,7 +213,7 @@ internal class MediaSources(
                 CloudLibrary.browse(path, false, offset, cancellation, order).put("state", "ready")
             } catch (_: Exception) { JSONObject().put("state", "error").put("error", "PHOTO_DIRECTORY_UNAVAILABLE") }
             result.put("path", path).put("offset", offset).put("order", order).toString()
-        }, emit)
+        }, emit, path.trimStart('/').substringBefore('/'))
         return id
     }
     fun photoDirectoryCancel(id: Int) = photoDirectoryRequests.cancel(id)
@@ -293,7 +293,7 @@ internal class MediaSources(
     }
 
     /** MPV-playable location for a library URI; blocks (SMB connects). Worker threads only. */
-    private val strm = StrmResolver(::readStrm, ::isStrm) { origin, target ->
+    private val strm = StrmResolver({ readStrm(it, null) }, ::isStrm) { origin, target ->
         if (target.startsWith("smb://")) smb.strmTarget(target, origin) else target
     }
 
@@ -305,7 +305,7 @@ internal class MediaSources(
         return StrmFile.named(StorageDocumentReader.displayName(resolver, source).orEmpty())
     }
 
-    private fun readStrm(uri: String): StrmDocument {
+    private fun readStrm(uri: String, cancellation: CloudCancellation?): StrmDocument {
         val source = android.net.Uri.parse(uri)
         val bytes = when (source.scheme) {
             "file" -> java.io.File(source.path ?: throw StrmFailure("STRM_READ_FAILED")).inputStream().use(StrmFile::read)
@@ -314,7 +314,15 @@ internal class MediaSources(
             "usb" -> StrmFile.read(usb.source(uri))
             "cloud" -> {
                 CloudLibrary.start(context() ?: error("Activity unavailable"))
-                StrmFile.read(CloudLibrary.dav.source(CloudPaths.path(uri)))
+                val path = CloudPaths.path(uri)
+                if (cancellation == null) StrmFile.read(CloudLibrary.dav.source(path))
+                else cancellation.prepare { transport ->
+                    val file = CloudLibrary.fileSource(path, transport)
+                    try {
+                        cancellation.attachAction { transport.cancel(); file.close() }
+                        StrmFile.read(file)
+                    } finally { file.close() }
+                }
             }
             "http", "https" -> return StrmHttp.read(uri)
             else -> throw StrmFailure("STRM_UNSUPPORTED_ADDRESS")
@@ -344,9 +352,12 @@ internal class MediaSources(
         return CloudLibrary.audioDownload(uri,streams(),1024*1024L)
     }
 
-    fun playable(uri: String): String {
-        val target = strm.resolve(uri)
-        return try { directPlayable(target) }
+    fun playable(uri: String): String = playable(uri, null)
+
+    fun playable(uri: String, cancellation: CloudCancellation?): String {
+        val target = strm.resolve(uri) { readStrm(it, cancellation) }
+        cancellation?.checkActive()
+        return try { directPlayable(target, cancellation) }
         catch (error: Exception) {
             if (target != uri) throw StrmFailure("STRM_TARGET_UNAVAILABLE", error)
             throw error
@@ -375,6 +386,21 @@ internal class MediaSources(
     fun pdfSmbSource(uri: String, cancellation: CloudCancellation): PdfNetworkSource =
         PdfSmbSource.open(uri, cancellation, smb::pdfStream, ::releasePhotoStream, ::hasPhotoStream)
     fun hasPhotoStream(uri: String): Boolean = server?.hasSource(uri) == true
+    /** A book on a network share, cloud drive or DLNA server, read once from start to end by the reading mode. */
+    fun bookSource(uri: String, cancellation: CloudCancellation): PdfNetworkSource {
+        val app = context() ?: error("BOOK_UNAVAILABLE")
+        return when (android.net.Uri.parse(uri).scheme) {
+            "smb" -> pdfSmbSource(uri, cancellation)
+            "cloud" -> { CloudLibrary.start(app); CloudLibrary.pdfSource(uri, cancellation) }
+            "dlna", "http", "https" -> {
+                val address = if (uri.startsWith("dlna://")) dlna.playable(uri) else uri
+                val source = HttpRangeStreamSource.remote(java.net.URI(address)).boundedRanges(1024*1024L)
+                cancellation.attachAction { source.close() }
+                PdfNetworkSource(source) { if (cancellation.cancelled) throw CloudFailure() }
+            }
+            else -> error("BOOK_UNAVAILABLE")
+        }
+    }
 
     /** Capture owns its reader; opening it must not revoke playback or its subtitle/audio leases. */
     fun capturePlayable(uri: String): String {
@@ -396,7 +422,7 @@ internal class MediaSources(
         android.net.Uri.parse(uri).scheme in setOf("file", "content", "smb", "usb", "cloud") &&
             DvdFolderImage.index(android.net.Uri.decode(uri.substringAfterLast('/')).substringAfterLast('/'))
 
-    private fun discPlayable(uri: String): String {
+    private fun discPlayable(uri: String, cancellation: CloudCancellation?): String {
         val app = context() ?: error("Activity unavailable")
         fun publish(source: DvdFolderSource): String =
             try { streams().publish(source, "video.iso", IsoMetadataMemory.key("dvd-folder", uri, source.identity)) }
@@ -419,7 +445,7 @@ internal class MediaSources(
             }
             uri.startsWith("cloud://") -> {
                 CloudLibrary.start(app)
-                CloudLibrary.discPlayable(uri, streams())
+                CloudLibrary.discPlayable(uri, streams(), cancellation)
             }
             else -> {
                 require(local.documents.owns(uri))
@@ -431,8 +457,8 @@ internal class MediaSources(
         }
     }
 
-    private fun directPlayable(uri: String): String = when {
-        discFolder(uri) -> discPlayable(uri)
+    private fun directPlayable(uri: String, cancellation: CloudCancellation? = null): String = when {
+        discFolder(uri) -> discPlayable(uri, cancellation)
         uri.startsWith("externalvideo://") -> externalVideo.playable(uri) ?: error("External video unavailable")
         webVideo.descriptor(uri) != null -> webVideo.prepare(webVideo.descriptor(uri)!!)
         uri.startsWith("webvideo:") -> error("Captured video session is no longer available")
@@ -449,7 +475,7 @@ internal class MediaSources(
         uri.startsWith("usb://") -> usb.stream(uri, streams())
         uri.startsWith("cloud://") -> {
             CloudLibrary.start(context() ?: error("Activity unavailable"))
-            CloudLibrary.playable(uri, streams())
+            CloudLibrary.playable(uri, streams(), cancellation)
         }
         else -> uri
     }

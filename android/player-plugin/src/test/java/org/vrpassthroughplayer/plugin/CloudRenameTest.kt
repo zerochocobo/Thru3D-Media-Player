@@ -102,6 +102,19 @@ class CloudRenameTest {
         assertTrue(result.getBoolean("renamed")); assertEquals("/new.folder", result.getString("new_path"))
         assertEquals(1, client.writes); assertTrue(client.reads.all { it == "/" })
     }
+
+    @Test fun visibleNonVideosKeepTheirOriginalExtensionAndNeverMoveSiblings() {
+        for (extension in listOf("JpG", "FLAC", "PDF", "epub", "zip", "SRT", "gLb")) {
+            val item = file("old.zh.$extension", "1")
+            val client = Fake().apply { files.addAll(listOf(item, file("old.zh.mp4", "2"))) }
+            val req = prepare(client, item, "新名字.part.txt")
+            val result = CloudRename(client).run(item.id, req, false)
+            assertTrue(result.getBoolean("renamed"))
+            assertEquals("新名字.part.txt.$extension", result.getString("new_title"))
+            assertTrue(client.files.any { it.name == "old.zh.mp4" })
+            assertEquals(1, client.writes)
+        }
+    }
     @Test fun replacedObjectsChangedMetadataAndDestinationFolderBlockWrites() {
         val item = file("old.mp4", "1")
         for (replacement in listOf(file("old.mp4", "2"), file("old.mp4", "1", writable = false))) {

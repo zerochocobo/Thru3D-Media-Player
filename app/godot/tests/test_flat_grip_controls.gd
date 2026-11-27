@@ -12,6 +12,9 @@ func check(ok: bool, message: String) -> void:
 	checks += 1
 	if not ok: failures.append(message)
 
+func grid_visible(main: Node) -> bool:
+	return is_instance_valid(main.adjustment_grid.mesh) and main.adjustment_grid.mesh.visible
+
 func push(main: Node, hand: String, stick: Vector2, delta: float = 0.1) -> void:
 	main._process_sticks(stick if hand == "left_hand" else Vector2.ZERO, stick if hand == "right_hand" else Vector2.ZERO, delta)
 	main._update_interface_move()
@@ -33,6 +36,7 @@ func run() -> void:
 	var host := preload("res://tests/test_player_menu.gd").Host.new(); video.platform = host
 	var camera := Camera3D.new(); root.add_child(camera); camera.global_transform = main.head_pose; video.view_camera = camera
 	var menu := Menu.new(); root.add_child(menu); menu.set_process(false); main.player_menu = menu
+	main.recent_menu = preload("res://scripts/library_menu.gd").new(); main.recent_menu.visible = false
 	menu.state_provider = main._menu_state; menu.visible = false
 	main.screen_rotation_control = main.ScreenRotationControl.new(); root.add_child(main.screen_rotation_control)
 	main.screen_edit_lock.control = main.ScreenEditLock.CornerControl.new(); root.add_child(main.screen_edit_lock.control)
@@ -55,10 +59,12 @@ func run() -> void:
 				push(main, "right_hand" if hand == "left_hand" else "left_hand", Vector2.RIGHT)
 				check(video.screen_scale == 1.0, "Other hand cannot resize the grip: " + label)
 				for step in 10: push(main, hand, Vector2.RIGHT)
+				check(grid_visible(main), "The default Videos mode shows the grid during free screen resizing: " + label)
 				check(video.screen_scale > 1.5 and video.flat_pose.is_equal_approx(pose) and is_equal_approx(video.screen_distance, 3), "Right enlarges at the same pose/distance: " + label)
 				for step in 10: push(main, hand, Vector2.LEFT)
 				check(is_equal_approx(video.screen_scale, 1.0) and video.flat_pose.is_equal_approx(pose), "Left shrinks symmetrically without moving: " + label)
 				push(main, hand, Vector2(0, 1))
+				check(grid_visible(main), "Free screen grip depth shows the grid: " + label)
 				check(is_equal_approx(video.screen_distance, 3.15) and is_equal_approx(video.screen_scale, 1), "Forward still pushes away without scaling: " + label)
 				push(main, hand, Vector2(0, -1))
 				check(is_equal_approx(video.screen_distance, 3) and video.flat_pose.is_equal_approx(pose), "Back still pulls closer without scaling: " + label)
@@ -67,6 +73,7 @@ func run() -> void:
 				check(is_equal_approx(video.screen_scale, 1) and video.flat_pose.is_equal_approx(pose), "Deadzone, equal diagonals and invalid input do nothing: " + label)
 				main.settings.set_value("screen", "edit_locked", true)
 				push(main, hand, Vector2.RIGHT)
+				check(not grid_visible(main), "A locked adjustment hides the grid: " + label)
 				check(is_equal_approx(video.screen_scale, 1), "Screen lock blocks grip resizing: " + label)
 				main.settings.set_value("screen", "edit_locked", false)
 				push(main, hand, Vector2.RIGHT)
@@ -80,13 +87,16 @@ func run() -> void:
 				push(main, hand, Vector2.ZERO)
 	# Menu-only grabs keep their old distance-only behavior.
 	video.alpha_requested = false; main.portrait_screen.active = false
+	video.cinema.configure(video, true, main.head_pose)
 	menu.toggle() if not menu.visible else menu.refresh()
 	main.rays = {"right_hand": [menu.global_position + menu.global_basis.z, -menu.global_basis.z]}
 	main._begin_interface_move("right_hand", "grip_click")
 	check(main.interface_move.capture.targets.all(func(target): return target.kind == "menu"), "Menu-only capture excludes the video")
 	var size: float = video.screen_scale; push(main, "right_hand", Vector2.ZERO); push(main, "right_hand", Vector2.RIGHT)
 	check(video.screen_scale == size, "Grip on a menu cannot resize video")
+	check(not grid_visible(main), "A menu-only grip does not show the upright screen's grid")
 	main._finish_interface_move(); menu.dismiss()
+	video.cinema.configure(video, false, main.head_pose)
 	# A pending grip + trigger chord retains ownership; no scale shortcut intercepts it.
 	grab(main, video, "right_hand"); push(main, "right_hand", Vector2.ZERO)
 	main.controller_bindings.press("right_hand", "trigger_click")
@@ -136,7 +146,7 @@ func run() -> void:
 	video.set_corner_hover(1)
 	check(video._handles.all(func(handle): return not handle.visible), "Authored Alpha passthrough also hides corners")
 	main.screen_rotation_control.free(); main.screen_edit_lock.control.free()
-	menu.free(); camera.free(); video.free(); main.free()
+	main.recent_menu.free(); menu.free(); camera.free(); video.free(); main.free()
 	for failure in failures: push_error(failure)
 	print("Flat grip controls: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)

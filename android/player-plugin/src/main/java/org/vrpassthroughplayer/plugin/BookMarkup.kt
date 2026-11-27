@@ -1,5 +1,7 @@
 package org.vrpassthroughplayer.plugin
 
+import kotlin.math.roundToInt
+
 internal class BookSpan(val start: Int, val end: Int, val style: Int) {
     companion object { const val BOLD = 1; const val ITALIC = 2; const val RAISED = 4; const val LOWERED = 8 }
 }
@@ -122,11 +124,13 @@ internal object BookMarkup {
         var skip = 0
         var pre = 0
         var bullet = false
+        val verbatim = HashSet<Int>()
 
         fun flush() {
             var end = text.length
             while (end > 0 && (text[end - 1].isWhitespace() || text[end - 1] == ' ')) end--
             for (style in styles) { if (style[1] < end) spans += BookSpan(style[1], end, style[0]); style[1] = 0 }
+            if (end > 0 && pre > 0) verbatim += out.size
             if (end > 0) out += BookBlock.Text(text.substring(0, end), spans.filter { it.start < it.end }.map {
                 BookSpan(it.start, minOf(it.end, end), it.style) }, heading, heading > 0 || open.any { it.second })
             text.setLength(0); spans.clear()
@@ -191,6 +195,51 @@ internal object BookMarkup {
             }
         })
         flush()
-        return BookFlow(out, anchors)
+        return rejoin(out, anchors, verbatim)
+    }
+
+    private const val PRINTED_LINES = 12
+    private const val PRINTED_WIDTH = 14f
+    private const val ENDINGS = "。！？!?…”」』.\""
+
+    /** Width in CJK cells, so mixed Chinese and Latin lines compare. */
+    private fun cells(text: String): Float {
+        var width = 0f
+        for (c in text) width += if (c.code < 0x1100 || c.code in 0xFF61..0xFFDC) 0.5f else 1f
+        return width
+    }
+
+    /**
+     * Books converted from PDF keep every printed line as its own paragraph, so each line would start indented.
+     * When most of the longer body paragraphs fill one width, a full-width line that does not end a sentence
+     * continues into the next one. Short lines are left alone: plays and verse break them on purpose.
+     */
+    private fun rejoin(blocks: List<BookBlock>, anchors: Map<String, Int>, verbatim: Set<Int>): BookFlow {
+        fun body(index: Int) = (blocks[index] as? BookBlock.Text)?.takeIf { it.heading == 0 && !it.centered && index !in verbatim }
+        val widths = blocks.indices.mapNotNull { body(it)?.let { block -> cells(block.text) } }.filter { it >= PRINTED_WIDTH }
+        if (widths.size < PRINTED_LINES) return BookFlow(blocks, anchors)
+        val line = widths.groupingBy { it.roundToInt() }.eachCount().maxBy { it.value }.key.toFloat()
+        if (widths.count { it >= line * 0.85f && it <= line * 1.1f } < widths.size * 0.5f) return BookFlow(blocks, anchors)
+        val out = ArrayList<BookBlock>(blocks.size)
+        val moved = IntArray(blocks.size + 1)
+        var open = false // The last block in [out] is a full line still waiting for the rest of its paragraph.
+        for (index in blocks.indices) {
+            val block = body(index)
+            val last = out.lastOrNull() as? BookBlock.Text
+            if (open && block != null && last != null) {
+                val tail = last.text.last(); val head = block.text.first()
+                val hyphen = tail == '-' && last.text.length > 1 && last.text[last.text.length - 2].isLowerCase() && head.isLowerCase()
+                val kept = if (hyphen) last.text.dropLast(1) else last.text
+                val join = if (!hyphen && tail.code < 0x1100 && head.code < 0x1100 && tail.isLetterOrDigit() && head.isLetterOrDigit()) " " else ""
+                val shift = kept.length + join.length
+                out[out.size - 1] = BookBlock.Text(kept + join + block.text,
+                    last.spans.map { BookSpan(it.start, minOf(it.end, kept.length), it.style) }.filter { it.start < it.end } +
+                        block.spans.map { BookSpan(it.start + shift, it.end + shift, it.style) }, 0, false)
+            } else out += blocks[index]
+            moved[index] = out.size - 1
+            open = block != null && cells(block.text) >= line * 0.8f && block.text.last() !in ENDINGS
+        }
+        moved[blocks.size] = out.size
+        return BookFlow(out, anchors.mapValues { moved[it.value.coerceIn(0, blocks.size)] })
     }
 }

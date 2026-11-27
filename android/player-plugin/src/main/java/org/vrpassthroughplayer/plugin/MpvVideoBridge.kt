@@ -26,7 +26,7 @@ internal class MpvVideoBridge(
     private val render: (Runnable) -> Unit,
     private val emit: (String, Int, String) -> Unit,
     /** Library URI (smb://, http(s)://) -> MPV location; blocks, called on the worker. */
-    private val resolveNetwork: (String) -> String = { it },
+    private val resolveNetwork: (String, CloudCancellation?) -> String = { uri, _ -> uri },
     /** Library URI -> extra M4A tracks beside the video (clone voice); blocks, called on the worker. */
     private val sidecarAudio: (String) -> List<SidecarAudio.Track> = { emptyList() },
     private val releaseNetwork: (String) -> Unit = {},
@@ -137,7 +137,7 @@ internal class MpvVideoBridge(
     private var audioFocus: MpvAudioFocus? = null // worker only
     @Volatile private var audioFocusState = "none"
 
-    private inner class Host(val uri: String, val startMs: Int, val hardware: Boolean, val audio: Boolean, val exactStart: Boolean,
+    private inner class Host(openId: Int, val uri: String, val startMs: Int, val hardware: Boolean, val audio: Boolean, val exactStart: Boolean,
                              val maxWidth: Int, val layerRequested: Boolean = false, val alphaLayer: Boolean = false) {
         /** MPV decodes into a compositor layer surface; set when that surface was created. */
         @Volatile var layer = false
@@ -174,6 +174,7 @@ internal class MpvVideoBridge(
         @Volatile var sourcePreparing = true // includes preflight; handle == 0 does not mean its reader is idle
         @Volatile var discProbe = 0L
         @Volatile var owner: EGLContext? = null
+        val sourceCancellation = CloudCancellation("playback", openId)
         @Volatile var closing = false
         @Volatile var closeStuckLogged = false
         @Volatile var closeRequestedMs = -1L // elapsedRealtime of the close request; diagnostics only
@@ -435,7 +436,7 @@ internal class MpvVideoBridge(
         val alphaLayer = alpha && layerAlpha()
         // Only a verified view must resume exactly. Preserve the user's seek
         // policy for ordinary files and the older leading-audio compatibility.
-        val host = Host(uri, startMs, hardware, audio, exactSeek || preparedView != null, outputWidthCap,
+        val host = Host(id, uri, startMs, hardware, audio, exactSeek || preparedView != null, outputWidthCap,
             layer && hardware && !depth && (!alpha || alphaLayer), alphaLayer && layer && hardware)
         host.playbackLayout = preparedView?.layout
         host.memorySaver = memorySaver
@@ -452,6 +453,7 @@ internal class MpvVideoBridge(
         val session = Session(scope, host, stereo, profile, alpha, vulkan, debugNormalFastPath, depth,
             stereo && topBottom)
         sessions[id] = session; hosts.add(host)
+        if (uri.startsWith("cloud://")) host.sourceCancellation.mark("worker_submit")
         // Diagnostics only: an earlier source still closing holds a native slot this open may wait on.
         runCatching { stuckCloses(host).firstOrNull()?.let { oldest ->
             emitSource(id, JSONObject().put("kind", "open_with_stuck_source").put("scheme", MpvSourceDiagnostics.scheme(uri))
@@ -462,6 +464,7 @@ internal class MpvVideoBridge(
         prepareModel(session)
         worker.post {
             try {
+                if (uri.startsWith("cloud://")) host.sourceCancellation.mark("worker_started")
                 host.markStartup("worker_started_ms")
                 if (host.closing || stopped) return@post
                 if (!awaitBrowserRelease()) {
@@ -474,7 +477,7 @@ internal class MpvVideoBridge(
                 val tlsCaFile = MpvTlsTrust.prepare(app)
                 // Keep Host.uri (history, modes and companions) on the shortcut, resolving only the input.
                 val mirror = uri.startsWith("airplayvideo://")
-                val resolved = if (mirror) uri else preparedView?.url ?: resolveNetwork(uri)
+                val resolved = if (mirror) uri else preparedView?.url ?: resolveNetwork(uri, host.sourceCancellation)
                 val source = Uri.parse(resolved)
                 host.remote = host.remote || source.scheme in setOf("http", "https", "smb", "cloud", "medialib")
                 host.loadingPhase = "reading"
@@ -962,7 +965,7 @@ internal class MpvVideoBridge(
     private fun openVoiceSample(uri: String): VoiceCloneController.Source {
         require(uri.length<=4096&&Uri.parse(uri).scheme in setOf("file","content","usb","smb","cloud","medialib","dlna","http","https"))
         val app=context() ?: error("voice_unavailable")
-        val resolved=if(uri.startsWith("cloud://"))referenceSource(uri) else resolveNetwork(uri)
+        val resolved=if(uri.startsWith("cloud://"))referenceSource(uri) else resolveNetwork(uri, null)
         var descriptor: ParcelFileDescriptor?=null
         try {
             val parsed=Uri.parse(resolved)
@@ -2227,6 +2230,10 @@ internal class MpvVideoBridge(
     /** reason (diagnostics only): "replaced", "closed", "failed" or "shutdown". */
     private fun dispose(session: Session, closeHost: Boolean, reason: String = "closed") {
         if (!session.disposed.compareAndSet(false, true)) return
+        if (closeHost) {
+            if (session.host.sourcePreparing && session.host.uri.startsWith("cloud://")) session.host.sourceCancellation.mark("cancel_requested")
+            session.host.sourceCancellation.cancel()
+        }
         session.model?.close(); session.depthModel?.close(); session.textProtection?.close(); session.portraitDepth?.close(); session.normal.close()
         synchronized(session.lock) { session.display.close() }
         if (closeHost) {

@@ -30,6 +30,10 @@ internal object DlnaClient {
 
     private const val CONTENT_DIRECTORY = "urn:schemas-upnp-org:service:ContentDirectory:1"
     private const val SEC = "http://www.sec.co.kr/"
+    private val documentKinds = setOf("subtitle", "scene", "book", "pdf", "archive")
+    private val audioSuffixes = mapOf("audio/mpeg" to "mp3", "audio/mp4" to "m4a", "audio/x-m4a" to "m4a",
+        "audio/flac" to "flac", "audio/x-flac" to "flac", "audio/ogg" to "ogg", "audio/wav" to "wav",
+        "audio/x-wav" to "wav", "audio/vnd.dts" to "dts", "audio/vnd.dts.hd" to "dtshd")
     private const val PV = "http://www.pv.com/pvns/"
 
     fun address(host: String, port: String, scheme: String = "http"): String {
@@ -351,10 +355,25 @@ internal object DlnaClient {
                 }
             }
             if (chosen == null && audio != null) { chosen = audio; kind = "audio" }
+            if (chosen == null && !imageItem && !audioItem && !itemClass.startsWith("object.item.videoItem")) {
+                for (r in 0 until resources.length) {
+                    val candidate = resources.item(r) as Element
+                    val name = resourceName(candidate)
+                    val declared = listOf(name, title(item)).firstOrNull {
+                        MediaKinds.fileNameKind(it) in documentKinds
+                    } ?: continue
+                    if (httpUri(candidate.textContent.trim(), base) == null) continue
+                    chosen = candidate; kind = MediaKinds.fileNameKind(declared); break
+                }
+            }
             val res = chosen ?: continue
             val entry = JSONObject().put("id", item.getAttribute("id")).put("title", mediaTitle(title(item), res, kind)).put("container", false)
                 .put("uri", httpUri(res.textContent.trim(), base)?.toString() ?: res.textContent.trim()).put("kind", kind)
             if (kind == "video") entry.put("subtitles", subtitles(item, base))
+            if (kind == "audio" && !MediaKinds.audio(entry.getString("title"))) {
+                val mime = res.getAttribute("protocolInfo").split(':').getOrNull(2)?.lowercase()
+                audioSuffixes[mime]?.let { entry.put("audio_import_title", entry.getString("title") + "." + it) }
+            }
             item.getAttribute("parentID").takeIf { it.isNotBlank() && it != "-1" }?.let { entry.put("parent_id", it) }
             res.getAttribute("size").toLongOrNull()?.let { entry.put("size", it) }
             parseDuration(res.getAttribute("duration"))?.let { entry.put("duration_ms", it) }
@@ -393,6 +412,11 @@ internal object DlnaClient {
 
     /** Keep the server's title, including an original suffix when it offers a transcoded stream. */
     private fun mediaTitle(title: String, resource: Element, kind: String): String {
+        if (kind !in setOf("video", "image", "audio")) {
+            val name = resourceName(resource)
+            if (MediaKinds.fileNameKind(title) == kind || MediaKinds.fileNameKind(name) != kind) return title
+            return if (title.isBlank()) name else "$title.${name.substringAfterLast('.')}"
+        }
         val extensions = when (kind) { "image" -> MediaKinds.images; "audio" -> MediaKinds.audio; else -> VIDEO_EXTENSIONS }
         if (title.substringAfterLast('.', "").lowercase() in extensions) return title
         // URI.path decodes escaped filenames and excludes query parameters. MIME alone does not

@@ -121,6 +121,25 @@ func run() -> void:
 	check(overlay.visible and not menu.visible, "Initial network loading also respects hidden controls")
 	video.media.close(); video.changed.emit()
 	check(not overlay.visible and overlay.text.is_empty(), "Closing playback clears feedback")
+	video.media.begin(10); video.media.state = "playing"; video._waiting_first = false; video.requested_play = true
+	video.video_layer = preload("res://scripts/video_layer.gd").new(null)
+	video.video_layer.copy_cadence = true
+	video.picture_quality = true; video.picture_interpolation = true; video._quality_requested = true
+	var copy := {"quality": true, "interpolating": true, "output_frames": 100, "between": 60, "sample_ms": 1250}
+	video.media.playback = {"details": {"container_fps": "24"}, "layer_copy": copy}
+	main._show_player_menu()
+	main._next_interpolation_sample = 0; overlay.refresh()
+	copy.merge({"output_frames": 172, "between": 108, "sample_ms": 2250}, true)
+	main._next_interpolation_sample = 0; overlay.refresh()
+	var rate := "Interpolation · Source 24 → Output 72 FPS"
+	check(not overlay.visible and main._menu_state().interpolation_caption == rate, "Measured copy output belongs to the open menu")
+	menu.dismiss(); overlay.refresh()
+	check(overlay.text == rate and overlay.position == Fps.HUD_POSITION and not fps.visible, "Dismissing the player shows the preview at the FPS anchor with the preference off")
+	video.panel.visible = true
+	fps.set_shown(true); fps.source = main._fps_sample; overlay.refresh(); fps._process(Fps.WINDOW)
+	check(not overlay.visible and fps.text.contains(rate) and fps.text.contains("XR "), "Permanent FPS includes the same measurement in one overlay")
+	fps.set_shown(false); overlay.refresh()
+	check(not overlay.visible, "Switching off constant FPS does not replay the preview")
 	video.changed.disconnect(main._on_video_changed)
 	main.free(); overlay.free(); fps.free(); menu.free(); video.free()
 	for failure in failures: push_error(failure)

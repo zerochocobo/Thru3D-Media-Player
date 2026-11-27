@@ -1,8 +1,10 @@
 package cloudcore
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"strings"
@@ -40,6 +42,16 @@ func cloudDiagnosticText(value string) string {
 }
 
 func cloudListError(c *gin.Context, stage string, err error) {
+	if c.Request != nil {
+		if tr, ok := c.Request.Context().Value(traceKey{}).(*cloudOperation); ok {
+			var n net.Error
+			if errors.Is(err, context.Canceled) {
+				tr.record("driver_cancelled")
+			} else if errors.As(err, &n) && n.Timeout() {
+				tr.record("driver_timeout")
+			}
+		}
+	}
 	detail := err.Error()
 	if strings.Contains(detail, "metadata limit") || strings.Contains(detail, "metadata cache limit") {
 		c.JSON(200, gin.H{"code": 500, "message": "Directory metadata limit reached", "error_reason": "cloud_metadata_limit", "error_detail": stage + "\n" + cloudDiagnosticText(detail)})

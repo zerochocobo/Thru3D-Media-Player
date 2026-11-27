@@ -210,7 +210,7 @@ func update(pose: Transform3D, head: Variant, follow: RefCounted) -> bool:
 					target.node.set_layout_viewer(head, follow.enabled)
 					world = target.node.global_transform
 			if head is Transform3D and not target.get("cinema", false):
-				if target.kind != "detail": follow.capture(target.key, head, world)
+				if target.kind not in ["detail", "book"]: follow.capture(target.key, head, world)
 				if target.kind in ["menu", "screen", "detail"]:
 					var frame: Transform3D = menu_head(head, follow.enabled) if target.kind == "menu" else head
 					placements[target.key] = frame.affine_inverse() * world

@@ -138,6 +138,8 @@ func cloudRemoveError(c *gin.Context, err error, started bool) {
 }
 
 func invalidateCloudRemoval(s driver.Driver, mount, p string) {
+	listingMu.Lock()
+	defer listingMu.Unlock()
 	parent := mount + path.Dir(p)
 	target := mount + p
 	for key := range cloudSnapshots {

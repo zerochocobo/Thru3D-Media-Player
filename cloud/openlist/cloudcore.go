@@ -37,6 +37,7 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/db"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
+	"github.com/OpenListTeam/OpenList/v4/internal/op"
 	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
 	"github.com/OpenListTeam/OpenList/v4/server/common"
 	"github.com/OpenListTeam/OpenList/v4/server/handles"
@@ -108,6 +109,7 @@ func start(dataDir, keyHex string) (err error) {
 		return err
 	}
 	bootstrap.InitConfig()
+	traceTransport()
 	bootstrap.Log()
 	bootstrap.InitDB()
 	// Pre-create the private admin to avoid the command bootstrap printing an
@@ -129,7 +131,10 @@ func start(dataDir, keyHex string) (err error) {
 	bootstrap.InitIndex()
 	bootstrap.InitUpgradePatch()
 	common.SecretKey = []byte(conf.Conf.JwtSecret)
-	bootstrap.LoadStorages()
+	if err = restoreMounts(); err != nil {
+		return err
+	}
+	conf.SendStoragesLoadedSignal()
 	api = gin.New()
 	api.Use(gin.Recovery(), middlewares.StoragesLoaded, middlewares.Auth(false), middlewares.AuthAdmin)
 	api.POST("/list", handles.FsListSplit)
@@ -148,7 +153,28 @@ func start(dataDir, keyHex string) (err error) {
 	api.POST("/update", handles.UpdateStorage)
 	api.POST("/delete", func(c *gin.Context) {
 		id, _ := strconv.Atoi(c.Query("id"))
+		row, lookupErr := db.GetStorageById(uint(id))
+		if lookupErr == nil {
+			q := knownMount(row.MountPath)
+			if q != nil && q.pending.Load() != 0 && !op.HasStorage(row.MountPath) {
+				// A never-opened account has no live driver to drop.
+				if err := db.DeleteStorageById(uint(id)); err != nil {
+					cloudError(c)
+					return
+				}
+				q.forget(row.MountPath)
+				c.JSON(200, gin.H{"code": 200})
+				return
+			}
+		}
 		handles.DeleteStorage(c)
+		if lookupErr == nil {
+			if _, err := db.GetStorageById(uint(id)); errors.Is(err, gorm.ErrRecordNotFound) {
+				if q := knownMount(row.MountPath); q != nil {
+					q.forget(row.MountPath)
+				}
+			}
+		}
 		if id > 0 {
 			dropCursorStorage(id)
 		}
@@ -166,7 +192,7 @@ func start(dataDir, keyHex string) (err error) {
 	streams := gin.New()
 	streams.Use(gin.CustomRecovery(recoverStream), middlewares.StoragesLoaded)
 	// The unguessable per-process path authorizes this loopback-only stream.
-	chain := []gin.HandlerFunc{markLegacyStream, middlewares.PathParse, middlewares.Down(func(string, string) error { return nil }), handles.Proxy}
+	chain := []gin.HandlerFunc{readyStreamMount, markLegacyStream, middlewares.PathParse, middlewares.Down(func(string, string) error { return nil }), handles.Proxy}
 	streams.GET("/"+capability+"/*path", chain...)
 	streams.HEAD("/"+capability+"/*path", chain...)
 	playback115Routes(streams, capability)
@@ -223,7 +249,7 @@ func (s secretField) Scan(ctx context.Context, field *schema.Field, dst reflect.
 // Request is JNI-only. No credentials, admin token or management route is exposed
 // to HTTP clients. Responses containing driver secrets stay in the Android layer.
 func Request(method, route, body string) (string, error) {
-	// JNI-only capability configuration precedes bootstrap.LoadStorages.
+	// JNI-only capability configuration precedes lazy mount initialization.
 	if method == "POST" && route == "/thunder-development" {
 		var setting struct {
 			Enabled bool `json:"enabled"`
@@ -240,31 +266,20 @@ func Request(method, route, body string) (string, error) {
 }
 
 func requestContext(ctx context.Context, method, route, body string) (string, error) {
-	gate := requestMu
-	if route == "/comic" {
-		gate = comicRequestMu
-	}
-	select {
-	case gate <- struct{}{}:
-		defer func() { <-gate }()
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	if api == nil || startErr != nil {
-		return "", errors.New("cloud unavailable")
-	}
+	path, tr := traceRequest(ctx, route, body)
+	return dispatchRequest(ctx, method, route, body, path, tr)
+}
+
+func serveRequest(ctx context.Context, method, route, body string) (string, error) {
 	if !strings.HasPrefix(route, "/") || strings.HasPrefix(route, "//") {
 		return "", errors.New("invalid cloud route")
 	}
 	r := httptest.NewRequest(method, route, strings.NewReader(body)).WithContext(ctx)
-	token, err := common.GenerateToken(admin)
+	token, err := acquireToken()
 	if err != nil {
 		return "", errors.New("cloud authentication failed")
 	}
-	defer common.InvalidateToken(token)
+	defer releaseToken(token)
 	r.Header.Set("Authorization", token)
 	r.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

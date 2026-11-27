@@ -4,7 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** Exact basename matching; an arbitrary extension is preserved byte-for-byte. */
-internal class RenameBundle(video: String, newStem: String, names: Collection<String>, includeSameName: Boolean = true,
+internal class RenameBundle(fileName: String, newStem: String, names: Collection<String>, includeSameName: Boolean = true,
                             folder: Boolean = false, allowHashAndPercent: Boolean = false) {
     data class Move(val from: String, val to: String)
     val moves: List<Move>
@@ -14,13 +14,14 @@ internal class RenameBundle(video: String, newStem: String, names: Collection<St
             newStem.none { it < ' ' || it in "/\\:*?\"<>|" || (!allowHashAndPercent && it in "#%") } &&
             newStem !in setOf(".", "..")) { "Invalid file name" }
         require(!Regex("(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\..*)?").matches(newStem)) { "Invalid file name" }
-        val stem = if (folder) video else video.substringBeforeLast('.')
+        require(folder || MediaKinds.renameableFileName(fileName)) { "Rename unavailable for this source" }
+        val stem = if (folder) fileName else fileName.substringBeforeLast('.')
         require(!stem.equals(newStem, true)) { "Name is unchanged" }
-        val companions = if (folder || !includeSameName) emptyList() else names.filter {
-            it != video && it.contains('.') && it.substringBeforeLast('.').equals(stem, true)
+        val companions = if (folder || !includeSameName || MediaKinds.fileNameKind(fileName) != "video") emptyList() else names.filter {
+            it != fileName && !DvdFolderImage.index(it) && it.contains('.') && it.substringBeforeLast('.').equals(stem, true)
         }.sorted()
         require(companions.size <= 64) { "Too many companion files" }
-        moves = (listOf(video) + companions).map { Move(it, newStem + it.substring(stem.length)) }
+        moves = (listOf(fileName) + companions).map { Move(it, newStem + it.substring(stem.length)) }
         val existing = names.map { it.lowercase(java.util.Locale.ROOT) }.toSet()
         require(moves.all { it.to.lowercase(java.util.Locale.ROOT) !in existing } &&
             moves.map { it.to.lowercase(java.util.Locale.ROOT) }.distinct().size == moves.size) { "A file with that name already exists" }

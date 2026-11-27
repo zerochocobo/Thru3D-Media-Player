@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	sdk "github.com/OpenListTeam/115-sdk-go"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
@@ -17,7 +18,7 @@ import (
 func listingDriver(transport playerSearchTransport) *Open115 {
 	d := &Open115{}
 	d.RootFolderID, d.OrderBy, d.OrderDirection = "0", "file_name", "asc"
-	d.client = sdk.New(sdk.WithAccessToken("fixture")).SetHttpClient(&http.Client{Transport: transport})
+	d.client = sdk.New(playerClientOption(transport), sdk.WithAccessToken("fixture"))
 	return d
 }
 
@@ -350,5 +351,94 @@ func TestVerifiedDeletionSendsOnlySelectedIDAndAuthoritativeParent(t *testing.T)
 		if err := d.Remove(context.Background(), obj); err != nil || writes != 1 {
 			t.Fatal(err, writes)
 		}
+	}
+}
+
+func TestPlayer115CancelsDirectoryAndPlaybackAtTransport(t *testing.T) {
+	for _, operation := range []string{"directory", "playback"} {
+		t.Run(operation, func(t *testing.T) {
+			dispatched := make(chan struct{})
+			d := listingDriver(func(r *http.Request) (*http.Response, error) {
+				close(dispatched)
+				<-r.Context().Done()
+				return nil, r.Context().Err()
+			})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				if operation == "playback" {
+					_, err := d.PlayerPlaybackTarget(ctx, "/fixture.mp4", "9")
+					done <- err
+				} else {
+					_, _, err := d.PlayerListPage(ctx, &Obj{Fid: "0", Fc: "0"}, 0, "source")
+					done <- err
+				}
+			}()
+			select {
+			case <-dispatched:
+			case <-time.After(2 * time.Second):
+				t.Fatal("115 SDK did not dispatch")
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("cancelled operation succeeded")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("SDK ignored cancellation")
+			}
+		})
+	}
+}
+
+func TestPlayer115RefreshOutlivesCancelledCaller(t *testing.T) {
+	refreshing, release := make(chan struct{}), make(chan struct{})
+	d := listingDriver(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "passportapi.115.com" {
+			close(refreshing)
+			<-release
+			if err := r.Context().Err(); err != nil {
+				return nil, err
+			}
+			return listingResponse(r, `{"state":1,"code":0,"data":{"access_token":"new-access","refresh_token":"new-refresh","expires_in":7200}}`), nil
+		}
+		if err := r.Context().Err(); err != nil {
+			return nil, err
+		}
+		return listingResponse(r, `{"state":false,"code":40140125,"message":"access token expired"}`), nil
+	})
+	saved := make(chan string, 1)
+	d.client.SetRefreshToken("old-refresh").SetOnRefreshToken(func(_, refresh string) { saved <- refresh })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := d.PlayerListPage(ctx, &Obj{Fid: "0", Fc: "0"}, 0, "source")
+		done <- err
+	}()
+	select {
+	case <-refreshing:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expired access token did not start a refresh")
+	}
+	cancel()
+	close(release)
+	select {
+	case refresh := <-saved:
+		if refresh != "new-refresh" {
+			t.Fatal("unexpected refresh token", refresh)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelling the listing abandoned the accepted refresh")
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled listing succeeded")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("listing did not return after refresh")
 	}
 }

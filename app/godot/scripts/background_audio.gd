@@ -2,6 +2,7 @@ extends Node
 ## One application-wide transport. Music and field recordings replace each other.
 signal changed
 signal preferences_changed
+signal directory_import_finished(report: Dictionary)
 const Catalog := preload("res://scripts/background_audio_catalog.gd")
 const Importer := preload("res://scripts/background_audio_import.gd")
 const Library := preload("res://scripts/audio_library.gd")
@@ -13,6 +14,7 @@ var queue: Array[String] = []
 var queue_name := ""
 var queue_source := ""
 var current := ""
+var directory_track := {}
 var volume := 45.0
 var _speech_gain := 1.0
 var mode := "sequence"
@@ -39,6 +41,7 @@ var _shuffle_bag: Array[String] = []
 var pending_imports: Array[Dictionary] = []
 var failed_imports: Array[Dictionary] = []
 var _import_job := {}
+var _directory_batch := 0
 var _bus := "Thru3D Background"
 var _owns_bus := false
 var _native_token := 0
@@ -119,6 +122,7 @@ func save_settings(settings: ConfigFile) -> void:
 	for key in ["music", "ambience", "music_volume", "ambience_volume", "paused"]:
 		if settings.has_section_key("background_audio", key): settings.erase_section_key("background_audio", key)
 	for pair in [["current", current], ["queue", queue], ["source", queue_source], ["name", queue_name], ["mode", mode], ["volume", volume], ["position", position()], ["duration", duration()]]:
+		if not directory_track.is_empty() and pair[0] not in ["mode", "volume"]: continue
 		settings.set_value("audio_player", pair[0], pair[1])
 
 func video_blocks_audio() -> bool: return video_active and not play_during_video
@@ -238,8 +242,28 @@ func play_tracks(ids: Array, track: String, label: String = "", source: String =
 	if not _mode_selected and default_mode in MODES: mode = default_mode
 	return select_track(track)
 
+func play_directory_file(uri: String, title: String) -> bool:
+	if uri.is_empty(): return false
+	if directory_track.get("uri", "") == uri:
+		toggle_pause(); return true
+	var id := "directory_" + uri.sha256_text()
+	directory_track = {"id": id, "uri": uri, "label": title, "path": preload("res://scripts/media_uri.gd").decode_path(uri.trim_prefix("file://")) if uri.begins_with("file://") else uri}
+	queue.assign([id]); queue_name = ""; queue_source = ""
+	return select_track(id)
+
+func track_info(id: String) -> Dictionary:
+	if not directory_track.is_empty() and directory_track.id == id: return directory_track
+	return library.resolve(id)
+
+func release_directory_source() -> void:
+	if directory_track.is_empty(): return
+	paused = true; _end_pending = false; _generation += 1; _loaded = ""
+	_stop_native(); player.stop(); player.stream = null
+	changed.emit()
+
 func select_track(id: String) -> bool:
-	if library.resolve(id).is_empty(): return false
+	if track_info(id).is_empty(): return false
+	if directory_track.get("id", "") != id: directory_track.clear()
 	stop_preview(false)
 	_stop_native()
 	if not queue.has(id): queue.append(id)
@@ -255,7 +279,7 @@ func toggle_pause() -> void:
 	if paused and _queue_finished:
 		select_track(queue[0] if mode == "sequence" and not queue.is_empty() else current); return
 	paused = not paused
-	if not paused and _loaded != current: _request()
+	if not paused and _loaded != current and not _native_loading: _request()
 	elif not paused and player.stream and not player.playing: player.play(_resume_position)
 	_apply_context(); _notify()
 
@@ -270,16 +294,18 @@ func seek(seconds: Variant) -> bool:
 	_notify(); return true
 
 func can_advance(step: int) -> bool:
-	if queue.is_empty(): return false
+	if queue.is_empty() or not directory_track.is_empty(): return false
 	return mode != "sequence" or (queue.find(current) + step >= 0 and queue.find(current) + step < queue.size())
 
 func adjacent(step: int, automatic: bool = false) -> bool:
 	if queue.is_empty(): return false
-	if mode == "sequence" and not can_advance(step):
+	if (mode == "sequence" or not directory_track.is_empty()) and not can_advance(step):
 		if automatic:
 			_resume_position = duration(); _remembered_duration = duration()
 			paused = true; _queue_finished = true; _end_pending = false
-			player.stop(); _notify()
+			player.stop()
+			if not directory_track.is_empty(): _stop_native()
+			_notify()
 		return false
 	var target := current
 	if automatic and (mode == "single" or queue.size() == 1):
@@ -303,10 +329,11 @@ func _finished() -> void:
 
 func _request() -> void:
 	if _thread or current.is_empty() or not is_inside_tree(): return
-	var row := library.resolve(current)
+	var row := track_info(current)
 	if row.is_empty(): return
 	if not str(row.path).begins_with("res://") and Importer.Methods.supports(importer.platform, "load_background_audio"):
-		_native_token = int(importer.platform.load_background_audio(str(row.path), _resume_position))
+		if directory_track.is_empty(): _native_token = int(importer.platform.load_background_audio(str(row.path), _resume_position))
+		elif Importer.Methods.supports(importer.platform, "load_directory_audio"): _native_token = int(importer.platform.load_directory_audio(str(row.uri), _resume_position))
 		_native_loading = _native_token > 0; _native_ended = false
 		if _native_loading: _apply_context()
 		else: error = "Unsupported or damaged audio"; paused = true; _notify()
@@ -325,7 +352,7 @@ func _process(delta: float) -> void:
 			if state is Dictionary and int(state.get("generation", 0)) == _native_token:
 				var status := str(state.get("state", ""))
 				if status == "failed":
-					_stop_native(); paused = true; error = "Unsupported or damaged audio"; _notify()
+					_stop_native(); _loaded = ""; paused = true; error = "Unsupported or damaged audio"; _notify()
 				elif status == "ready" or (status == "ended" and not _native_ended):
 					_resume_position = _number(state.get("position", 0), _resume_position, 0, 86400)
 					_remembered_duration = _number(state.get("duration", 0), _remembered_duration, 0, 86400)
@@ -350,11 +377,30 @@ func _process(delta: float) -> void:
 func _notify() -> void:
 	preferences_changed.emit(); changed.emit()
 
-func import_tracks(files: Array, destination: String = "") -> void:
+func import_tracks(files: Array, destination: String = "", from_directory: bool = false) -> void:
+	var report := {}
+	if from_directory:
+		var list := library.playlist(destination)
+		if list.is_empty() or list.builtin: return
+		_directory_batch += 1
+		report = {"id": _directory_batch, "label": list.label, "destination": destination, "remaining": 0, "added": 0, "existing": 0, "failed": 0}
 	for file in files:
 		if file is Dictionary and not str(file.get("uri", "")).is_empty():
-			pending_imports.append({"uri": str(file.uri), "title": str(file.get("title", "")), "destination": destination})
+			var job := {"uri": str(file.uri), "title": str(file.get("title", "")), "destination": destination}
+			if from_directory:
+				report.remaining += 1
+				job.report = report
+			pending_imports.append(job)
 	_next_import()
+
+func _finish_import_job(result: String) -> void:
+	if result == "failed": failed_imports.append(_import_job.duplicate())
+	var report: Dictionary = _import_job.get("report", {})
+	_import_job.clear()
+	if not report.is_empty():
+		report[result] += 1; report.remaining -= 1
+		if report.remaining == 0: directory_import_finished.emit(report.duplicate())
+	call_deferred("_next_import")
 
 func _next_import() -> void:
 	if importer.busy or not _import_job.is_empty(): return
@@ -366,22 +412,31 @@ func _next_import() -> void:
 
 func _import_changed() -> void:
 	if not importer.busy and not _import_job.is_empty():
-		if not importer.error.is_empty(): failed_imports.append(_import_job.duplicate())
-		_import_job.clear(); call_deferred("_next_import")
+		_finish_import_job("failed")
 	changed.emit()
 
 func _import_completed(entry: Dictionary, destination: String) -> void:
-	if not library.add_import(entry, destination):
+	var list := library.playlist(destination)
+	var already: bool = list.get("tracks", []).has(entry.id)
+	if (_import_job.has("report") and list.is_empty()) or not library.add_import(entry, destination):
 		if entry.get("created", false): importer.remove_copy(str(entry.path))
-		error = library.error; failed_imports.append(_import_job.duplicate())
+		error = library.error; _finish_import_job("failed")
+	else: _finish_import_job("existing" if already else "added")
 	# Importing never changes current, queue, position or pause intent.
-	_import_job.clear(); changed.emit(); call_deferred("_next_import")
+	changed.emit()
 
 func cancel_imports() -> void:
 	pending_imports.clear(); _import_job.clear(); importer.cancel(); changed.emit()
 
 func retry_imports() -> void:
+	for job in failed_imports: job.erase("report")
 	pending_imports.append_array(failed_imports); failed_imports.clear(); _next_import()
+
+func retry_directory_import(report: Dictionary) -> void:
+	var jobs := failed_imports.filter(func(job): return job.get("report", {}).get("id", -1) == report.id)
+	if library.playlist(str(report.destination)).is_empty(): return
+	for job in jobs: failed_imports.erase(job)
+	import_tracks(jobs, str(report.destination), true)
 
 func remove_import(id: String) -> bool:
 	var entry := library.resolve(id)
@@ -398,7 +453,7 @@ func remove_import(id: String) -> bool:
 	_notify(); return true
 
 func snapshot() -> Dictionary:
-	var row := library.resolve(current)
+	var row := track_info(current)
 	var storage: Dictionary = importer.storage_info()
 	if not storage.has("used_bytes"):
 		if _storage_revision != library.revision:
@@ -406,6 +461,8 @@ func snapshot() -> Dictionary:
 			for entry in library.imports: _storage_used += maxi(0, int(entry.get("bytes", 0)))
 		storage.used_bytes = _storage_used
 	return {"audio_current": current, "audio_title": str(row.get("label", "Choose audio")), "audio_volume": volume,
+		"audio_directory_uri": str(directory_track.get("uri", "")),
+		"audio_playback_error": error,
 		"audio_play_during_video": play_during_video,
 		"audio_storage": storage,
 		"audio_preview_available": Importer.Methods.supports(importer.platform, "preview_background_audio"),
@@ -415,6 +472,7 @@ func snapshot() -> Dictionary:
 		"audio_blocked": video_blocks_audio() or not focused, "audio_loading": _thread != null or _native_loading, "audio_position": position(), "audio_duration": duration(),
 		"audio_queue": queue.duplicate(), "audio_queue_name": queue_name, "audio_queue_source": queue_source,
 		"audio_importing": importer.busy or not pending_imports.is_empty(), "audio_progress": importer.progress,
+		"audio_directory_import_name": str(_import_job.get("report", {}).get("label", "")),
 		"audio_pending": pending_imports.size(), "audio_failed": failed_imports.size(), "audio_revision": library.revision,
 		"audio_error": error if not error.is_empty() else (library.error if not library.error.is_empty() else importer.error)}
 

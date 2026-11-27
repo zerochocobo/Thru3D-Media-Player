@@ -319,7 +319,7 @@ func _run() -> void:
 	check(operations == ["music_open"] and photo_menu._adjustment != "photo_audio", "Photo entry delegates to global player instead of a dual mixer")
 	var browser := Library.new(); root.add_child(browser); browser.section = Library.Section.LOCAL
 	browser._local_entries = [{"title": "a.mp3", "uri": "file:///a.mp3", "kind": "audio"}, {"title": "Recording.M4A", "uri": "file:///recording.M4A"}, {"title": "photo.jpg", "uri": "file:///photo.jpg", "kind": "image"}]
-	browser._rebuild_rows(); check(browser.rows.size() == 1, "Normal media browsing excludes audio import files")
+	browser._rebuild_rows(); check(browser.rows.size() == 3, "Normal media browsing includes supported audio and images")
 	browser.visible = true; browser.refresh()
 	check(not button(browser, Library.MUSIC_OPEN).is_empty(), "Home entry is available before any song is selected")
 	var selected := []; browser.audio_import_selected.connect(func(files): selected.append(files))

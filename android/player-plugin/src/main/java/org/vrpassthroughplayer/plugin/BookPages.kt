@@ -68,7 +68,7 @@ internal class BookStyle(val columns: Int = 22, val spacing: Float = 1.75f, val 
  * in the background; such pages leave the book open for the whole layout that replaces them.
  */
 internal class BookPages(private val book: Book, private val look: BookStyle, saved: java.io.File? = null,
-    private val only: IntRange? = null) : BookSheets {
+    private val only: IntRange? = null, private val cancelled: () -> Boolean = { false }) : BookSheets {
     /** [offset] and [end] bound the piece's characters within its block. */
     private class Piece(val chapter: Int, val block: Int, val from: Int, val to: Int, val top: Float, val height: Float,
         val offset: Int = 0, val end: Int = 0)
@@ -186,6 +186,8 @@ internal class BookPages(private val book: Book, private val look: BookStyle, sa
                 try {
                     val own = Setter()
                     while (failure.get() == null) {
+                        // A book closed or replaced meanwhile: stop laying it out.
+                        if (cancelled()) error("BOOK_CANCELLED")
                         val index = next.getAndIncrement()
                         if (index > range.last || index >= done.size) break
                         done[index] = paginate(index, own).also { check(total.addAndGet(it.size) <= MAX_PAGES) { "PDF_PAGE_LIMIT" } }
@@ -502,7 +504,7 @@ internal class BookPages(private val book: Book, private val look: BookStyle, sa
             Character.UnicodeScript.HANGUL, Character.UnicodeScript.BOPOMOFO, Character.UnicodeScript.COMMON)
         private const val CLOSERS = "。！？!?…”’」』）)\"'"
         /** Bumped whenever pagination changes, so older cached page breaks are paginated again. */
-        const val LAYOUT_VERSION = 3
+        const val LAYOUT_VERSION = 4
         const val WIDTH = 1200
         const val HEIGHT = 1600
         const val TOP = 116f

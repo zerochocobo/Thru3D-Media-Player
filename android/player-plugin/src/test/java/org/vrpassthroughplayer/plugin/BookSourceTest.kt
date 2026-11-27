@@ -26,6 +26,49 @@ class BookSourceTest {
         assertEquals(0, flow.anchors["c1"])
     }
 
+    @Test fun printedLinesFromPdfConversionsRejoinIntoParagraphs() {
+        val full = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉"
+        val lines = ArrayList<String>()
+        repeat(4) { paragraph ->
+            repeat(3) { lines += full.substring(0, 19) + "，" }
+            lines += "完${paragraph}。"
+        }
+        lines[1] = "<b>" + lines[1].substring(0, 2) + "</b>" + lines[1].substring(2)
+        val html = lines.withIndex().joinToString("") { (index, line) ->
+            if (index == 4) "<p id=\"two\">$line</p>" else "<p>$line</p>" } + "<p id=\"end\">1931年起，Thru3D Media Player plays files</p>"
+        val flow = BookMarkup.flow("<h1>章</h1>$html")
+        val text = texts(flow)
+        assertEquals(6, text.size)
+        assertEquals(full.substring(0, 19) + "，" + full.substring(0, 19) + "，", text[1].text.substring(0, 40))
+        assertTrue(text[1].text.endsWith("完0。")); assertTrue(text[2].text.startsWith(full.substring(0, 19)))
+        assertEquals(listOf(20 to 22), text[1].spans.map { it.start to it.end })
+        assertEquals(2, flow.anchors["two"]); assertEquals(5, flow.anchors["end"])
+    }
+
+    @Test fun ordinaryParagraphsPoemsAndCodeAreNotRejoined() {
+        val prose = (1..16).joinToString("") { "<p>" + "字".repeat(5 + it * 7 % 60) + "，</p>" }
+        assertEquals(16, texts(BookMarkup.flow(prose)).size)
+        val poem = (1..16).joinToString("") { "<p>床前明月光疑是，</p>" }
+        assertEquals(16, texts(BookMarkup.flow(poem)).size)
+        val code = "<pre>" + (1..16).joinToString("\n") { "val x = listOf(1, 2, 3, 4, 5, 6, 7, 8, 9)" } + "</pre>"
+        assertEquals(16, texts(BookMarkup.flow(code)).size)
+    }
+
+    @Test(timeout = 10000) fun damagedHuffmanTableFailsInsteadOfSpinning() {
+        fun be(value: Int) = byteArrayOf((value ushr 24).toByte(), (value ushr 16).toByte(), (value ushr 8).toByte(), value.toByte())
+        val head = ByteArray(120).also { be(0).copyInto(it, 112); be(2).copyInto(it, 116) }
+        // Every first-level entry says "code length 0": a decoder that trusts it never consumes a bit.
+        val huff = "HUFF".toByteArray() + ByteArray(4) + be(16) + be(16 + 1024) + ByteArray(1024) + ByteArray(32 * 8)
+        val cdic = "CDIC".toByteArray() + ByteArray(4) + be(0) + be(1)
+        val huffman = MobiBook.Huffman(head, 0) { if (it == 0) huff else cdic }
+        assertThrows(IllegalArgumentException::class.java) { huffman.unpack(byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8)) }
+    }
+
+    @Test fun resourcesAreReadNoFurtherThanTheLimit() {
+        assertEquals(10, Books.bounded(java.io.ByteArrayInputStream(ByteArray(10)), 10)?.size)
+        assertNull(Books.bounded(java.io.ByteArrayInputStream(ByteArray(11)), 10))
+    }
+
     @Test fun epubFollowsSpineOrderAndNamesChaptersFromTheContents() {
         val file = temp(".epub")
         ZipOutputStream(file.outputStream()).use { zip ->

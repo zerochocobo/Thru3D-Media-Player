@@ -2,6 +2,7 @@ extends SceneTree
 const Video := preload("res://scripts/mpv_video_display.gd")
 const Menu := preload("res://scripts/player_menu.gd")
 const I18n := preload("res://scripts/i18n.gd")
+var grid := preload("res://scripts/screen_adjustment_grid.gd").new()
 var checks := 0
 var failures: Array[String] = []
 var output := ProjectSettings.globalize_path("res://../../build/output/cinema-placement/visuals")
@@ -39,18 +40,18 @@ func run() -> void:
 	video.panel.visible = true
 	var anchor: Vector3 = video.cinema.bottom.origin
 	await shot(viewport, "cinema-small")
-	video.cinema.show_guide(video, camera.global_transform, true)
+	grid.show_for(video.panel, camera.global_transform, video.cinema.guide_pose)
 	await shot(viewport, "cinema-adjusting-small")
 	video.set_screen_scale(2.2)
 	check(video.cinema.bottom.origin.is_equal_approx(anchor), "Rendered zoom retains world bottom")
-	check(video.cinema.guide.visible and not video.has_node("CinemaReferences"), "Adjustment grid is visible without a screen frame")
+	check(grid.mesh.visible and not video.has_node("CinemaReferences"), "Adjustment grid is visible without a screen frame")
 	await shot(viewport, "cinema-adjusting-large")
-	video.cinema.show_guide(video, camera.global_transform, false)
+	grid.hide()
 	await shot(viewport, "cinema-large")
-	video.cinema.show_guide(video, camera.global_transform, true)
+	grid.show_for(video.panel, camera.global_transform, video.cinema.guide_pose)
 	video.cinema.push(video, camera.global_position, 2)
 	await shot(viewport, "cinema-adjusting-pushed")
-	video.cinema.hide_guide()
+	grid.hide()
 	await shot(viewport, "cinema-pushed")
 	video.set_screen_curve(0.7); video._apply_geometry()
 	await shot(viewport, "cinema-curved")
@@ -75,6 +76,7 @@ func run() -> void:
 		I18n.use(language)
 		for cinema in [false, true]:
 			state.screen_cinema = cinema; menu.refresh()
+			check(menu.get_children().any(func(node): return node is Label3D and node.text == I18n.t("Upright screen")), "Screen settings show the localized upright placement title: " + language)
 			var targets := [Menu.SCREEN_CINEMA, Menu.SCREEN_CINEMA_OFF, Menu.SCREEN_SET_DEFAULT, Menu.SCREEN_AUTO_DEFAULT, 450, 451, Menu.SPATIAL_FOV, Menu.SETTINGS_CLOSE, 108]
 			# Curvature is a continuous slider since 2026-11-07, not four preset buttons.
 			check(menu._adjust_rows.has(Menu.SCREEN_CURVE_SLIDER), "Screen settings offer the curvature slider")

@@ -27,7 +27,23 @@ internal enum class ListingFreshness(val wire: String) {
 internal class CloudDrive(val provider: String, private val cookie: String, private val http: CloudTransport = CloudHttp,
     private val metadata: CloudMetadata = CloudMetadata()) : CloudClient {
     init { require(provider == P115 && CloudHttp.validCookie(cookie)) }
-    private fun get(url: String, values: Map<String, String> = emptyMap()) = http.request(CloudHttp.query(url, values), cookie, null)
+    private fun request(operation: String, url: String, form: Map<String,String>?): CloudResponse {
+        val token = http as? CloudCancellation
+        val owner = token?.let { "${it.kind}=${it.owner}" } ?: "background=0"
+        val rid = requestNumber.incrementAndGet()
+        val fields = "legacy_rid=$rid $owner account=${metadata.diagnosticNumber} driver=115_cookie op=$operation"
+        val started = System.nanoTime()
+        CloudRequestTrail.record("$fields stage=http_send attempt=1")
+        var outcome = "error"
+        try {
+            return http.request(url, cookie, form).also { outcome = "finished" }
+        } catch (e: Exception) {
+            if (token?.cancelled == true) outcome = "cancelled"
+            else if (generateSequence<Throwable>(e) { it.cause }.any { it is java.net.SocketTimeoutException }) outcome = "timeout"
+            throw e
+        } finally { CloudRequestTrail.record("$fields stage=$outcome elapsed_ms=${(System.nanoTime()-started)/1_000_000}") }
+    }
+    private fun get(url: String, values: Map<String, String> = emptyMap()) = request("directory", CloudHttp.query(url, values), null)
     private fun checked(response: CloudResponse): JSONObject {
         val json = response.json
         if (json.opt("state") != true && json.opt("state")?.toString() != "1") {
@@ -116,7 +132,7 @@ internal class CloudDrive(val provider: String, private val cookie: String, priv
         if (file.folder || file.size <= 0) throw CloudFailure("cloud_file_missing")
         return run {
             // The plain web endpoint is capped at 200 MB. Use the RSA app endpoint for original videos.
-            val response = http.request("https://proapi.115.com/app/chrome/downurl", cookie,
+            val response = request("link", "https://proapi.115.com/app/chrome/downurl",
                 mapOf("data" to Cloud115Cipher.encrypt(JSONObject().put("pickcode", file.pickCode).toString())))
             val json = checked(response)
             val files = JSONObject(Cloud115Cipher.decrypt(json.getString("data")))
@@ -136,6 +152,7 @@ internal class CloudDrive(val provider: String, private val cookie: String, priv
         "Referer" to "https://115.com/")
 
     companion object {
+        private val requestNumber = java.util.concurrent.atomic.AtomicLong()
         const val PAGE_SIZE = 48
         const val P115 = "115"
         const val BAIDU = "baidu"

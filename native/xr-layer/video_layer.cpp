@@ -1949,21 +1949,21 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_interpPairPush(JNIEnv*, jcl
 
 /** enhanceTexture for the moment [phase] (0..1) between two kept pairs: the picture in between (or a
  * pair's own copy, at 0 and 1) drawn into the whole acquired image of [slot], each eye on its own. */
-extern "C" JNIEXPORT jboolean JNICALL
-Java_org_vrpassthroughplayer_plugin_VideoLayerNative_interpPairDraw(JNIEnv* env, jclass, jint slot, jlong before, jlong after, jfloat phase,
+extern "C" JNIEXPORT jfloat JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_interpPairDrawPhase(JNIEnv* env, jclass, jint slot, jlong before, jlong after, jfloat phase,
         jint source_width, jint source_height, jfloat sharpen, jfloatArray grade, jfloat denoise_step, jfloat denoise_tolerance) {
     std::lock_guard<std::mutex> lock(mutex);
     Picture* target = picture(slot);
-    if (!target || !target->acquired) return JNI_FALSE;
+    if (!target || !target->acquired) return -1.0f;
     const GLuint texture = frame_interp::pair_picture(before, after, phase);
-    if (!texture) return JNI_FALSE;
+    if (!texture) return -1.0f;
     jfloat values[11];
     const bool graded = grade && env->GetArrayLength(grade) >= 11;
     if (graded) env->GetFloatArrayRegion(grade, 0, 11, values);
     EnhanceSource from;
     from.texture = texture; from.width = source_width; from.height = source_height; from.eyes_across = 2;
     return enhance_frame(enhance, target->acquired, target->width, target->height, true, from, sharpen, graded ? values : nullptr,
-                         denoise_step, denoise_tolerance) ? JNI_TRUE : JNI_FALSE;
+                         denoise_step, denoise_tolerance) ? phase : -1.0f;
 }
 
 /** interpPairPush with the kept copy drawn by picture quality mode (denoised, sharpened, graded; no
@@ -1989,12 +1989,12 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_interpPairPushEnhanced(JNIE
 
 /** The picture [phase] of the way between two pairs kept by interpPairPushEnhanced, straight into the
  * whole acquired image of [slot] (the pairs' size). */
-extern "C" JNIEXPORT jboolean JNICALL
-Java_org_vrpassthroughplayer_plugin_VideoLayerNative_interpPairShow(JNIEnv*, jclass, jint slot, jlong before, jlong after, jfloat phase) {
+extern "C" JNIEXPORT jfloat JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_interpPairShowPhase(JNIEnv*, jclass, jint slot, jlong before, jlong after, jfloat phase) {
     std::lock_guard<std::mutex> lock(mutex);
     Picture* target = picture(slot);
-    if (!target || !target->acquired) return JNI_FALSE;
-    return frame_interp::pair_show(target->acquired, before, after, phase) ? JNI_TRUE : JNI_FALSE;
+    if (!target || !target->acquired) return -1.0f;
+    return frame_interp::pair_show(target->acquired, before, after, phase);
 }
 
 extern "C" JNIEXPORT void JNICALL

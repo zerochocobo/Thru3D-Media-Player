@@ -54,6 +54,23 @@ func run() -> void:
 	var camera := Camera3D.new(); root.add_child(camera); camera.global_transform = main.head_pose; photo.view_camera = camera
 	var menu := preload("res://scripts/player_menu.gd").new(); root.add_child(menu); menu.set_process(false)
 	main.player_menu = menu; main.photo_menu = menu; menu.state_provider = main._menu_state; menu.visible = false
+	main._on_setting_changed("grid_in_3d_scenes", true)
+	check(not photo.ground_vertical, "Photo placement defaults to following the view")
+	photo.flat_pose = Transform3D(Basis(Vector3.RIGHT, 0.25), Vector3(0, 1.6, -3))
+	photo._apply_geometry(); photo.panel.visible = true
+	var initial_scale := photo.screen_scale
+	grab(main, "right_hand", photo.panel.global_position)
+	push(main, "right_hand", Vector2.ZERO); push(main, "right_hand", Vector2.RIGHT)
+	check(photo.screen_scale > initial_scale and not is_instance_valid(main.adjustment_grid.mesh), "Default Videos mode excludes a photo even with All scenes")
+	main._on_setting_changed("grid_media", "video_photo")
+	check(main.adjustment_grid.mesh.visible, "Videos + photos shows the grid for a tilted photo")
+	for mode in ["off", "video"]:
+		main._on_setting_changed("grid_media", mode)
+		check(not main.adjustment_grid.mesh.visible, "Switching to %s hides the held photo's grid" % mode)
+		main._on_setting_changed("grid_media", "video_photo")
+		check(main.adjustment_grid.mesh.visible, "Re-enabling photos restores the grid during the same grip")
+	main._on_controller_release("grip_click", "right_hand")
+	main._on_photo_adjustment("ground_vertical", true)
 	for stereo in [false, true]:
 		for hand in ["left_hand", "right_hand"]:
 			photo.geometry = 0; photo.stereo_sbs = stereo; photo.set_screen_scale(1)
@@ -62,16 +79,20 @@ func run() -> void:
 			var before: Transform3D = photo.flat_pose
 			var index: int = photo.index
 			grab(main, hand, photo.panel.global_position)
+			main._update_adjustment_grid()
+			check(main.adjustment_grid.mesh.visible, "Holding an upright photo shows its grid")
 			push(main, hand, Vector2.RIGHT)
 			check(photo.screen_scale == 1, "Held stick must recenter before resize")
 			push(main, hand, Vector2.ZERO)
 			push(main, "right_hand" if hand == "left_hand" else "left_hand", Vector2.RIGHT)
 			check(photo.screen_scale == 1, "Other hand cannot resize the captured photo")
 			for step in 4: push(main, hand, Vector2(1, .4))
+			check(main.adjustment_grid.mesh.visible, "Photo grid stays visible while resizing with the grip")
 			check(photo.screen_scale > 1 and photo.flat_pose.is_equal_approx(before) and is_equal_approx(photo.screen_distance, 3), "Right enlarges mono/stereo photo without changing distance or pose")
 			for step in 4: push(main, hand, Vector2.LEFT)
 			check(is_equal_approx(photo.screen_scale, 1) and photo.flat_pose.is_equal_approx(before), "Left shrinks symmetrically")
 			push(main, hand, Vector2.UP)
+			check(main.adjustment_grid.mesh.visible, "Photo grid stays visible while adjusting grip depth")
 			check(photo.screen_distance < 3 and is_equal_approx(photo.screen_scale, 1), "Back keeps the existing distance adjustment")
 			push(main, hand, Vector2.DOWN)
 			check(is_equal_approx(photo.screen_distance, 3) and is_equal_approx(photo.screen_scale, 1), "Forward restores distance without scaling")
@@ -90,11 +111,33 @@ func run() -> void:
 			check(photo.index == index and photo.screen_scale == scaled, "Resizing/release cannot leak to next photo")
 			push(main, hand, Vector2.ZERO)
 	# Existing remappable zoom and next/previous shortcuts stay independent.
+	push(main, "right_hand", Vector2.UP)
+	check(main.adjustment_grid.mesh.visible, "Bare stick resizing shows the photo grid")
+	push(main, "right_hand", Vector2.ZERO)
+	check(not main.adjustment_grid.mesh.visible, "Centering the bare stick hides the grid")
+	var corner: Vector3 = photo.panel.to_global(photo.screen_corner(1))
+	main.rays.right_hand = [main.head_pose.origin, (corner - main.head_pose.origin).normalized()]
+	main._on_controller_button("trigger_click", "right_hand")
+	push(main, "right_hand", Vector2.ZERO)
+	check(main._grab.has("resize") and main.adjustment_grid.mesh.visible, "A photo corner shows the grid")
+	main.recent_menu = preload("res://scripts/library_menu.gd").new(); main.recent_menu.visible = false
+	corner = photo.panel.global_position.lerp(corner, 1.5)
+	main.rays.right_hand[1] = (corner - main.head_pose.origin).normalized()
+	var corner_size := photo.screen_scale
+	main._update_grab()
+	check(photo.screen_scale > corner_size, "Dragging the photo corner resizes the actual picture")
+	main._on_controller_release("trigger_click", "right_hand")
+	main.recent_menu.free()
+	main.recent_menu = null
+	push(main, "right_hand", Vector2.ZERO)
+	check(not main.adjustment_grid.mesh.visible, "Releasing a photo corner hides the grid")
 	check(main.controller_bindings.resolve("right_hand", "stick_right", "photo") == "photo_next" and main.controller_bindings.resolve("right_hand", "stick_left", "photo") == "photo_previous", "Bare horizontal stick keeps photo switching")
 	main.controller_bindings.assign("photo_zoom_in", main.ControllerBindings.bind("left_hand", "ax_button"), true)
 	grab(main, "right_hand", photo.panel.global_position); push(main, "right_hand", Vector2.ZERO)
 	photo.set_screen_scale(photo.PHOTO_SCALE_LIMITS.y); push(main, "right_hand", Vector2.RIGHT)
 	check(photo.screen_scale == photo.PHOTO_SCALE_LIMITS.y, "Photo maximum is retained")
+	push(main, "right_hand", Vector2.ZERO)
+	check(main.adjustment_grid.mesh.visible, "Pausing at the size limit keeps a held photo's grid visible")
 	photo.set_screen_scale(photo.PHOTO_SCALE_LIMITS.x); push(main, "right_hand", Vector2.LEFT)
 	check(photo.screen_scale == photo.PHOTO_SCALE_LIMITS.x, "Photo minimum is retained")
 	push(main, "right_hand", Vector2.RIGHT)
@@ -105,6 +148,7 @@ func run() -> void:
 	main.controller_bindings.release("right_hand", "trigger_click")
 	main.pose_available = false; push(main, "right_hand", Vector2.RIGHT)
 	check(main.interface_move.capture.is_empty() and photo.screen_scale == scale, "Lost tracking cancels without resizing")
+	check(not main.adjustment_grid.mesh.visible, "Lost grip tracking hides the photo grid")
 	main.pose_available = true; main._on_controller_release("grip_click", "right_hand")
 	# Menu-only, magnifier and panorama captures are not flat picture resizing.
 	menu.toggle(); main.rays = {"right_hand": [menu.global_position + menu.global_basis.z, -menu.global_basis.z]}
@@ -124,6 +168,8 @@ func run() -> void:
 	# Overview grip resizes actual cards through the existing layout scale, not the hidden full image.
 	for layout in [2, 3]:
 		for hand in ["left_hand", "right_hand"]:
+			var upright: bool = hand == "left_hand"
+			main._on_photo_adjustment("ground_vertical", upright)
 			photo.gallery.set_mode(layout); photo.gallery.recenter(); photo.gallery.set_view_scale(1); photo.gallery._process(.01)
 			var card: Dictionary = photo.gallery.cards.values()[0]
 			var height: float = card.size.y
@@ -131,6 +177,9 @@ func run() -> void:
 			var distance: float = photo.gallery.view_distance
 			grab(main, hand, card.node.global_position); push(main, hand, Vector2.ZERO); push(main, hand, Vector2.RIGHT)
 			photo.gallery._process(.01)
+			check(main.adjustment_grid.mesh.visible and main.adjustment_grid.mesh.get_parent() == photo.gallery, "The visible gallery has a grid with upright=%s for layout %d" % [upright, layout])
+			push(main, hand, Vector2.ZERO)
+			check(main.adjustment_grid.mesh.visible, "The gallery grid stays visible while the stick rests")
 			check(photo.gallery.view_scale > 1 and photo.screen_scale == 1, "Grip enlarges the overview independently of the full photo")
 			check(photo.gallery.cards.values()[0].size.y > height and photo.gallery.anchor.is_equal_approx(anchor) and photo.gallery.view_distance == distance, "Overview cards enlarge without moving the layout")
 			push(main, hand, Vector2.LEFT)

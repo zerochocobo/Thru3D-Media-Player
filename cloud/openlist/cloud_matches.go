@@ -34,7 +34,7 @@ func freshMatchParent(ctx context.Context, native cloudNativeMatches, mount, rem
 		return nil, err
 	}
 	if id == "" {
-		if cached, ok := cloudFolders[mount+remote]; ok && time.Now().Before(cached.expires) {
+		if cached, ok := cachedFolder(mount + remote); ok && time.Now().Before(cached.expires) {
 			id = cached.object.GetID()
 		}
 	}
@@ -52,13 +52,7 @@ func freshMatchParent(ctx context.Context, native cloudNativeMatches, mount, rem
 	if actual != remote {
 		return nil, errors.New("cloud parent changed; refresh the folder")
 	}
-	if len(cloudFolders) >= 64 {
-		for key := range cloudFolders {
-			delete(cloudFolders, key)
-			break
-		}
-	}
-	cloudFolders[mount+remote] = cloudFolder{object: folder, expires: time.Now().Add(2 * time.Minute)}
+	rememberFolder(mount+remote, cloudFolder{object: folder, expires: time.Now().Add(2 * time.Minute)})
 	return folder, ctx.Err()
 }
 

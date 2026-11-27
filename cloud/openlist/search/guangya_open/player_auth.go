@@ -41,6 +41,7 @@ type tokenResponse struct {
 	RefreshToken string `json:"refresh_token"`
 	ExpiresIn    int    `json:"expires_in"`
 	Code         *int   `json:"code"`
+	Error        string `json:"error"`
 }
 
 func PlayerAuth(ctx context.Context, request PlayerAuthRequest) (*PlayerAuthResult, error) {
@@ -70,10 +71,16 @@ func parseToken(response *resty.Response) (*tokenResponse, error) {
 		return nil, fmt.Errorf("guangya sign-in unavailable (HTTP %d)", response.StatusCode())
 	}
 	if token.AccessToken == "" || token.RefreshToken == "" || len(token.AccessToken) > 16384 || len(token.RefreshToken) > 16384 {
-		if token.Code != nil {
+		// Only the code and OAuth error name are kept; descriptions are free text.
+		switch {
+		case token.Code != nil:
 			return nil, fmt.Errorf("guangya sign-in declined (%d)", *token.Code)
+		case errorPattern.MatchString(token.Error):
+			return nil, fmt.Errorf("guangya sign-in declined (%s)", token.Error)
+		case response.StatusCode() >= 500:
+			return nil, fmt.Errorf("guangya sign-in unavailable (HTTP %d)", response.StatusCode())
 		}
-		return nil, errors.New("guangya sign in required")
+		return nil, fmt.Errorf("guangya sign-in declined (HTTP %d)", response.StatusCode())
 	}
 	return &token, nil
 }

@@ -22,6 +22,7 @@ func check(value: bool, message: String) -> void:
 func _initialize() -> void: call_deferred("_run")
 
 func _run() -> void:
+	_feedback()
 	_memory()
 	_blockers()
 	_pair_blockers()
@@ -30,6 +31,49 @@ func _run() -> void:
 	print("picture interpolation tests: %d failures" % failures.size())
 	for failure in failures: print("  " + failure)
 	quit(1 if not failures.is_empty() else 0)
+
+func _feedback() -> void:
+	I18n.use("en")
+	var hud := preload("res://scripts/interpolation_feedback.gd").new()
+	var sample := {"open": 4, "epoch": [8, 1, 0, false], "state": "playing", "source": 23.976,
+		"time": 2000, "total": 100, "between": 60}
+	hud.update(sample, 0)
+	check(hud.caption().begins_with("Waiting") and hud.preview(0, true, false).is_empty(), "Wait for measured intermediate frames")
+	sample.merge({"time": 3000, "total": 171, "between": 107}, true)
+	hud.update(sample, 1000)
+	var measured := "Interpolation · Source 24 → Output 71 FPS"
+	check(hud.caption() == measured, "The readout uses the video submissions and source metadata")
+	check(hud.preview(1000, false, false).is_empty() and hud.preview(16000, true, false) == measured, "Time in settings leaves all ten seconds")
+	check(hud.preview(19000, false, false).is_empty() and hud.preview(29000, true, false) == measured, "Opening a menu suspends the visible countdown")
+	check(hud.preview(35999, true, false) == measured and hud.preview(36000, true, false).is_empty(), "Exactly ten visible seconds, once")
+	sample.epoch = [8, 1, 1, false]
+	hud.update(sample, 36000)
+	check(hud.caption().begins_with("Waiting"), "Seeking discards the old result")
+	sample.merge({"time": 4000, "total": 250, "between": 107}, true)
+	hud.update(sample, 37000)
+	check(hud.caption().begins_with("Waiting"), "Source-only output never claims interpolation")
+	sample.merge({"time": 5000, "total": 310, "between": 135, "source": 0.0}, true)
+	hud.update(sample, 38000)
+	check(hud.caption() == "Interpolation · Output 60 FPS" and hud.preview(38000, true, false).is_empty(), "Missing metadata and seeking do not retrigger the preview")
+	hud.update(sample, 39200)
+	check(hud.caption().begins_with("Waiting"), "A frozen Android status cannot keep an old FPS alive")
+	var stopped := {"open": 4, "epoch": sample.epoch, "state": "stopped"}
+	hud.update(stopped, 40000)
+	check(hud.preview(40000, true, false) == "Frame interpolation stopped" and hud.preview(43000, true, false).is_empty(), "Automatic stop replaces FPS for three seconds")
+	hud.update(sample, 44000)
+	sample.merge({"time": 6000, "total": 382, "between": 183}, true)
+	hud.update(sample, 45000)
+	check(hud.preview(45000, true, false).contains("72 FPS"), "Explicit retry earns a fresh preview")
+	check(hud.preview(45100, true, true).is_empty() and hud.preview(45200, true, false).is_empty(), "Permanent FPS owns its readout without a second popup")
+	hud.update({"open": 4, "state": "paused"}, 46000)
+	check(hud.caption() == "Paused", "Paused film shows no stale FPS")
+	hud.update({}, 47000)
+	check(hud.caption().is_empty(), "Leaving the film clears feedback")
+	sample.open = 5
+	hud.update(sample, 48000)
+	sample.merge({"time": 7000, "total": 451, "between": 224}, true)
+	hud.update(sample, 49000)
+	check(hud.preview(49000, true, false).contains("69 FPS"), "A different film with a remembered setting earns its own preview")
 
 func _memory() -> void:
 	var memory := Video.PictureMemory.new(ProjectSettings.globalize_path("res://../../build/interpolation-test-%s" % Time.get_ticks_usec()))
@@ -233,6 +277,13 @@ func _menu() -> void:
 		return menu._buttons.filter(func(button): var target: Dictionary = menu.choices.targets.get(button.target, {}); return target.get("key", "") == "picture_interpolation" and int(target.get("value", -1)) == value)[0]
 	check("Frame interpolation" in menu.text_snapshot(), "The picture quality page has the row")
 	check(option.call(1).enabled, "On is on offer for a video that can take it")
+	state.picture_interpolation = true
+	menu.refresh_values()
+	var label := menu._interpolation_label
+	check(is_instance_valid(label) and label.text == "Waiting for frame interpolation…", "The active row reserves one status line")
+	state.interpolation_caption = "Interpolation · Source 24 → Output 71 FPS"
+	menu.refresh_values()
+	check(menu._interpolation_label == label and label.text == state.interpolation_caption, "FPS updates in place without rebuilding the popup")
 	var inside := true
 	for value in [0, 1]:
 		var rect: Rect2 = option.call(value).rect

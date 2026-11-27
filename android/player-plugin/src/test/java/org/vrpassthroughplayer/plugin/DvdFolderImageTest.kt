@@ -5,6 +5,9 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
 import java.io.RandomAccessFile
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class DvdFolderImageTest {
     private val sector = DvdFolderImage.SECTOR
@@ -44,6 +47,41 @@ class DvdFolderImageTest {
 
     private fun source(files: Map<String, ByteArray>, opened: MutableList<String> = ArrayList()) =
         DvdFolderSource.of(files.map { it.key to it.value.size.toLong() }) { name -> opened.add(name); Bytes(files.getValue(name)) }
+
+    @Test fun cancellingDuringCloudDiscVerificationDisconnectsFirstBody() {
+        val files = disc()
+        val entered = CountDownLatch(1)
+        val closed = CountDownLatch(1)
+        val worker = Executors.newSingleThreadExecutor()
+        val session = CloudCancellation("playback", 7)
+        try {
+            val result = worker.submit<Boolean> {
+                runCatching {
+                    session.prepare { transport ->
+                        DvdFolderSource.of(files.map { it.key to it.value.size.toLong() }, onVerifying = { opening ->
+                            session.attachAction { transport.cancel(); opening.close() }
+                        }) { name ->
+                            object : StreamSource {
+                                override val size = files.getValue(name).size.toLong()
+                                override fun open() = object : StreamSource.Reader {
+                                    override fun read(offset: Long, buffer: ByteArray, length: Int): Int {
+                                        entered.countDown()
+                                        check(closed.await(5, TimeUnit.SECONDS)) { "body still connected" }
+                                        throw java.io.IOException("closed")
+                                    }
+                                    override fun close() {}
+                                }
+                                override fun close() { closed.countDown() }
+                            }
+                        }
+                    }
+                }.exceptionOrNull() is java.io.IOException
+            }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            session.cancel()
+            assertTrue(result.get(2, TimeUnit.SECONDS))
+        } finally { closed.countDown(); worker.shutdownNow() }
+    }
 
     private fun readAll(source: StreamSource): ByteArray {
         val image = ByteArray(source.size.toInt())

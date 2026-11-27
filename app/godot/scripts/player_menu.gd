@@ -1,5 +1,33 @@
 extends "res://scripts/ray_menu.gd"
 
+var _sample_uri := ""
+var _sample_icon := ""
+var _sample_until := 0
+var _sample_target := -1
+var _sample_dot: MeshInstance3D
+
+func guide_sample(uri: String, action: String) -> void:
+	if is_instance_valid(_sample_dot): _sample_dot.hide()
+	_sample_uri = uri
+	_sample_icon = {"2d_to_3d": "depth", "portrait_passthrough": "alpha",
+		"photo_2d_to_3d": "depth", "photo_viewer": "zoom"}.get(action, "")
+	_sample_until = 0
+	_sample_target = -1
+
+func _sample_control(target: int, icon: String, centre: Vector2, size: float, enabled: bool, tip: String) -> void:
+	_glyph(target, icon, centre, size, enabled, tip)
+	if not enabled or _sample_icon != icon or _state.get("source_uri", "") != _sample_uri: return
+	var now := Time.get_ticks_msec()
+	if not _sample_until: _sample_until = now + 12000
+	if now >= _sample_until: return
+	_sample_target = target
+	_sample_dot = _quad(Vector2.ONE * 0.014, Vector3(size * 0.37, size * 0.37, 0.006), ACCENT, 13)
+	_buttons.back().node.add_child(_sample_dot)
+	_sample_dot.create_tween().tween_callback(_sample_dot.hide).set_delay(float(_sample_until - now) / 1000.0)
+
+func _consume_sample_control(target: int) -> void:
+	if target == _sample_target: guide_sample("", "")
+
 signal screen_lock_blocked(hand: String)
 const ScreenLockMenu := preload("res://scripts/screen_lock_menu.gd")
 var screen_lock_ui := ScreenLockMenu.new(self)
@@ -232,6 +260,7 @@ var _picture_tab := 0
 var _picture_advanced := false
 var _picture_panel_bounds := Rect2()
 var _picture_drawn: Array = []
+var _interpolation_label: Label3D
 ## The 2D to 3D settings fold under one header above Alpha's, closed each time like it.
 const DEPTH_GROUP := 462
 const DEPTH_FOREGROUND := 463
@@ -754,6 +783,8 @@ func refresh_values() -> void:
 	if editing_picture() and _picture_drawn != _picture_key() and _adjust_hand.is_empty():
 		refresh()
 		return
+	if is_instance_valid(_interpolation_label):
+		_interpolation_label.text = _interpolation_caption()
 	if _adjustment in ["screen", "stereo_view"] and _settings_drawn != _settings_key():
 		_finish_adjustment()
 		if _adjustment == "stereo_view" and not _enabled("stereo_view"): _adjustment = ""
@@ -863,6 +894,7 @@ func _draw() -> void:
 	_duration = null
 	_status = null
 	_listening_status = null
+	_interpolation_label = null
 	_subtitle_status_label = null
 	_subtitle_group_states.clear()
 	_panel_status = null
@@ -991,6 +1023,7 @@ func _draw_picture_panel() -> void:
 	var plugin_rows := 3 if _state.get("picture_anime4k", false) else 1
 	var height := (0.41 + 0.064 * keys.size()) if in_color and _picture_advanced \
 		else (0.55 if in_color else 0.243 + 0.064 * plugin_rows if in_plugins else 0.499)
+	if not in_color and not in_plugins and _show_interpolation_caption(): height += 0.042
 	if not has_mode: height -= 0.10
 	var bottom := POPUP_BOTTOM
 	var top := bottom + height
@@ -1174,9 +1207,9 @@ func _draw_bar() -> void:
 	if _cast_allowed("next_video"): _glyph(103, "next_video", Vector2(0.13, row), 0.08, _enabled("next_video"), I18n.t("Next video"))
 	var spatial := bool(_state.get("spatial_video", false))
 	if spatial: _close_depth_slider()
-	_glyph(104, "alpha", Vector2(0.26 if spatial else 0.23, row), 0.075, _enabled("alpha"), I18n.t("AI portrait passthrough"))
+	_sample_control(104, "alpha", Vector2(0.26 if spatial else 0.23, row), 0.075, _enabled("alpha"), I18n.t("AI portrait passthrough"))
 	if not spatial:
-		_glyph(112, "depth", Vector2(0.32, row), 0.075, _enabled("depth"), _depth_tip())
+		_sample_control(112, "depth", Vector2(0.32, row), 0.075, _enabled("depth"), _depth_tip())
 		_depth_busy = _busy_ring(_buttons.back().node, 0.075)
 	_glyph(MODE, "view_mode", Vector2(0.38 if spatial else 0.41, row), 0.075, true, I18n.t("Video mode"))
 	_glyph(11, "settings", Vector2(0.5, row), 0.075, true, I18n.t("Settings"))
@@ -2704,6 +2737,17 @@ func _picture_quality_rows(y: float) -> void:
 	_picture_choice_row("Frame interpolation (Beta)", "picture_interpolation", 1 if _state.get("picture_interpolation", false) and blocker.is_empty() else 0,
 		[{"value": 0, "label": "Off", "hint": hint}, {"value": 1, "label": "On", "hint": hint}],
 		y - 0.192, on, I18n.t(PICTURE_INTERPOLATION_BLOCKERS[blocker]) if on and blocker != "load" and PICTURE_INTERPOLATION_BLOCKERS.has(blocker) else "")
+	if _show_interpolation_caption():
+		_interpolation_label = _label(_interpolation_caption(), Vector3(PICTURE_PANEL_X, y - 0.243, 0.004), TEXT_BODY)
+
+func _show_interpolation_caption() -> bool:
+	return _state.get("picture_quality_available", false) and _state.get("picture_quality", false) \
+		and _state.get("picture_interpolation", false) and _state.get("picture_interpolation_blocker", "") in ["", "load"]
+
+func _interpolation_caption() -> String:
+	if _state.get("picture_interpolation_blocker", "") == "load": return I18n.t("Frame interpolation stopped")
+	var caption := str(_state.get("interpolation_caption", ""))
+	return I18n.t("Waiting for frame interpolation…") if caption.is_empty() else caption
 
 func _anime4k_on() -> bool:
 	return _state.get("picture_anime4k", false) and str(_state.get("picture_anime4k_blocker", "")).is_empty()
@@ -2812,7 +2856,7 @@ func _settings_key() -> String:
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
 		_state.get("immersive_adjustment_gauges", true), _state.get("video_auto_3d", false),
 		_state.get("screen_edit_locked", false), _state.get("screen_default_locked", false), _state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("screen_scene_curve", true), _state.get("cinema_lights", "auto"),
-		_state.get("screen_curve_modes_available", false), _state.get("screen_curve_mode", "horizontal"),
+		_state.get("cottage_film_limits", {}), _state.get("screen_curve_modes_available", false), _state.get("screen_curve_mode", "horizontal"),
 		_state.get("video_aspect_preset", "original"), _state.get("video_aspect_locked", false), _state.get("depth_requested", false),
 		_state.get("error", ""), _state.get("error_report", {}), _state.get("usb_takeover_offer", false), _state.get("diagnostic_upload", {}), _alpha_expanded, _depth_expanded,
 		_state.get("picture_quality", false), _state.get("picture_quality_available", false), _state.get("picture_quality_supported", false),
@@ -2937,6 +2981,7 @@ func _activate_hit(hit: Dictionary) -> void:
 		super._activate_hit(hit)
 
 func _activate(target: int) -> void:
+	_consume_sample_control(target)
 	if screen_lock_ui.blocked(target): return
 	if section == 0 and _subtitle_open and target == SUBTITLE_CACHE_DELETE:
 		setting_requested.emit("listening_cache_delete", true); refresh(); return
@@ -3643,6 +3688,19 @@ func _draw_screen_settings() -> void:
 	if _state.get("has_video", false) and int(_state.get("geometry", 0)) != 0:
 		_draw_immersive_settings()
 		return
+	var limits: Dictionary = _state.get("cottage_film_limits", {})
+	if not limits.is_empty():
+		var cottage_top := _settings_frame(.86)
+		_draw_settings_tabs(cottage_top - .055)
+		screen_lock_ui.row(cottage_top - .15)
+		_adjustment_row(450, "screen_distance", "Screen distance", Vector3(limits.near, limits.far, .1), cottage_top - .24)
+		_adjustment_row(451, "screen_scale", "Screen size", Vector3(limits.minimum, maxf(limits.minimum+.01,limits.maximum), 5), cottage_top - .34)
+		_draw_video_aspect(cottage_top - .44)
+		_draw_screen_rotation(cottage_top - .65, true)
+		_refresh_adjustments()
+		choices.bounds = Vector2(POPUP_BOTTOM + .015, cottage_top - .10)
+		choices.finish()
+		return
 	if CinemaFeature.enabled() and _state.get("screen_scene_locked", false):
 		# Movement and lights live in the scene settings and footer; this page shapes the picture.
 		var scene_curve: bool = _state.get("screen_scene_curve", true)
@@ -3671,13 +3729,13 @@ func _draw_screen_settings() -> void:
 	if flat:
 		screen_lock_ui.row(y)
 		y -= 0.08
-		var cinema_title := _label(I18n.t("Cinema screen"), Vector3(-0.50, y, 0.004), TEXT_BODY)
+		var cinema_title := _label(I18n.t("Upright screen"), Vector3(-0.50, y, 0.004), TEXT_BODY)
 		cinema_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		for option in [{"target": SCREEN_CINEMA_OFF, "label": "Off", "value": false}, {"target": SCREEN_CINEMA, "label": "On", "value": true}]:
 			_button(option.target, I18n.t(option.label), Vector2(0.16 + (0.1685 if option.value else -0.1685), y), Vector2(0.323, 0.055))
 			set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
 			_buttons.back().base_color = SELECTED if cinema == option.value else TILE
-			_tips[option.target] = I18n.t("Keeps the screen upright, like in a cinema. Resizing keeps its bottom edge in place; pushing or pulling changes only its distance. A ground grid appears only while resizing or moving it nearer or farther. Turn off to position the screen freely.")
+			_tips[option.target] = I18n.t("Keeps the screen perpendicular to the floor. Its bottom edge stays in place when you resize it. Push or pull to adjust its distance.")
 		y -= 0.08
 		if cinema:
 			for index in ScreenPresets.ITEMS.size():
@@ -3722,16 +3780,8 @@ func _draw_screen_settings() -> void:
 		_draw_curve_slider(y)
 		y -= 0.09
 	if not cinema:
-		_adjustment_row(452, "screen_rotation", "Screen rotation", Vector3(-180, 180, 1), y)
-		if flat: _tips[452] = I18n.t("Point at the screen's lower-left corner to show the curved arrows; hold either end to keep turning, or drag to rotate, then release to snap to the nearest 90°.")
-		_slider_tick(452, 0, "0°", y)
-		_inline_reset(ROTATION_RESET, "Straighten", "screen_rotation", 0.0, y)
-		if flat:
-			y -= 0.075
-			for index in ROTATION_ANGLES.size():
-				var angle: float = ROTATION_ANGLES[index]
-				_button(ROTATION_PRESET + index, "%+.0f°" % angle if angle in [-90.0, 90.0] else "%.0f°" % angle, Vector2(-0.375 + index * 0.25, y), Vector2(0.235, 0.05))
-				set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
+		_draw_screen_rotation(y, flat)
+		if flat: y -= .075
 	else: y += 0.09
 	if spatial_fov:
 		_button(SPATIAL_FOV, I18n.t("Match spatial video capture FOV"), Vector2(0, y - 0.09), Vector2(0.86, 0.055), bool(_state.get("spatial_fov_available", false)))
@@ -3739,6 +3789,17 @@ func _draw_screen_settings() -> void:
 	_refresh_adjustments()
 	choices.bounds = Vector2(POPUP_BOTTOM + 0.015, top - 0.10)
 	choices.finish()
+
+func _draw_screen_rotation(y: float, flat: bool) -> void:
+	_adjustment_row(452, "screen_rotation", "Screen rotation", Vector3(-180, 180, 1), y)
+	if flat: _tips[452] = I18n.t("Point at the screen's lower-left corner to show the curved arrows; hold either end to keep turning, or drag to rotate, then release to snap to the nearest 90°.")
+	_slider_tick(452, 0, "0°", y)
+	_inline_reset(ROTATION_RESET, "Straighten", "screen_rotation", 0.0, y)
+	if flat:
+		for index in ROTATION_ANGLES.size():
+			var angle: float = ROTATION_ANGLES[index]
+			_button(ROTATION_PRESET + index, "%+.0f°" % angle if angle in [-90.0, 90.0] else "%.0f°" % angle, Vector2(-0.375 + index * 0.25, y-.075), Vector2(0.235, 0.05))
+			set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
 
 func _draw_curve_mode(y: float) -> void:
 	var title := _label(I18n.t("Curve mode"), Vector3(-0.50, y, 0.004), TEXT_BODY)

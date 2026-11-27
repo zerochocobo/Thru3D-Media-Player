@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPlayerBodyRejectsExcessBeforeUnlimitedAllocation(t *testing.T) {
@@ -34,5 +35,43 @@ func TestPlayerReadDirStopsAtRecordLimit(t *testing.T) {
 	files, err := client.PlayerReadDir(context.Background(), "/")
 	if err == nil || len(files) > 20000 || !strings.Contains(err.Error(), "metadata limit") {
 		t.Fatal(len(files), err)
+	}
+}
+
+func TestPlayerColdStatCancelsAtServer(t *testing.T) {
+	entered, disconnected := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Read the PROPFIND body so the server observes a disconnected HTTP/1 caller.
+		_, _ = io.Copy(io.Discard, r.Body)
+		close(entered)
+		select {
+		case <-r.Context().Done():
+			close(disconnected)
+		case <-time.After(4 * time.Second):
+		}
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := NewClient(server.URL, "", "").PlayerStat(ctx, "/cold.mp4"); done <- err }()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stat did not reach DAV")
+	}
+	cancel()
+	select {
+	case <-disconnected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("DAV stat connection kept running")
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("stat succeeded after cancellation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stat blocked caller")
 	}
 }

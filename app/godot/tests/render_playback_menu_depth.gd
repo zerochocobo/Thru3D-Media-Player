@@ -53,7 +53,8 @@ func run() -> void:
 		library._hover.clear(); library._update_tooltip()
 		library._choose(library.rows.filter(func(row): return row.get("display_settings_group") == "interface")[0])
 		library._choose(library.rows.filter(func(row): return row.get("display_settings_group") == "overlays")[0])
-		check(library.rows.back().key == "stick_seek_overlay" and library.rows[-2].key == "show_fps",
+		var seek_index: int = library.rows.find_custom(func(row): return row.get("key") == "stick_seek_overlay")
+		check(seek_index > 0 and library.rows[seek_index - 1].get("key") == "show_fps",
 			language + " thumbstick progress bar follows FPS under playback overlays")
 		await pixels(view, "display-seek-on-" + language)
 		var switch_targets: Array = library.choices.targets.keys().filter(func(id): return library.choices.targets[id].key == "stick_seek_overlay")
@@ -65,6 +66,25 @@ func run() -> void:
 			library._activate(switch_targets[0])
 			check(display_settings.get("stick_seek_overlay", true) == false, language + " switch emits off")
 			await pixels(view, "display-seek-off-" + language)
+		library.scroll = library._max_scroll(); library.refresh()
+		await pixels(view, "display-adjustment-grid-" + language)
+		var media: Dictionary = library.rows[-2]
+		var scenes: Dictionary = library.rows[-1]
+		check(media.key == "grid_media" and media.value == "video" and scenes.key == "grid_in_3d_scenes" and not scenes.value, language + " grid media precedes scene scope with both defaults")
+		for row in [media, scenes]:
+			var options: Array = library.choices.targets.keys().filter(func(id): return library.choices.targets[id].key == row.key)
+			var values := ["off", "video", "video_photo"] if row == media else [false, true]
+			check(options.map(func(id): return library.choices.targets[id].get("value")) == values, language + " grid choices are direct buttons in the requested order")
+			if options.size() != values.size(): continue
+			if row == media:
+				library._hover = {"right_hand": options[1]}; library._update_tooltip()
+				await pixels(view, "display-adjustment-grid-tooltip-" + language)
+				library._hover.clear(); library._update_tooltip()
+			for index in options.size():
+				var target: int = options[index]
+				check(library._tips[target] == I18n.t(row.info), language + " grid option has a translated tooltip")
+				library._activate(target)
+				check(display_settings.get(row.key) == values[index], language + " selecting the grid option emits its value")
 	library.hide()
 	I18n.use("en")
 	var menu := Player.new(); menu.state_provider = func(): return state

@@ -140,3 +140,7 @@ Progressive photo 3D uses the separately supplied `depth-mnn/photo_fast.mnn` gra
 ## 0.18.8 narration graph preparation
 
 The exact external graph sizes and hashes are in third_party/narration/model.json. The install directory retains its older name for upgrades. tools/models/optimize_narration_kv.py transforms separately supplied MOSS Nano graphs to attention-layout KV caches, an extend graph and continuation-probability outputs. It does not distribute the input graphs, tensor payloads or voice recordings; existing model licensing and reference-recording provenance limits remain.
+
+## 0.19.0 scene and experience payloads
+
+Attic geometry/textures/audio and the offline experience.dat archive remain excluded. Runtime/build source is public; see [EXTERNAL_RESOURCES.md](EXTERNAL_RESOURCES.md) for additional required paths. Font/narration preparation and licensing remain separate.

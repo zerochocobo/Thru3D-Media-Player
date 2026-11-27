@@ -327,7 +327,7 @@ func _draw_bar() -> void:
 	var portrait: bool = _state.get("portrait_requested",false)
 	var swapping: bool = _state.get("gallery_swapping", false)
 	if not _state.get("archive_mode", false): _glyph(PHOTO_GALLERY, "images", Vector2(-0.535, 0.025), 0.075, _state.get("count", 0) > 0, I18n.t("Images"))
-	_glyph(PHOTO_INSPECT, "zoom", Vector2(-0.43, 0.025), 0.075, has and not portrait, _inspect_tip())
+	_sample_control(PHOTO_INSPECT, "zoom", Vector2(-0.43, 0.025), 0.075, has and not portrait, _inspect_tip())
 	_glyph(PHOTO_ADJUST, "adjust", Vector2(-0.325, 0.025), 0.075, has, I18n.t("Adjust image"))
 	var autoplay: bool = _state.get("autoplay_enabled", false)
 	_glyph(PHOTO_AUTOPLAY, "photo_autoplay", Vector2(-0.225, 0.025), 0.075,
@@ -345,7 +345,7 @@ func _draw_bar() -> void:
 	_glyph(PHOTO_NEXT, "next", Vector2(0.14, 0.025), 0.085, _state.get("can_next", false) and not swapping, I18n.t("Next image"))
 	_glyph(PHOTO_PORTRAIT, "alpha", Vector2(0.23, 0.025), 0.075, portrait or _state.get("portrait_available",false), I18n.t("Exit portrait" if portrait else "Portrait passthrough"))
 	if int(_state.get("geometry", 0)) == 0:
-		_glyph(PHOTO_DEPTH, "depth", Vector2(DEPTH_X, 0.025), 0.075, _can_depth(), _depth_tip())
+		_sample_control(PHOTO_DEPTH, "depth", Vector2(DEPTH_X, 0.025), 0.075, _can_depth(), _depth_tip())
 	_glyph(MODE, "view_mode", Vector2(0.41, 0.025), 0.075, has and not portrait and int(_state.get("layout", 0)) != 4, I18n.t("Image mode"))
 	_glyph(11, "settings", Vector2(0.5, 0.025), 0.075, has, I18n.t("Settings"))
 	_status = _label(_fit_title(_photo_status(), "", 0.76, 15), Vector3(-0.11, -0.075, 0.004), 15)
@@ -824,6 +824,7 @@ func _translation_status() -> String:
 	return I18n.t({"recognizing": "Reading page…", "no_dialogue": "No stable dialogue", "unsupported": "Flat images only", "unavailable": "Comic reading unavailable", "ready": "No translation needed"}.get(str(_state.get("comic_state", "")), "Reading page…"))
 
 func _activate(target: int) -> void:
+	_consume_sample_control(target)
 	if target == PHOTO_AUTOPLAY: action_requested.emit("photo_autoplay"); refresh(); return
 	if target in [PHOTO_STEADY_ON, PHOTO_STEADY_OFF]:
 		setting_requested.emit("photo_edge_steady", target == PHOTO_STEADY_ON); refresh(); return

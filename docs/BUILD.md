@@ -4,7 +4,7 @@ The primary application build scripts target PowerShell 7 on Windows. The libmpv
 
 ## Source-only verification
 
-Python 3.10+ is sufficient for `python tools/Check-PublicSource.py`. Godot host tests require the matching Godot executable but no Android toolchain or models:
+Python 3.10+ is sufficient for `python tools/Check-PublicSource.py`. Godot host tests require the matching Godot executable but no Android toolchain. Tests that open the app, built-in scenes or experience folder also need separately supplied resources or clearly identified synthetic fixtures:
 
 ```powershell
 $env:GODOT_EXE = (Get-Command godot).Source
@@ -176,7 +176,7 @@ This source follows the fixed release input records, not temporary channel overr
 
 ## Dated release archives
 
-Release APK archives default to the build completion date. Use the optional PowerShell parameter -ReleaseDate YYYYMMDD with Release builds to choose the archive date. Standard 0.18.11 Android source uses versionCode 128 and the PICO China store build uses 129.
+Release APK archives default to the build completion date. Use the optional PowerShell parameter -ReleaseDate YYYYMMDD with Release builds to choose the archive date. Standard 0.19.0 Android source uses versionCode 130 and the PICO China store build uses 131.
 
 Public-source builds support saving diagnostic logs locally and sharing them on Wi-Fi. Remote diagnostic upload is disabled in this export.
 

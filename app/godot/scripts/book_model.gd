@@ -16,14 +16,28 @@ uniform vec3 light = vec3(1.0);
 uniform float edge = 0.0;
 uniform float lift = 0.0;
 uniform float shadow = 0.0;
+uniform bool sharpened = true;
 varying float shade;
 varying float across;
 void vertex() { shade = COLOR.r; across = VERTEX.x; }
+// A page drawn in the eye buffer (a leaf turning) gets far fewer pixels than on its layer, and a
+// plain trilinear read softens small type further. Four reads spread over the pixel, each a mip
+// level finer, average the type at the pixel's own size instead of a blurred smaller copy.
+vec3 sharp(sampler2D page, vec2 uv) {
+	vec2 dx = dFdx(uv); vec2 dy = dFdy(uv);
+	vec2 gx = dx * 0.5; vec2 gy = dy * 0.5;
+	vec3 sum = textureGrad(page, uv + 0.125 * dx + 0.375 * dy, gx, gy).rgb;
+	sum += textureGrad(page, uv - 0.375 * dx + 0.125 * dy, gx, gy).rgb;
+	sum += textureGrad(page, uv + 0.375 * dx - 0.125 * dy, gx, gy).rgb;
+	sum += textureGrad(page, uv - 0.125 * dx - 0.375 * dy, gx, gy).rgb;
+	return sum * 0.25;
+}
 void fragment() {
 	// UV.x runs from the spine outwards on both faces, so the verso is mirrored here.
 	vec3 colour = paper;
-	if (FRONT_FACING) { if (has_front) colour = texture(front, UV).rgb; }
-	else if (has_back) colour = texture(back, vec2(1.0 - UV.x, UV.y)).rgb;
+	vec2 verso = vec2(1.0 - UV.x, UV.y);
+	if (FRONT_FACING) { if (has_front) colour = sharpened ? sharp(front, UV) : texture(front, UV).rgb; }
+	else if (has_back) colour = sharpened ? sharp(back, verso) : texture(back, verso).rgb;
 	float beyond = (across - edge) * sign(edge);
 	float soft = 0.012 + lift * 1.6;
 	float dark = shadow * step(0.0, beyond) * exp(-beyond / soft) * clamp(1.0 - lift * 4.0, 0.35, 1.0);
@@ -51,7 +65,7 @@ const Wand := preload("res://scripts/book_wand.gd")
 ## A slowly turning circle of light, drawn in the rune ring: rings, a band of runes and a six-pointed star.
 const CIRCLE_SHADER := """
 shader_type spatial;
-render_mode unshaded, blend_add, cull_disabled, depth_draw_never, shadows_disabled;
+render_mode unshaded, blend_premul_alpha, cull_disabled, depth_draw_never, shadows_disabled;
 uniform vec3 colour : source_color = vec3(1.0, 0.78, 0.40);
 uniform float strength = 0.6;
 float line(float d, float w) { return smoothstep(w, 0.0, abs(d)); }
@@ -78,6 +92,10 @@ void fragment() {
 	star *= step(r, 0.50);
 	float glow = light + 0.45 * ticks + 0.75 * rune + 0.7 * star + 0.10 * smoothstep(0.95, 0.0, r);
 	ALBEDO = colour * strength * glow * smoothstep(1.0, 0.96, r);
+	// Light adds to what is behind it, but must not make the eye buffer opaque: where the eye buffer is
+	// cleared over a page or menu layer (or passthrough), additive blending wrote alpha 1 across the
+	// whole quad and showed it as a black square. Coverage follows the light itself.
+	ALPHA = clamp(max(ALBEDO.r, max(ALBEDO.g, ALBEDO.b)), 0.0, 1.0);
 }
 """
 const COLUMNS := 24
@@ -95,6 +113,8 @@ var single := false
 ## Paper brightness, 0..1: dimmer paper in a dark scene keeps the lenses from glaring.
 ## Brightness and warmth over every sheet: multiplies the paper and its printing.
 var light := Color.WHITE
+## Which side the turning leaf is over: 1 the right, -1 the left, 0 while no leaf is in the air.
+var leaf_side := 0
 
 var _left := MeshInstance3D.new()
 var _right := MeshInstance3D.new()
@@ -239,6 +259,10 @@ func _ribbon(section: PackedVector2Array, mirrored: bool, lifted: bool = false) 
 	var mesh := ArrayMesh.new(); mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
 
+## Debug A/B: the leaves' supersampled read against a plain trilinear one.
+func set_sharp(on: bool) -> void:
+	for sheet in [_left, _right, _leaf] + _riffle: sheet.material_override.set_shader_parameter("sharpened", on)
+
 ## Shows a bookmark tab over each open page that carries one.
 func set_marked(left: bool, right: bool) -> void:
 	if _tabs.size() == 2: _tabs[0].visible = left; _tabs[1].visible = right
@@ -258,12 +282,14 @@ func set_leaf(front: Texture2D, back: Texture2D) -> void:
 
 func turn(amount: float) -> void:
 	if amount <= 0.0 or amount >= 1.0:
+		leaf_side = 0
 		_leaf.visible = false; _sparks.emitting = false
 		for sheet in [_left, _right]: sheet.material_override.set_shader_parameter("shadow", 0.0)
 		return
 	var section := _bend(amount)
 	_leaf.mesh = _ribbon(section, false, true)
 	var tip := section[section.size() - 1]
+	leaf_side = 1 if tip.x > 0.0 else -1
 	_sparks.position = Vector3(tip.x, 0, tip.y)
 	_sparks.emitting = true
 	_leaf.material_override.set_shader_parameter("light", _rgb(light) * (1.0 - 0.06 * sin(PI * amount)))

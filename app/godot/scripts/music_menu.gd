@@ -1,7 +1,10 @@
 extends "res://scripts/ray_menu.gd"
 ## One ray-operated surface for the global library and the photo mini player.
 signal close_requested
+## The song playing goes into, or out of, the app's favourites.
+signal favorite_requested(uri: String, title: String)
 signal import_requested(destination: String)
+signal destination_selected(destination: String, files: Array)
 const ChoiceFields := preload("res://scripts/choice_fields.gd")
 const StorageView := preload("res://scripts/audio_storage_view.gd")
 const TextInput := preload("res://scripts/system_text_input.gd")
@@ -41,6 +44,7 @@ const DONE := 430
 const FROM_LIBRARY := 431
 const CANCEL := 432
 const EDIT_NAME := 435
+const FAVORITE := 436
 const INLINE_UP := 600
 const INLINE_DOWN := 610
 const INLINE_REMOVE := 620
@@ -48,6 +52,8 @@ const LIST_ROWS := 5
 var choices := ChoiceFields.new(self)
 var editor := TextInput.new(self)
 var audio: Node
+## uri -> {"selected", "locked"} from the app's favourites.
+var favorite_provider: Callable
 var compact := false
 var _volume_open := false
 var _unmuted_volume := 45.0
@@ -63,6 +69,7 @@ var offset := 0
 var modal := ""
 var target_track := ""
 var target_playlist := ""
+var directory_files: Array = []
 var name_text := ""
 var _state := {}
 var _rows: Array[Dictionary] = []
@@ -81,6 +88,7 @@ func _ready() -> void:
 	choices.previewed.connect(_choice_previewed)
 
 func open(_mini: bool) -> void:
+	directory_files.clear()
 	editor.cancel()
 	compact = true; _volume_open = false; modal = ""; editing = false; _modal_history.clear(); choices.reset(); _drag.clear()
 	if view == "add": view = "tracks"; offset = _add_return_offset
@@ -88,6 +96,7 @@ func open(_mini: bool) -> void:
 	visible = true; refresh()
 
 func dismiss() -> void:
+	directory_files.clear()
 	editor.cancel()
 	choices.reset(); _drag.clear(); super()
 
@@ -115,6 +124,7 @@ func navigate_back() -> bool:
 		for hand in ["left_hand", "right_hand"]: cancel_pointer(hand)
 	elif not choices.opened.is_empty(): choices.reset()
 	elif _volume_open: _volume_open = false
+	elif modal == "choose_list" and not directory_files.is_empty(): return false
 	elif not modal.is_empty(): _close_modal()
 	elif compact: return false
 	elif view == "add": view = "tracks"; selected_tracks.clear(); offset = _add_return_offset
@@ -128,6 +138,12 @@ func _open_modal(value: String) -> void:
 	_modal_history.append({"modal": modal, "offset": offset})
 	modal = value; offset = 0
 	if value == "name": _edit_name()
+
+func choose_directory_destination(files: Array) -> void:
+	open(false)
+	directory_files = files.duplicate(true)
+	target_track = ""; target_playlist = ""
+	_open_modal("choose_list"); refresh()
 
 func _close_modal(all: bool = false) -> void:
 	editor.cancel()
@@ -149,6 +165,7 @@ static func _track_icon(row: Dictionary) -> String:
 
 func _source_caption() -> String:
 	if audio.current.is_empty(): return I18n.t("Choose audio")
+	if not audio.directory_track.is_empty(): return I18n.t("Music")
 	var source: Dictionary = audio.library.playlist(audio.queue_source)
 	if not source.is_empty(): return I18n.t("Playlist") + " · " + _playlist_label(source)
 	return I18n.t("Audio library") if audio.queue_source.is_empty() else str(audio.queue_name) + " · " + I18n.t("Queue")
@@ -280,7 +297,7 @@ func _collect_rows() -> void:
 			if not row.is_empty(): _rows.append(row)
 	elif view == "queue":
 		for id in audio.queue:
-			var row: Dictionary = audio.library.resolve(str(id))
+			var row: Dictionary = audio.track_info(str(id))
 			if not row.is_empty(): _rows.append(row)
 	else:
 		for row in audio.library.all_tracks():
@@ -358,7 +375,7 @@ func _draw_track_rows() -> void:
 			_glyph(INLINE_UP + i, "arrow_up", Vector2(0.38, y), 0.070, offset + i > 0, I18n.t("Move up"))
 			_glyph(INLINE_DOWN + i, "arrow_down", Vector2(0.48, y), 0.070, offset + i + 1 < _rows.size(), I18n.t("Move down"))
 			_glyph(INLINE_REMOVE + i, "minus", Vector2(0.59, y), 0.070, true, I18n.t("Remove from playlist"))
-		elif view != "add": _glyph(MORE + i, "more", Vector2(0.59, y), 0.075, true, I18n.t("Track options"))
+		elif view != "add" and not row.has("uri"): _glyph(MORE + i, "more", Vector2(0.59, y), 0.075, true, I18n.t("Track options"))
 
 func _draw_paging(y: float) -> void:
 	if _rows.size() <= _capacity(): return
@@ -384,8 +401,13 @@ func _draw_status(y: float) -> void:
 	elif int(_state.audio_failed) > 0: _glyph(RETRY_IMPORT, "refresh", Vector2(action_x, y), 0.05, true, I18n.t("Retry"))
 
 func _draw_transport() -> void:
-	var title := _label(_fit_title(I18n.t(str(_state.audio_title)), "", 0.96, 24), Vector3(0, 0.105, 0.004), 24)
+	var title := _label(_fit_title(I18n.t(str(_state.audio_title)), "", 0.80, 24), Vector3(0, 0.105, 0.004), 24)
 	title.font = ui_bold_font()
+	# A song from a folder can be kept in the favourites; the library's own tracks are already kept here.
+	var song := favorite_uri()
+	var liked: Dictionary = favorite_provider.call(song) if favorite_provider.is_valid() and not song.is_empty() else {}
+	_glyph(FAVORITE, "lock" if liked.get("locked", false) else "star_filled" if liked.get("selected", false) else "star",
+		Vector2(0.46, 0.105), 0.07, not song.is_empty(), I18n.t("Remove favorite" if liked.get("selected", false) else "Add favorite"))
 	var seek_y := 0.025
 	var width := 1.0
 	if float(_state.audio_duration) > 0:
@@ -440,6 +462,8 @@ func _draw_modal() -> void:
 		return
 	var label := I18n.t(str(audio.library.resolve(target_track).get("label", ""))) if not target_track.is_empty() else _playlist_label(audio.library.playlist(target_playlist))
 	if modal == "add_source": label = _playlist_label(audio.library.playlist(playlist_id))
+	if modal == "choose_list" and not directory_files.is_empty():
+		label = str(directory_files[0].title) if directory_files.size() == 1 else I18n.t("%d tracks") % directory_files.size()
 	_label(_fit_title(label, "", 1.04, 20), Vector3(0, top - 0.10, 0.004), 20).modulate = MUTED
 	if modal == "choose_list":
 		_rows = audio.library.playlists.duplicate(true)
@@ -478,6 +502,11 @@ func _draw_modal() -> void:
 		_buttons.back().node.get_child(0).modulate = UiTheme.color("music_danger")
 	_pill(CANCEL, "Cancel", Vector2(0, -0.29), 0.40)
 
+## The playing song's own address when it came from a folder, or "" for the library's tracks.
+func favorite_uri() -> String:
+	if audio == null or not audio.has_method("track_info"): return ""
+	return str(audio.track_info(str(_state.get("audio_current", ""))).get("uri", ""))
+
 func _activate(id: int) -> void:
 	if choices.action(id): return
 	if id == CANCEL and modal == "name":
@@ -487,6 +516,10 @@ func _activate(id: int) -> void:
 	if id in [CLOSE, BACK, CANCEL]:
 		if id == CLOSE or not navigate_back(): editor.cancel(); close_requested.emit()
 		return
+	if id == FAVORITE:
+		var song := favorite_uri()
+		if not song.is_empty(): favorite_requested.emit(song, str(_state.audio_title))
+		refresh(); return
 	if id == SETTINGS and modal.is_empty():
 		_volume_open = false; _open_modal("settings"); refresh(); return
 	if id in [PREVIOUS, NEXT]:
@@ -498,6 +531,8 @@ func _activate(id: int) -> void:
 			if target_playlist.is_empty():
 				var created: String = audio.library.create_playlist(name_text, [target_track] if not target_track.is_empty() else [])
 				if not created.is_empty():
+					if not directory_files.is_empty():
+						destination_selected.emit(created, directory_files.duplicate()); return
 					if not target_track.is_empty(): _close_modal(true)
 					else: _modal_history.clear(); playlist_id = created; view = "tracks"; modal = ""; editing = false; offset = 0
 			elif audio.rename_playlist(target_playlist, name_text): _close_modal(true)
@@ -506,6 +541,8 @@ func _activate(id: int) -> void:
 		if modal != "choose_list": target_track = ""
 		target_playlist = ""; name_text = I18n.t("Playlist") + " %d" % (audio.library.playlists.size() + 1); _open_modal("name"); refresh(); return
 	if modal == "choose_list" and id >= ROW and id < ROW + LIST_ROWS:
+		if not directory_files.is_empty() and offset + id - ROW < _rows.size():
+			destination_selected.emit(str(_rows[offset + id - ROW].id), directory_files.duplicate()); return
 		if offset + id - ROW < _rows.size() and audio.library.add_track(str(_rows[offset + id - ROW].id), target_track): _close_modal(true)
 		refresh(); return
 	if modal == "add_source":

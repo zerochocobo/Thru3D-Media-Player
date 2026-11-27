@@ -35,6 +35,7 @@ func _run() -> void:
 		elif operation=="home": events.append(["cinema_home",true]))
 	root.add_child(menu); menu.open("global")
 	check(menu._cards.any(func(item): return item.id=="cinema" and item.title=="Grand cinema"),"Scene cards include final cinema name")
+	check(menu._cards[0].id=="magic_cottage" and menu._cards[0].title=="Wizard's Attic","The wizard's attic leads the built-in scenes")
 	check(not menu._buttons.any(func(item): return item.target in [menu.FREE_MOVEMENT,menu.CINEMA_LIGHTS]),"Cinema shortcuts leave the shared footer")
 	tap(menu,menu.ADJUST)
 	check(menu.view=="adjust","Scene adjustment opens by ray")

@@ -36,7 +36,7 @@ func companions115(c *gin.Context) {
 	var folder model.Obj
 	if req.FolderID != "" {
 		folder, err = native.PlayerFolder(ctx, parent, req.FolderID)
-	} else if cached, exists := cloudFolders[req.Mount+parent]; exists && time.Now().Before(cached.expires) {
+	} else if cached, exists := cachedFolder(req.Mount + parent); exists && time.Now().Before(cached.expires) {
 		folder = cached.object
 	} else {
 		folder, err = native.PlayerFolder(ctx, parent, "")

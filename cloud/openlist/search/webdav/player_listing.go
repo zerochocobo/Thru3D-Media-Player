@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
@@ -24,9 +25,12 @@ type playerDAVSnapshot struct {
 	expires time.Time
 }
 
-var playerDAVCache = map[playerDAVKey]*playerDAVSnapshot{} // JNI management is serial.
+var playerDAVMu sync.Mutex
+var playerDAVCache = map[playerDAVKey]*playerDAVSnapshot{}
 
 func PlayerDropStorage(id uint) {
+	playerDAVMu.Lock()
+	defer playerDAVMu.Unlock()
 	for key := range playerDAVCache {
 		if key.driver.GetStorage().ID == id {
 			delete(playerDAVCache, key)
@@ -35,6 +39,8 @@ func PlayerDropStorage(id uint) {
 }
 
 func (d *WebDav) PlayerDropPages() {
+	playerDAVMu.Lock()
+	defer playerDAVMu.Unlock()
 	for key := range playerDAVCache {
 		if key.driver == d {
 			delete(playerDAVCache, key)
@@ -53,11 +59,15 @@ func (d *WebDav) PlayerFolder(_ context.Context, remote, id string) (model.Obj, 
 	return &model.Object{ID: id, Path: full, Name: path.Base(full), IsFolder: true}, nil
 }
 func (d *WebDav) PlayerForget(remote string) {
+	playerDAVMu.Lock()
+	defer playerDAVMu.Unlock()
 	delete(playerDAVCache, playerDAVKey{d, path.Join("/", d.RootFolderPath, remote)})
 }
 
 // Consult the same snapshot as PlayerPageSized. Native directory calls are serialized.
 func (d *WebDav) PlayerPageCacheHit(dir model.Obj) bool {
+	playerDAVMu.Lock()
+	defer playerDAVMu.Unlock()
 	snapshot := playerDAVCache[playerDAVKey{d, dir.GetPath()}]
 	return snapshot != nil && time.Now().Before(snapshot.expires)
 }
@@ -85,7 +95,9 @@ func (d *WebDav) PlayerPageSized(ctx context.Context, dir model.Obj, cursor, ord
 		return nil, "", 0, errors.New("invalid directory sort order")
 	}
 	key := playerDAVKey{d, dir.GetPath()}
+	playerDAVMu.Lock()
 	snapshot := playerDAVCache[key]
+	playerDAVMu.Unlock()
 	if snapshot == nil || time.Now().After(snapshot.expires) {
 		files, err := d.client.PlayerReadDir(ctx, dir.GetPath())
 		if err != nil {
@@ -102,6 +114,7 @@ func (d *WebDav) PlayerPageSized(ctx context.Context, dir model.Obj, cursor, ord
 		if err := ctx.Err(); err != nil {
 			return nil, "", 0, err
 		}
+		playerDAVMu.Lock()
 		delete(playerDAVCache, key)
 		total := len(objects)
 		for _, s := range playerDAVCache {
@@ -116,6 +129,7 @@ func (d *WebDav) PlayerPageSized(ctx context.Context, dir model.Obj, cursor, ord
 		}
 		snapshot = &playerDAVSnapshot{objects: objects, expires: time.Now().Add(2 * time.Minute)}
 		playerDAVCache[key] = snapshot
+		playerDAVMu.Unlock()
 	}
 	if snapshot.order != order {
 		snapshot.ordered = append([]model.Obj(nil), snapshot.objects...)

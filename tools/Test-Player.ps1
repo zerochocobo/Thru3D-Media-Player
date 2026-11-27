@@ -362,6 +362,8 @@ foreach ($browseTest in @('test_directory_browse_memory', 'test_directory_browse
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'file-editing-memory-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Renamed history and bookmarks regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_local_storage.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'local-storage-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'local-storage-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Removable storage host regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_builtin_experience.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'builtin-experience-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'builtin-experience-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Built-in experience regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_cloud_pagination.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'cloud-pagination-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'cloud-pagination-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Cloud pagination regression failed.' }
 foreach ($pagingTest in @('test_cloud_native_paging', 'test_cloud_paging_options')) {

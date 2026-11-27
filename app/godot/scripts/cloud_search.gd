@@ -144,7 +144,9 @@ func rows() -> Array[Dictionary]:
 	for item in entries:
 		if subtitle_context and (item.get("container", false) or not menu.SubtitleSources.supported(str(item.get("title", "")))): continue
 		var location := str(item.get("relative_path", "")).get_base_dir().trim_prefix("/")
-		result.append({"title": str(item.title), "detail": location, "icon": "subtitle" if subtitle_context else "folder" if item.get("container", false) else ("image" if item.get("kind") == "image" else "video"), "kind": "subtitle" if subtitle_context else item.get("kind", "video"), "folder": item.get("container", false), "search_result": item})
+		var kind := "folder" if item.get("container", false) else str(item.get("kind", "video"))
+		var icon: String = {"audio": "music", "scene": "cube", "book": "bookmark", "archive": "folder", "pdf": "folder"}.get(kind, kind)
+		result.append({"title": str(item.title), "detail": location, "icon": icon, "kind": kind, "enabled": subtitle_context or kind not in ["scene", "subtitle"], "folder": item.get("container", false), "search_result": item})
 	return result
 func choose(row: Dictionary) -> bool:
 	if not active or not row.has("search_result"): return false
@@ -191,7 +193,9 @@ func receive(id: int, payload: String) -> bool:
 		if entry.get("container", false):
 			if entry.has("cloud_id"): menu._cloud_stack.back()["cloud_id"] = entry.cloud_id
 			menu._load_cloud(); menu.refresh()
-		else: menu._choose(menu._entry_row(entry))
+		else:
+			if entry.get("kind") == "audio": menu._load_cloud(); menu.refresh()
+			menu._choose(menu._entry_row(entry))
 		return true
 	if not data.get("entries") is Array: menu.status = "Cloud search failed"; menu.refresh(); return true
 	entries = data.entries; page = requested_page; next_cursor = str(data.get("next_cursor", "")); limited = bool(data.get("limited", false))

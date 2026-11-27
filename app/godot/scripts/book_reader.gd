@@ -2,6 +2,7 @@ extends Node3D
 ## Reading mode: a great tome afloat in the air, read with a wand. It owns its pages, position, type
 ## settings and controls, and shares nothing with the video or photo viewers.
 
+const LeafMotion := preload("res://scripts/book_leaf_motion.gd")
 const Model := preload("res://scripts/book_model.gd")
 const Bar := preload("res://scripts/book_bar.gd")
 const Wand := preload("res://scripts/book_wand.gd")
@@ -9,13 +10,14 @@ const I18n := preload("res://scripts/i18n.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
 const PageLayers := preload("res://scripts/book_page_layers.gd")
 const MarkMemory := preload("res://scripts/book_mark_memory.gd")
+const Privacy := preload("res://scripts/media_privacy.gd")
 const Narration := preload("res://scripts/book_narration.gd")
 const Fonts := preload("res://scripts/book_fonts.gd")
 ## A warm wash over the paragraph being read aloud, with a bar in the margin beside it. Added on top
 ## of the page (and its sharp layer), so it never dims the words.
 const READING_SHADER := """
 shader_type spatial;
-render_mode unshaded, blend_add, cull_disabled, depth_draw_never, depth_test_disabled, shadows_disabled;
+render_mode unshaded, blend_premul_alpha, cull_disabled, depth_draw_never, depth_test_disabled, shadows_disabled;
 uniform vec3 colour : source_color = vec3(1.0, 0.72, 0.30);
 uniform float bar = 0.02;
 uniform vec2 size = vec2(1.0);
@@ -25,6 +27,10 @@ void fragment() {
 	float wash = smoothstep(0.0, 0.012, min(edge.x, edge.y)) * 0.07;
 	float mark = step(UV.x * size.x, bar) * 0.55;
 	ALBEDO = colour * max(wash, mark);
+	// Light adds to what is behind it, but must not make the eye buffer opaque: where the eye buffer is
+	// cleared over a page or menu layer (or passthrough), additive blending wrote alpha 1 across the
+	// whole quad and showed it as a black square. Coverage follows the light itself.
+	ALPHA = clamp(max(ALBEDO.r, max(ALBEDO.g, ALBEDO.b)), 0.0, 1.0);
 }
 """
 const EXTENSIONS := ["epub", "txt", "mobi", "azw3", "azw", "prc"]
@@ -57,7 +63,7 @@ const TURNS := ["swish", "drag", "buttons", "stick", "palm"]
 const EDGE := 1024
 ## Printed pages (PDF) carry their own small type and scans; they are drawn sharper.
 const PRINTED_EDGE := 1536
-const TURN_SECONDS := 0.55
+const TURN_SECONDS := LeafMotion.TURN_SECONDS
 ## The tome is four times a desk folio and hangs well beyond arm's reach, so its type subtends what
 ## a held book's would while the object itself towers over the reader.
 const SCALE := 4.0
@@ -163,24 +169,43 @@ var _spot := MeshInstance3D.new()
 var _connected: Object
 var _home := Transform3D.IDENTITY
 var _placed := false
+## Where the reader carried the tome with the grip, in the frame of the last recentre, and the
+## distance setting it was carried at; empty until carried, cleared by bringing the book here.
+var _carried: Variant = null
+var _carried_reach := 1.0
 var _arrive := 1.0
-var _yaw := 0.0
-var _swish := 0.0
-## Where along the book the wand has pointed lately: [msec, x in page widths from the spine].
-var _sweep: Array[Vector2] = []
-var _rest := 0.0
+var _sweep := LeafMotion.new()
 var _held_since := 0
 ## Blank leaves in the air on the way to a distant page: {direction, phase, to, from}.
 var _riffle := {}
 var _reading_direction := 1
 ## The whole book's layout, arrived while a leaf was in the air: swapped in once it lands.
 var _pending := []
+## Bumped whenever the native side's page numbers change under the same session (a fuller layout swapped
+## in): pages drawn or decoded for the old numbering are dropped.
+var _generation := 0
+## How far the last fuller layout moved the page numbers (new minus old), for the voice to follow.
+var layout_shift := 0
+## Set by the app while the reader is away (headset off) or another menu is up: automatic turning waits.
+var held := false
+var _unrecorded := ""
+## Seconds spent reading the open book, across openings. A page left untouched for a long while stops
+## counting (the reader has gone), unless the book is reading itself aloud or turning its own pages.
+var reading_seconds := 0.0
+var _seconds := {} # uri -> seconds, for this run when history may not record it
+var _active_ms := 0
+const IDLE_MS := 5 * 60 * 1000
 var _note_until := 0
+## When a book that could not be opened puts itself away again (msec), or 0.
+var _failed_until := 0
+## Whether the wand last pointed at the book (or just beside it); a trigger elsewhere calls the ring.
+var pointing := false
+const FAILED_SECONDS := 3.0
 var _retried := false
 
-## Whether readers are shown books at all: Debug only until the reading mode is released.
+## Whether readers are shown books at all. Released: Debug and Release both offer the reading mode.
 static func offered() -> bool:
-	return OS.is_debug_build()
+	return true
 
 static func named(path: String, name: String = "") -> bool:
 	var extension := name.get_extension().to_lower()
@@ -328,6 +353,7 @@ func _style() -> String:
 func open(path: String, name: String) -> bool:
 	if not Methods.supports(platform, "book_open"): return false
 	if active: _remember()
+	_unrecorded = ""
 	narration.stop()
 	_release()
 	_retried = false
@@ -337,8 +363,10 @@ func open(path: String, name: String) -> bool:
 		platform.connect("book_page", _on_page)
 		if platform.has_signal("book_found"): platform.connect("book_found", _on_found)
 	uri = path; title = name; active = true; visible = true
+	if bar: bar.forget() # The way back and the search belonged to the last book.
 	marks = _load_marks()
 	_restore = _saved()
+	reading_seconds = _saved_seconds(); _active_ms = Time.get_ticks_msec()
 	_begin()
 	if not _placed: recenter()
 	_arrive = 0.0
@@ -351,15 +379,17 @@ func _begin() -> void:
 	_textures.clear(); _wanted.clear()
 	message = "Loading…"
 	_pending = []
+	_failed_until = 0
 	_request = platform.book_open(uri, _style())
-	if _request <= 0: message = "Book could not be opened"
+	if _request <= 0: _fail("Book could not be opened"); return
 	_show()
 	_refresh_bar()
 
 func _on_ready(id: int, payload: String) -> void:
 	if not active or id != _request: return
 	if session == id and (not _turn.is_empty() or not _riffle.is_empty()):
-		_pending = [id, payload]; return
+		# The native side already numbers pages the new way: nothing drawn from now on fits the old numbers.
+		_pending = [id, payload]; _generation += 1; _wanted.clear(); return
 	var parsed: Variant = JSON.parse_string(payload)
 	# The chapter on show came first and the rest failed: keep reading it and try the rest once more.
 	if session == id and count > 0 and parsed is Dictionary and parsed.get("state") == "error":
@@ -368,22 +398,39 @@ func _on_ready(id: int, payload: String) -> void:
 		return
 	if not parsed is Dictionary or parsed.get("state") != "ready":
 		var code := str(parsed.get("error", "")) if parsed is Dictionary else ""
-		message = "DRM-protected books are not supported" if code == "BOOK_PROTECTED" else "Book could not be opened"
-		_show(); _refresh_bar(); return
+		_fail({"BOOK_PROTECTED": "DRM-protected books are not supported", "BOOK_CACHE_FULL": "Not enough storage",
+			"PDF_PAGE_LIMIT": "This book is too long to open"}.get(code, "Book could not be opened")); return
 	# The chapter being read comes first; the whole book follows and replaces it at the same words.
-	if session == id and count > 0:
+	var swapped := session == id and count > 0
+	var was_first := first_page()
+	var held_place := ""
+	if swapped:
 		var places: Array = info.get("at", [])
 		if first_page() < places.size(): _restore = str(places[first_page()])
+		# The page being read aloud stays in view even when the new numbering pairs the pages the other way.
+		if narration.on and narration.cursor >= 0 and narration.cursor < places.size(): held_place = str(places[narration.cursor])
 		_turn = {}; _queued = 0; _riffle = {}; model.turn(0.0)
-		_textures.clear(); _wanted.clear()
+		_textures.clear(); _wanted.clear(); _generation += 1
 	info = parsed; session = id; count = int(parsed.get("pages", 0)); contents = parsed.get("contents", [])
+	# Chapters keep their page breaks in every layout, so old and new numbers differ by one offset.
+	layout_shift = _page_at(_restore) - was_first if swapped else 0
 	_variants[uri] = variant()
 	# Only now is the book's language known: lay it out again in the font chosen for it.
 	if font_path() != _laid_font:
 		message = ""; page = _spread(_page_at(_restore)); _restyle(); return
 	message = ""
-	page = _spread(_page_at(_restore))
+	page = _spread(_page_at(held_place if not held_place.is_empty() else _restore))
 	_settle()
+
+## Nothing of the book could be shown: say why, then put it away so the library comes back.
+func _fail(words: String) -> void:
+	message = words
+	_failed_until = Time.get_ticks_msec() + int(FAILED_SECONDS * 1000.0)
+	_show(); _refresh_bar()
+
+## Whether the open book failed and is about to close; any button closes it at once.
+func failed() -> bool:
+	return active and _failed_until > 0
 
 ## Reading positions are "chapter/block/character" in the book's own text, so they survive any change
 ## of type size or page shape.
@@ -583,6 +630,12 @@ func _dress_turn() -> void:
 		model.set_leaf(_texture(page - step), null if single else _texture(page - step + 1))
 		model.set_pages(null if single else _texture(page - step - 1), _texture(page))
 
+## The page lying on [side] (1 right, -1 left) under a turning leaf, as [_dress_turn] lays it.
+func _resting(side: int) -> int:
+	var step := _step()
+	if int(_turn.direction) > 0: return page + step if side > 0 else page - 1
+	return page if side > 0 else page - step - 1
+
 func _show() -> void:
 	if _turn.is_empty(): model.set_pages(null if single else _texture(page - 1), _texture(page))
 	else: _dress_turn()
@@ -591,6 +644,7 @@ func _show() -> void:
 	_note.visible = not message.is_empty()
 
 func _settle() -> void:
+	_active_ms = Time.get_ticks_msec()
 	model.progress = fraction()
 	model.rebuild()
 	_want_window()
@@ -610,27 +664,27 @@ func _want_window() -> void:
 		if single and index != page and absi(index - page) > 3: continue
 		if index < 0 or index >= count: continue
 		keep[index] = true
-		if _textures.has(index) or _wanted.has(index): continue
+		if _textures.has(index) or _wanted.has(index) or not _pending.is_empty(): continue
 		_wanted[index] = true
 		platform.book_render(session, index, _edge())
 	for index in _textures.keys():
 		if not keep.has(index): _textures.erase(index)
 
 func _on_page(id: int, index: int, path: String) -> void:
-	if id != session or not active or path.is_empty():
+	if id != session or not active or path.is_empty() or not _pending.is_empty():
 		if not path.is_empty() and Methods.supports(platform, "book_discard"): platform.book_discard(path)
-		_wanted.erase(index)
+		if _pending.is_empty(): _wanted.erase(index)
 		return
-	WorkerThreadPool.add_task(_decode.bind(id, index, path))
+	WorkerThreadPool.add_task(_decode.bind(id, _generation, index, path))
 
-func _decode(id: int, index: int, path: String) -> void:
+func _decode(id: int, generation: int, index: int, path: String) -> void:
 	var image := Image.load_from_file(path)
 	if image != null and not image.is_empty(): image.generate_mipmaps()
-	_decoded.call_deferred(id, index, path, image)
+	_decoded.call_deferred(id, generation, index, path, image)
 
-func _decoded(id: int, index: int, path: String, image: Image) -> void:
+func _decoded(id: int, generation: int, index: int, path: String, image: Image) -> void:
 	if is_instance_valid(platform) and Methods.supports(platform, "book_discard"): platform.book_discard(path)
-	if id != session or not active: return
+	if id != session or generation != _generation or not active: return
 	_wanted.erase(index)
 	if image == null or image.is_empty(): return
 	_textures[index] = ImageTexture.create_from_image(image)
@@ -639,6 +693,9 @@ func _decoded(id: int, index: int, path: String, image: Image) -> void:
 func _process(delta: float) -> void:
 	_sync_layers()
 	if not active: return
+	if _failed_until > 0 and Time.get_ticks_msec() > _failed_until:
+		close_book(); return
+	_count_reading(delta)
 	if _note_until > 0 and Time.get_ticks_msec() > _note_until:
 		_note_until = 0; _note.visible = not message.is_empty(); _note.text = I18n.t(message) if not message.is_empty() else ""
 	if not _pending.is_empty() and _turn.is_empty() and _riffle.is_empty():
@@ -664,11 +721,7 @@ func _process(delta: float) -> void:
 		return
 	if _turn.is_empty() or _turn.held: return
 	var target := float(_turn.target)
-	# A leaf let go with momentum keeps it, then eases down onto the page.
-	var speed := maxf(1.0 / (TURN_SECONDS * (0.6 if _queued != 0 else 1.0)), absf(float(_turn.get("speed", 0.0))))
-	_turn.speed = move_toward(float(_turn.get("speed", 0.0)), 0.0, delta * 4.0)
-	var remaining := absf(target - float(_turn.amount))
-	_turn.amount = move_toward(float(_turn.amount), target, delta * speed * clampf(remaining * 6.0 + 0.25, 0.25, 1.0))
+	LeafMotion.advance(_turn,delta,_queued != 0)
 	model.turn(float(_turn.amount))
 	if not is_equal_approx(float(_turn.amount), target): return
 	var committed: bool = _turn.commit
@@ -703,6 +756,7 @@ func _pose() -> void:
 ## turns a leaf; holding the trigger on a page lifts that leaf and carries it with the wand.
 func aim(origin: Variant, direction: Variant, pressed: bool, delta: float, free: bool = true, bare: bool = false) -> void:
 	if not active or not origin is Vector3 or not direction is Vector3:
+		pointing = false
 		wand.visible = false; _spot.visible = false
 		if not _turn.is_empty() and _turn.held: _drop()
 		return
@@ -715,68 +769,76 @@ func aim(origin: Variant, direction: Variant, pressed: bool, delta: float, free:
 	if not hit.is_empty(): _spot.global_transform = Transform3D(global_basis, hit.point + global_basis.z * 0.02)
 	var across: Vector3 = global_basis.inverse() * direction
 	var yaw := atan2(across.x, -across.z)
-	_swish = lerpf(_swish, (yaw - _yaw) / maxf(delta, 0.001), 0.5)
-	_yaw = yaw
-	_rest = maxf(0.0, _rest - delta)
-	# A swish only counts across the book: the wand must sweep over the pages, not just turn in the air.
-	var now := Time.get_ticks_msec()
-	var reach: Dictionary = model.hit(from, direction, 1.35)
-	if not reach.is_empty(): _sweep.append(Vector2(now, model.to_local(reach.point).x / model.page_size.x))
-	while not _sweep.is_empty() and now - _sweep[0].x > 320: _sweep.pop_front()
+	var reach: Dictionary = model.hit(from,direction,1.35)
+	pointing = not reach.is_empty()
+	_sweep.track(yaw,model.to_local(reach.point).x/model.page_size.x if pointing else null,delta)
 	if not _turn.is_empty() and _turn.held:
 		if not pressed: _drop(); return
 		if not hit.is_empty():
 			var x: float = (model.to_local(hit.point)).x
-			var want := clampf((model.page_size.x - x) / (model.page_size.x * 2.0), 0.03, 0.97)
-			# The leaf trails the wand a touch, like paper with a little weight, and remembers how fast it moved.
-			var before := float(_turn.amount)
-			_turn.amount = lerpf(before, want, 1.0 - exp(-delta * 16.0))
-			_turn.speed = lerpf(float(_turn.get("speed", 0.0)), (float(_turn.amount) - before) / maxf(delta, 0.001), 0.4)
+			LeafMotion.carry(_turn,x/model.page_size.x,delta)
 			model.turn(float(_turn.amount))
 		return
 	if not free:
-		_spot.visible = false; _swish = 0.0; return
+		_spot.visible = false; _sweep.velocity = 0.0; return
 	if turns.drag and pressed and _turn.is_empty() and _held_since == 0 and not hit.is_empty():
 		_held_since = Time.get_ticks_msec()
 		_lift(1 if int(hit.side) > 0 or single else -1, true)
 		return
 	if not pressed: _held_since = 0
-	if turns.swish and _turn.is_empty() and not pressed and _rest <= 0.0 and absf(_swish) > SWISH and not reach.is_empty() and _swept() > 1.0:
-		_rest = SWISH_REST; _sweep.clear()
-		turn(1 if _swish < 0.0 else -1)
-
-## How far, in page widths, the wand's point has crossed the book in the last moments.
-func _swept() -> float:
-	if _sweep.size() < 2: return 0.0
-	var low := INF; var high := -INF
-	for sample in _sweep: low = minf(low, sample.y); high = maxf(high, sample.y)
-	return high - low
+	if turns.swish and _turn.is_empty() and not pressed and pointing:
+		var direction_to_turn := _sweep.swish()
+		if direction_to_turn: turn(direction_to_turn)
 
 ## Letting go: a leaf carried far enough, or simply tapped, finishes its turn; otherwise it falls back.
 func _drop() -> void:
-	var forward := int(_turn.direction) > 0
-	var amount := float(_turn.amount)
-	var tapped := Time.get_ticks_msec() - _held_since < 260
-	var speed := float(_turn.get("speed", 0.0)) * (1.0 if forward else -1.0)
-	# A flick finishes the turn however little of it was carried; a flick back returns the leaf.
-	var finish := tapped or speed > FLICK or (speed > -FLICK and (amount > 0.45 if forward else amount < 0.55))
-	if not finish: model.sound(randf_range(1.0, 1.1), -6.0)
-	_turn.held = false
-	_turn.commit = finish
-	_turn.target = (1.0 if forward else 0.0) if finish else (0.0 if forward else 1.0)
+	if not LeafMotion.drop(_turn,Time.get_ticks_msec()-_held_since<260):
+		model.sound(randf_range(1.0,1.1),-6.0)
 
 func _saved() -> String:
 	if _memory.has(uri): return str(_memory[uri])
 	return str(catalog.lookup(uri).get("book_at", "")) if catalog and catalog.has_method("lookup") else ""
 
+## The file was renamed: the open book and this run's reading place follow it.
+func relocate(old_uri: String, new_uri: String) -> void:
+	if _memory.has(old_uri): _memory[new_uri] = _memory[old_uri]; _memory.erase(old_uri)
+	if _seconds.has(old_uri): _seconds[new_uri] = _seconds[old_uri]; _seconds.erase(old_uri)
+	if uri == old_uri: uri = new_uri
+
+## History was cleared while this book was open: it is not recorded again until it is opened again.
+func forget_history(network_only: bool) -> void:
+	for key in _memory.keys():
+		if not network_only or not Privacy.is_local(str(key)): _memory.erase(key)
+	for key in _seconds.keys():
+		if not network_only or not Privacy.is_local(str(key)): _seconds.erase(key)
+	if active and (not network_only or not Privacy.is_local(uri)): _unrecorded = uri
+
 func _remember() -> void:
+	if not _unrecorded.is_empty() and uri == _unrecorded: return
 	var places: Array = info.get("at", [])
 	if count <= 0 or first_page() >= places.size(): return
 	var at := str(places[first_page()])
 	_memory[uri] = at
+	_seconds[uri] = int(reading_seconds)
 	if catalog and catalog.has_method("set_book_position"):
 		catalog.opened(uri, title, false, "book")
 		catalog.set_book_position(uri, at)
+		if catalog.has_method("set_book_seconds"): catalog.set_book_seconds(uri, int(reading_seconds))
+
+func _saved_seconds() -> float:
+	if _seconds.has(uri): return float(_seconds[uri])
+	return float(catalog.lookup(uri).get("book_seconds", 0)) if catalog and catalog.has_method("lookup") else 0.0
+
+## Counts reading time while the book is open, in view and being read.
+func _count_reading(delta: float) -> void:
+	if count <= 0 or failed() or held or _arrive < 1.0: return
+	if narration.on or auto or Time.get_ticks_msec() - _active_ms < IDLE_MS: reading_seconds += delta
+
+## Time spent reading this book, as "2h 5m" or "12m"; empty under a minute.
+func reading_time() -> String:
+	var minutes := int(reading_seconds) / 60
+	if minutes <= 0: return ""
+	return I18n.t("%dh %dm") % [minutes / 60, minutes % 60] if minutes >= 60 else I18n.t("%dm") % minutes
 
 func set_font(value: int) -> void:
 	value = clampi(value, 0, COLUMNS.size() - 1)
@@ -834,7 +896,7 @@ func auto_wait() -> int: return int(AUTO_SECONDS[auto_step]) * (1 if single else
 
 ## Time passes only while the book lies open and still, with the controls put away.
 func _auto_tick(delta: float) -> void:
-	if narration.on: return
+	if narration.on or held: return
 	if count <= 0 or bar.visible or not _turn.is_empty() or not _riffle.is_empty() or _arrive < 1.0: return
 	_auto_elapsed += delta
 	if _auto_elapsed < auto_wait(): return
@@ -871,13 +933,31 @@ func recenter() -> void:
 	# Its face leans down a little towards the reader below.
 	_frame = frame
 	_placed = true
+	_carried = null
 	_place()
+
+## Whether the tome can be taken hold of: it has finished arriving and stands where it was placed.
+func movable() -> bool:
+	return active and visible and _placed and _arrive >= 1.0
+
+## The grip let go of the tome where it now hangs: it stays there, and a later distance setting moves
+## it nearer or further along the same line from the reader.
+func keep_carried() -> void:
+	if not movable(): return
+	_carried = _frame.affine_inverse() * global_transform
+	_carried_reach = REACHES[reach_step]
+	_home = global_transform
 
 ## Where the tome hangs in the frame of the last recentre, at the reader's chosen distance; nearer,
 ## it also sits less far below the eyes so the gaze still meets it at the same angle.
 func _place() -> void:
 	var reach: float = REACHES[reach_step]
-	_home = _frame * Transform3D(Basis(Vector3.RIGHT, deg_to_rad(LEAN)), Vector3(0, LIFT * reach, -DISTANCE * reach))
+	if _carried is Transform3D:
+		var held: Transform3D = _carried
+		held.origin *= reach / _carried_reach
+		_home = _frame * held
+	else:
+		_home = _frame * Transform3D(Basis(Vector3.RIGHT, deg_to_rad(LEAN)), Vector3(0, LIFT * reach, -DISTANCE * reach))
 	_pose()
 
 func set_size_step(value: int) -> void:
@@ -899,14 +979,17 @@ func close_book() -> void:
 	auto = false
 	narration.stop()
 	active = false; visible = false; bar.dismiss(); wand.visible = false; _spot.visible = false
+	_failed_until = 0; pointing = false
 	uri = ""; info = {}; contents = []; count = 0
 	closed.emit()
 
-## The open pages go to the compositor while nothing moves them; a turning, riffling or arriving book
-## is drawn whole in the eye buffer.
+## The open pages go to the compositor while nothing moves them; a riffling or arriving book is drawn
+## whole in the eye buffer. While a leaf turns, only its side is: the page lying still on the other
+## side stays sharp (it was the whole spread going soft for the turn that read as a blur).
 func _sync_layers() -> void:
 	if not layers.enabled: return
-	if not active or not visible or count <= 0 or not _turn.is_empty() or not _riffle.is_empty() or _arrive < 1.0:
+	var turning: bool = not _turn.is_empty()
+	if not active or not visible or count <= 0 or (turning and model.leaf_side == 0) or not _riffle.is_empty() or _arrive < 1.0:
 		layers.show_pages([], active and visible and count > 0); return
 	var place: Transform3D = model.global_transform
 	var scale: float = place.basis.get_scale().x
@@ -914,13 +997,20 @@ func _sync_layers() -> void:
 	var size: Vector2 = model.page_size * scale
 	var pages := []
 	for side in ([1] if single else [1, -1]):
-		var texture: Texture2D = _texture(page if side > 0 else page - 1)
-		if texture == null: continue
+		# Each side keeps its own layer (an empty entry puts it aside), so a page does not repaint for moving slot.
+		var index: int = _resting(side) if turning else (page if side > 0 else page - 1)
+		var texture: Texture2D = null if turning and side == model.leaf_side else _texture(index)
+		if texture == null: pages.append({}); continue
 		# A hair in front of the paper, so the hole wins the depth test over the page it covers.
 		var centre: Vector3 = place * Vector3(side * model.page_size.x * 0.5, 0, 0.0015)
 		pages.append({"texture": texture, "transform": Transform3D(facing, centre), "size": size, "light": model.light,
-			"mark": _reading_rect(page if side > 0 else page - 1)})
+			"mark": _reading_rect(index)})
 	layers.show_pages(pages, true)
+
+## The reading position a page starts at ("chapter/block/character"), or "" past the pages laid out.
+func place_of(index: int) -> String:
+	var places: Array = info.get("at", [])
+	return str(places[index]) if index >= 0 and index < places.size() else ""
 
 ## Where a reading position falls now, or -1 while only part of the book is laid out and it lies beyond.
 func locate(at: String) -> int:

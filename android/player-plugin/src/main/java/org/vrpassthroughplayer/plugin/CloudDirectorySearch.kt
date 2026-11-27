@@ -9,14 +9,12 @@ internal class CloudDirectorySearch(private val now: () -> Long = { System.nanoT
     private data class Snapshot(val account: String, val identity: String, val path: String, val query: String,
         val kind: String, val files: List<CloudFile>, val expires: Long)
     private val snapshots = LinkedHashMap<String, Snapshot>()
-    @Synchronized fun search(account: String, identity: String, client: CloudClient, path: String, query: String,
+    fun search(account: String, identity: String, client: CloudClient, path: String, query: String,
         kind: String, cursor: String, refresh: Boolean): JSONObject {
         require(kind in setOf("all", "video", "image", "folder", "subtitle") && query.isNotBlank())
         val parts = cursor.split(':'); var key = parts.first(); var offset = 0
         val snapshot: Snapshot
         if (cursor.isEmpty()) {
-            snapshots.entries.removeAll { it.value.expires <= now() }
-            while (snapshots.size >= 4) snapshots.remove(snapshots.keys.first())
             val files = ArrayList<CloudFile>(); val seen = HashSet<String>(); var next = 0
             while (true) {
                 if (Thread.currentThread().isInterrupted) throw CloudFailure()
@@ -29,14 +27,19 @@ internal class CloudDirectorySearch(private val now: () -> Long = { System.nanoT
             }
             val matches = files.filter { it.name.contains(query, ignoreCase = true) &&
                 if (it.folder) kind in setOf("all", "folder") else if (kind == "subtitle") SidecarSubtitles.supportedFile(it.name)
-                else MediaKinds.supportedFileName(it.name) && (kind == "all" || MediaKinds.fileNameKind(it.name) == kind) }
+                else MediaKinds.listedFileName(it.name) && (kind == "all" || MediaKinds.fileNameKind(it.name) == kind) }
                 .sortedWith(CloudSortedPages.comparator("name_asc"))
             snapshot = Snapshot(account, identity, path, query, kind, matches, now() + 300_000)
-            key = UUID.randomUUID().toString(); snapshots[key] = snapshot
+            key = UUID.randomUUID().toString()
+            synchronized(this) {
+                snapshots.entries.removeAll { it.value.expires <= now() }
+                while (snapshots.size >= 4) snapshots.remove(snapshots.keys.first())
+                snapshots[key] = snapshot
+            }
         } else {
             require(parts.size == 2 && !refresh) { "Search expired. Search again" }
             offset = parts[1].toIntOrNull() ?: error("Search expired. Search again")
-            snapshot = snapshots[key] ?: error("Search expired. Search again")
+            snapshot = synchronized(this) { snapshots[key] } ?: error("Search expired. Search again")
             require(snapshot.account == account && snapshot.identity == identity && snapshot.path == path &&
                 snapshot.query == query && snapshot.kind == kind && snapshot.expires > now()) { "Search expired. Search again" }
         }

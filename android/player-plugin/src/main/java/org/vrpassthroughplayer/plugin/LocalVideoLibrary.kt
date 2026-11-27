@@ -299,7 +299,7 @@ internal class LocalVideoLibrary(
         val uri = Uri.parse(request.getString("uri"))
         require(uri.scheme == "file" && uri.authority.isNullOrEmpty())
         val roots = LocalStorageVolumes.roots(activity)
-        val file = MediaDeletePolicy.local(File(uri.path ?: ""), fileRoots(roots))
+        val file = MediaDeletePolicy.local(File(uri.path ?: ""), fileRoots(roots), forRename = true)
         check(!removable(file)) { "USB storage is read-only" }
         check(writable() && MediaDeletePolicy.regular(file) && file.parentFile?.canWrite() == true) { "File deletion permission denied" }
         MediaDeletePolicy.unchanged(file.length(), file.lastModified(), request.getLong("size"), request.getLong("modified"))
@@ -393,7 +393,7 @@ internal class LocalVideoLibrary(
         } }
         val editableVolume = !removable(directory)
         val result = JSONArray()
-        children.filter { !it.name.startsWith(".") && (it.isDirectory || if (subtitlesOnly) SidecarSubtitles.supportedFile(it.name) else MediaKinds.supportedFileName(it.name)) }
+        children.filter { !it.name.startsWith(".") && (it.isDirectory || if (subtitlesOnly) SidecarSubtitles.supportedFile(it.name) else MediaKinds.listedFileName(it.name)) }
             .sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
             .forEach {
                 val editablePath = editableVolume && !(it.absolutePath.replace('\\', '/') + "/").contains("/Android/")
@@ -409,7 +409,7 @@ internal class LocalVideoLibrary(
                     val kind = MediaKinds.fileNameKind(it.name)
                     entry.put("uri", Uri.fromFile(it).toString()).put("size", it.length()).put("kind", kind)
                         .put("can_delete", writable() && editablePath && directory.canWrite() && MediaDeletePolicy.regular(it) && it.canonicalPath == it.absolutePath)
-                        .put("can_rename", writable() && editablePath && directory.canWrite() && MediaDeletePolicy.regular(it) && it.canonicalPath == it.absolutePath && kind == "video")
+                        .put("can_rename", writable() && managementAvailable && MediaKinds.renameableFileName(it.name))
                         .put("delete_reason", "File deletion permission denied")
                 }
                 result.put(entry)

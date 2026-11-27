@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -61,8 +62,34 @@ type searchSession struct {
 	Capped       bool
 }
 
-var cloudSearchSessions = map[string]*searchSession{} // Serialized JNI management requests.
+var searchMu sync.Mutex
+var cloudSearchSessions = map[string]*searchSession{}
 
+func cachedSearch(key string) *searchSession {
+	searchMu.Lock()
+	defer searchMu.Unlock()
+	return cloudSearchSessions[key]
+}
+func rememberSearch(key string, session *searchSession) {
+	searchMu.Lock()
+	defer searchMu.Unlock()
+	for id, cached := range cloudSearchSessions {
+		if time.Now().After(cached.Expires) {
+			delete(cloudSearchSessions, id)
+		}
+	}
+	if len(cloudSearchSessions) >= 4 {
+		var oldest string
+		var expires time.Time
+		for id, cached := range cloudSearchSessions {
+			if oldest == "" || cached.Expires.Before(expires) {
+				oldest, expires = id, cached.Expires
+			}
+		}
+		delete(cloudSearchSessions, oldest)
+	}
+	cloudSearchSessions[key] = session
+}
 func searchRoutes(router *gin.Engine) {
 	router.POST("/search", searchCloud)
 	router.POST("/searchresolve", resolveCloudSearch)
@@ -150,27 +177,12 @@ func searchCloud(c *gin.Context) {
 		}
 		key = parts[0]
 		page, err = strconv.Atoi(parts[1])
-		session = cloudSearchSessions[key]
+		session = cachedSearch(key)
 		if err != nil || page < 0 || session == nil || time.Now().After(session.Expires) || !sameSearch(session.Request, req) || session.Storage != storage {
 			searchError(c, "Search expired. Search again")
 			return
 		}
 	} else {
-		for id, cached := range cloudSearchSessions {
-			if time.Now().After(cached.Expires) {
-				delete(cloudSearchSessions, id)
-			}
-		}
-		if len(cloudSearchSessions) >= 4 {
-			var oldest string
-			var expires time.Time
-			for id, cached := range cloudSearchSessions {
-				if oldest == "" || cached.Expires.Before(expires) {
-					oldest, expires = id, cached.Expires
-				}
-			}
-			delete(cloudSearchSessions, oldest)
-		}
 		key = searchKey()
 		if key == "" {
 			searchError(c, "Cloud search unavailable")
@@ -232,7 +244,7 @@ func searchCloud(c *gin.Context) {
 			searchError(c, "Search scope unavailable")
 			return
 		}
-		cloudSearchSessions[key] = session
+		rememberSearch(key, session)
 	}
 	cached, ok := session.Pages[page]
 	if !ok {
@@ -357,7 +369,7 @@ func resolveCloudSearch(c *gin.Context) {
 		return
 	}
 	key, _, ok := strings.Cut(req.Token, ":")
-	session := cloudSearchSessions[key]
+	session := cachedSearch(key)
 	if !ok || session == nil || session.Request.Mount != req.Mount || time.Now().After(session.Expires) {
 		searchError(c, "Search expired. Search again")
 		return

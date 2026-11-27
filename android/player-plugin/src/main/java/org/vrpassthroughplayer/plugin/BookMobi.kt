@@ -231,7 +231,7 @@ internal class MobiBook(file: File, name: String) : Book {
     override fun close() = access.close()
 
     /** Huffman/CDIC text compression: a prefix code over 32-bit windows with dictionary entries that may nest. */
-    private class Huffman(head: ByteArray, first: Int, record: (Int) -> ByteArray) {
+    internal class Huffman(head: ByteArray, first: Int, record: (Int) -> ByteArray) {
         private val dict1 = LongArray(256)
         private val minCode = LongArray(33); private val maxCode = LongArray(33)
         private val entries = ArrayList<ByteArray?>()
@@ -276,8 +276,10 @@ internal class MobiBook(file: File, name: String) : Book {
                 var entry = dict1[(code ushr 24).toInt()]
                 var length = (entry and 0x1f).toInt()
                 var maximum: Long
+                // A damaged table with a zero-length code would never consume a bit.
+                require(length in 1..32) { "BOOK_UNAVAILABLE" }
                 if (entry and 0x80 == 0L) {
-                    while (code < minCode[length]) length++
+                    while (length < 32 && code < minCode[length]) length++
                     maximum = maxCode[length]
                 } else maximum = ((entry ushr 8) shl (32 - length)) or ((1L shl (32 - length)) - 1)
                 n -= length
@@ -291,6 +293,7 @@ internal class MobiBook(file: File, name: String) : Book {
                     entries[index] = phrase; literal[index] = true
                 }
                 out.write(phrase)
+                require(out.size() <= Books.TEXT_BYTES) { "BOOK_UNAVAILABLE" }
             }
             return out.toByteArray()
         }

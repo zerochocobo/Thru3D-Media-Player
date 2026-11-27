@@ -3,6 +3,28 @@ package org.vrpassthroughplayer.plugin
 import org.json.JSONObject
 import java.net.URI
 
+// Values passed here are enum labels, process-local sequence numbers and timings only.
+internal object CloudRequestTrail {
+    private fun preferences(context: android.content.Context) =
+        context.getSharedPreferences("cloud_request_diagnostics", android.content.Context.MODE_PRIVATE)
+
+    fun clear(context: android.content.Context) {
+        preferences(context).edit().putLong("since_ms", System.currentTimeMillis() + 1).apply()
+    }
+    fun history(context: android.content.Context): String {
+        if (!PlaybackPrivacy.diagnostics) return ""
+        val since = preferences(context).getLong("since_ms", 0) / 1000.0
+        val lines = runCatching { DiagnosticLogs.logcat(null, "-t", "384", "-v", "epoch", "Thru3DCloud:I", "*:S") }.getOrDefault("")
+        return lines.lineSequence().filter {
+            val time = it.trimStart().substringBefore(' ').toDoubleOrNull()
+            time != null && time >= since && "Thru3DCloud" in it
+        }.joinToString("\n")
+    }
+    fun record(line: String) {
+        if (PlaybackPrivacy.diagnostics) runCatching { android.util.Log.i("Thru3DCloud", line) }
+    }
+}
+
 /** Error DTOs contain bounded, redacted diagnostics, never a response body or stack trace. */
 internal object CloudDiagnostics {
     private val header = Regex("(?im)(cookie|set-cookie|authorization)\\s*[:=][^\\r\\n]*")
@@ -41,9 +63,17 @@ internal object CloudDiagnostics {
         val detail = result.optString("error_detail").ifBlank { message }
         if (result.optString("error_reason") in setOf("cloud_page_expired", "cloud_location_expired", "cloud_metadata_limit"))
             throw CloudFailure(result.getString("error_reason"), detail, apiCode = code.takeIf { it != 0 })
-        // Drivers report a provider's non-member rejection as text; the sign-in screen needs it as a reason.
-        if ("membership required" in detail.lowercase())
-            throw CloudFailure("cloud_membership_required", "OpenList $route · code $code\n$detail", apiCode = code.takeIf { it != 0 })
+        // Drivers report these provider rejections as text; the screens need them as reasons.
+        val reason = detail.lowercase().let {
+            when {
+                "membership required" in it -> "cloud_membership_required"
+                // Token drivers say this only when the provider declined the refresh, never for an outage.
+                "sign in required" in it -> "cloud_login_required"
+                else -> ""
+            }
+        }
+        if (reason.isNotEmpty())
+            throw CloudFailure(reason, "OpenList $route · code $code\n$detail", apiCode = code.takeIf { it != 0 })
         throw CloudFailure(detail = "OpenList $route · code $code\n$detail", apiCode = code.takeIf { it != 0 })
     }
     fun providerFailure(json: JSONObject): CloudFailure {

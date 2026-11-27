@@ -117,3 +117,22 @@ func TestPlayerGuangyaListingAndPlayback(t *testing.T) {
 		t.Fatalf("link %v %v", link, err)
 	}
 }
+
+func TestPlayerGuangyaRefreshFailureKeepsItsReason(t *testing.T) {
+	for _, c := range []struct {
+		status     int
+		body, want string
+	}{
+		{200, `{"code":117,"msg":"free text 13100000000"}`, "guangya sign in required; refresh declined (117)"},
+		{400, `{"error":"invalid_grant","error_description":"free text"}`, "guangya sign in required; refresh declined (invalid_grant)"},
+		{401, `{}`, "guangya sign in required; refresh declined (HTTP 401)"},
+		{502, `<html>bad gateway</html>`, "guangya sign-in unavailable (HTTP 502)"},
+		{503, `{}`, "guangya sign-in unavailable (HTTP 503)"},
+	} {
+		serve(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(c.status); w.Write([]byte(c.body)) })
+		d := &PlayerGuangya{PlayerCredential: PlayerCredential{ClientID: testClient, RefreshToken: "r"}}
+		if err := d.Init(context.Background()); err == nil || err.Error() != c.want {
+			t.Fatalf("%d %s: %v", c.status, c.body, err)
+		}
+	}
+}

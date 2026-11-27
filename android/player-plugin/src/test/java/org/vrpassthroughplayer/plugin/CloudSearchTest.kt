@@ -6,7 +6,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CloudSearchTest {
-    @Test fun subtitleSearchKeepsAllTextFormatsAndNormalMediaSearchStillExcludesThem() {
+    @Test fun subtitleSearchAndOrdinaryListingsRecognizeTheSameTextFormats() {
         val names = listOf("Film.zh.SRT", "Film.en.ass", "Film.ssa", "Film.vtt", "Film.smi", "Film.sami", "Film.sub", "Film.sup", ".Film.srt", "Film.mp4", "Film.nfo")
         val directory = Directory(names.mapIndexed { index, name -> CloudFile(name, false, 128, "$index") } + CloudFile("Film", true, 0, "folder"))
         val search = CloudDirectorySearch()
@@ -18,10 +18,10 @@ class CloudSearchTest {
             assertEquals("subtitle", entry.getString("kind"))
             assertEquals(item.getString("token"), entry.getString("search_token"))
             assertEquals(item.getString("path"), search.resolve("a", "id", entry.getString("search_token")).getString("path"))
-            assertNull(CloudLibrary.searchEntry(item, "/a/media", "all"))
+            assertEquals("subtitle", CloudLibrary.searchEntry(item, "/a/media", "all")!!.getString("kind"))
         }
         val normal = search.search("a", "id", directory, "/media", "film", "all", "", false).getJSONArray("content")
-        assertEquals(2, normal.length()) // video and folder
+        assertEquals(9, normal.length()) // video, folder and seven text subtitles
         for (name in listOf("Film.mp4", "Film.sup", ".Film.srt", "Film\u0001.srt")) {
             assertNull(CloudLibrary.searchEntry(JSONObject().put("name", name).put("is_dir", false).put("token", "bad"), "/a/media", "subtitle"))
         }

@@ -38,7 +38,8 @@ internal class PdfSheets(file: File, private val title: String, private val look
     override val pages = renderer.pageCount
 
     init {
-        if (pages !in 1..20000) { close(); error("BOOK_UNAVAILABLE") }
+        if (pages < 1) { close(); error("BOOK_UNAVAILABLE") }
+        if (pages > 20000) { close(); error("PDF_PAGE_LIMIT") }
     }
 
     override fun describe(): JSONObject {

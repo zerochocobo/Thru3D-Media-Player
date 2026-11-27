@@ -12,6 +12,8 @@ internal class DlnaLibrary(
     private val saved = LinkedHashMap<String, JSONObject>()
     private val found = LinkedHashMap<String, DlnaClient.Server>()
     private val references = LinkedHashMap<String, JSONObject>()
+    private data class ListedFile(val parent: String, val kind: String)
+    private val listedFiles = LinkedHashMap<Pair<String, String>, ListedFile>()
     // Match the player's 32-entry history. Directory browsing must not evict played items.
     private val playbackReferences = LinkedHashMap<String, JSONObject>()
     private var durableReferences = JSONArray()
@@ -71,6 +73,7 @@ internal class DlnaLibrary(
     }
 
     @Synchronized fun remove(id: String) {
+        listedFiles.keys.removeAll { it.first == id }
         val previous = saved.remove(id) ?: return
         try { store() } catch (error: Exception) { saved[id] = previous; throw error }
         // A saved server may also have been discovered; refresh can find it again.
@@ -88,6 +91,12 @@ internal class DlnaLibrary(
         synchronized(this) {
             for (i in 0 until entries.length()) {
                 val entry = entries.getJSONObject(i)
+                val kind = entry.optString("kind")
+                if (kind in fileKinds) {
+                    val key = id to entry.getString("id")
+                    listedFiles.remove(key)
+                    listedFiles[key] = ListedFile(objectId, kind)
+                }
                 if (entry.optString("kind") != "video") continue
                 val uri = entry.getString("uri")
                 if (PlaybackPrivacy.networkHistory) transientReferences.remove(uri) else transientReferences.add(uri)
@@ -99,6 +108,7 @@ internal class DlnaLibrary(
             }
             // Keep every video in the complete displayed directory available for subtitle selection.
             while (references.size > DlnaClient.MAX_BROWSE_ITEMS) references.remove(references.keys.first())
+            while (listedFiles.size > DlnaClient.MAX_BROWSE_ITEMS) listedFiles.remove(listedFiles.keys.first())
             // Reference caching must never turn a successful browse into an error.
             runCatching { store() }
         }
@@ -130,6 +140,8 @@ internal class DlnaLibrary(
             error("DLNA server unavailable")
         }
         val objectId = java.net.URLDecoder.decode(identity.rawPath.removePrefix("/"), "UTF-8")
+        val listed = synchronized(this) { listedFiles[id to objectId] }
+        val expectedKinds = listed?.let { setOf(it.kind) } ?: fileKinds
         val metadataDiagnostics = if (PlaybackPrivacy.diagnostics) DlnaClient.BrowseDiagnostics(objectId) else null
         var parentDiagnostics: DlnaClient.BrowseDiagnostics? = null
         var parentStatus = "not_queried"
@@ -140,12 +152,12 @@ internal class DlnaLibrary(
             val metadataEntries = try {
                 DlnaClient.browse(endpoint, objectId, metadata = true, diagnostics = metadataDiagnostics)
             } catch (error: DlnaClient.EmptyMetadataResponse) {
-                if (knownParent(id, objectId, null) == null) throw error
+                if (listed == null && knownParent(id, objectId, null) == null) throw error
                 JSONArray()
             }
-            val metadata = media(metadataEntries, objectId)
+            val metadata = media(metadataEntries, objectId, expectedKinds)
             val parentId = metadata?.optString("parent_id")?.takeIf { it.isNotBlank() && it != objectId }
-                ?: knownParent(id, objectId, metadata?.optString("uri"))
+                ?: listed?.parent ?: knownParent(id, objectId, metadata?.optString("uri"))
             // Some servers list the stream only in BrowseDirectChildren. Use the saved parent
             // as a location hint and obtain the resource again, including any renewed URL.
             val entry = if (metadata != null) {
@@ -155,7 +167,7 @@ internal class DlnaLibrary(
                 parentStatus = "no_known_parent"
                 val parent = parentId ?: error("DLNA item unavailable")
                 parentDiagnostics = metadataDiagnostics?.let { DlnaClient.BrowseDiagnostics(objectId) }
-                media(DlnaClient.browse(endpoint, parent, diagnostics = parentDiagnostics), objectId)
+                media(DlnaClient.browse(endpoint, parent, diagnostics = parentDiagnostics), objectId, expectedKinds)
                     ?.takeIf { DlnaClient.httpUri(it.optString("uri")) != null } ?: error("DLNA item unavailable")
             }
             val resolved = entry.getString("uri")
@@ -265,13 +277,15 @@ internal class DlnaLibrary(
 
     private fun video(entries: JSONArray, objectId: String): JSONObject? = media(entries, objectId, setOf("video"))
 
-    /** Images and audio open through the same dlna:// identity as videos; subtitles stay video-only. */
-    private fun media(entries: JSONArray, objectId: String, kinds: Set<String> = setOf("video", "image", "audio")): JSONObject? =
+    /** Display-only attachments cannot satisfy a playable object lookup. */
+    private val fileKinds = setOf("video", "image", "audio", "pdf", "book", "archive")
+    private fun media(entries: JSONArray, objectId: String, kinds: Set<String>): JSONObject? =
         (0 until entries.length())
             .mapNotNull { entries.optJSONObject(it) }
             .singleOrNull { it.optString("kind") in kinds && it.optString("id") == objectId }
 
     @Synchronized fun clearPlaybackReferences() {
+        listedFiles.clear()
         references.clear(); playbackReferences.clear(); transientReferences.clear(); durableReferences = JSONArray(); durablePlayback = JSONArray()
         store()
     }

@@ -34,10 +34,10 @@ GLuint pair_slot(int width, int height, jlong id);
 bool pair_estimate(jlong id, jlong before_id);
 void pair_forget(jlong id);
 /** pair_picture drawn straight into [image], an sRGB texture of the pairs' size (a picture layer's). */
-bool pair_show(GLuint image, jlong before_id, jlong after_id, float phase);
+float pair_show(GLuint image, jlong before_id, jlong after_id, float phase); // actual phase drawn, or -1 on failure
 /** A texture of the pairs' size holding the picture [phase] (0..1) of the way from one kept pair to
  * another: a pair's own copy at 0 or 1 or where the motion is missing. 0 when neither pair is kept. */
-GLuint pair_picture(jlong before_id, jlong after_id, float phase);
+GLuint pair_picture(jlong before_id, jlong after_id, float& phase); // updates phase when a source texture is returned
 /** Frees the copies and everything made for them. */
 void pair_release();
 }

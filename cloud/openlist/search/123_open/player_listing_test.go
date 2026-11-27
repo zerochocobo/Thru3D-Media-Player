@@ -108,3 +108,59 @@ func TestPlayer123CursorPages(t *testing.T) {
 		t.Error("invalid folder accepted")
 	}
 }
+
+func TestPlayer123HungRequestDoesNotHoldTheNextAccountsQuota(t *testing.T) {
+	old := base.RestyClient
+	base.RestyClient = resty.New()
+	defer func() { base.RestyClient = old }()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer slow" {
+			close(entered)
+			select {
+			case <-r.Context().Done():
+				return
+			case <-release:
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "{\"code\":0}")
+	}))
+	defer server.Close()
+	defer close(release)
+	quota := InitApiInfo(server.URL, 1)
+	driver := func(token string) *Open123 {
+		d := &Open123{tm: &tokenManager{expiredAt: time.Now().Add(time.Hour)}}
+		d.AccessToken = token
+		return d
+	}
+	slow, fast := driver("slow"), driver("fast")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := slow.Request(quota, http.MethodGet, func(r *resty.Request) { r.SetContext(ctx) }, nil)
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("slow driver not dispatched")
+	}
+	healthy, stop := context.WithTimeout(context.Background(), 3*time.Second)
+	defer stop()
+	if _, err := fast.Request(quota, http.MethodGet, func(r *resty.Request) { r.SetContext(healthy) }, nil); err != nil {
+		t.Fatal("healthy account waited for slow response", err)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected cancellation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("slow request did not return")
+	}
+}

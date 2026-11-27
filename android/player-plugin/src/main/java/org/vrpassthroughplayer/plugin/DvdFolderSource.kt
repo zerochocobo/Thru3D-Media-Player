@@ -8,7 +8,7 @@ import java.io.IOException
 internal class DvdFolderSource(private val layout: DvdFolderImage.Layout, private val file: (String) -> StreamSource) : StreamSource {
     companion object {
         /** [files]: the folder's raw names and sizes; [file] opens one by the folder's own spelling. */
-        fun of(files: List<Pair<String, Long>>, file: (String) -> StreamSource): DvdFolderSource {
+        fun of(files: List<Pair<String, Long>>, onVerifying: (DvdFolderSource) -> Unit = {}, file: (String) -> StreamSource): DvdFolderSource {
             val named = HashMap<String, Pair<String, Long>>()
             for (item in files) {
                 val name = DvdFolderImage.canonical(item.first) ?: continue
@@ -16,7 +16,10 @@ internal class DvdFolderSource(private val layout: DvdFolderImage.Layout, privat
             }
             val entries = DvdFolderImage.select(named.mapValues { it.value.second })
             val source = DvdFolderSource(DvdFolderImage.layout(entries)) { file(named.getValue(it).first) }
-            try { DvdFolderImage.verify(entries, source::head) } catch (error: Exception) { source.close(); throw error }
+            try {
+                onVerifying(source)
+                DvdFolderImage.verify(entries, source::head)
+            } catch (error: Exception) { source.close(); throw error }
             return source
         }
     }

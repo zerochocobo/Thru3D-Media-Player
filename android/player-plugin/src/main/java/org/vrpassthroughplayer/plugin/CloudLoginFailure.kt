@@ -25,6 +25,7 @@ internal class CloudLoginFailure(stage: Stage, error: Exception? = null) : IOExc
                 "i/o timeout" in detail || "context deadline exceeded" in detail -> "TIMEOUT"
                 "x509:" in detail || "tls handshake" in detail -> "TLS"
                 cloud?.reason == "cloud_membership_required" -> "MEMBER"
+                cloud?.reason == "cloud_login_required" -> "LOGIN"
                 stage == Stage.MOUNT && "failed to get user id" in detail -> "PROFILE"
                 "failed to refresh token:" in detail || "empty token returned from official api" in detail -> "REFRESH"
                 else -> ""

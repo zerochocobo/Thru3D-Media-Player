@@ -61,7 +61,11 @@ func (d *PlayerGuangya) renew(ctx context.Context) error {
 	}
 	token, err := parseToken(response)
 	if err != nil {
-		return errors.New("guangya sign in required")
+		// A declined refresh needs a new sign-in; an unreadable reply may be a passing outage.
+		if reason, declined := strings.CutPrefix(err.Error(), "guangya sign-in declined "); declined {
+			return fmt.Errorf("guangya sign in required; refresh declined %s", reason)
+		}
+		return err
 	}
 	d.accessToken = token.AccessToken
 	lifetime := time.Duration(min(max(token.ExpiresIn, 120), 86400)) * time.Second
@@ -140,7 +144,7 @@ func (d *PlayerGuangya) request(ctx context.Context, endpoint string, query map[
 		}
 		return fmt.Errorf("guangya API declined (%d)", body.Code)
 	}
-	return errors.New("guangya sign in required")
+	return errors.New("guangya sign in required; refreshed token rejected (117)")
 }
 
 type playerFile struct {

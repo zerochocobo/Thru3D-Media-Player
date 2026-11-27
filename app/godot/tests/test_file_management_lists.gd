@@ -40,6 +40,60 @@ func button(menu: Node3D, id: int) -> Dictionary:
 	return {}
 func pick(menu: Node3D, index: int) -> void:
 	menu.file_actions.toggle(menu.rows[index])
+
+func click_target(menu: Node3D, id: int) -> void:
+	var item := button(menu, id)
+	check(not item.is_empty(), "Ray target exists: %d" % id)
+	if item.is_empty(): return
+	var node: Node3D = item.node
+	var origin := node.to_global(Vector3(0, 0, 0.3))
+	var direction := -node.global_basis.z
+	menu.update_pointer("right_hand", origin, direction, true)
+	menu.press_pointer("right_hand", origin, direction, true)
+	menu.release_pointer("right_hand", origin, direction, true)
+
+func rename_visible_files(menu: Node3D, platform: Platform) -> void:
+	for compact in [true, false]:
+		for view in ["list", "grid"]:
+			fixture(menu); menu.set_compact(compact); menu.set_view_mode(view)
+			menu.file_actions.set_enabled(true); menu._local_entries.clear()
+			for title in ["a.zh.SRT", "b.GLB", "c.jpg", "d.flac", "e.pdf", "f.epub", "g.zip", "h.mp4"]:
+				menu._local_entries.append({"title":title, "uri":"file:///disk/" + title, "size":10, "modified":1, "can_rename":true, "can_delete":true})
+			for i in 12: menu._local_entries.append({"title":"z%d.mp4" % i, "uri":"file:///disk/z%d.mp4" % i, "can_rename":false})
+			menu.scroll = 0; menu.refresh()
+			click_target(menu, Menu.ROW_BASE)
+			check(not menu.file_actions.has_selection() and menu.visible, "A subtitle stays inert while browsing")
+			if view == "grid": click_target(menu, Actions.EDIT_MODE)
+			for i in 2:
+				click_target(menu, (Menu.ROW_BASE if view == "grid" else Actions.SELECT_BASE) + i)
+				check(menu.file_actions.selected_row().title == menu.rows[i].title and not has(menu, Actions.DELETE_FILE), "Display-only file can be selected exclusively for rename")
+				click_target(menu, Actions.Rename.OPEN)
+				check(menu.file_actions.rename.name == menu.rows[i].title.get_basename() and not has(menu, Actions.Rename.SAME_NAME), "Only the selected file's stem is editable")
+				check(menu.text_snapshot().contains("." + menu.rows[i].title.get_extension()), "Original mixed-case extension is displayed")
+				menu.system_text_input.set_text("file_rename", "new.name"); menu._activate(Actions.Rename.PREVIEW)
+				check(platform.calls.back().target.new_name == "new.name" and not platform.calls.back().target.include_same_name, "Preview sends only the stem and excludes companions")
+				platform.respond("ready", {"preview":true, "plan":"plan", "moves":[{"from":menu.rows[i].title, "to":"new.name." + menu.rows[i].title.get_extension()}]})
+				menu._activate(Actions.CANCEL)
+				click_target(menu, (Menu.ROW_BASE if view == "grid" else Actions.SELECT_BASE) + i)
+			if view == "grid":
+				for i in [2,3,4]:
+					click_target(menu, Menu.ROW_BASE + i)
+					check(menu.file_actions.selected_row().get("title") == menu.rows[i].title, "Photo, song and PDF tiles select without opening a viewer")
+					click_target(menu, Menu.ROW_BASE + i)
+				click_target(menu, Menu.ROW_BASE)
+				for fraction in [0.0, 0.2, 0.65, 0.67, 0.85, 0.97, 0.99, 1.0]:
+					menu._set_scroll(fraction)
+					var footer: Rect2 = button(menu, Actions.Rename.OPEN).rect
+					for tile in menu._buttons:
+						if tile.target < Menu.ROW_BASE or tile.target >= Menu.ROW_BASE + menu._drawn_slots() or not tile.node.is_visible_in_tree(): continue
+						var mid: Vector3 = menu.to_local(tile.node.global_position)
+						var tile_rect := Rect2(Vector2(mid.x, mid.y) - tile.rect.size / 2, tile.rect.size)
+						check(tile_rect.end.y < footer.position.y or tile_rect.position.y > footer.end.y, "Visible tiles stay clear of the action row at scroll %s" % fraction)
+				click_target(menu, Actions.Rename.OPEN)
+				check(menu.file_actions.modal == "rename", "The footer receives the ray after scrolling")
+				menu._activate(Actions.CANCEL)
+			menu.file_actions.set_enabled(false)
+	menu.set_compact(false)
 func fixture(menu: Node3D) -> void:
 	menu.section = Menu.Section.LOCAL; menu._local_all_files = true; menu.view_mode = "list"; menu.visible = true
 	menu._local_stack = [{"id": "/disk", "title": "Disk"}]
@@ -51,7 +105,8 @@ func _initialize() -> void: call_deferred("_run")
 func _run() -> void:
 	Menu.I18n.use("en")
 	var platform := Platform.new()
-	var menu := Menu.new(); root.add_child(menu); menu.attach_platform(platform); fixture(menu)
+	var menu := Menu.new(); root.add_child(menu); menu.attach_platform(platform)
+	rename_visible_files(menu, platform); platform.calls.clear(); fixture(menu)
 	var baseline: Rect2 = button(menu, Menu.ROW_BASE).rect
 	check(not has(menu, Actions.SELECT_BASE), "Default lists have no checkboxes")
 	menu.file_actions.set_enabled(true); menu.refresh()

@@ -4,7 +4,7 @@
 
 Imported originals, generated previews and content-addressed bindings live under the application's private background library, outside public Git. Removing a caller asset and changing a mode selection are distinct operations. The built-in previews are runtime UI assets, not personal imports or store promotion. Belfast/Morning/Milky Way previews derive from the attributed originals; the Milky Way derivative retains CC BY4.0 and ESO/S. Brunier credit. The cinema preview comes from the project environment; actual generated scene/texture payloads remain separately prepared.
 
-统一入口可预览与管理场景，全局／图片共享素材但独立保存选择；私人导入、预览缓存及绑定数据不公开。图片不继承影院；阅读模式源代码预留不等于已开放功能。内置缩略图保留原背景许可与署名。
+统一入口可预览与管理场景，全局／图片共享素材但独立保存选择；私人导入、预览缓存及绑定数据不公开。图片不继承影院；0.19.0 起阅读模式开放，详见[阅读源码范围](BOOK_SOURCE.md)。内置缩略图保留原背景许可与署名。
 
 ## 0.17.2 scene controls and distribution boundary
 
@@ -39,3 +39,7 @@ The Scene Gallery verifies downloaded files against their catalog size and SHA-2
 The 53 bundled previews are rendered views of adapted scenes. The catalog records each original title, creator and source link. Both the underlying scene assets and these adapted previews are offered under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). See the [scene catalog](../app/godot/scene_library/catalog.json).
 
 The Scene menu offers six environment themes and optional screen mood light. Ambient sound uses the separately supplied audio listed in the build documentation. Screen mood light starts off for new settings. Room tint requires passthrough color-LUT support. Thanks to [@ghanshyamv1](https://github.com/ghanshyamv1) for the initial screen mood light implementation in [PR #9](https://github.com/zerochocobo/Thru3D-Media-Player/pull/9).
+
+## 0.19.0 Wizard’s Attic
+
+Wizard’s Attic (魔法阁楼 / 魔法閣樓 / 魔法使いの屋根裏; internal ID magic_cottage) is first among the eight built-in scenes. Fresh installs use it by default; existing installs retain their scene, and legacy settings without a saved background retain cinema. Seated wand interactions include the Star Mirror, plants, potions and window defense. Runtime scripts/shaders and source build/test tools are included. Full meshes, textures, audio and Blender masters remain outside public Git; see [external resources](EXTERNAL_RESOURCES.md). Room lighting is baked; device-specific observations do not establish untested headset acceptance.

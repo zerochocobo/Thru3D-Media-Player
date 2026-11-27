@@ -184,12 +184,29 @@ func check_panorama_direction() -> void:
 	viewport.queue_free(); await process_frame
 
 func check_first_run_backgrounds() -> void:
+	# A new install opens in the attic and keeps that as its own choice.
+	var fresh := Main.new()
+	fresh.settings_path = folder.path_join("first-run.cfg")
+	root.add_child(fresh)
+	fresh.set_process(false)
+	fresh.report_timer.stop()
+	check(fresh.background.choice == "magic_cottage", "A new install starts in the wizard's attic")
+	var saved := ConfigFile.new()
+	check(saved.load(fresh.settings_path) == OK and saved.get_value("appearance", "background", "") == "magic_cottage", "The attic is written as the new install's own choice")
+	fresh.queue_free()
+	await process_frame
+	# Settings from before the attic, never given a background, keep the grand cinema.
+	var earlier := ConfigFile.new()
+	earlier.set_value("video", "volume", 1.0)
+	earlier.save(folder.path_join("earlier-install.cfg"))
 	var main := Main.new()
-	main.settings_path = folder.path_join("first-run.cfg")
+	main.settings_path = folder.path_join("earlier-install.cfg")
 	root.add_child(main)
 	main.set_process(false)
 	main.report_timer.stop()
-	check(main.background.choice == "cinema", "Fresh settings select the cinema without a manual background change")
+	check(main.background.choice == "cinema", "An earlier install without a saved background keeps the grand cinema")
+	saved = ConfigFile.new()
+	check(saved.load(main.settings_path) == OK and saved.get_value("appearance", "background", "") == "cinema", "That earlier default is written down, so later defaults cannot move it")
 	var deadline := Time.get_ticks_msec() + 15000
 	while main.cinema_environment.loading and Time.get_ticks_msec() < deadline:
 		await create_timer(.01).timeout

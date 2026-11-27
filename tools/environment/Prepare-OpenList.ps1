@@ -31,6 +31,8 @@ $searchAdapters = @(Sort-BindingInputs @(Get-ChildItem (Join-Path $workspace 'cl
 $adapterHashes += '/' + (($searchAdapters | ForEach-Object { "$($_.Directory.Name)/$($_.Name):$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)" }) -join '/')
 $zipCompatibility = Join-Path $PSScriptRoot 'Set-OpenListZipCompatibility.ps1'
 $adapterHashes += '/zip-compatibility:' + (Get-FileHash -LiteralPath $zipCompatibility -Algorithm SHA256).Hash
+$requestPatch = Join-Path $PSScriptRoot 'openlist-request-context.patch'
+$adapterHashes += '/request-context:' + (Get-FileHash -LiteralPath $requestPatch -Algorithm SHA256).Hash
 $fingerprint = "$revision/$mobileVersion/$adapterHashes/$((Get-FileHash $PSCommandPath -Algorithm SHA256).Hash)"
 $stamp = Join-Path $cache 'build.stamp'
 if (!$Force -and (Test-Path $output) -and (Test-Path $stamp) -and (Get-Content $stamp -Raw).Trim() -eq $fingerprint) { return }
@@ -59,6 +61,21 @@ foreach ($adapter in $searchAdapters) {
     $packageRoot = if ($adapter.Directory.Name -eq 'gowebdav') { 'pkg' } else { 'drivers' }
     Copy-Item -LiteralPath $adapter.FullName -Destination (Join-Path $source "$packageRoot\$($adapter.Directory.Name)\$($adapter.Name)") -Force
 }
+# Reapply the small driver changes to pristine files from the verified upstream archive.
+# Other overlays (including encryption and ZIP support) touch different files.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$archive = [IO.Compression.ZipFile]::OpenRead((Join-Path $cache 'openlist.zip'))
+try {
+    foreach ($line in (Get-Content -LiteralPath $requestPatch)) {
+        if ($line -cmatch '^\+\+\+ b/(drivers/[a-z0-9_]+/[a-z0-9_]+\.go)$') {
+            $relative = $Matches[1]
+            $entry = $archive.GetEntry("OpenList-$revision/$relative")
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $source $relative), $true)
+        }
+    }
+} finally { $archive.Dispose() }
+& git -c "safe.directory=$($workspace.Replace('\','/'))" -C $workspace apply --no-index --whitespace=nowarn "--directory=.cache/openlist/OpenList-$revision" $requestPatch
+if ($LASTEXITCODE) { throw 'OpenList request context patch failed.' }
 $storageModel = Join-Path $source 'internal\model\storage.go'
 $modelText = Get-Content $storageModel -Raw
 $originalTag = 'json:"addition" gorm:"type:text"'

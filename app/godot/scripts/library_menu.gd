@@ -7,6 +7,13 @@ const Distribution := preload("res://scripts/distribution_channel.gd")
 ## asynchronously through the platform's media_list(id, json) signal. Selection is controller ray + trigger only.
 
 signal chosen(uri: String, title: String)
+signal experience_opened(version: int)
+const Experience := preload("res://scripts/builtin_experience.gd")
+var experience := Experience.new()
+var experience_seen_version := 0
+var _guide_experience_visit := false
+var _return_to_experience := false
+var _sample_hint := {}
 signal browser_opened
 signal cast_requested(action: String)
 var cast_state := {}
@@ -35,6 +42,11 @@ const SubtitleSources := preload("res://scripts/subtitle_sources.gd")
 const SubtitleFilter := preload("res://scripts/subtitle_picker_filter.gd")
 var subtitle_filter := SubtitleFilter.new(self)
 var _subtitle_cloud_listing := {}
+signal directory_song_requested(uri: String, title: String)
+signal directory_playlist_requested(files: Array)
+signal directory_retry_requested(report: Dictionary)
+const DirectoryMusic := preload("res://scripts/library_directory_music.gd")
+var directory_music := DirectoryMusic.new(self)
 signal music_requested
 signal online_panoramas_requested
 const ONLINE_PANORAMAS := 985002
@@ -109,6 +121,7 @@ var account_panel: RefCounted = AccountPanel.new(self)
 const Quality := preload("res://scripts/display_quality.gd")
 const WatchPalette := preload("res://scripts/watch_palette.gd")
 const PlaybackMenuDepth := preload("res://scripts/playback_menu_depth.gd")
+const ScreenAdjustmentGrid := preload("res://scripts/screen_adjustment_grid.gd")
 const SeekPolicy := preload("res://scripts/seek_policy.gd")
 const SeekStep := preload("res://scripts/seek_step.gd")
 const VideoAuto3D := preload("res://scripts/video_auto_3d.gd")
@@ -202,6 +215,7 @@ const CRUMB_BASE := 50
 const FILTER_BASE := 70
 const MEDIA_FILTERS := ["All", "Video", "Images"]
 const FOLDER_FILTER := 3 # Keep existing video/image filter IDs and saved positions stable.
+const MUSIC_FILTER := 5
 const BOOK_FILTER := 4 # Books open in the reading mode; they are their own kind of file.
 const ImageInfo := preload("res://scripts/image_info.gd")
 const DirectoryArtwork := preload("res://scripts/library_directory_artwork.gd")
@@ -229,6 +243,7 @@ const COLS := 4
 const GRID_LINES := 3
 const RECENT_PAGE_SIZE := COLS * GRID_LINES
 const TILE_SIZE := Vector2(0.3, 0.27)
+const COMPACT_EDIT_TILE_HEIGHT := 0.235
 const GRID_PITCH := Vector2(0.33, 0.29)
 const GRID_TOP := 0.375
 static var SELECTED: Color:
@@ -250,6 +265,9 @@ var section := Section.RECENT:
 		# Main can open settings directly, without activating a sidebar button.
 		if section == Section.MEDIA_SERVER and value != section: server_browser.leave_section()
 		if section == Section.SMB and value != section: _cancel_smb_connect()
+		if value != section:
+			_guide_experience_visit = false
+			_return_to_experience = false
 		section = value
 var tab := 0
 var scroll := 0.0                  # first visible line; fractional while moving, settles on a whole line
@@ -268,7 +286,7 @@ var _media_filter_location := ""
 var media_browse_intent := 0
 var media_filter := 0:
 	set(value):
-		media_filter=clampi(value,0,3)
+		media_filter=clampi(value,0,MUSIC_FILTER)
 		_media_filter_location=_filter_location()
 var status := ""                   # English; shown through I18n
 var _pending := {}                 # request id -> kind
@@ -370,6 +388,7 @@ func remember_playback_context(uri: String = "") -> void:
 			_playback_context.search[key] = value.duplicate(true) if value is Array or value is Dictionary else value
 
 func set_compact(value: bool, restore_playback: bool = false) -> void:
+	if restore_playback: _return_to_experience = false
 	# A resumed layout may reapply the current mode while authentication is open.
 	if account_panel.view == "web" and value == compact and not restore_playback: return
 	if archives.browsing: restore_playback = false
@@ -520,13 +539,14 @@ func refresh_session_controls(force: bool = false) -> void:
 	if not compact and not playback_expanded: super(force)
 
 func refresh_background_audio() -> void:
+	var state: Dictionary = background_audio_provider.call() if background_audio_provider.is_valid() else {}
+	directory_music.sync_playback(state)
 	if audio_import_mode:
 		if has_pointer_capture(): _audio_preview_dirty = true
 		else: refresh_music_quick_controls()
 		return
 	if music_quick and music_quick.expanded:
 		refresh_music_quick_controls(); return
-	var state: Dictionary = background_audio_provider.call() if background_audio_provider.is_valid() else {}
 	for button in _buttons:
 		if button.target == MUSIC_OPEN:
 			button.base_color = SELECTED if state.get("audio_active", false) else TILE
@@ -536,6 +556,9 @@ func refresh_background_audio() -> void:
 func toggle() -> void:
 	if visible:
 		dismiss()
+	elif _return_to_experience and experience_open() and not browse_memory.locked():
+		visible = true
+		set_compact(compact, true)
 	else:
 		_browse_return_restore = false
 		var anchor := (_position_to_restore.duplicate(true) if not _position_to_restore.is_empty() else capture_position()) if restore_directory_position or compact else {}
@@ -548,6 +571,8 @@ func toggle() -> void:
 			_load_cloud(); refresh()
 
 func dismiss() -> void:
+	_guide_experience_visit = false
+	directory_music.cancel_selection()
 	if path_menu.open: path_menu.close()
 	thumbnail_prefetch.cancel()
 	if release_notes.opened: release_notes.close(self); return
@@ -724,6 +749,7 @@ func subtitle_picker_location() -> Dictionary:
 		"local": _subtitle_folders(_local_stack), "cloud": _subtitle_folders(_cloud_stack), "server": _smb_server, "path": _smb_path}
 
 func _start_file_picker() -> void:
+	if _local_path() == Experience.FOLDER: _local_stack.clear(); _local_entries.clear()
 	media_browse_intent=0
 	audio_selection.clear()
 	collections.selection.clear(); file_actions.reset(); file_actions.enabled = false
@@ -880,7 +906,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 		if path_menu.contains(target): path_menu.action(target)
 		else: path_menu.close()
 		return true
-	if not hit.is_empty() and target not in [SCROLLBAR, NONE] and not _row_target(target) and not collections.row_target(target) and not file_actions.selection_target(target):
+	if not hit.is_empty() and target not in [SCROLLBAR, NONE] and not _row_target(target) and not collections.row_target(target) and not file_actions.selection_target(target) and not directory_music.add_target(target):
 		hit["hand"] = hand
 		_activate_hit(hit)
 		return true
@@ -894,6 +920,9 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	_fling = 0.0
 	_drag = {"hand": hand, "target": target, "start_y": start_y, "start_scroll": scroll, "moved": false,
 		"last": scroll, "at_us": Time.get_ticks_usec(), "velocity": 0.0}
+	if directory_music.add_target(target):
+		var index := _row_index(target - DirectoryMusic.ROW_ADD)
+		if index < rows.size(): _drag.music_uri = str(rows[index].get("uri", ""))
 	if collections.home():
 		var index: int = collections.row_index(target)
 		if index >= 0 and index < rows.size() and rows[index].has("uri"): _drag.collection_uri = str(rows[index].uri)
@@ -1004,6 +1033,9 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 		return
 	if not tracked or int(drag.target) == NONE:
 		return
+	if drag.has("music_uri"):
+		var index := _row_index(int(drag.target) - DirectoryMusic.ROW_ADD)
+		if index >= rows.size() or rows[index].get("uri", "") != drag.music_uri: return
 	if drag.has("collection_uri"):
 		var index: int = collections.row_index(int(drag.target))
 		if index < 0 or index >= rows.size() or str(rows[index].get("uri", "")) != str(drag.collection_uri): return
@@ -1057,6 +1089,7 @@ func stick_scroll_horizontal(x: float, delta: float) -> void:
 		server_browser.gallery.stick_scroll(x, delta)
 
 func _process(delta: float) -> void:
+	directory_music.tick()
 	server_browser.artwork.tick(Time.get_ticks_msec())
 	path_menu.tick(Time.get_ticks_msec())
 	Thumbnails.poll()
@@ -1241,6 +1274,13 @@ func _place_list() -> void:
 	var pitch := _pitch()
 	var cols := _cols()
 	var last_line := _lines() - 0.65
+	# A partially scrolled file tile must end above the footer, including its ray target.
+	if _grid() and (compact or file_actions.folder()) and not subtitle_filter.active():
+		var short_tile := _compact_grid_actions()
+		var tile_height := COMPACT_EDIT_TILE_HEIGHT if short_tile else TILE_SIZE.y
+		var footer_top := -0.478
+		if compact: footer_top = -0.246 if short_tile else -0.325
+		last_line = minf(last_line, (_bar_span().x - tile_height - footer_top) / pitch)
 	var slots := _drawn_slots()
 	var recycled := _recycled()
 	var first := _first_line() * cols
@@ -1375,6 +1415,7 @@ func _lines() -> int:
 	return GRID_LINES if _grid() else VISIBLE_ROWS
 
 func _pitch() -> float:
+	if _compact_grid_actions(): return 0.25
 	if section == Section.WEB and _grid(): return web_browser.library.PREVIEW_PITCH
 	if archives.browsing: return GRID_PITCH.y if _grid() else ROW_PITCH
 	if compact: return GRID_PITCH.y if _grid() else ROW_PITCH
@@ -1382,6 +1423,9 @@ func _pitch() -> float:
 	if account_panel.active(): return ROW_PITCH
 	if section == Section.MEDIA_SERVER: return server_browser.pitch()
 	return GRID_PITCH.y if _grid() else ROW_PITCH
+
+func _compact_grid_actions() -> bool:
+	return compact and _grid() and (file_actions.editing or file_actions.needs_footer() or collections.has_selection())
 
 func _line_count() -> int:
 	return ceili(float(rows.size()) / _cols())
@@ -1416,11 +1460,31 @@ func _filter_location() -> String:
 		Section.RECENT: return str([section,collections.home_tab if collections else 0])
 	return str(section)
 
+func _visible_media_row(row: Dictionary) -> bool:
+	# Favourite folders have their own filter; Books and Music list only books and songs.
+	if (row.get("folder", false) or row.get("kind") == "folder") and _favorite_folder_filter() and media_filter in [BOOK_FILTER, MUSIC_FILTER]: return false
+	if row.get("folder", false) or row.get("kind") == "folder": return true
+	if not row.has("uri") and not row.has("search_result"): return true
+	var kind := str(row.get("kind", "video"))
+	if subtitle_picker_mode: return SubtitleSources.supported(str(row.get("title", "")))
+	if audio_import_mode: return str(row.get("uri", "")).is_empty() or AudioCatalog.supported(str(row.get("title", "")))
+	if voice_picker_mode: return _voice_sample_source(row)
+	if kind == "book" and not preload("res://scripts/book_reader.gd").offered(): return false
+	if section in [Section.SETTINGS, Section.MEDIA_SERVER]: return true
+	match media_filter:
+		1: return kind == "video"
+		2: return kind in ["image", "pdf"] or (kind == "archive" and not image_picker_mode)
+		BOOK_FILTER: return kind in ["book", "pdf"]
+		MUSIC_FILTER: return kind == "audio"
+		FOLDER_FILTER: return not _favorite_folder_filter()
+	return true
+
 func _sync_media_filter() -> void:
 	if media_browse_intent>0:
 		if media_filter!=media_browse_intent: media_filter=media_browse_intent
 	elif not _media_filter_location.is_empty() and _media_filter_location!=_filter_location(): media_filter=0
 	if media_filter == FOLDER_FILTER and not _favorite_folder_filter(): media_filter = 0
+	if media_filter == MUSIC_FILTER and not directory_music.directory() and not _favorite_folder_filter(): media_filter = 0
 
 func _favorite_folder_filter() -> bool:
 	return not archives.browsing and section == Section.RECENT and collections.home_tab == 1
@@ -1777,14 +1841,14 @@ func _on_media_list(id: int, payload: String) -> void:
 		var event: Variant = JSON.parse_string(payload)
 		if event is Dictionary and event.get("source") == "local_storage":
 			if event.get("state") == "error":
-				if section == Section.LOCAL: status = "Storage device unavailable"; refresh()
+				if section == Section.LOCAL and not experience_open(): status = "Storage device unavailable"; refresh()
 				return
 			var volumes: Array = event.get("volumes", [])
 			if volumes == _local_volumes: return
 			var removed := _external_volumes().filter(func(volume): return not volumes.any(func(current): return str(current.id) == str(volume.id)))
 			_local_volumes = volumes
 			for volume in removed: storage_removed.emit(volume.duplicate(true))
-			if not _local_stack.is_empty() and not _local_volumes.any(func(volume): return str(volume.id) == str(_local_stack[0].id)):
+			if not _local_stack.is_empty() and _local_path() != Experience.FOLDER and not _local_volumes.any(func(volume): return str(volume.id) == str(_local_stack[0].id)):
 				_local_stack.clear(); _local_entries = []
 			if section == Section.LOCAL and not account_panel.active() and _storage_stop_pending.is_empty():
 				_load_section()
@@ -1793,7 +1857,7 @@ func _on_media_list(id: int, payload: String) -> void:
 		if event is Dictionary and event.get("source") == "local_access":
 			var access_state := str(event.get("state", "error"))
 			_local_grant_pending = access_state in ["requested", "settings_opened"]
-			if section != Section.LOCAL or account_panel.active(): return
+			if section != Section.LOCAL or experience_open() or account_panel.active(): return
 			if not str(event.get("path", "")).is_empty() and str(event.path) != _local_path(): return
 			if access_state == "granted": _load_section()
 			elif access_state == "settings_opened": status = "Allow access in system settings"
@@ -1834,6 +1898,7 @@ func _on_media_list(id: int, payload: String) -> void:
 			refresh()
 		return
 	var result: Dictionary = parsed
+	if kind == "local" and _local_path() == Experience.FOLDER: return
 	if kind == "local" and result.has("path") and str(result.path) != _local_path(): return
 	if kind == "local" and result.get("state") == "loading":
 		_pending[id] = kind
@@ -2015,7 +2080,7 @@ func _local_volume() -> Dictionary:
 
 func _local_access_mode() -> String:
 	var path := _local_path()
-	if path.is_empty() or path.begins_with("usb://"): return "none"
+	if path.is_empty() or path == Experience.FOLDER or path.begins_with("usb://"): return "none"
 	var volume := _local_volume()
 	if bool(volume.get("removable", false)) or path.begins_with("content://com.android.externalstorage.documents/"): return "directory"
 	return "none" if _local_all_files else "all_files"
@@ -2145,11 +2210,19 @@ func _browse_smb(server: String, path: String) -> int:
 	return platform.media_subtitle_smb_browse(server, path) if subtitle_picker_mode else platform.media_smb_browse(server, path)
 
 func _load_section() -> void:
+	if experience_open():
+		_retire_directory_reads()
+		status = ""
+		_restore_folder_position()
+		return
+	_guide_experience_visit = false
+	_return_to_experience = false
 	if section == Section.MEDIA_SERVER:
 		server_browser.open_section()
 		return
 	if not platform:
 		status = "Headset only" if section in [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] else ""
+		if section == Section.LOCAL and _local_stack.is_empty() and _experience_browse_mode(): status = ""
 		return
 	match section:
 		Section.CLOUD:
@@ -2173,6 +2246,7 @@ func _load_section() -> void:
 # --- rows -----------------------------------------------------------------------------------
 
 func _rebuild_rows() -> void:
+	directory_music.reconcile()
 	if subtitle_queue_open and section == Section.SETTINGS and tab == VIDEO_TAB:
 		rows.assign(preload("res://scripts/subtitle_task_rows.gd").rows(settings_provider.call().get("subtitle_defaults", {}).get("subtitle_tasks", {})))
 		scroll = clampf(scroll, 0, _max_scroll()); return
@@ -2197,7 +2271,12 @@ func _rebuild_rows() -> void:
 		Section.RECENT:
 			rows.assign(collections.home_rows())
 		Section.LOCAL:
-			for entry in _local_entries:
+			var entries := _local_entries
+			if experience_open():
+				_local_stack.back().title = experience.title(I18n.language)
+				entries = experience.entries(I18n.language, preload("res://scripts/book_reader.gd").offered())
+				if entries.is_empty() or entries.any(func(e): return not e.enabled): status = "File unavailable; select it again"
+			for entry in entries:
 				var row := _entry_row(entry)
 				if bool(entry.get("volume", false)):
 					row.icon = "usb" if bool(entry.get("removable", false)) else "device"
@@ -2344,22 +2423,14 @@ func _rebuild_rows() -> void:
 			rows.assign(rows.filter(func(row): return row.has("scene") or row.has("container_node") or row.has("library") or row.has("server_account") or row.has("open_libraries")))
 		else:
 			rows.assign(rows.filter(func(row): return not row.has("smb_found")))
-	if subtitle_picker_mode:
-		rows.assign(rows.filter(func(row): return row.get("folder", false) or not row.has("uri") or SubtitleSources.supported(str(row.get("title", "")))))
-		subtitle_filter.filter_rows()
-	elif audio_import_mode:
-		rows.assign(rows.filter(func(row): return not row.has("uri") or str(row.get("uri", "")).is_empty() or row.get("kind", "") == "folder" or AudioCatalog.supported(str(row.get("title", "")))))
-	elif voice_picker_mode:
-		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("folder", false) or row.get("kind", "") == "folder" or _voice_sample_source(row)))
-	else:
-		var hidden := ["audio", "scene"] if preload("res://scripts/book_reader.gd").offered() else ["audio", "scene", "book"]
-		rows.assign(rows.filter(func(row): return row.get("kind", "") not in hidden))
-	if media_filter == FOLDER_FILTER and _favorite_folder_filter():
-		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "") == "folder"))
-	elif not audio_import_mode and not subtitle_picker_mode and not voice_picker_mode and media_filter > 0 and section not in [Section.SETTINGS, Section.MEDIA_SERVER]:
-		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "") == "folder" or row.get("kind", "video") in (["image", "archive", "pdf"] if media_filter == 2 and not image_picker_mode else ["image", "pdf"] if media_filter == 2 else ["book", "pdf"] if media_filter == BOOK_FILTER else ["video"])))
-	if not subtitle_picker_mode: subtitle_filter.filter_rows()
+	rows.assign(rows.filter(_visible_media_row))
+	subtitle_filter.filter_rows()
 	file_actions.sort_rows()
+	if section == Section.LOCAL and _local_stack.is_empty() and _experience_browse_mode():
+		var title := experience.title(I18n.language)
+		rows.push_front({"title": title, "detail": "", "icon": "folder", "folder": true,
+			"experience_guide": experience_seen_version < Experience.GUIDE_VERSION,
+			"container": {"id": Experience.FOLDER, "title": title, "container": true}})
 	file_actions.reconcile()
 	if section == Section.RECENT:
 		_recent_all_rows.assign(rows)
@@ -2377,6 +2448,30 @@ func _rebuild_rows() -> void:
 ## The open local folder's path ("" lists the storage volumes).
 func _local_path() -> String:
 	return "" if _local_stack.is_empty() else str(_local_stack.back().id)
+
+func _experience_browse_mode() -> bool:
+	return not (image_picker_mode or audio_import_mode or subtitle_picker_mode or voice_picker_mode or scene_picker_mode)
+
+func experience_open() -> bool:
+	return section == Section.LOCAL and _local_path() == Experience.FOLDER and _experience_browse_mode()
+
+func bind_experience_guide(settings: ConfigFile, path: String) -> void:
+	experience_seen_version = int(settings.get_value("library", "experience_seen_version", 0))
+	experience_opened.connect(func(version: int):
+		settings.set_value("library", "experience_seen_version", version)
+		if settings.save(path) != OK: push_warning("Could not save experience guide progress"))
+
+func _enter_experience() -> void:
+	if not experience_open(): return
+	_guide_experience_visit = experience_seen_version < Experience.GUIDE_VERSION
+	if _guide_experience_visit:
+		experience_seen_version = Experience.GUIDE_VERSION
+		experience_opened.emit(experience_seen_version)
+
+func take_experience_hint(uri: String) -> String:
+	var action := str(_sample_hint.get("action", "")) if _sample_hint.get("uri") == uri else ""
+	_sample_hint.clear()
+	return action
 
 func _cloud_path() -> String:
 	return "" if _cloud_stack.is_empty() else str(_cloud_stack.back().id)
@@ -2496,7 +2591,7 @@ func _turn_cloud_page(step: int) -> void:
 	refresh()
 
 func _artwork_location() -> Dictionary:
-	if archives.browsing or image_picker_mode or audio_import_mode or voice_picker_mode or subtitle_picker_mode or cloud_search.active:
+	if experience_open() or archives.browsing or image_picker_mode or audio_import_mode or voice_picker_mode or subtitle_picker_mode or cloud_search.active:
 		return {}
 	return MediaLocation.capture(self, {}) if section in [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] else {}
 
@@ -2519,9 +2614,13 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 				folder_row["folder_cover_url"] = str(entry.cover)
 				folder_row["folder_cover_key"] = "dlna-cover://" + JSON.stringify([folder, folder_row.folder_cover_url]).sha1_text()
 		return folder_row
-	var subtitle: bool = subtitle_picker_mode and SubtitleSources.supported(str(entry.title))
+	var subtitle: bool = entry.get("kind", "") == "subtitle" or SubtitleSources.supported(str(entry.title))
 	var photo: bool = not subtitle and (entry.get("kind", "") == "image" or ImageInfo.is_image(str(entry.get("uri", "")), str(entry.title)))
 	var row := {"title": str(entry.title), "detail": _size(entry), "kind": "image" if photo else "video", "icon": "image" if photo else "video", "uri": str(entry.get("uri", ""))}
+	if entry.has("experience_thumbnail"):
+		row.experience_thumbnail = entry.experience_thumbnail
+		row.experience_action = entry.experience_action
+		row.enabled = entry.enabled
 	if archives.named(str(entry.get("uri", "")), str(entry.title)):
 		row.kind = "pdf" if preload("res://scripts/pdf_pages.gd").named(str(entry.get("uri", "")), str(entry.title)) else "archive"; row.icon = "folder"
 	if entry.get("kind", "") == "book" or preload("res://scripts/book_reader.gd").named(str(entry.get("uri", "")), str(entry.title)):
@@ -2532,7 +2631,7 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 		row.kind = "scene"; row.icon = "cube"
 	if subtitle:
 		row.kind = "subtitle"; row.icon = "subtitle"
-	for field in ["size", "modified", "can_delete", "can_rename", "delete_reason", "id", "cloud_id", "delete_effect", "duration_ms", "width", "height"]:
+	for field in ["size", "modified", "can_delete", "can_rename", "delete_reason", "id", "cloud_id", "delete_effect", "duration_ms", "width", "height", "audio_import_title"]:
 		if entry.has(field): row[field] = entry[field]
 	if not str(entry.get("cover", "")).is_empty():
 		row["cover"] = str(entry.cover)
@@ -2540,6 +2639,8 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 		# The index stands for the disc: renaming or deleting it alone would break the folder.
 		row.title = DiscTitles.folder_title(row.uri, "DVD"); row.icon = "disc"
 		row.can_delete = false; row.can_rename = false
+	if (row.kind == "scene" and not scene_picker_mode) or (row.kind == "subtitle" and not subtitle_picker_mode):
+		row.enabled = false; row.can_delete = false
 	if section == Section.DLNA and row.has("id") and not _dlna_server.is_empty():
 		var declared := str(entry.get("thumbnail_uri", ""))
 		if row.kind == "image" and not declared.is_empty() and declared != row.uri: row.cover = declared
@@ -2564,7 +2665,7 @@ func image_queue() -> Array[Dictionary]:
 	if section == Section.MEDIA_SERVER:
 		result.assign(server_browser.image_entries()); return result
 	for row in (_recent_all_rows if section == Section.RECENT and not _recent_all_rows.is_empty() else rows):
-		if row.get("kind") == "image" and row.has("uri"): result.append(row.duplicate(true))
+		if row.get("kind") == "image" and not str(row.get("uri", "")).is_empty(): result.append(row.duplicate(true))
 	return result
 
 ## Capture browsing order at selection time; later history updates must not reorder playback.
@@ -2575,7 +2676,7 @@ func video_queue() -> Array[Dictionary]:
 	for row in source:
 		var uri := str(row.get("uri", ""))
 		var title := str(row.get("title", ""))
-		if uri.is_empty() or row.get("kind", "") in ["image", "archive", "pdf", "book", "audio", "subtitle"] or ImageInfo.is_image(uri, title): continue
+		if uri.is_empty() or row.get("kind", "") in ["image", "archive", "pdf", "book", "audio", "subtitle", "scene"] or ImageInfo.is_image(uri, title): continue
 		if row.get("container", false) or row.has("folder") or row.get("kind", "") == "folder": continue
 		var metadata: Dictionary = row.duplicate(true)
 		metadata.location = preload("res://scripts/media_location.gd").capture(self, row)
@@ -2713,6 +2814,7 @@ func _clear_storage_cache(category: String) -> void:
 ## Video state changes arrive several times a second: redraw only when the Alpha profiles
 ## (current, compiling, cold) shown on the Alpha tab change.
 func _activate(target: int) -> void:
+	if directory_music.action(target): return
 	if path_menu.action(target): return
 	if target >= PathMenu.INLINE and target < PathMenu.INLINE + 4:
 		_go_to(_crumbs().size() - 1 - (target - PathMenu.INLINE))
@@ -2863,16 +2965,16 @@ func _activate(target: int) -> void:
 		_takeover_usb()
 	elif target == CLEAR_HISTORY:
 		# A video/image filter narrows the clear to what it lists; folder positions stay.
-		if media_filter in [1, 2]: collections._remove_rows(_filtered_history())
+		if media_filter in [1, 2, BOOK_FILTER]: collections._remove_rows(_filtered_history())
 		else: collections._remove_rows(catalog.list_recent(), true)
 	elif target >= CRUMB_BASE and target < CRUMB_BASE + 10:
 		_go_to(target - CRUMB_BASE)
 	elif target in [SIBLING_PREVIOUS, SIBLING_NEXT]:
 		_open_sibling(-1 if target == SIBLING_PREVIOUS else 1)
-	elif target >= FILTER_BASE and target <= FILTER_BASE + BOOK_FILTER:
+	elif target >= FILTER_BASE and target <= FILTER_BASE + MUSIC_FILTER:
 		if image_picker_mode or voice_picker_mode: return
 		if target == FILTER_BASE + FOLDER_FILTER and not _favorite_folder_filter(): return
-		if target == FILTER_BASE + BOOK_FILTER and not preload("res://scripts/book_reader.gd").offered(): return
+		if target == FILTER_BASE + BOOK_FILTER and not directory_music.directory() and not preload("res://scripts/book_reader.gd").offered(): return
 		_change_media_filter(target - FILTER_BASE)
 	elif _row_target(target):
 		var index := _row_index(target - ROW_BASE)
@@ -2882,6 +2984,7 @@ func _activate(target: int) -> void:
 		_editor_input(target)
 
 func _choose(row: Dictionary) -> void:
+	if (row.has("uri") or row.has("container")) and file_actions.select(row): return
 	if web_browser.choose(row): return
 	if web_video.choose(row): return
 	if not bool(row.get("enabled", true)): return
@@ -2965,9 +3068,10 @@ func _choose(row: Dictionary) -> void:
 		_confirm = ""
 		refresh()
 		return
+	if not subtitle_picker_mode and row.get("kind") in ["subtitle", "scene"]: return
+	if directory_music.choose(row): return
 	if collections.choose(row): return
 	if cloud_search.choose(row): return
-	if file_actions.select(row): return
 	if account_panel.choose(row): return
 	if row.has("online_history"):
 		if web_browser.supported():
@@ -3009,7 +3113,10 @@ func _choose(row: Dictionary) -> void:
 		_save_folder_position(row)
 		collections.selected_location = preload("res://scripts/media_location.gd").capture(self, row)
 		collections.selected_entry = row.duplicate(true)
+		if _guide_experience_visit and experience_open():
+			_sample_hint = {"uri": row.uri, "action": row.get("experience_action", "")}
 		remember_playback_context(str(row.uri))
+		_return_to_experience = experience_open()
 		dismiss()
 		chosen.emit(str(row.uri), str(row.title))
 	elif row.has("smb_server"):
@@ -3040,6 +3147,7 @@ func _choose(row: Dictionary) -> void:
 		if section == Section.LOCAL:
 			_local_stack.append(container.duplicate(true))
 			_local_entries = []
+			_enter_experience()
 			_load_section()
 		elif section == Section.SMB:
 			_smb_path = str(container.id)
@@ -3054,6 +3162,7 @@ func _choose(row: Dictionary) -> void:
 			_dlna_entries = []
 			_request("dlna_browse", platform.media_dlna_browse(_dlna_server, str(container.id)))
 		_restore_folder_key = _folder_key()
+		if experience_open(): _restore_folder_position()
 		refresh()
 	elif row.has("clear_cache"):
 		var category := str(row.clear_cache)
@@ -3084,6 +3193,8 @@ func _choose(row: Dictionary) -> void:
 
 ## True when a child layer was consumed; false means the source's top-level list.
 func navigate_back() -> bool:
+	if directory_music.selecting and not cloud_pagination.opened:
+		directory_music.cancel_selection(); refresh_file_selection(); return true
 	if path_menu.present and path_menu.open: path_menu.close(); return true
 	if release_notes.opened: release_notes.close(self); return true
 	if subtitle_queue_open and section == Section.SETTINGS and tab == VIDEO_TAB:
@@ -3317,6 +3428,7 @@ func _open_sibling(step: int) -> void:
 		Section.LOCAL:
 			_local_stack[-1] = container.duplicate(true)
 			_local_entries = []
+			_enter_experience()
 			_load_section()
 		Section.CLOUD:
 			_cloud_stack[-1] = container.duplicate(true)
@@ -3331,6 +3443,7 @@ func _open_sibling(step: int) -> void:
 			_dlna_entries = []
 			_request("dlna_browse", platform.media_dlna_browse(_dlna_server, str(container.id)))
 	_restore_folder_key = _folder_key()
+	if experience_open(): _restore_folder_position()
 	refresh()
 
 func _refresh_source() -> void:
@@ -3624,6 +3737,7 @@ func _draw_compact() -> void:
 			_button(CloudBrowseError.OPEN, "", Vector2(0.39, 0.36), Vector2(0.065, 0.065), true, "info")
 			_tips[CloudBrowseError.OPEN] = I18n.t("Error details")
 	quick_access.draw()
+	directory_music.draw_notice()
 	path_menu.draw_popup()
 
 func _draw_compact_rows() -> void:
@@ -3633,7 +3747,9 @@ func _draw_compact_rows() -> void:
 		var row: Dictionary = rows[i]
 		var k := i - first
 		if _grid():
-			var center := Vector2(-0.34 + (k % 3) * 0.34, (-0.03 if subtitle_filter.active() else 0.13) - (k / 3) * _pitch())
+			var height := COMPACT_EDIT_TILE_HEIGHT if _compact_grid_actions() else TILE_SIZE.y
+			var first_y := (0.105 if subtitle_filter.active() else 0.265) - height * 0.5
+			var center := Vector2(-0.34 + (k % 3) * 0.34, first_y - (k / 3) * _pitch())
 			_tile(ROW_BASE + k, row, center)
 			if not archives.browsing: collections.decorate_row(k, row, center, true, _list)
 		else:
@@ -3646,7 +3762,7 @@ func _draw_compact_rows() -> void:
 			_button(ROW_BASE + k, _fit_title(str(row.title), "", 0.72 if managing else 0.83, 20), centre + Vector2(0.055 if managing else 0.0, 0), Vector2(0.92 if managing else 1.03, 0.098), bool(row.get("enabled", true)), "", false, _list)
 			var button: Dictionary = _buttons.back()
 			var node: MeshInstance3D = button.node
-			if _is_current_row(row):
+			if _is_current_row(row) or row.get("experience_guide", false):
 				button.base_color = SELECTED; node.material_override.set_shader_parameter("surface_color", SELECTED)
 			var name: Label3D = node.get_child(0)
 			name.position = Vector3(-0.345 if managing else -0.40, 0.021, 0.004); name.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -3655,6 +3771,7 @@ func _draw_compact_rows() -> void:
 			_icon(str(row.get("icon", "video")), Vector3(-0.405 if managing else -0.46, 0, 0.005), 0.04, FOLDER if row.has("container") else MUTED, node)
 			var detail := _label(_fit_title(str(Presentation.info(row, catalog, section == Section.RECENT).subtitle), "", 0.72 if managing else 0.83, 15), Vector3(-0.345 if managing else -0.40, -0.025, 0.004), 15, node)
 			detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; detail.modulate = MUTED
+			directory_music.decorate(button, row)
 			if not archives.browsing: file_actions.draw_checkbox(ROW_BASE + k, row, centre + Vector2(-0.48, 0))
 			if not archives.browsing: collections.decorate_row(k, row, centre + Vector2(-0.10, 0), false, _list)
 	if _max_scroll() > 0:
@@ -3682,7 +3799,9 @@ func _draw() -> void:
 	_audio_storage_labels.clear()
 	_audio_preview_rows.clear(); _subtitle_task_buttons.clear()
 	audio_preview_seek.clear_layout()
-	_audio_preview_state = background_audio_provider.call() if audio_import_mode and background_audio_provider.is_valid() else {}
+	var music_state: Dictionary = background_audio_provider.call() if background_audio_provider.is_valid() else {}
+	_audio_preview_state = music_state if audio_import_mode else {}
+	directory_music.sync_playback(music_state, false)
 	_clear_layout()
 	_settings_scroll_hint = null
 	if release_notes.opened:
@@ -3758,7 +3877,7 @@ func _draw() -> void:
 		if web_video.home.active(): footer_y = web_video.home.footer_y()
 		if not audio_import_mode and not subtitle_picker_mode and not image_picker_mode and not voice_picker_mode:
 			if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): music_toggle_requested.emit())
-			music_quick.draw(MUSIC_OPEN, Vector2(-0.48, footer_y), background_audio_provider.call() if background_audio_provider.is_valid() else {})
+			music_quick.draw(MUSIC_OPEN, Vector2(-0.48, footer_y), music_state)
 		# Closing the menu is the shared footer's job and recentering the player's; only collapse floats here.
 		if playback_expanded: _round(EXPAND_LIBRARY, "collapse", Vector2(0.13, footer_y), 0.08, true, false, I18n.t("Collapse library"))
 		# With no floating row left, the footer takes its place right under the browser.
@@ -3845,6 +3964,7 @@ func _draw() -> void:
 	if not archives.browsing and section == Section.RECENT and collections.home_tab == 0 and not rows.is_empty():
 		_button(CLEAR_HISTORY, "", _action_position(0.80), Vector2(0.09, 0.065), true, "trash")
 		_tips[CLEAR_HISTORY] = I18n.t(["Clear history", "Clear video history", "Clear image history"][media_filter if media_filter in [1, 2] else 0])
+		if media_filter == BOOK_FILTER: _tips[CLEAR_HISTORY] += " · " + I18n.t("Books")
 	if not archives.browsing and section == Section.DLNA:
 		if not subtitle_picker_mode and not image_picker_mode and not audio_import_mode and not voice_picker_mode and PlatformMethods.supports(platform, "dlna_receiver_enable"):
 			CastPanel.draw(self, cast_state, -0.79)
@@ -3863,6 +3983,7 @@ func _draw() -> void:
 		_button(SubtitleFilter.OPEN, "", _action_position(0.58 if subtitle_filter.directory_mode or not subtitle_picker_mode else 0.47), Vector2(0.09, 0.065), true, "search", subtitle_filter.enabled)
 		_tips[SubtitleFilter.OPEN] = I18n.t(subtitle_filter.title())
 	if browser_content() and not subtitle_picker_mode: draw_view_modes(_action_position(0.80).y)
+	directory_music.draw_entry()
 	_align_folder_tools()
 	if not archives.browsing and preload("res://scripts/online_panorama_panel.gd").AVAILABLE and media_filter==2 and section!=Section.SETTINGS and not audio_import_mode and not image_picker_mode:
 		_round(ONLINE_PANORAMAS,"globe",Vector2(0.80,0.58),0.08,true,false,I18n.t("Online panoramas"))
@@ -3903,7 +4024,9 @@ func _draw() -> void:
 			_button(RETRY_USB, I18n.t("Retry"), Vector2(0.52, -0.34), Vector2(0.3, 0.07), true)
 		else:
 			_button(RETRY_USB, I18n.t("Retry"), Vector2(0.19, -0.34), Vector2(0.3, 0.07), true, "", true)
-	if collections.has_selection():
+	if directory_music.selecting:
+		directory_music.draw_selection_footer()
+	elif collections.has_selection():
 		collections.draw_footer()
 	elif file_actions.has_selection():
 		file_actions.draw_footer()
@@ -3917,14 +4040,17 @@ func _draw() -> void:
 		_place_device_status(Vector2(0.13, -0.79))
 	elif section not in [Section.SETTINGS, Section.WEB] and not cloud_managing and not subtitle_picker_mode and not image_picker_mode and not voice_picker_mode:
 		var filters := [0, FOLDER_FILTER, 1, 2, BOOK_FILTER] if _favorite_folder_filter() else [0, 1, 2, BOOK_FILTER]
-		if not preload("res://scripts/book_reader.gd").offered(): filters.erase(BOOK_FILTER)
+		# Folders list their songs; the favourites keep songs too.
+		if directory_music.directory() or _favorite_folder_filter(): filters.insert(filters.find(BOOK_FILTER), MUSIC_FILTER)
+		if not directory_music.directory() and not preload("res://scripts/book_reader.gd").offered(): filters.erase(BOOK_FILTER)
 		for position in filters.size():
 			var i: int = filters[position]
-			_button(FILTER_BASE + i, I18n.t("Folders" if i == FOLDER_FILTER else "Books" if i == BOOK_FILTER else MEDIA_FILTERS[i]), Vector2(0.72 - (filters.size() - 1 - position) * 0.18, -0.515), Vector2(0.17, 0.06))
+			var pitch := 0.165 if filters.has(MUSIC_FILTER) else 0.18
+			_button(FILTER_BASE + i, I18n.t("Folders" if i == FOLDER_FILTER else "Books" if i == BOOK_FILTER else "Music" if i == MUSIC_FILTER else MEDIA_FILTERS[i]), Vector2(0.72 - (filters.size() - 1 - position) * pitch, -0.515), Vector2(pitch - 0.01, 0.06))
 			set_label_size(_buttons.back().node.get_child(0), 17)
 			_lit(media_filter == i)
 	var cloud_paging := not archives.browsing and section == Section.CLOUD and not _cloud_stack.is_empty()
-	var cloud_page_y := -0.59 if file_actions.has_selection() else -0.515
+	var cloud_page_y := -0.59 if file_actions.has_selection() or directory_music.selecting else -0.515
 	if not archives.browsing and section == Section.RECENT:
 		_button(RECENT_PREVIOUS, "‹", Vector2(-0.45, -0.515), Vector2(0.09, 0.07), _recent_page > 0)
 		_label("%d / %d" % [_recent_page + 1, _recent_page_count()], Vector3(-0.27, -0.515, 0.004), 18)
@@ -3949,13 +4075,14 @@ func _draw() -> void:
 	line.modulate = UiTheme.color("danger") if has_cloud_error else MUTED
 	if file_actions.uncertain or file_actions.pending > 0:
 		_button(FileActions.CHECK_STATUS, I18n.t(file_actions.pending_text()), Vector2(0.66, -0.59), Vector2(0.30, 0.06), file_actions.pending == 0, "refresh")
+	directory_music.draw_notice()
 	path_menu.draw_popup()
 
 ## Pack the visible folder actions against the view buttons, without gaps for absent actions.
 func _align_folder_tools() -> void:
 	if not browser_content() or (section == Section.RECENT and not archives.browsing): return
 	var tools: Array[Dictionary] = []
-	for target in [Collections.FAVORITE_FOLDER, FileActions.SORT, FileActions.EDIT_MODE, EJECT_STORAGE, USB_STORAGE, ALL_FILES, CloudSearch.OPEN, SubtitleFilter.OPEN, EDIT, REFRESH, VIEW_LIST, VIEW_GRID]:
+	for target in [DirectoryMusic.MULTI, Collections.FAVORITE_FOLDER, FileActions.SORT, FileActions.EDIT_MODE, EJECT_STORAGE, USB_STORAGE, ALL_FILES, CloudSearch.OPEN, SubtitleFilter.OPEN, EDIT, REFRESH, VIEW_LIST, VIEW_GRID]:
 		for button in _buttons:
 			if button.target == target and is_equal_approx(button.rect.get_center().y, 0.445): tools.append(button)
 	var right := 0.845
@@ -4078,6 +4205,8 @@ func _draw_rows() -> void:
 ## One row (or tile) of the list: [k] is its target slot, [place] its position from the list origin.
 func _draw_row(i: int) -> void:
 	var row: Dictionary = rows[i]
+	if directory_music.selecting and row.get("folder", false):
+		row = row.duplicate(); row.enabled = false
 	var k := _row_slot(i)
 	var place := i - _list_origin() * _cols()
 	var row_top: float = (0.17 if subtitle_filter.directory_mode else 0.22) if subtitle_filter.active() else 0.045 if (cloud_search.active and not archives.browsing) else (server_browser.list_top() if (section == Section.MEDIA_SERVER and not archives.browsing) and not account_panel.active() else LIST_TOP)
@@ -4114,7 +4243,7 @@ func _draw_row(i: int) -> void:
 			_setting_field(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
 			return
 		_row_button(ROW_BASE + k, str(row.title), "" if row.get("about_info", false) else str(row.get("detail", "")), str(row.get("icon", "video")),
-			Vector2(0.17, row_top - k * _pitch()), bool(row.get("selected", false)), section == Section.WEB)
+			Vector2(0.17, row_top - k * _pitch()), bool(row.get("selected", false) or row.get("experience_guide", false)), section == Section.WEB)
 		if row.has("tip"): _tips[ROW_BASE + k] = I18n.t(str(row.tip))
 		if not bool(row.get("enabled", true)):
 			_buttons.back().enabled = false
@@ -4500,6 +4629,16 @@ func _display_overlay_rows(settings: Dictionary) -> Array[Dictionary]:
 	seek_row.info = "Show a progress bar when seeking with the thumbstick. Turn off for greater immersion."
 	for option in seek_row.choices: option.hint = seek_row.info
 	entries.append(seek_row)
+	var media_row := _choice_row("Show grid while adjusting", ScreenAdjustmentGrid.MEDIA_KEY, settings.get(ScreenAdjustmentGrid.MEDIA_KEY, ScreenAdjustmentGrid.DEFAULT_MEDIA),
+		[{"value": "off", "label": "Disabled"}, {"value": "video", "label": "Videos"}, {"value": "video_photo", "label": "Videos + photos"}], true)
+	media_row.info = "Use the ground grid to judge screen size and distance. It stays visible while you hold the screen with Grip."
+	for option in media_row.choices: option.hint = media_row.info
+	entries.append(media_row)
+	var scenes_row := _choice_row("Scenes with grid", "grid_in_3d_scenes", settings.get("grid_in_3d_scenes", false),
+		[{"value": false, "label": "Non-3D scenes"}, {"value": true, "label": "All scenes"}])
+	scenes_row.info = "Non-3D scenes include black, passthrough and panorama backgrounds. Choose All scenes to include built-in and imported 3D environments."
+	for option in scenes_row.choices: option.hint = scenes_row.info
+	entries.append(scenes_row)
 	return entries
 
 func _video_settings_group(group: String, title: String) -> Dictionary:
@@ -4630,11 +4769,13 @@ func _subtitle_group_rows(settings: Dictionary, group: String) -> Array[Dictiona
 ## length or size in the corner), the name in up to two lines below.
 func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 	var icon := str(row.get("icon", "video"))
-	_button(target, _fit_title(str(row.title), "", 0.5, 18), centre, TILE_SIZE, true, "", false, _list)
+	var short_tile := _compact_grid_actions()
+	var size := Vector2(TILE_SIZE.x, COMPACT_EDIT_TILE_HEIGHT) if short_tile else TILE_SIZE
+	_button(target, _fit_title(str(row.title), "", 0.5, 18), centre, size, true, "", false, _list)
 	var button: Dictionary = _buttons.back()
 	button.base_color = SELECTED if file_actions.editing and file_actions.is_selected(row) else Color(TILE, 0.0)
-	if (compact and _is_current_row(row)) or (str(row.get("uri", "")) == collections.reveal_uri and not collections.reveal_uri.is_empty()): button.base_color = SELECTED
-	button.enabled = bool(row.get("enabled", true)) and (not file_actions.editing or not file_actions.row_uri(row).is_empty())
+	if row.get("experience_guide", false) or (compact and _is_current_row(row)) or (str(row.get("uri", "")) == collections.reveal_uri and not collections.reveal_uri.is_empty()): button.base_color = SELECTED
+	button.enabled = (file_actions.idle() and file_actions.selectable(row)) if file_actions.editing else bool(row.get("enabled", true))
 	button.node.material_override.set_shader_parameter("surface_color", button.base_color)
 	var node: MeshInstance3D = button.node
 	var name: Label3D = node.get_child(0)
@@ -4643,12 +4784,12 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 	name.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 	name.width = (TILE_SIZE.x - 0.03) / name.pixel_size
 	var folder_art := row.has("folder_thumb_scope")
-	var picture := icon in ["video", "image"] or folder_art
+	var picture := icon in ["video", "image"] or folder_art or row.has("experience_thumbnail")
 	# A picture card gives the name a left edge to line up with. A bare glyph (servers, drives,
 	# accounts, plain folders) has no card, so its name stays centred under it.
 	name.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT if picture else HORIZONTAL_ALIGNMENT_CENTER
 	name.vertical_alignment = VERTICAL_ALIGNMENT_TOP
-	name.position = Vector3(-(TILE_SIZE.x - 0.03) * 0.5 + 0.005 if picture else 0.0, -0.06, 0.004)
+	name.position = Vector3(-(TILE_SIZE.x - 0.03) * 0.5 + 0.005 if picture else 0.0, -0.046 if short_tile else -0.06, 0.004)
 	var area := _quad(Vector2(TILE_SIZE.x - 0.02, 0.165), Vector3(0, 0.04, 0.003), UiTheme.color("placeholder") if picture else Color(TILE, 0.0), 12)
 	node.add_child(area)
 	var shown: Texture2D = _picture(row) if picture else null
@@ -4666,13 +4807,14 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 	var glyph := _icon(icon, Vector3(0, 0.04, 0.005), 0.081 if picture and not folder_art else 0.125 if folder_art else 0.1, FOLDER if folder_art else MUTED if picture else UiTheme.color("text"), node)
 	glyph.material_override.render_priority = 13
 	glyph.visible = shown == null
+	directory_music.decorate(button, row)
 	if picture: button.thumbnail_placeholder = glyph
 	if folder_art:
 		var mark := _icon("folder", Vector3(-0.092, 0.097, 0.006), 0.03, FOLDER, node)
 		mark.material_override.render_priority = 14
 		mark.visible = shown != null
 		button.thumbnail_folder_badge = mark
-	if file_actions.editing and not file_actions.row_uri(row).is_empty():
+	if file_actions.editing and file_actions.selectable(row):
 		var marker := _icon("check" if file_actions.is_selected(row) else "circle", Vector3(-0.115, 0.095, 0.009), 0.035, ACCENT, node)
 		marker.material_override.render_priority = 14
 	var detail := str(row.get("detail", ""))
@@ -4763,6 +4905,7 @@ func _thumbnail_matches(row: Dictionary, digest: String) -> bool:
 	return false
 
 func _picture(row: Dictionary, permit_request: bool = true) -> Texture2D:
+	if row.has("experience_thumbnail"): return experience.thumbnail(row.experience_thumbnail)
 	if row.has("folder_thumb_scope"):
 		var declared := Thumbnails.texture(str(row.get("folder_cover_key", "")))
 		return declared if declared else DirectoryArtwork.texture(row.folder_thumb_scope)
@@ -4847,10 +4990,11 @@ func _media_row_button(target: int, row: Dictionary, centre: Vector2) -> void:
 	var managing := not archives.browsing and file_actions.list_management()
 	var status_text := str(info.status)
 	var title_width := (0.76 if not status_text.is_empty() else 1.0) - (0.11 if managing else 0.0)
+	if directory_music.song(row): title_width = minf(title_width, 0.87)
 	if audio_import_mode: title_width = minf(title_width, 0.90)
 	var body := centre + Vector2(0.055 if managing else 0.0, 0)
 	_button(target, _fit_title(str(row.title), "", title_width, 22), body, Vector2(1.13 if managing else 1.24, 0.098), bool(row.get("enabled", true)), "", false, _list)
-	var selected := file_actions.is_selected(row) or (str(row.get("uri", "")) == collections.reveal_uri and not collections.reveal_uri.is_empty())
+	var selected := bool(row.get("experience_guide", false)) or file_actions.is_selected(row) or (str(row.get("uri", "")) == collections.reveal_uri and not collections.reveal_uri.is_empty())
 	_lit(selected)
 	var node: MeshInstance3D = _buttons.back().node
 	var label: Label3D = node.get_child(0)
@@ -4859,7 +5003,7 @@ func _media_row_button(target: int, row: Dictionary, centre: Vector2) -> void:
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	if label.text != str(row.title): _tips[target] = str(row.title)
 	var glyph := _icon(str(row.get("icon", "video")), Vector3(-0.51 if managing else -0.565, 0, 0.004), 0.045, FOLDER if info.folder else _buttons.back().foreground, node)
-	if row.has("folder_thumb_scope") or row.get("kind") in ["video", "image"]:
+	if row.has("experience_thumbnail") or row.has("folder_thumb_scope") or row.get("kind") in ["video", "image"]:
 		var button: Dictionary = _buttons.back()
 		var area := _quad(Vector2(0.069, 0.039), glyph.position, Color.WHITE, 12)
 		node.add_child(area)
@@ -4882,6 +5026,7 @@ func _media_row_button(target: int, row: Dictionary, centre: Vector2) -> void:
 		status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT; status_label.modulate = ACCENT
 	if info.folder: _icon("next", Vector3(0.51 if managing else 0.565, 0, 0.004), 0.028, MUTED, node)
 	_progress_on(node, float(info.ratio), Vector2(0.405 if managing else 0.46, -0.025), 0.24)
+	directory_music.decorate(_buttons.back(), row)
 	if not archives.browsing: file_actions.draw_checkbox(target, row, centre + Vector2(-0.575, 0))
 
 func _row_button(target: int, title: String, detail: String, icon: String, centre: Vector2, selected: bool, two_lines: bool = false) -> void:
@@ -4921,6 +5066,8 @@ func _nav_button(target: int, text: String, icon: String, centre: Vector2, selec
 	label.modulate = ACCENT if selected else button.foreground
 	label.font_size = roundi(label.font_size * CAPTION_GROW)
 	button["caption_grown"] = true
+	if target == NAV_BASE + Section.LOCAL and section == Section.RECENT and _experience_browse_mode() and experience_seen_version < Experience.GUIDE_VERSION:
+		node.add_child(_quad(Vector2.ONE * 0.014, Vector3(0.15, 0, 0.005), ACCENT, 13))
 	if not badge.is_empty():
 		var status := _label(badge, Vector3(0, 0, 0.004), 14, node)
 		status.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT

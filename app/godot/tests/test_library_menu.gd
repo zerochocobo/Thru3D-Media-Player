@@ -242,10 +242,10 @@ func _run() -> void:
 	# Local: the disk itself, volumes then folders and videos.
 	menu._activate(Menu.NAV_BASE + Menu.Section.LOCAL)
 	await settle()
-	check(titles(menu) == ["Internal storage", "USB drive"] and menu.rows[1].icon == "usb", "Storage volumes: %s" % [titles(menu)])
+	check(titles(menu) == ["Try Thru3D", "Internal storage", "USB drive"] and menu.rows[2].icon == "usb", "Storage volumes: %s" % [titles(menu)])
 	check(menu.text_snapshot().is_empty() == false and not menu._buttons.any(func(b): return b.target == Menu.ALL_FILES),
 		"Volume discovery does not suggest a shared-storage grant for USB devices")
-	menu._activate(Menu.ROW_BASE); await settle()
+	menu._activate(Menu.ROW_BASE + 1); await settle()
 	check(menu._buttons.any(func(b): return b.target == Menu.ALL_FILES), "Internal storage retains its all-files access action")
 	menu._activate(Menu.ALL_FILES)
 	check(platform.grants == 1, "The button opens the system access page")
@@ -449,11 +449,11 @@ func _run() -> void:
 	menu.scroll = 0.0
 	menu.refresh()
 	check(menu.rows.size() == 30 and int(menu.scroll) == 0, "Folder with 30 videos starts at the top")
-	# A scene file is offered to the scene picker only: sources report it by name, as they do a video.
+	# A scene file is visible in folders and selectable in the dedicated picker.
 	var room := {"id": "/big/room", "uri": "file:///big/room.glb", "title": "room.glb", "size": 1, "container": false}
 	menu._local_entries = many + [room]
 	menu.refresh()
-	check(menu._entry_row(room).kind == "scene" and menu.rows.size() == 30, "A scene file stays out of the ordinary listing")
+	check(menu._entry_row(room).kind == "scene" and not menu._entry_row(room).enabled and menu.rows.size() == 31, "Ordinary listings show scene files as display-only")
 	# A DVD folder's index is listed as the disc itself, under the name of the folder holding VIDEO_TS.
 	var disc: Dictionary = menu._entry_row({"id": "/big/Film/VIDEO_TS/VIDEO_TS.IFO", "uri": "file:///big/Film/VIDEO_TS/video_ts.ifo",
 		"title": "video_ts.ifo", "size": 12288, "container": false, "kind": "video", "can_delete": true, "can_rename": true})

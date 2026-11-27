@@ -4,7 +4,7 @@ extends Node3D
 
 const GLOW := """
 shader_type spatial;
-render_mode unshaded, blend_add, cull_disabled, depth_draw_never, shadows_disabled;
+render_mode unshaded, blend_premul_alpha, cull_disabled, depth_draw_never, shadows_disabled;
 uniform vec3 colour : source_color = vec3(1.0, 0.82, 0.45);
 uniform float strength = 1.0;
 void vertex() {
@@ -16,12 +16,17 @@ void fragment() {
 	float d = length(UV - vec2(0.5)) * 2.0;
 	float core = smoothstep(1.0, 0.0, d);
 	ALBEDO = colour * strength * (core * core * core + 0.35 * core);
+	// Light adds to what is behind it, but must not make the eye buffer opaque: where the eye buffer is
+	// cleared over a page or menu layer (or passthrough), additive blending wrote alpha 1 across the
+	// whole quad and showed it as a black square. Coverage follows the light itself.
+	ALPHA = clamp(max(ALBEDO.r, max(ALBEDO.g, ALBEDO.b)), 0.0, 1.0);
 }
 """
 const LENGTH := 0.34
+const DEFAULT_GLOW := Color(1.0, 0.85, 0.52)
 var tip := Node3D.new()
 var _halo := MeshInstance3D.new()
-var _trail := CPUParticles3D.new()
+var _trail: CPUParticles3D
 var _last := Vector3.ZERO
 var _speed := 0.0
 
@@ -62,7 +67,7 @@ func _init() -> void:
 	add_child(tip)
 	# Small: the tip sits between the eyes and the page, and a broad glow would hide the line being read.
 	var halo := QuadMesh.new(); halo.size = Vector2.ONE * 0.035
-	_halo.mesh = halo; _halo.material_override = glow_material(Color(1.0, 0.85, 0.52), 1.0)
+	_halo.mesh = halo; _halo.material_override = glow_material(DEFAULT_GLOW, 1.0)
 	tip.add_child(_halo)
 	_trail = sparks(48, 0.7, 0.014, Color(1.0, 0.80, 0.42))
 	tip.add_child(_trail)
@@ -79,6 +84,9 @@ func aim(origin: Vector3, direction: Vector3) -> void:
 func cast(active: bool) -> void:
 	_halo.material_override.set_shader_parameter("strength", 2.2 if active else 1.0)
 	_halo.scale = Vector3.ONE * (1.8 if active else 1.0)
+
+func tint(colour: Color) -> void:
+	_halo.material_override.set_shader_parameter("colour",colour)
 
 func _process(delta: float) -> void:
 	if not visible or delta <= 0.0: _trail.emitting = false; return

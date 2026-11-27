@@ -10,6 +10,19 @@ class LayerCopyInterpolationTest {
     private val display = 1_000_000_000L
     private val grid = display - lead
 
+    @Test fun successfulSubmissionsCountEachVideoMomentOnce() {
+        val frames = LayerCopy.OutputFrames()
+        frames.submitted(5)
+        frames.submitted(5) // a settings redraw
+        frames.submitted(5, 0.33f)
+        frames.submitted(5, 0.33f)
+        frames.submitted(5, 0.67f)
+        frames.submitted(6) // a fallback to the nearer source, followed by that same source
+        frames.submitted(6)
+        assertEquals(4L, frames.total)
+        assertEquals(2L, frames.between)
+    }
+
     @Test fun aDrawIsForTheFirstLatchHalfAPeriodAway() {
         // Just after a latch: the next one is nearly a whole period away.
         assertEquals(grid + period, LayerCopy.latchAfter(grid + 1_000_000L, display, period, lead))

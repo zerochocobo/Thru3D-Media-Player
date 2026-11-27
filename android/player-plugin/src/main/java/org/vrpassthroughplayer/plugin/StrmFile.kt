@@ -150,13 +150,13 @@ internal class StrmResolver(
     private val isStrm: (String) -> Boolean = StrmFile::location,
     private val mapTarget: (String, String) -> String = { _, target -> target },
 ) {
-    fun resolve(original: String): String {
+    fun resolve(original: String, readDocument: (String) -> StrmDocument = read): String {
         var uri = original
         val visited = HashSet<String>()
         var depth = 0
         while (isStrm(uri)) {
             if (!visited.add(uri) || depth++ >= StrmFile.MAX_DEPTH) throw StrmFailure("STRM_RECURSIVE")
-            val document = try { read(uri) } catch (error: StrmFailure) { throw error }
+            val document = try { readDocument(uri) } catch (error: StrmFailure) { throw error }
                 catch (_: java.net.SocketTimeoutException) { throw StrmFailure("STRM_READ_TIMEOUT") }
                 catch (_: Exception) { throw StrmFailure("STRM_READ_FAILED") }
             uri = mapTarget(uri, StrmFile.target(document.location, StrmFile.parse(document.bytes)))

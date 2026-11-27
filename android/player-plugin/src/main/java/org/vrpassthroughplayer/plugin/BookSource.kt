@@ -25,6 +25,18 @@ internal object Books {
     const val TEXT_BYTES = 64L * 1024 * 1024
     val extensions = setOf("epub", "txt", "mobi", "azw3", "azw", "prc")
 
+    /** The whole stream, or null when it holds more than [limit] bytes. */
+    fun bounded(input: java.io.InputStream, limit: Long): ByteArray? {
+        val out = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(1 shl 16)
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) return out.toByteArray()
+            if (out.size() + read > limit) return null
+            out.write(buffer, 0, read)
+        }
+    }
+
     fun named(name: String) = name.substringBefore('?').substringBefore('#').substringAfterLast('.', "").lowercase() in extensions
 
     fun open(file: File, name: String): Book {
@@ -133,8 +145,11 @@ internal class EpubBook(file: File) : Book {
                 (items[tocId] ?: items.values.firstOrNull { it[1] == "application/x-dtbncx+xml" })?.get(0))
             val parsed = ArrayList<BookChapter>()
             val index = HashMap<String, Int>()
+            var characters = 0L
             for (document in documents) {
                 val source = text(document[0]) ?: continue
+                characters += source.length
+                require(characters <= Books.TEXT_BYTES) { "BOOK_UNAVAILABLE" }
                 val flow = BookMarkup.flow(source) { Books.join(document[0], it) }
                 index[document[0]] = parsed.size // Empty wrappers still let their links reach the next chapter.
                 if (flow.blocks.isEmpty()) continue
@@ -204,7 +219,8 @@ internal class EpubBook(file: File) : Book {
     override fun resource(path: String): ByteArray? {
         val entry = entry(path) ?: return null
         if (entry.isDirectory || entry.size > Books.RESOURCE_BYTES) return null
-        return zip.getInputStream(entry).use { it.readBytes() }
+        // The header's size can lie: stop reading at the limit rather than trust it.
+        return zip.getInputStream(entry).use { Books.bounded(it, Books.RESOURCE_BYTES) }
     }
     override fun close() = zip.close()
 }

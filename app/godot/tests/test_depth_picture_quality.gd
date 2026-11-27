@@ -18,6 +18,7 @@ class Host extends RefCounted:
 	var delays: Array = []
 	var released := 0
 	var refuse_pairs := false
+	var nearest_only := false
 	func interpolate_pair_push(texture: int, w: int, h: int, id: int, before: int) -> bool:
 		pushed.append([texture, w, h, id, before])
 		return not refuse_pairs
@@ -35,6 +36,13 @@ class Host extends RefCounted:
 	func interpolate_pair_show(slot: int, before: int, after: int, phase: float) -> bool:
 		between.append({"slot": slot, "before": before, "after": after, "phase": phase, "direct": true})
 		return true
+	func interpolate_pair_show_phase(slot: int, before: int, after: int, phase: float) -> float:
+		interpolate_pair_show(slot, before, after, phase)
+		return roundf(phase) if nearest_only else phase
+	func interpolate_pair_draw_phase(slot: int, before: int, after: int, phase: float, w: int, h: int, sharpen: float,
+			grade: PackedFloat32Array, step: float, tolerance: float) -> float:
+		interpolate_pair_draw(slot, before, after, phase, w, h, sharpen, grade, step, tolerance)
+		return roundf(phase) if nearest_only else phase
 	func interpolate_pair_release() -> void: released += 1
 	func set_mpv_pair_delay(id: int, ms: float) -> bool:
 		delays.append([id, ms])
@@ -135,6 +143,12 @@ func _interpolation(video: Video, host: Host, origin: XROrigin3D) -> void:
 	var moving := host.between.filter(func(draw): return draw.phase > 0.0 and draw.phase < 1.0)
 	check(moving.size() >= 10, "Most refreshes draw a picture between two pairs: %d of %d" % [moving.size(), host.between.size() - 1])
 	check(moving.all(func(draw): return draw.after == draw.before + 1), "each between a pair and the one after it")
+	check(video._pair_drawn.y == moving.size(), "Only successful intermediate stereo pictures count")
+	video.video_layer_shown = true
+	video.media.state = "playing"; video.requested_play = true; video._waiting_first = false
+	var sample := video.interpolation_sample(4000)
+	check(sample.get("time") == 4000 and sample.get("between") == moving.size() and sample.get("total") == video._pair_drawn.x,
+		"The live 3D readout uses both eyes as one video frame")
 	check(host.enhanced.size() == plain and host.pushed.size() == 8, "Every pair is handed over once, none drawn the plain way meanwhile")
 	video.picture_sharpness = 0.25
 	var draws_before := host.between.size()
@@ -161,12 +175,16 @@ func _interpolation(video: Video, host: Host, origin: XROrigin3D) -> void:
 	video._show_depth_picture(origin, [])
 	check(host.released == 2 and host.finished.size() == 9 and is_equal_approx(host.finished[-1].sharpen, Video.sharpen_strength(0.25)),
 		"Back at their own size the pairs are finished pictures again, with the slider's value")
+	host.nearest_only = true
+	var intermediate_before := video._pair_drawn.y
 	for refresh in 9:
 		layers.display += layers.period
 		if refresh % 3 == 2:
 			video._binding.ticket = _film(token, token - 10)
 			token += 1
 		video._show_depth_picture(origin, [])
+	check(video._pair_drawn.y == intermediate_before, "A successful draw that fell back to the nearest source is no intermediate picture")
+	host.nearest_only = false
 	plain = host.enhanced.size()
 	var kept_pairs := host.pushed.size()
 	# A pause: the picture runs on to the newest pair, which is then drawn the plain way (the bridge redraws that one in place).

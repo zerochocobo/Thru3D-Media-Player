@@ -8,7 +8,7 @@ const Model := preload("res://scripts/book_model.gd")
 ## where the wand points along it.
 const ARC_SHADER := """
 shader_type spatial;
-render_mode unshaded, blend_add, cull_disabled, depth_draw_never, shadows_disabled;
+render_mode unshaded, blend_premul_alpha, cull_disabled, depth_draw_never, shadows_disabled;
 uniform vec3 colour : source_color = vec3(1.0, 0.80, 0.42);
 uniform float filled = 0.0;
 uniform float aim = -1.0;
@@ -23,6 +23,10 @@ void fragment() {
 	float bead = aim >= 0.0 ? smoothstep(0.022, 0.0, length(p - vec2(sin(aim * TAU), -cos(aim * TAU)) * 0.93)) : 0.0;
 	float here = smoothstep(0.016, 0.0, length(p - vec2(sin(filled * TAU), -cos(filled * TAU)) * 0.93));
 	ALBEDO = colour * (band * lit + bead * 3.0 + here * 2.0);
+	// Light adds to what is behind it, but must not make the eye buffer opaque: where the eye buffer is
+	// cleared over a page or menu layer (or passthrough), additive blending wrote alpha 1 across the
+	// whole quad and showed it as a black square. Coverage follows the light itself.
+	ALPHA = clamp(max(ALBEDO.r, max(ALBEDO.g, ALBEDO.b)), 0.0, 1.0);
 }
 """
 const A_LETTER := "A"
@@ -43,6 +47,9 @@ const TAB_CONTENTS := 15
 const TAB_MARKS := 16
 const TAB_SEARCH := 17
 const QUERY := 18
+const MUSIC := 19
+const FAVORITE := 20
+const SCENE := 21
 ## A bookmark row's own remove button: REMOVE + its index.
 const REMOVE := 100000
 const LISTS := ["contents", "marks", "search", "settings"]
@@ -83,11 +90,23 @@ const RIM_BAND := 0.04
 const APPEAR_SECONDS := 0.22
 var reader: Node3D
 var mode := "bar"
+## The background music, as the other menus show it: [audio_state] gives its state, [music_toggle]
+## plays or pauses it, and [signal music_requested] asks for the full player.
+signal music_requested
+## The book goes into, or out of, the app's favourites.
+signal favorite_requested
+## The scene panel, as the library's Scene button calls it.
+signal scene_requested
+## {"enabled", "selected", "locked"} for the open book, from the app's favourites.
+var favorite_state: Callable
+var audio_state: Callable
+var music_toggle: Callable
 ## The settings page on show.
 var section := "look"
 var first := 0
-## The page to come back to after a leap through the rim or the contents, or -1.
-var return_page := -1
+## Where to come back to after a leap through the rim or the contents ("chapter/block/character"), or "".
+## A position, not a page: a fuller layout or new type settings renumber the pages.
+var return_at := ""
 var _touched := 0
 var _scroll := 0.0
 var _grown := 1.0
@@ -136,6 +155,9 @@ func open(next: String = "bar") -> void:
 	touch()
 	refresh()
 
+func _toggle_music() -> void:
+	if music_toggle.is_valid(): music_toggle.call()
+
 func dismiss() -> void:
 	editor.cancel()
 	_aimed.clear(); _scrub = -1.0
@@ -152,12 +174,20 @@ func back() -> void:
 ## Leaps to a page and offers the way back to where the reader was.
 func leap(index: int) -> void:
 	var here: int = reader.first_page()
-	if absi(index - here) > 2: return_page = here
+	if absi(index - here) > 2: return_at = reader.place_of(here)
 	reader.leap(index)
+
+## A new book: nothing of the last one's way back or search carries over.
+func forget() -> void:
+	return_at = ""
+	query = ""; _hits = []; _more = false; _searched = ""; _searching = 0
+	if editor.active(): editor.cancel()
 
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	super.update_pointer(hand, origin, direction, tracked)
 	if tracked and not pointer_hit(origin, direction).is_empty(): touch()
+	# The small player reaches past the ring; while it is open the ring stays.
+	if music_quick and music_quick.expanded: touch()
 	var along := _rim(origin, direction) if tracked and mode == "bar" and ray_hit(origin, direction).is_empty() else -1.0
 	if along >= 0.0: _aimed[hand] = along; touch()
 	else: _aimed.erase(hand)
@@ -199,6 +229,8 @@ func _process(delta: float) -> void:
 		_grown = minf(1.0, _grown + delta / APPEAR_SECONDS)
 		var eased := 1.0 - pow(1.0 - _grown, 3.0)
 		global_transform = Transform3D(global_basis.orthonormalized().scaled(Vector3.ONE * _size * lerpf(0.35, 1.0, eased)), global_position)
+		# The compositor measures the ring when it repaints: it repaints as the ring grows.
+		composition_changed.emit()
 	if mode == "bar" and Time.get_ticks_msec() - _touched > IDLE_MS: dismiss()
 	if mode == "settings" and section == "font" and Time.get_ticks_msec() > _font_redraw:
 		_font_redraw = Time.get_ticks_msec() + 500
@@ -232,6 +264,9 @@ func _light(code: String, size: float, depth: float, values: Dictionary) -> Mesh
 	var quad := QuadMesh.new(); quad.size = Vector2.ONE * size
 	node.mesh = quad; node.material_override = material; node.position = Vector3(0, 0, depth)
 	add_child(node); _decorations.append(node)
+	# The ring itself goes to the compositor with the other menus; its lights turn and follow the
+	# wand, so they stay in the eye buffer and glow over it rather than freeze in a captured image.
+	node.set_meta("menu_eye_buffer", true)
 	return node
 
 func _draw() -> void:
@@ -255,26 +290,40 @@ func _draw() -> void:
 	_lines[2].modulate = ACCENT
 	_lines[3].modulate = MUTED
 	_show_position()
-	# Clockwise from the top: contents, then the settings, day or night and the pages turning by
-	# themselves on the right, leaving on the left.
+	# Clockwise from the top: contents, then the settings, day or night, the favourite star, reading
+	# aloud and the pages turning by themselves on the right, every 30 degrees as on the left.
+	var liked: Dictionary = favorite_state.call() if favorite_state.is_valid() else {}
 	var runes := [
 		[CONTENTS, "list", 90.0, ready and not reader.contents.is_empty(), "Contents"],
-		[SETTINGS, "settings", 54.0, true, "Reading settings"],
-		[NIGHT, "light" if reader.night() else "night", 18.0, true, "Day" if reader.night() else "Night"],
-		[READ, "stop" if reader.narration.on else "voice", -18.0, ready and reader.narration.supported(),
+		[SETTINGS, "settings", 60.0, true, "Reading settings"],
+		[NIGHT, "light" if reader.night() else "night", 30.0, true, "Day" if reader.night() else "Night"],
+		[FAVORITE, "lock" if liked.get("locked", false) else "star_filled" if liked.get("selected", false) else "star", 0.0,
+			liked.get("enabled", false), "Remove favorite" if liked.get("selected", false) else "Add favorite"],
+		[READ, "stop" if reader.narration.on else "voice", -30.0, ready and reader.narration.supported(),
 			"Stop reading aloud" if reader.narration.on else "Read aloud"],
-		[AUTO, "pause" if reader.auto else "play", -54.0, ready, "Stop turning pages" if reader.auto else "Turn pages by themselves"],
+		# Its own sign, not a play button: the music entry on the left has the play button.
+		[AUTO, "auto_turn", -60.0, ready, "Stop turning pages" if reader.auto else "Turn pages by themselves"],
 		[EXIT, "close", -90.0, true, "Close book"],
-		[LIBRARY, "media_library", -135.0, true, "Library"],
-		[RECENTER, "recenter", 180.0, true, "Bring the book here"],
-		[MARK, "bookmark" if reader.mark_here() >= 0 else "bookmark_add", 135.0, ready,
-			"Remove bookmark" if reader.mark_here() >= 0 else "Add bookmark"]]
-	if return_page >= 0 and ready: runes.append([RETURN, "undo", 112.5, true, "Back to where I was"])
+		# The left half every 30 degrees, the music in the leftmost place as in the other menus.
+		[LIBRARY, "media_library", -150.0, true, "Library"],
+		# Not the framing corners of recentre elsewhere: beside the music player's expand button they read alike.
+		[RECENTER, "book_here", 150.0, true, "Bring the book here"],
+		[MARK, "bookmark" if reader.mark_here() >= 0 else "bookmark_add", 120.0, ready,
+			"Remove bookmark" if reader.mark_here() >= 0 else "Add bookmark"],
+		# Beside the library, low on the left, as Scene sits at the foot of the library.
+		[SCENE, "panorama", -120.0, true, "Scene"]]
 	for rune in runes:
 		var angle := deg_to_rad(float(rune[2]))
-		var lit: bool = (rune[0] == MARK and reader.mark_here() >= 0) or (rune[0] == AUTO and reader.auto) or (rune[0] == READ and reader.narration.on)
+		var lit: bool = (rune[0] == MARK and reader.mark_here() >= 0) or (rune[0] == AUTO and reader.auto) or (rune[0] == READ and reader.narration.on) 			or (rune[0] == FAVORITE and liked.get("selected", false))
 		_round(int(rune[0]), str(rune[1]), Vector2(cos(angle), sin(angle)) * RADIUS, 0.115, bool(rune[3]), lit, I18n.t(str(rune[4])))
 		_buttons.back()["tip_below"] = sin(angle) < 0.1
+	# After a leap, the way back sits under the position it returns from.
+	if not return_at.is_empty() and ready and reader.locate(return_at) >= 0:
+		_round(RETURN, "undo", Vector2(0, -0.17), 0.1, true, false, I18n.t("Back to where I was"))
+		_buttons.back()["tip_below"] = true
+	# Pointed at, it opens leftwards into a small player; its button opens the full one.
+	if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, _toggle_music)
+	music_quick.draw(MUSIC, Vector2(-RADIUS, 0.0), audio_state.call() if audio_state.is_valid() else {}, 0.115)
 
 ## Chapter, page and progress in the middle of the ring; while the wand runs along the rim, the
 ## chapter and page it would leap to.
@@ -288,10 +337,14 @@ func _show_position() -> void:
 	var index: int = _rim_page(_scrub) if _scrub >= 0.0 else reader.first_page()
 	_lines[0].text = _fit_title(reader.chapter_name(index), "", 0.40, 20)
 	_lines[1].text = "%d / %s" % [index + 1, "…" if reader.partial() else str(reader.count)]
+	var spent: String = reader.reading_time()
 	_lines[2].text = "" if reader.partial() else I18n.t("Read %d%%") % roundi(100.0 * index / maxf(reader.count - 1, 1.0))
+	# How long this book has been read, beside how far.
+	if not spent.is_empty() and _scrub < 0.0: _lines[2].text = spent if _lines[2].text.is_empty() else _lines[2].text + " · " + spent
 	_lines[3].text = _clock()
 	_lines[1].modulate = ACCENT if _scrub >= 0.0 else UiTheme.color("label")
 	_lines[2].modulate = ACCENT if _scrub < 0.0 else MUTED
+	composition_changed.emit()
 
 ## The time, and the headset's battery when the platform reports it: a reader loses track of both.
 func _clock() -> String:
@@ -415,7 +468,7 @@ func _draw_book() -> void:
 	for i in reader.REACHES.size():
 		_choice(REACH_BASE + i, str(i + 1), _cell(2, i), i == reader.reach_step)
 	_row_label("Bring the book here", 3)
-	_choice(RECENTER, "", _cell(3, 0), false, true, "recenter", I18n.t("Bring the book here"))
+	_choice(RECENTER, "", _cell(3, 0), false, true, "book_here", I18n.t("Bring the book here"))
 
 const TURN_ROWS := [["swish", "bolt", "Swish the wand"], ["drag", "single_page", "Pull a page with the trigger"],
 	["buttons", "gamepad", "A / X buttons"], ["stick", "forward", "Thumbstick"], ["palm", "hand_unlocked", "Wave a hand across the book"]]
@@ -709,9 +762,13 @@ func _activate(target: int) -> void:
 		ONE_PAGE: reader.set_single(true); refresh()
 		TWO_PAGES: reader.set_single(false); refresh()
 		RECENTER: reader.recenter()
-		LIBRARY: reader.library_requested.emit()
+		LIBRARY: dismiss(); reader.library_requested.emit()
+		MUSIC: music_requested.emit()
+		FAVORITE: favorite_requested.emit(); refresh()
+		SCENE: dismiss(); scene_requested.emit()
 		EXIT: reader.close_book()
 		RETURN:
-			var back_to := return_page
-			return_page = reader.first_page()
-			reader.leap(back_to); refresh()
+			var back_to: int = reader.locate(return_at)
+			return_at = reader.place_of(reader.first_page())
+			if back_to >= 0: reader.leap(back_to)
+			refresh()

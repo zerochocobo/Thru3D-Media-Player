@@ -105,7 +105,7 @@ func settings_rows() -> Array:
 		[{"value": false, "label": "Off"}, {"value": true, "label": "On"}])]
 
 func folder() -> bool:
-	if menu.archives.browsing: return false # Archive contents are read-only.
+	if menu.archives.browsing or menu.experience_open(): return false
 	return (menu.section == menu.Section.LOCAL and not menu._local_stack.is_empty()) or \
 		(menu.section == menu.Section.SMB and not menu._smb_server.is_empty() and not menu._smb_path.is_empty()) or \
 		(menu.section == menu.Section.CLOUD and not menu._cloud_stack.is_empty() and menu.cloud_accounts.mode.is_empty())
@@ -193,7 +193,7 @@ func selected_rows() -> Array[Dictionary]:
 	return result
 
 func list_management() -> bool:
-	return enabled and menu.view_mode == "list" and folder() and not menu.cloud_search.active
+	return enabled and menu.view_mode == "list" and folder() and not menu.cloud_search.active and not menu.directory_music.selecting
 
 func has_selection() -> bool:
 	# Compact row sizing must inspect selected identities, never scan the whole directory.
@@ -247,6 +247,7 @@ func can_delete_selection() -> bool:
 func draw_checkbox(row_target: int, row: Dictionary, centre: Vector2) -> void:
 	if not list_management(): return
 	var available := selectable(row)
+	if not row.get("enabled", true) and not available: return
 	menu._button(SELECT_BASE + row_target - menu.ROW_BASE, "", centre, Vector2(0.075, 0.086), available and idle(), "check" if is_selected(row) else "checkbox", is_selected(row), menu._list)
 	menu._buttons.back()["list_row"] = row_target
 	menu._buttons.back()["hover_disabled"] = not available
@@ -439,6 +440,7 @@ func draw_header() -> void:
 	draw_entry(menu._action_position(0.36))
 
 func draw_entry(position: Vector2) -> void:
+	if menu.directory_music.selecting: return
 	var state := entry_state()
 	if enabled and editing and folder(): state = "available"
 	if state.is_empty() or list_management(): return

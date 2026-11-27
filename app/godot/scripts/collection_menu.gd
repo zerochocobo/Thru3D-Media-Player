@@ -234,7 +234,7 @@ func home_rows() -> Array[Dictionary]:
 		row.kind = str(entry.get("kind", "image" if menu.ImageInfo.is_image(str(entry.get("uri", "")), str(entry.get("title", ""))) else "video"))
 		if row.kind == "folder": row.title = Location.folder_title(location_for(row), str(entry.get("title", "")))
 		elif row.kind in ["archive", "pdf"] and location_for(row).get("type") == "archive": row.title = Location.folder_title(location_for(row), str(entry.get("title", "")))
-		row.icon = "folder" if row.kind in ["folder", "archive", "pdf"] else ("image" if row.kind == "image" else "video")
+		row.icon = "folder" if row.kind in ["folder", "archive", "pdf"] else {"image": "image", "book": "bookmark", "audio": "music"}.get(row.kind, "video")
 		row.detail = ""; row.position_ms = int(entry.get("position_ms", 0)); row.duration_ms = int(entry.get("duration_ms", -1))
 		if home_tab == 1 and store.protected:
 			var recent: Dictionary = entry.get("private", {}).get("recent", {})

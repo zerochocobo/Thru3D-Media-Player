@@ -287,7 +287,7 @@ internal class UsbStorage(private val host: () -> Activity?, private val emit: (
         val open=mount(uri)
         return try {
             val raw=JSONArray(UsbFsNative.list(open.volume,open.path.toByteArray(Charsets.UTF_8)).toString(Charsets.UTF_8))
-            val rows=(0 until raw.length()).map(raw::getJSONObject).filter { !it.getString("name").startsWith('.') && (it.getBoolean("directory") || !mediaOnly || MediaKinds.supportedFileName(it.getString("name"))) }
+            val rows=(0 until raw.length()).map(raw::getJSONObject).filter { !it.getString("name").startsWith('.') && (it.getBoolean("directory") || !mediaOnly || MediaKinds.listedFileName(it.getString("name"))) }
                 .sortedWith(compareBy({ !it.getBoolean("directory") },{ it.getString("name").lowercase() }))
             JSONArray().apply { for(row in rows) {
                 val name=row.getString("name"); val folder=row.getBoolean("directory"); val location=child(uri,name)

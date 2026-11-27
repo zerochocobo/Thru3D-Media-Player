@@ -2,6 +2,8 @@ package org.vrpassthroughplayer.plugin
 
 /** Account-local, bounded metadata only. Never stores download URLs or credentials. */
 internal class CloudMetadata(private val now: () -> Long = { System.nanoTime() / 1_000_000 }) {
+    val diagnosticNumber = nextNumber.incrementAndGet()
+    private companion object { val nextNumber = java.util.concurrent.atomic.AtomicInteger() }
     private data class Value(val item: Any, val expires: Long)
     private data class PageKey(val path: String, val offset: Int, val order: String)
     private val files = LinkedHashMap<String, Value>(16, 0.75f, true)

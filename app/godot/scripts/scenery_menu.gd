@@ -8,11 +8,11 @@ static var SELECTED: Color:
 const TextInput := preload("res://scripts/system_text_input.gd")
 const SceneBudget := preload("res://scripts/scene_import/scene_import_budget.gd")
 const GalleryView := preload("res://scripts/scene_import/scene_gallery_view.gd")
-const BUILTINS := [["cinema","Grand cinema"],["private_beach","Private beach"],["belfast","Belfast sunset"],["morning","Morning sky"],
+const BUILTINS := [["magic_cottage","Wizard's Attic"],["cinema","Grand cinema"],["private_beach","Private beach"],["belfast","Belfast sunset"],["morning","Morning sky"],
 	["night","Milky Way panorama"],["dark","Dark background"],["passthrough","Passthrough"]]
-const PREVIEWS := ["cinema","private_beach","belfast","morning","night"]
+const PREVIEWS := ["magic_cottage","cinema","private_beach","belfast","morning","night"]
 ## Built-in scenes that are modelled rooms, and the two that are no picture at all.
-const BUILTIN_SCENES := ["cinema","private_beach"]
+const BUILTIN_SCENES := ["cinema","private_beach","magic_cottage"]
 const BUILTIN_PLAIN := ["dark","passthrough"]
 const CARD := 200000
 const BACK := 10100
@@ -45,6 +45,9 @@ const HELP_SCENE := 10123
 const SET_ENTRY := 10124
 ## Opens the scenes offered for download.
 const GALLERY := 10125
+const COTTAGE_SCREEN := 10126
+const COTTAGE_RESET := 10127
+const CottageFilm := preload("res://environments/magic_cottage/film_screen.gd")
 const ADDING_CARD := "adding"
 var _followed := ""
 ## Set whenever the scene page is come to afresh: its list then turns to the scene in use.
@@ -226,7 +229,7 @@ func _choice_previewed(key: String, value: Variant) -> void:
 		command.emit("preview_yaw", {"mode": mode, "value": value})
 
 func _choice_changed(key: String,value: Variant) -> void:
-	if view == "beach_screen" and _state.get("screen_edit_locked", false): command.emit("screen_lock_notice", ""); return
+	if view in ["beach_screen","cottage_screen"] and _state.get("screen_edit_locked", false): command.emit("screen_lock_notice", ""); return
 	if view=="beach_screen" and screen_edit.values.has(key): screen_edit.values[key]=value
 	else: command.emit("adjust", {"mode":mode,"key":key,"value":value})
 	refresh()
@@ -282,6 +285,7 @@ func navigate_back() -> bool:
 	elif modal=="add": modal=""
 	elif not modal.is_empty(): modal = ""; selected.clear()
 	elif view=="beach_screen": view="adjust"; screen_edit.values.clear()
+	elif view=="cottage_screen": view="adjust"
 	elif view != "scene": view = "scene"; bulk = false; selected.clear(); page = 0; _locate=true
 	else: return false
 	refresh(); return true
@@ -301,6 +305,7 @@ func refresh() -> void:
 	_state = state_provider.call(mode) if state_provider.is_valid() else {}
 	if view=="beach_screen" and _state.get("choice","")!="private_beach":
 		view="scene"; screen_edit.values.clear()
+	if view=="cottage_screen" and not _state.has("cottage_screen"): view="scene"
 	_signature = str(_state)
 	_draw(); _apply_screen_lock(); arrange_surfaces(); composition_changed.emit()
 
@@ -318,7 +323,9 @@ func _draw() -> void:
 	elif view=="mood": height=.40+(3*SUB_ROW if _state.get("mood_light",{}).get("on",false) else 0.0)
 	elif view=="adjust": height=(.74+(.12 if _scene_state().get("baked",false) else 0.0)+(0.0 if _scene_state().get("own_sky",true) else .12)) if _scene_active() else 1.0 if _state.get("choice","")=="cinema" else .87 if _state.get("choice","")=="private_beach" else .62
 	elif view=="beach_screen": height=1.12
+	elif view=="cottage_screen": height=.96
 	elif view in ["import","import_error"]: height=.82
+	if view=="adjust" and modal.is_empty() and _state.has("cottage_screen"): height=.87
 	_top=height/2; _bottom=-_top
 	_set_backdrop(Vector2(1.50,height))
 	var header_y:=_top-.10
@@ -338,7 +345,7 @@ func _draw() -> void:
 	elif view=="manage": title=I18n.t("Manage my scenes")
 	elif view=="review": title=I18n.t("Confirm panoramas")
 	elif view=="adjust": title=_selected_title()
-	elif view=="beach_screen": title=I18n.t("Screen placement")
+	elif view in ["beach_screen","cottage_screen"]: title=I18n.t("Screen placement")
 	elif view in ["import","import_error"]: title=I18n.t("Add panorama")
 	_left(title,Vector2(-.54 if back else LEFT,header_y),TEXT_PAGE_TITLE,.80).font=ui_bold_font()
 	if modal.is_empty() and view == "scene":
@@ -366,12 +373,13 @@ func _draw() -> void:
 		_button(BACK,I18n.t("Cancel"),Vector2(.16,_bottom+.09),Vector2(.30,.075))
 	elif view == "adjust": _draw_adjust()
 	elif view == "beach_screen": _draw_beach_screen()
+	elif view == "cottage_screen": _draw_cottage_screen()
 	elif view in ["import","import_error"]: _draw_import()
 	elif view == "gallery": GalleryView.draw(self)
 	elif view == "atmosphere": _draw_atmosphere(_top-.25)
 	elif view == "mood": _draw_mood_light(_top-.25)
 	else: _draw_cards()
-	if view not in ["import","import_error","beach_screen"] and modal not in ["requirements","issues"]:
+	if view not in ["import","import_error","beach_screen","cottage_screen"] and modal not in ["requirements","issues"]:
 		# Why images were turned down belongs with the lists of scenes, not on a scene's own page.
 		var show_issues: bool=modal.is_empty() and view in ["scene","manage","review"] and not library.import_progress.get("errors",[]).is_empty()
 		var status:=_scene_status()
@@ -734,6 +742,11 @@ func _loading_overlay(card: Node3D,layout: Dictionary,stage: String = "") -> voi
 		var dot:=_quad(Vector2.ONE*.014,Vector3(cos(angle),sin(angle),0)*.036,Color(1,1,1,.15+.85*index/float(SPINNER_DOTS-1)),14)
 		dot.material_override.set_shader_parameter("corner_radius",.007); _spinner.add_child(dot)
 
+func _builtin_title(id: String) -> String:
+	for item in BUILTINS:
+		if item[0]==id: return I18n.t(item[1])
+	return id
+
 func _paging(pages: int,y: float,x: float = -.63) -> void:
 	if pages<=1: return
 	_glyph(PREVIOUS,"previous",Vector2(x,y),.06,page>0)
@@ -746,7 +759,7 @@ func _draw_delete() -> void:
 	var y:=_top-.43
 	for descriptor in library.MODES:
 		if selected.has(str(library.bindings.get(descriptor.id,{}).get("id",""))):
-			_left(I18n.t(descriptor.label)+" → "+I18n.t("Grand cinema" if descriptor.default=="cinema" else "Belfast sunset"),Vector2(LEFT,y),TEXT_BODY); y-=.07
+			_left(I18n.t(descriptor.label)+" → "+_builtin_title(str(descriptor.default)),Vector2(LEFT,y),TEXT_BODY); y-=.07
 	_button(BACK,I18n.t("Cancel"),Vector2(.16,_bottom+.10),Vector2(.30,.075))
 	_danger(CONFIRM,I18n.t("Remove"),Vector2(.51,_bottom+.10),Vector2(.30,.075),not _state.get("busy",false))
 
@@ -788,12 +801,20 @@ func _draw_adjust() -> void:
 			{"key":"beach_screen_light","value":_state.get("beach_screen_light",1.0),"choices":[{"value":0.0,"label":"Off"},{"value":.5,"label":"Low"},{"value":1.0,"label":"Medium"},{"value":1.6,"label":"High"}]}]
 		_button(BEACH_SCREEN,I18n.t("Screen placement"),Vector2(-.22,_bottom+.13),Vector2(.46,.075),bool(_state.get("cinema_ready",false)))
 		_button(CURRENT,I18n.t("Return to start"),Vector2(.44,_bottom+.13),Vector2(.46,.075),bool(_state.get("cinema_ready",false)))
+	elif choice=="magic_cottage":
+		# Like the cinema, the attic always opens facing its arch from the seat.
+		rows=[{"key":"background_brightness","value":_state.get("brightness",1.0),"choices":[{"value":.5,"label":"50%"},{"value":.75,"label":"75%"},{"value":1.0,"label":"100%"},{"value":1.25,"label":"125%"}]}]
+		names=["Brightness"]
 	elif choice not in ["dark","passthrough"]:
 		rows=[{"key":"background_yaw", "value":_state.get("yaw", 0), "slider":true, "span":Vector3(0, 359, 1),
 			"unit":"°", "decimals":0, "nudge_step":1, "nudge_sides":true, "wrap":true, "ticks":range(0, 360, 45)},
 			{"key":"background_brightness","value":_state.get("brightness",1.0),"choices":[{"value":.5,"label":"50%"},{"value":.75,"label":"75%"},{"value":1.0,"label":"100%"},{"value":1.25,"label":"125%"}]}]
 	if not _scene_active() and choice=="cinema": names=["Cinema lighting","Cinema interaction","Viewing brightness","Screen ambient light"]
 	elif not _scene_active() and choice=="private_beach": names=["Time of day","Cinema interaction","Screen ambient light"]
+	elif _state.has("cottage_screen"):
+		rows.append({"key":"cottage_play_dim","value":_state.cottage_screen.play_dim,"choices":[{"value":1.,"label":"100%"},{"value":.5,"label":"50%"},{"value":.25,"label":"25%"},{"value":.1,"label":"10%"}]})
+		names.append("Scene brightness during playback")
+		_button(COTTAGE_SCREEN,I18n.t("Screen placement"),Vector2(.44,_bottom+.13),Vector2(.46,.075))
 	# Five rows (a baked scene without a sky) close up to leave the buttons below their room.
 	var step:=.13 if rows.size()<=4 else .115
 	for i in rows.size():
@@ -806,6 +827,20 @@ func _draw_adjust() -> void:
 			button.enabled=false; button.foreground=MUTED
 			for child in button.node.get_children():
 				if child is Label3D: child.modulate=MUTED
+
+func _draw_cottage_screen() -> void:
+	var labels := ["Nearest screen position","Farthest screen position","Minimum picture size","Maximum picture size"]
+	var keys := ["near","far","minimum","maximum"]
+	for i in keys.size():
+		var key: String = keys[i]
+		var span: Vector3 = CottageFilm.RANGES[key]
+		if key=="near": span.y=minf(span.y,_state.cottage_screen.far-.1)
+		if key=="far": span.x=maxf(span.x,_state.cottage_screen.near+.1)
+		var y := _top-.26-i*.13
+		_left(I18n.t(labels[i]),Vector2(LEFT,y),TEXT_BODY,.45)
+		choices.field(null,{"slider":true,"key":"cottage_"+key,"value":_state.cottage_screen[key],
+			"span":span,"unit":"m" if i<2 else "%","decimals":1 if i<2 else 0,"nudge_step":span.z},Vector2(.25,y),.82,.07)
+	_button(COTTAGE_RESET,I18n.t("Return screen to arch"),Vector2(.37,_bottom+.13),Vector2(.59,.075))
 
 func _draw_beach_screen() -> void:
 	var busy: bool = _state.get("beach_screen_loading",false)
@@ -835,6 +870,8 @@ func _draw_beach_screen() -> void:
 func _activate(target: int) -> void:
 	if _screen_lock_target(target): command.emit("screen_lock_notice", ""); return
 	if choices.action(target): return
+	if target==COTTAGE_SCREEN: view="cottage_screen"; choices.reset(); refresh(); return
+	if target==COTTAGE_RESET: _choice_changed("cottage_reset", true); return
 	if target in [BEACH_APPLY,BEACH_RESET] and has_pointer_capture(): return
 	if target==BEACH_SCREEN: command.emit("edit_beach_screen",null); return
 	if target==BEACH_APPLY: command.emit("apply_beach_screen",screen_edit.candidate()); refresh(); return
@@ -964,7 +1001,7 @@ func cancel_pointer(hand: String) -> void:
 
 
 func _screen_lock_target(target: int) -> bool:
-	return bool(_state.get("screen_edit_locked", false)) and (target in [BEACH_SCREEN, BEACH_APPLY, BEACH_RESET] or (view == "beach_screen" and choices.targets.has(target)))
+	return bool(_state.get("screen_edit_locked", false)) and (target in [BEACH_SCREEN, BEACH_APPLY, BEACH_RESET, COTTAGE_SCREEN, COTTAGE_RESET] or (view in ["beach_screen","cottage_screen"] and choices.targets.has(target)))
 
 func _apply_screen_lock() -> void:
 	for button in _buttons:

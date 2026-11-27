@@ -5127,6 +5127,8 @@ var _pair_failed := 0 # the session this GL could not interpolate in
 ## super resolution enlarging them they are kept as they came and each picture passes the mode's draw.
 var _pair_direct := false
 var _pair_drawn := Vector2i.ZERO # for the debug report: its draws of the picture layer, and those of them in between two pairs
+var _pair_output_id := -1
+var _pair_output_phase := 0.0
 
 ## Picture quality mode for frames a software decoder made (a DVD's MPEG-2, Profile 5...): they never
 ## pass the layer copy, so the picture layer draws them enlarged, sharpened and graded itself.
@@ -5654,6 +5656,8 @@ func _show_depth_picture(origin: XROrigin3D, extras: Array = []) -> bool:
 		_depth_picture_look = stamp
 		_depth_quality_drawn = quality
 		_depth_picture_size = size
+		if _pair_frame >= 0 and token == _pair_token and _pair_timeline != null:
+			_count_pair_output(_pair_timeline.pushed() - 1, 0.0)
 	return video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(size), 1, Vector2.ZERO, Vector4(0, 0, 1, 1),
 		VideoLayer.OPAQUE, extras)
 
@@ -5689,6 +5693,7 @@ func _interpolate_pair(ticket: Dictionary, source: Vector2i, size: Vector2i, loo
 	if _pair_timeline == null or _pair_session != media.session_id:
 		_pair_timeline = PairInterpolation.new()
 		_pair_session = media.session_id; _pair_token = -1; _pair_stamp = []; _pair_drawn = Vector2i.ZERO
+		_pair_output_id = -1
 		_pair_delay_ms = 0.0 # the plugin's delay is the session's
 	if _pair_timeline.overloaded: return PAIR_IDLE
 	var direct := size == source and PlatformMethods.supports(platform, "interpolate_pair_show")
@@ -5721,9 +5726,20 @@ func _interpolate_pair(ticket: Dictionary, source: Vector2i, size: Vector2i, loo
 		size = _depth_picture_image(source, size)
 		if size == Vector2i.ZERO or platform.acquire_layer_image(VideoLayer.PICTURE_SLOT) <= 0: return PAIR_FAILED
 		stamp[3] = size
-		var drawn: bool = platform.interpolate_pair_show(VideoLayer.PICTURE_SLOT, pick.before, pick.after, pick.phase) if direct \
-			else platform.interpolate_pair_draw(VideoLayer.PICTURE_SLOT, pick.before, pick.after, pick.phase, source.x, source.y,
-				look[0], grade, look[17], look[18])
+		var phase := -1.0
+		var drawn: bool
+		if direct and PlatformMethods.supports(platform, "interpolate_pair_show_phase"):
+			phase = platform.interpolate_pair_show_phase(VideoLayer.PICTURE_SLOT, pick.before, pick.after, pick.phase)
+			drawn = phase >= 0.0
+		elif not direct and PlatformMethods.supports(platform, "interpolate_pair_draw_phase"):
+			phase = platform.interpolate_pair_draw_phase(VideoLayer.PICTURE_SLOT, pick.before, pick.after, pick.phase,
+				source.x, source.y, look[0], grade, look[17], look[18])
+			drawn = phase >= 0.0
+		else:
+			# Older plugins can draw the picture but cannot identify a fallback to a source frame.
+			drawn = platform.interpolate_pair_show(VideoLayer.PICTURE_SLOT, pick.before, pick.after, pick.phase) if direct \
+				else platform.interpolate_pair_draw(VideoLayer.PICTURE_SLOT, pick.before, pick.after, pick.phase, source.x, source.y,
+					look[0], grade, look[17], look[18])
 		if not platform.release_layer_image(VideoLayer.PICTURE_SLOT, false) or not drawn:
 			_pair_failed = media.session_id
 			DiagnosticLog.record("pair_interpolation_failed", {"source": [source.x, source.y], "size": [size.x, size.y], "step": "draw"})
@@ -5735,7 +5751,8 @@ func _interpolate_pair(ticket: Dictionary, source: Vector2i, size: Vector2i, loo
 		_depth_picture_look = []
 		_depth_quality_drawn = true
 		_depth_picture_size = size
-		_pair_drawn += Vector2i(1, 1 if pick.phase > 0.0 and pick.phase < 1.0 else 0)
+		if phase >= 1.0: _count_pair_output(pick.after, 0.0)
+		elif phase >= 0.0: _count_pair_output(pick.before, phase)
 	_pair_timeline.paced(display, period)
 	if media.playback.has("depth_updates"):
 		_pair_timeline.depth_counts(int(media.playback.depth_updates), int(media.playback.get("captured_frames", 0)))
@@ -5744,6 +5761,35 @@ func _interpolate_pair(ticket: Dictionary, source: Vector2i, size: Vector2i, loo
 			"depth": _pair_timeline.depth_starved, "depth_share": _pair_timeline.depth_share})
 		_send_pair_delay(0.0)
 	return PAIR_DRAWN
+
+func _count_pair_output(id: int, phase: float) -> void:
+	if id == _pair_output_id and phase == _pair_output_phase: return
+	_pair_output_id = id
+	_pair_output_phase = phase
+	_pair_drawn += Vector2i(1, 1 if phase > 0.0 else 0)
+
+## Counts and their observation time travel together: copy status arrives in snapshots from Android.
+func interpolation_sample(now: int) -> Dictionary:
+	if not picture_quality or not picture_interpolation or local_uri.is_empty() or media.state in ["closed", "failed", "ended"]: return {}
+	var blocker := picture_interpolation_blocker()
+	var details: Dictionary = media.playback.get("details", {})
+	var state := "playing"
+	if blocker == "load": state = "stopped"
+	elif not blocker.is_empty(): state = "unavailable"
+	elif media.state == "paused" or not requested_play: state = "paused"
+	elif str(details.get("paused_for_cache", "")) in ["yes", "true"]: state = "buffering"
+	elif media.state != "playing" or _waiting_first or control.pending or control.in_flight > 0 or _scrub_hold: state = "waiting"
+	var sample := {"open": picture_open_id, "epoch": [media.session_id, media.generation, server_playback.seek_serial, depth_requested],
+		"state": state, "source": str(details.get("container_fps", "")).to_float()}
+	if state != "playing": return sample
+	if depth_requested:
+		if _pair_frame < 0 or _pair_session != media.session_id or not video_layer_shown: return sample
+		sample.merge({"total": _pair_drawn.x, "between": _pair_drawn.y, "time": now})
+	else:
+		var copy: Variant = media.playback.get("layer_copy")
+		if copy is Dictionary and copy.get("interpolating", false) and copy.has("output_frames"):
+			sample.merge({"total": int(copy.output_frames), "between": int(copy.between), "time": int(copy.sample_ms)})
+	return sample
 
 func _pair_interpolation_report() -> Dictionary:
 	return {"active": _pair_frame >= 0, "drawn": _pair_drawn.x, "between": _pair_drawn.y, "delay_ms": _pair_delay_ms,

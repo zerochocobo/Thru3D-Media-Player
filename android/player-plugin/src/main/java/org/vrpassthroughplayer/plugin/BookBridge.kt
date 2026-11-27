@@ -14,8 +14,10 @@ import java.util.concurrent.Executors
  * photo or PDF paths.
  */
 internal class BookBridge(private val context: () -> Context?, private val ready: (Int, String) -> Unit,
-    private val page: (Int, Int, String) -> Unit, private val found: (Int, Int, String) -> Unit = { _, _, _ -> }) : Closeable {
-    private class Session(val id: Int, var pages: BookSheets? = null, var copy: File? = null)
+    private val page: (Int, Int, String) -> Unit, private val found: (Int, Int, String) -> Unit = { _, _, _ -> },
+    private val remote: (String, CloudCancellation) -> PdfNetworkSource = { _, _ -> error("BOOK_UNAVAILABLE") }) : Closeable {
+    private class Session(val id: Int, @Volatile var pages: BookSheets? = null, @Volatile var copy: File? = null,
+        val cancellation: CloudCancellation = CloudCancellation())
     private val lock = Any()
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "BookPages") }
     /** Searches run apart from page drawing; a newer search makes the one running give up. */
@@ -36,6 +38,7 @@ internal class BookBridge(private val context: () -> Context?, private val ready
         val next = Session(id)
         val previous = session
         session = next
+        previous?.cancellation?.cancel() // A book still on its way from the network stops downloading.
         worker.execute {
             previous?.let(::dispose)
             if (!current(next)) return@execute
@@ -113,24 +116,24 @@ internal class BookBridge(private val context: () -> Context?, private val ready
     private fun whole(owner: Session, id: Int, book: Book, look: BookStyle, saved: File?, at: Int) {
         Thread({
             window(book, at)?.let { range ->
-                val near = try { BookPages(book, look, null, range) } catch (_: Throwable) { null }
-                if (near != null) worker.execute {
-                    if (!current(owner)) { near.close(); return@execute }
+                val near = try { BookPages(book, look, null, range) { !current(owner) } } catch (_: Throwable) { null }
+                if (near != null) post {
+                    if (!current(owner)) { near.close(); return@post }
                     owner.pages = near
                     ready(id, near.describe().put("state", "ready").put("session", id).toString())
                 }
             }
-            if (!current(owner)) { worker.execute { if (!current(owner)) runCatching { book.close() } }; return@Thread }
-            val pages = try { BookPages(book, look, saved) } catch (error: Throwable) {
+            if (!current(owner)) { post { if (!current(owner)) runCatching { book.close() } }; return@Thread }
+            val pages = try { BookPages(book, look, saved) { !current(owner) } } catch (error: Throwable) {
                 runCatching { android.util.Log.w("QuestBookPages", "whole book layout failed: ${error.javaClass.simpleName} ${error.message}") }; null }
-            worker.execute {
+            post {
                 if (pages == null) {
                     // The chapters on show stay readable; the reader is told the rest could not be laid out.
                     if (!current(owner)) runCatching { book.close() }
                     else ready(id, JSONObject().put("state", "error").put("session", id).put("error", "BOOK_LAYOUT_FAILED").toString())
-                    return@execute
+                    return@post
                 }
-                if (!current(owner)) { pages.close(); return@execute }
+                if (!current(owner)) { pages.close(); return@post }
                 owner.pages = pages
                 ready(id, pages.describe().put("state", "ready").put("session", id).toString())
             }
@@ -140,7 +143,7 @@ internal class BookBridge(private val context: () -> Context?, private val ready
     /** Parsers need a seekable file; anything that is not one already is copied once. */
     private fun source(uri: Uri, owner: Session): File {
         if (uri.scheme == "file") return File(uri.path ?: error("BOOK_UNAVAILABLE"))
-        require(uri.scheme == "content") { "BOOK_UNAVAILABLE" }
+        if (uri.scheme != "content") return download(uri.toString(), owner)
         val app = context() ?: error("BOOK_UNAVAILABLE")
         val target = File.createTempFile("source-", ".book", cache())
         owner.copy = target
@@ -153,6 +156,8 @@ internal class BookBridge(private val context: () -> Context?, private val ready
                     if (read < 0) break
                     total += read
                     require(total <= SOURCE_BYTES) { "BOOK_UNAVAILABLE" }
+                    if (owner.cancellation.cancelled) error("BOOK_CANCELLED")
+                    if (total and 0xFFFFFL < read && target.parentFile!!.usableSpace < 64L shl 20) error("BOOK_CACHE_FULL")
                     output.write(buffer, 0, read)
                 }
             }
@@ -160,8 +165,42 @@ internal class BookBridge(private val context: () -> Context?, private val ready
         return target
     }
 
+    /** A book on a share, cloud drive or media server: fetched whole into the cache before it is read. */
+    private fun download(uri: String, owner: Session): File {
+        val network = remote(uri, owner.cancellation)
+        network.use { input ->
+            val size = input.source.size
+            require(size in 1..SOURCE_BYTES) { "BOOK_UNAVAILABLE" }
+            if (cache().usableSpace < size + (64L shl 20)) error("BOOK_CACHE_FULL")
+            val name = uri.substringAfterLast('/').substringAfterLast('.', "book").take(8).filter { it.isLetterOrDigit() }
+            val target = File.createTempFile("source-", ".$name", cache())
+            owner.copy = target
+            input.source.open().use { reader ->
+                target.outputStream().use { output ->
+                    val buffer = ByteArray(1 shl 16)
+                    var offset = 0L
+                    while (offset < size) {
+                        input.validate()
+                        if (!current(owner)) error("BOOK_UNAVAILABLE")
+                        val read = reader.read(offset, buffer, minOf(buffer.size.toLong(), size - offset).toInt())
+                        if (read <= 0) error("BOOK_UNAVAILABLE")
+                        output.write(buffer, 0, read)
+                        offset += read
+                    }
+                }
+            }
+            return target
+        }
+    }
+
+    /** Hands work to the page worker; once the bridge has closed there is nothing to hand it to. */
+    private fun post(task: () -> Unit) {
+        try { worker.execute(task) } catch (_: java.util.concurrent.RejectedExecutionException) {}
+    }
+
     private fun current(value: Session) = synchronized(lock) { !closed && session === value }
     private fun dispose(value: Session) {
+        value.cancellation.cancel()
         runCatching { value.pages?.close() }; value.pages = null
         value.copy?.delete(); value.copy = null
     }

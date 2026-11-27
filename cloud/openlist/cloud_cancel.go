@@ -21,11 +21,25 @@ var cloudRequestContexts = struct {
 // Allocate before Kotlin installs its cancellation callback, so cancellation
 // cannot race the registration of a JNI call waiting for requestMu.
 func NewRequest() (string, error) {
+	return NewTrackedRequest("background", 0)
+}
+
+// NewTrackedRequest links the Kotlin browse or playback generation to its Go stages.
+func NewTrackedRequest(kind string, number int64) (string, error) {
+	switch kind {
+	case "browse", "playback", "background":
+	default:
+		kind = "background"
+	}
+	budget := 25 * time.Second
+	if kind == "playback" {
+		budget = 90 * time.Second
+	}
 	key := searchKey()
 	if key == "" {
 		return "", errors.New("cloud request unavailable")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), operationKey{}, cloudCaller{kind, number}), budget)
 	cloudRequestContexts.Lock()
 	defer cloudRequestContexts.Unlock()
 	for id, item := range cloudRequestContexts.items {
@@ -38,7 +52,7 @@ func NewRequest() (string, error) {
 		cancel()
 		return "", errors.New("too many cloud requests")
 	}
-	cloudRequestContexts.items[key] = pendingCloudRequest{ctx, cancel, time.Now().Add(25 * time.Second)}
+	cloudRequestContexts.items[key] = pendingCloudRequest{ctx, cancel, time.Now().Add(budget)}
 	return key, nil
 }
 func CancelRequest(key string) {
@@ -71,5 +85,31 @@ func RequestCancelable(method, route, body, key string) (string, error) {
 		delete(cloudRequestContexts.items, key)
 		cloudRequestContexts.Unlock()
 	}()
-	return requestContext(item.context, method, route, body)
+	switch route {
+	case "/directory", "/list", "/list115", "/stat115", "/archive-stream", "/search", "/searchresolve", "/matches115", "/companions115", "/exists115":
+	default:
+		return requestContext(item.context, method, route, body)
+	}
+	path, tr := traceRequest(item.context, route, body)
+	// Some upstream drivers can still be unwinding a transport after cancellation.
+	// Keep their account gate until they exit, but release the calling Android worker now.
+	type result struct {
+		value string
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() { v, e := dispatchRequest(item.context, method, route, body, path, tr); done <- result{v, e} }()
+	select {
+	case r := <-done:
+		if item.context.Err() == nil {
+			return r.value, r.err
+		}
+	case <-item.context.Done():
+	}
+	if errors.Is(item.context.Err(), context.DeadlineExceeded) {
+		tr.record("caller_timeout")
+	} else {
+		tr.record("caller_cancelled")
+	}
+	return "", item.context.Err()
 }

@@ -9,7 +9,7 @@ const BELFAST := "res://backgrounds/belfast_sunset_puresky.jpg"
 const MORNING := "res://backgrounds/kloppenheim_06_puresky.jpg"
 const NIGHT := "res://backgrounds/eso0932a.jpg"
 const BUILTINS := {"belfast": BELFAST, "morning": MORNING, "night": NIGHT}
-const CHOICES := ["belfast", "morning", "night", "dark", "passthrough", "custom", "cinema", "private_beach"]
+const CHOICES := ["belfast", "morning", "night", "dark", "passthrough", "custom", "cinema", "private_beach", "magic_cottage"]
 var directory := "user://backgrounds"
 var library_directory := "user://background_library"
 var choice := "belfast"
@@ -38,12 +38,17 @@ func _ready() -> void:
 static func private_beach_available() -> bool:
 	return ResourceLoader.exists("res://environments/private_beach/beach_bundle.res")
 
+static func magic_cottage_available() -> bool:
+	return ResourceLoader.exists("res://environments/magic_cottage/workshop.res")
+
 static func normalize_choice(value: String) -> String:
+	if value == "magic_cottage" and not magic_cottage_available(): value = "cinema"
 	if value == "private_beach" and not private_beach_available(): value = "cinema"
 	return CinemaFeature.normalize_background(value)
 
 func select(value: String) -> bool:
 	if value not in CHOICES: return false
+	if value == "magic_cottage" and not magic_cottage_available(): return false
 	if value == "private_beach" and not private_beach_available(): return false
 	if value == "cinema" and not CinemaFeature.enabled(): return false
 	if value == "custom" and not has_custom(): return false

@@ -105,7 +105,8 @@ func _configure() -> bool:
 	return true
 
 ## Starts reading at [page] (the first open page by default).
-func start(page: int = -1) -> bool:
+## [paragraph] picks up partway down the page (the one being spoken when the pages were renumbered).
+func start(page: int = -1, paragraph: int = 0) -> bool:
 	if not supported() or reader.count <= 0 or reader.session <= 0:
 		reader.tell("Read aloud is not available for this book"); return false
 	stop(false)
@@ -127,7 +128,7 @@ func start(page: int = -1) -> bool:
 	var status: Variant = JSON.parse_string(str(reader.platform.comic_reader_status(_epoch, -1)))
 	_finished = int(status.get("finished", 0)) if status is Dictionary else 0
 	_expect = reader.page
-	_load(reader.first_page() if page < 0 else page)
+	_load(reader.first_page() if page < 0 else page, paragraph)
 	return true
 
 func stop(release: bool = true) -> void:
@@ -145,9 +146,10 @@ func _rows(page: int) -> Array:
 	return (parsed.get("blocks", []) as Array).filter(func(row): return row is Dictionary and row.get("eligible", false))
 
 ## Hands the page being read and the one after it to the voice, then reads its first paragraph.
-func _load(page: int) -> void:
-	cursor = page; index = 0
+func _load(page: int, paragraph: int = 0) -> void:
+	cursor = page
 	blocks = _rows(page)
+	index = clampi(paragraph, 0, maxi(blocks.size() - 1, 0))
 	var platform: Object = reader.platform
 	platform.book_reader_page(_epoch, 0, reader.session, page, false)
 	if page + 1 < reader.count: platform.book_reader_page(_epoch, 1, reader.session, page + 1, false)
@@ -181,12 +183,18 @@ func _next_page() -> void:
 func tick() -> void:
 	if not on: return
 	if not reader.active or reader.session != _session: stop(); return
+	# A fuller layout replaced the first chapter's: the same words have new page numbers. Read on from
+	# the paragraph being spoken, now on its renumbered page. (Checked first: the renumbering moves the
+	# open page too, which is not a turn by hand.)
+	if reader.count != _layout:
+		_layout = reader.count
+		var at := index
+		start(clampi(cursor + reader.layout_shift, 0, reader.count - 1), at)
+		return
 	# The reader turned or leapt by hand: read on from where they are now.
 	if reader._turn.is_empty() and reader._riffle.is_empty() and reader.page != _expect:
 		_expect = reader.page
 		if not cursor in reader.open_pages(): start(); return
-	# The whole book's layout replaced the first chapter's: the same words have new page numbers.
-	if reader.count != _layout: _layout = reader.count; start(); return
 	var now := Time.get_ticks_msec()
 	if now < _poll_at: return
 	_poll_at = now + POLL_MS

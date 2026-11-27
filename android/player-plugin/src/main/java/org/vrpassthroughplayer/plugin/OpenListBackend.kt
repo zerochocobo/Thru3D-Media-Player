@@ -13,21 +13,29 @@ internal object OpenListBackend {
     private val drivers = OpenListAuth.drivers + (CloudDrive.WEBDAV to "WebDav") +
         (CloudDrive.THUNDER to "ThunderPlayer") + (CloudDrive.GUANGYA to "GuangyaPlayer")
     fun supported(provider: String) = provider in drivers
-    private var initialized = false
+    @Volatile private var initialized = false
+    @Synchronized fun updateDiagnostics(clear: Boolean = false) {
+        if (!initialized) return
+        if (clear) Cloudcore.configureRequestDiagnostics(false)
+        Cloudcore.configureRequestDiagnostics(PlaybackPrivacy.diagnostics)
+        Cloudcore.configureReadDiagnostics(BuildConfig.DEBUG && PlaybackPrivacy.diagnostics)
+    }
+    fun requestDiagnostics(): String = if (initialized && PlaybackPrivacy.diagnostics) Cloudcore.requestDiagnostics() else ""
     @Synchronized fun start(context: Context) {
-        if (initialized) { Cloudcore.configureReadDiagnostics(BuildConfig.DEBUG && PlaybackPrivacy.diagnostics);return }
+        if (initialized) return
         try {
             Cloudcore.request("POST", "/thunder-development", JSONObject().put("enabled", true).toString())
             Cloudcore.start(File(context.noBackupFilesDir, "openlist-vr-v1").absolutePath, CloudSecret.key(context))
-            Cloudcore.configureReadDiagnostics(BuildConfig.DEBUG && PlaybackPrivacy.diagnostics)
+            Cloudcore.setRequestLogSink { line -> CloudRequestTrail.record(line) }
             initialized = true
+            updateDiagnostics()
         } catch (_: Exception) { throw CloudFailure("cloud_store_unavailable") }
     }
     fun request(method: String, route: String, body: JSONObject? = null, cancellation: CloudCancellation? = null): JSONObject {
         val result = try {
             if (cancellation == null) JSONObject(Cloudcore.request(method, route, body?.toString() ?: ""))
             else {
-                val key = Cloudcore.newRequest()
+                val key = Cloudcore.newTrackedRequest(cancellation.kind, cancellation.owner.toLong())
                 try {
                     cancellation.attachAction { Cloudcore.cancelRequest(key) }
                     JSONObject(Cloudcore.requestCancelable(method, route, body?.toString() ?: "", key))

@@ -75,6 +75,49 @@ func comicSourceObject(ctx context.Context, storage driver.Driver, q cloudTarget
 	if e := ctx.Err(); e != nil {
 		return nil, e
 	}
+	selected, err := cachedSourceObject(storage, q)
+	if err != nil {
+		return nil, err
+	}
+	if selected != nil {
+		return selected, nil
+	}
+	if reader, ok := storage.(comicSourceReader); ok {
+		if len(q.ID) > 2048 || strings.ContainsAny(q.ID, "\x00\r\n") {
+			return nil, errors.New("invalid archive identity")
+		}
+		id := q.ID
+		if id == q.Path {
+			id = ""
+		}
+		obj, link, err := reader.PlayerArchiveTarget(ctx, q.Path, id)
+		if err != nil && id == "" && q.ResolvePath {
+			// A cold video/photo open (history, nothing browsed) has only the path, and
+			// ID-addressed drivers such as Quark cannot use it. Walk it from the root
+			// once, as the generic proxy did. Archive pages never ask for this scan.
+			if found, e := op.GetUnwrap(ctx, storage, q.Path); e == nil && !found.IsDir() && found.GetID() != "" {
+				obj, link, err = reader.PlayerArchiveTarget(ctx, q.Path, found.GetID())
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+		if obj == nil {
+			return nil, errors.New("archive file missing")
+		}
+		return &comicRecoveredSource{Obj: obj, link: link, created: time.Now()}, nil
+	}
+	if _, ok := storage.(driver.Getter); ok {
+		return op.GetUnwrap(ctx, storage, q.Path)
+	}
+	return nil, errors.New("archive location expired; refresh the folder")
+}
+
+func cachedSourceObject(storage driver.Driver, q cloudTarget) (model.Obj, error) {
+	cursorMu.Lock()
+	defer cursorMu.Unlock()
+	searchMu.Lock()
+	defer searchMu.Unlock()
 	var selected model.Obj
 	accept := func(obj model.Obj) error {
 		if obj.IsDir() || obj.GetName() != path.Base(q.Path) {
@@ -127,38 +170,7 @@ func comicSourceObject(ctx context.Context, storage driver.Driver, q cloudTarget
 			}
 		}
 	}
-	if selected != nil {
-		return selected, nil
-	}
-	if reader, ok := storage.(comicSourceReader); ok {
-		if len(q.ID) > 2048 || strings.ContainsAny(q.ID, "\x00\r\n") {
-			return nil, errors.New("invalid archive identity")
-		}
-		id := q.ID
-		if id == q.Path {
-			id = ""
-		}
-		obj, link, err := reader.PlayerArchiveTarget(ctx, q.Path, id)
-		if err != nil && id == "" && q.ResolvePath {
-			// A cold video/photo open (history, nothing browsed) has only the path, and
-			// ID-addressed drivers such as Quark cannot use it. Walk it from the root
-			// once, as the generic proxy did. Archive pages never ask for this scan.
-			if found, e := op.GetUnwrap(ctx, storage, q.Path); e == nil && !found.IsDir() && found.GetID() != "" {
-				obj, link, err = reader.PlayerArchiveTarget(ctx, q.Path, found.GetID())
-			}
-		}
-		if err != nil {
-			return nil, err
-		}
-		if obj == nil {
-			return nil, errors.New("archive file missing")
-		}
-		return &comicRecoveredSource{Obj: obj, link: link, created: time.Now()}, nil
-	}
-	if _, ok := storage.(driver.Getter); ok {
-		return op.GetUnwrap(ctx, storage, q.Path)
-	}
-	return nil, errors.New("archive location expired; refresh the folder")
+	return selected, nil
 }
 
 type comicSourcePath struct {

@@ -9,6 +9,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,7 +23,8 @@ type cloudSnapshot struct {
 	cacheHit          bool
 }
 
-var cloudSnapshots = map[string]cloudSnapshot{} // Request serializes all JNI requests.
+var listingMu sync.Mutex // Protect cache metadata only; provider I/O runs outside this lock.
+var cloudSnapshots = map[string]cloudSnapshot{}
 
 type cloudPageDriver interface {
 	PlayerListPage(context.Context, model.Obj, int64, string) ([]model.Obj, int64, error)
@@ -37,7 +39,26 @@ type cloudFolder struct {
 
 var cloudFolders = map[string]cloudFolder{}
 
+func cachedFolder(key string) (cloudFolder, bool) {
+	listingMu.Lock()
+	defer listingMu.Unlock()
+	f, ok := cloudFolders[key]
+	return f, ok
+}
+func rememberFolder(key string, f cloudFolder) {
+	listingMu.Lock()
+	defer listingMu.Unlock()
+	if len(cloudFolders) >= 64 {
+		for k := range cloudFolders {
+			delete(cloudFolders, k)
+			break
+		}
+	}
+	cloudFolders[key] = f
+}
 func invalidateCloudPages(mount, remote string) {
+	listingMu.Lock()
+	defer listingMu.Unlock()
 	target := mount + remote
 	if remote == "/" {
 		target = mount
@@ -115,14 +136,16 @@ func readCloudListing(ctx context.Context, native cloudPageDriver, mount, p stri
 	if refresh {
 		invalidateCloudPages(mount, p)
 	}
-	if folder, exists := cloudFolders[mount+p]; exists && folderID != "" && folder.object.GetID() != folderID {
+	if folder, exists := cachedFolder(mount + p); exists && folderID != "" && folder.object.GetID() != folderID {
 		invalidateCloudPages(mount, p)
 	}
 	key := mount + p + "\x00" + order + "\x00" + strconv.Itoa(offset)
 	if pageSize != 48 {
 		key += "\x00" + strconv.Itoa(pageSize)
 	}
+	listingMu.Lock()
 	snapshot, ok := cloudSnapshots[key]
+	listingMu.Unlock()
 	if ok && folderID != "" && snapshot.folderID != folderID {
 		invalidateCloudPages(mount, p)
 		ok = false
@@ -131,7 +154,7 @@ func readCloudListing(ctx context.Context, native cloudPageDriver, mount, p stri
 		started := time.Now()
 		resolution := "memory"
 		folderKey := mount + p
-		folder, exists := cloudFolders[folderKey]
+		folder, exists := cachedFolder(folderKey)
 		if !exists || time.Now().After(folder.expires) || folderID != "" && folder.object.GetID() != folderID {
 			resolution = "provided_id"
 			if p == "/" {
@@ -146,14 +169,8 @@ func readCloudListing(ctx context.Context, native cloudPageDriver, mount, p stri
 			if obj == nil || !obj.IsDir() {
 				return cloudSnapshot{}, missingCloudFolder
 			}
-			if len(cloudFolders) >= 64 {
-				for k := range cloudFolders {
-					delete(cloudFolders, k)
-					break
-				}
-			}
 			folder = cloudFolder{obj, time.Now().Add(2 * time.Minute)}
-			cloudFolders[folderKey] = folder
+			rememberFolder(folderKey, folder)
 		}
 		resolveMs := time.Since(started).Milliseconds()
 		started = time.Now()
@@ -180,6 +197,8 @@ func readCloudListing(ctx context.Context, native cloudPageDriver, mount, p stri
 		if err := checkListingMetadata(items); err != nil {
 			return cloudSnapshot{}, err
 		}
+		listingMu.Lock()
+		defer listingMu.Unlock()
 		for len(cloudSnapshots) >= 64 || snapshotRows()+len(items) > 4096 {
 			for k := range cloudSnapshots {
 				delete(cloudSnapshots, k)
@@ -222,13 +241,7 @@ func stat115(c *gin.Context) {
 		return
 	}
 	if parent, ok := obj.(interface{ PlayerParentID() string }); ok && (parent.PlayerParentID() == "0" || cloudID.MatchString(parent.PlayerParentID())) {
-		if len(cloudFolders) >= 64 {
-			for key := range cloudFolders {
-				delete(cloudFolders, key)
-				break
-			}
-		}
-		cloudFolders[t.Mount+path.Dir(p)] = cloudFolder{object: &model.Object{ID: parent.PlayerParentID(), Name: path.Base(path.Dir(p)), IsFolder: true}, expires: time.Now().Add(2 * time.Minute)}
+		rememberFolder(t.Mount+path.Dir(p), cloudFolder{object: &model.Object{ID: parent.PlayerParentID(), Name: path.Base(path.Dir(p)), IsFolder: true}, expires: time.Now().Add(2 * time.Minute)})
 	}
 	location, err := playbackLeaseURL(s, t.Mount, p, obj)
 	if err != nil {
@@ -267,7 +280,7 @@ func lookupCloudFile(ctx context.Context, native cloudPageDriver, mount, remote,
 			mode = "root"
 		}
 		folder, err = native.PlayerFolder(ctx, parent, folderID)
-	} else if cached, exists := cloudFolders[mount+parent]; exists && time.Now().Before(cached.expires) {
+	} else if cached, exists := cachedFolder(mount + parent); exists && time.Now().Before(cached.expires) {
 		folder, mode = cached.object, "memory"
 	} else {
 		obj, err := native.PlayerLookup(ctx, remote)

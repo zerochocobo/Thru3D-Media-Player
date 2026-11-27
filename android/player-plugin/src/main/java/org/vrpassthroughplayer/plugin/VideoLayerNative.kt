@@ -105,14 +105,14 @@ internal object VideoLayerNative {
     @JvmStatic external fun interpPairPush(texture: Int, width: Int, height: Int, id: Long, before: Long): Boolean
     /** [enhanceTexture] for the moment [phase] (0..1) between two kept pairs: the picture in between (a
      * pair's own copy at 0 and 1) into the whole acquired image of [slot]. */
-    @JvmStatic external fun interpPairDraw(slot: Int, before: Long, after: Long, phase: Float, sourceWidth: Int, sourceHeight: Int,
-                                           sharpen: Float, grade: FloatArray?, denoiseStep: Float, denoiseTolerance: Float): Boolean
+    @JvmStatic external fun interpPairDrawPhase(slot: Int, before: Long, after: Long, phase: Float, sourceWidth: Int, sourceHeight: Int,
+                                                sharpen: Float, grade: FloatArray?, denoiseStep: Float, denoiseTolerance: Float): Float
     /** [interpPairPush] with the kept copy drawn by picture quality mode (denoised, sharpened, graded), for
-     * pairs shown at their own size; [interpPairShow] then draws each refresh's picture straight into the
+     * pairs shown at their own size; [interpPairShowPhase] then draws each refresh's picture straight into the
      * acquired image of [slot], one pass over the picture instead of two. */
     @JvmStatic external fun interpPairPushEnhanced(texture: Int, width: Int, height: Int, id: Long, before: Long,
                                                    sharpen: Float, grade: FloatArray?, denoiseStep: Float, denoiseTolerance: Float): Boolean
-    @JvmStatic external fun interpPairShow(slot: Int, before: Long, after: Long, phase: Float): Boolean
+    @JvmStatic external fun interpPairShowPhase(slot: Int, before: Long, after: Long, phase: Float): Float
     /** Frees the kept pairs and what was made for them (Godot's render thread). */
     @JvmStatic external fun interpPairRelease()
     /** Smoothed GPU milliseconds of one [blitBuffer]; 0 without a timer or before its first result. */

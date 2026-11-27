@@ -114,6 +114,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun set_playback_privacy(mode: String, protectedFavorites: Boolean) {
         PlaybackPrivacy.mode = mode.takeIf { it in setOf("all", "local", "none") } ?: "none"
         PlaybackPrivacy.protectedFavorites = protectedFavorites
+        if (!PlaybackPrivacy.diagnostics) activity?.let(CloudRequestTrail::clear)
+        OpenListBackend.updateDiagnostics()
         sources.serverPlaybackPrivacyChanged()
         webBrowser.setHistoryEnabled(PlaybackPrivacy.mode == "all" && !protectedFavorites)
         WebBrowserTrail.hosts = PlaybackPrivacy.diagnostics
@@ -131,6 +133,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun clear_playback_private_data() {
         webBrowser.clearHistory()
         WebBrowserTrail.clear()
+        activity?.let(CloudRequestTrail::clear)
+        OpenListBackend.updateDiagnostics(clear = true)
         sources.clearPlaybackReferences()
         activity?.applicationContext?.let { app ->
             CrashRecords.clear(app)
@@ -370,13 +374,19 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun background_audio_import_progress(id: Int): Double = backgroundAudio.progress(id)
     @UsedByGodot fun remove_background_audio(path: String): Boolean = backgroundAudio.remove(path)
     @UsedByGodot fun background_audio_storage(): String = backgroundAudio.storage()
-    private val musicPlayback = BackgroundAudioPlayback({ activity?.applicationContext })
+    private fun directoryAudioSource(uri: String): String = when {
+        uri.startsWith("content://") -> sources.archiveStream(uri)
+        uri.startsWith("file://") -> requireNotNull(android.net.Uri.parse(uri).path)
+        else -> sources.audioDownload(uri)
+    }
+    private val musicPlayback = BackgroundAudioPlayback({ activity?.applicationContext }, ::directoryAudioSource, sources::releasePhotoStream)
+    @UsedByGodot fun load_directory_audio(uri: String, position: Double): Int = if (closed.get()) 0 else musicPlayback.load(uri, position, resolveUri = true)
     @UsedByGodot fun load_background_audio(path: String, position: Double): Int = if (closed.get()) 0 else musicPlayback.load(path, position)
     @UsedByGodot fun control_background_audio(id: Int, playing: Boolean, volume: Double, position: Double): Boolean = musicPlayback.control(id, playing, volume, position)
     @UsedByGodot fun background_audio_status(): String = musicPlayback.status()
     @UsedByGodot fun stop_background_audio() = musicPlayback.stop()
     private val musicPreview = BackgroundAudioPlayback({ activity?.applicationContext }, sources::audioDownload, sources::releasePhotoStream)
-    @UsedByGodot fun preview_background_audio(uri: String): Int = if (closed.get()) 0 else musicPreview.load(uri, 0.0)
+    @UsedByGodot fun preview_background_audio(uri: String): Int = if (closed.get()) 0 else musicPreview.load(uri, 0.0, resolveUri = true)
     @UsedByGodot fun control_audio_preview(id: Int, playing: Boolean, volume: Double): Boolean = musicPreview.control(id, playing, volume, -1.0)
     @UsedByGodot fun seek_audio_preview(id: Int, position: Double): Boolean = musicPreview.seekTo(id, position)
     @UsedByGodot fun audio_preview_status(): String = musicPreview.status()
@@ -960,20 +970,25 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     /** The picture layer's last frame went without Anime4K while its networks are being linked: draw it again. */
     @UsedByGodot fun anime4k_picture_pending(): Boolean = runCatching { VideoLayerNative.anime4kPicturePending() }.getOrDefault(false)
     /** Frame interpolation for 2D->3D's stereo pairs on the picture layer: see [VideoLayerNative.interpPairPush]
-     * and [VideoLayerNative.interpPairDraw]. An empty [grade] leaves the colours as they are. */
+     * and [VideoLayerNative.interpPairDrawPhase]. An empty [grade] leaves the colours as they are. */
     @UsedByGodot fun interpolate_pair_push(texture: Int, width: Int, height: Int, id: Long, before: Long): Boolean =
         runCatching { VideoLayerNative.interpPairPush(texture, width, height, id, before) }.getOrDefault(false)
     @UsedByGodot fun interpolate_pair_draw(slot: Int, before: Long, after: Long, phase: Float, sourceWidth: Int, sourceHeight: Int,
                                            sharpen: Float, grade: FloatArray, denoiseStep: Float, denoiseTolerance: Float): Boolean =
-        runCatching { VideoLayerNative.interpPairDraw(slot, before, after, phase, sourceWidth, sourceHeight, sharpen,
-            grade.takeIf { it.size >= 11 }, denoiseStep, denoiseTolerance) }.getOrDefault(false)
+        interpolate_pair_draw_phase(slot, before, after, phase, sourceWidth, sourceHeight, sharpen, grade, denoiseStep, denoiseTolerance) >= 0f
+    @UsedByGodot fun interpolate_pair_draw_phase(slot: Int, before: Long, after: Long, phase: Float, sourceWidth: Int, sourceHeight: Int,
+                                                 sharpen: Float, grade: FloatArray, denoiseStep: Float, denoiseTolerance: Float): Float =
+        runCatching { VideoLayerNative.interpPairDrawPhase(slot, before, after, phase, sourceWidth, sourceHeight, sharpen,
+            grade.takeIf { it.size >= 11 }, denoiseStep, denoiseTolerance) }.getOrDefault(-1f)
     /** The same for pairs shown at their own size: see [VideoLayerNative.interpPairPushEnhanced]. */
     @UsedByGodot fun interpolate_pair_push_enhanced(texture: Int, width: Int, height: Int, id: Long, before: Long,
                                                     sharpen: Float, grade: FloatArray, denoiseStep: Float, denoiseTolerance: Float): Boolean =
         runCatching { VideoLayerNative.interpPairPushEnhanced(texture, width, height, id, before, sharpen,
             grade.takeIf { it.size >= 11 }, denoiseStep, denoiseTolerance) }.getOrDefault(false)
     @UsedByGodot fun interpolate_pair_show(slot: Int, before: Long, after: Long, phase: Float): Boolean =
-        runCatching { VideoLayerNative.interpPairShow(slot, before, after, phase) }.getOrDefault(false)
+        interpolate_pair_show_phase(slot, before, after, phase) >= 0f
+    @UsedByGodot fun interpolate_pair_show_phase(slot: Int, before: Long, after: Long, phase: Float): Float =
+        runCatching { VideoLayerNative.interpPairShowPhase(slot, before, after, phase) }.getOrDefault(-1f)
     @UsedByGodot fun interpolate_pair_release() { runCatching { VideoLayerNative.interpPairRelease() } }
     /** How much later than they arrive 2D->3D's interpolated pairs show (ms; 0: as they come): MPV delays the
      * audio as long. */
@@ -1123,7 +1138,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     private val books = BookBridge({ activity?.applicationContext },
         { id, json -> if (!closed.get()) emitSignal("book_ready", id, json) },
         { id, page, path -> if (!closed.get()) emitSignal("book_page", id, page, path) },
-        { id, token, json -> if (!closed.get()) emitSignal("book_found", id, token, json) })
+        { id, token, json -> if (!closed.get()) emitSignal("book_found", id, token, json) },
+        sources::bookSource)
     @UsedByGodot fun book_open(uri: String, style: String): Int = if (closed.get()) -1 else books.open(sources.nextId(), uri, style)
     @UsedByGodot fun book_render(session: Int, page: Int, edge: Int): Boolean = !closed.get() && books.render(session, page, edge)
     @UsedByGodot fun book_discard(path: String) = books.discard(path)

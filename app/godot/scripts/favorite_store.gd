@@ -38,7 +38,7 @@ func _decode(text: String) -> Dictionary:
 		var entry: Variant = data.entries[key]
 		if not entry is Dictionary or not entry.get("uri") is String or key != key_for(entry.uri) or not entry.get("title") is String: return {}
 		if str(key).is_empty() or not entry.get("added") is float and not entry.get("added") is int: return {}
-		if not is_finite(float(entry.added)) or entry.get("kind", "") not in ["video", "image", "folder"]: return {}
+		if not is_finite(float(entry.added)) or entry.get("kind", "") not in ["video", "image", "folder", "book", "audio"]: return {}
 		if not entry.get("private", {}) is Dictionary or not entry.get("location", {}) is Dictionary: return {}
 	return data
 

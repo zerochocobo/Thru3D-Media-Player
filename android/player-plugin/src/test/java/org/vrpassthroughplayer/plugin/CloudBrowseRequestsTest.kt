@@ -34,6 +34,42 @@ class CloudBrowseRequestsTest {
             assertEquals(listOf(2), emitted)
         } finally { requests.close() }
     }
+    @Test fun nextDriveCanEmitBeforeTheOldWorkerUnwinds() {
+        val requests = CloudBrowseRequests()
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val healthy = CountDownLatch(1)
+        val stale = CountDownLatch(1)
+        try {
+            requests.submit(1, {
+                started.countDown()
+                while (release.count > 0) {
+                    try { release.await() } catch (_: InterruptedException) { }
+                }
+                "old page"
+            }, { _, _ -> stale.countDown() }, "slow")
+            assertTrue(started.await(2, TimeUnit.SECONDS))
+            requests.submit(2, { "healthy page" }, { _, _ -> healthy.countDown() }, "healthy")
+            assertTrue(healthy.await(2, TimeUnit.SECONDS))
+        } finally { release.countDown(); requests.close() }
+        assertEquals(1L, stale.count)
+    }
+    @Test fun closingPlaybackAbortsPreparationAndPreservesHandedOffViews() {
+        val session = CloudCancellation("playback", 17)
+        val cancelled = CountDownLatch(1)
+        session.prepare { inFlight ->
+            assertEquals(17, inFlight.owner)
+            inFlight.attachAction { cancelled.countDown() }
+            session.cancel()
+            assertTrue(inFlight.cancelled)
+        }
+        assertTrue(cancelled.await(1, TimeUnit.SECONDS))
+        val other = CloudCancellation("playback", 18)
+        val retained = other.prepare { it }
+        other.cancel()
+        assertFalse(retained.cancelled)
+    }
+
     @Test fun cancelledRequestCannotAttachAnotherConnection() {
         val cancellation = CloudCancellation()
         var disconnected = false

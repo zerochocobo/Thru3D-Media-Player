@@ -61,7 +61,7 @@ class StorageDocumentTreeTest {
         provider.allowed.removeAt(1)
         try { tree.root("9876-DCBA"); fail("Other partition grant reused") } catch (_: AccessDeniedException) { }
     }
-    @Test fun subtitlePickerReadsRawGrantedFoldersWithoutChangingNormalMediaFiltering() {
+    @Test fun grantedFoldersListSubtitlesReadOnlyAndSubtitlePickerFiltersVideos() {
         val provider = Provider(); val root = "1234-ABCD:"
         provider.allowed.add(uri(root))
         provider.rows[uri(root) to true] = listOf(
@@ -72,7 +72,10 @@ class StorageDocumentTreeTest {
             StorageDocumentTree.Entry(root + "Subtitles/字幕.ass", "字幕.ass", false, 100),
             StorageDocumentTree.Entry(root + "Subtitles/notes.nfo", "notes.nfo", false, 100))
         val tree = StorageDocumentTree(provider)
-        assertEquals(2, tree.root("1234-ABCD").length())
+        val ordinary = tree.root("1234-ABCD")
+        assertEquals(3, ordinary.length())
+        val subtitle = (0 until ordinary.length()).map { ordinary.getJSONObject(it) }.single { it.getString("title") == "film.srt" }
+        assertFalse(subtitle.getBoolean("can_rename"))
         val captions = SidecarSubtitles.directoryEntries(tree.filePath("/storage/1234-ABCD", "/storage/1234-ABCD", "1234-ABCD", false))
         assertEquals(2, captions.length())
         assertTrue(captions.getJSONObject(0).getBoolean("container"))

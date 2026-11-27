@@ -45,10 +45,11 @@ func redraw(state: Dictionary) -> void:
 	host._update_highlights()
 	host.composition_layout_changed.emit()
 
-func draw(target: int, point: Vector2, state: Dictionary) -> void:
+## [size]: the entry's diameter, to match the host's other buttons (the reading ring's are larger).
+func draw(target: int, point: Vector2, state: Dictionary, size: float = 0.08) -> void:
 	active = true; anchor = point; open_target = target
 	if not expanded:
-		host._round(target, "music", point, 0.08, true, false, host.I18n.t("Music"))
+		host._round(target, "music", point, size, true, false, host.I18n.t("Music"))
 		if state.get("audio_active", false):
 			host._buttons.back().base_color = UiTheme.color("selected")
 			host._buttons.back().node.material_override.set_shader_parameter("surface_color", UiTheme.color("selected"))

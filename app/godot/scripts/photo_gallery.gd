@@ -183,6 +183,9 @@ func save_settings(settings: ConfigFile) -> void:
 		settings.set_value("photo_screen", "layout_%d_scale" % layout, _scales[layout])
 		settings.set_value("photo_screen", "layout_%d_distance" % layout, _distances[layout])
 
+func scaling_with_hands() -> bool:
+	return not _dual.is_empty() and not _dual_blocked
+
 ## Two optical pinches take ownership before either single-pointer release can click.
 func hand_zoom(inputs: Dictionary, enabled: bool) -> Dictionary:
 	var consumed := []; var finished := false

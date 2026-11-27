@@ -117,7 +117,24 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
     private val afterLatch = AtomicLong()
     private var pacedLate = 0
     private val tick = Runnable { tick() }
-    private val between = AtomicLong() // pictures drawn between two frames
+    internal class OutputFrames {
+        @Volatile var total = 0L
+            private set
+        @Volatile var between = 0L
+            private set
+        private var lastSequence = -1L
+        private var lastPhase = 0f
+
+        /** Called on the copy thread after a successful swap. Redrawing a held picture changes no frame. */
+        fun submitted(sequence: Long, phase: Float = 0f) {
+            if (sequence == lastSequence && phase == lastPhase) return
+            lastSequence = sequence
+            lastPhase = phase
+            total++
+            if (phase > 0f) between++
+        }
+    }
+    private val outputFrames = OutputFrames()
     private val late = AtomicLong() // refreshes missed: the draw before ran past its start
     private var lastKeptNs = Long.MIN_VALUE // copy thread
     private val bufferIds = java.util.Collections.synchronizedSet(HashSet<Long>())
@@ -285,7 +302,6 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
         try {
             if (phase > 0f && phase < 1f && second != null) {
                 render(first.image, first.sequence, second.image, second.sequence, phase)
-                between.incrementAndGet()
                 shownSequence = first.sequence; shownPhase = phase
             } else {
                 val frame = if (phase >= 1f && second != null) second else first
@@ -389,7 +405,10 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
             if (closed || context == EGL14.EGL_NO_CONTEXT || !ensureWindow(frame.outWidth, frame.outHeight)) return
             val started = SystemClock.elapsedRealtimeNanos()
             if (!VideoLayerNative.drawPacked(frame.slot)) { failed.incrementAndGet(); return }
-            if (EGL14.eglSwapBuffers(display, window)) { drawn.incrementAndGet(); presented = frame.sequence }
+            if (EGL14.eglSwapBuffers(display, window)) {
+                drawn.incrementAndGet(); presented = frame.sequence
+                outputFrames.submitted(frame.sequence)
+            }
             else { failed.incrementAndGet(); lastError = "swap 0x" + Integer.toHexString(EGL14.eglGetError()) }
             val ms = (SystemClock.elapsedRealtimeNanos() - started) / 1e6
             drawMs = if (drawMs == 0.0) ms else drawMs * 0.95 + ms * 0.05
@@ -411,6 +430,8 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
         val buffer = image.hardwareBuffer ?: return
         val second = after?.hardwareBuffer
         val started = SystemClock.elapsedRealtimeNanos()
+        var outputSequence = sequence
+        var outputPhase = 0f
         try {
             if (android.os.Build.VERSION.SDK_INT >= 31) bufferIds.add(buffer.id)
             val look = picture
@@ -427,6 +448,8 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
             var done = second != null && VideoLayerNative.interpBlit(buffer, second, sequence, afterSequence, phase, w, h, image.width, image.height,
                 outW, outH, flip, true, amount, area, graded, step, tolerance)
             // Where the picture in between cannot be drawn, the nearer frame.
+            if (done) outputPhase = phase
+            else if (second != null && phase >= 0.5f) outputSequence = afterSequence
             if (second != null && !done) unsupported = true
             // Anime4K on single frames (the menu keeps it and interpolation apart); its result is kept by
             // the frame's sequence, so a redraw of the frame on show does not run the networks again.
@@ -441,7 +464,10 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
             if (second != null) { interpolationGpuMs[0] = VideoLayerNative.interpGpuMs(0); interpolationGpuMs[1] = VideoLayerNative.interpGpuMs(1) }
             resizeWindow()
         } finally { buffer.close(); second?.close() }
-        if (EGL14.eglSwapBuffers(display, window)) { drawn.incrementAndGet(); presented = sequence }
+        if (EGL14.eglSwapBuffers(display, window)) {
+            drawn.incrementAndGet(); presented = sequence
+            outputFrames.submitted(outputSequence, outputPhase)
+        }
         else { failed.incrementAndGet(); lastError = "swap 0x" + Integer.toHexString(EGL14.eglGetError()) }
         val ms = (SystemClock.elapsedRealtimeNanos() - started) / 1e6
         drawMs = if (drawMs == 0.0) ms else drawMs * 0.95 + ms * 0.05
@@ -569,7 +595,8 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
         .put("gpu_ms", gpuMs).put("scaled_down", scaledDown).put("enlarged", enlarged).put("quality", quality).put("deep", deep).put("sharpen", strength.toDouble()).put("budget_ms", budgetMs)
         .put("window_degrees", halfDegrees.toDouble()).put("focus", focus?.let { "%.3f,%.3f".format(it[0], it[1]) } ?: "")
         .put("data_space", windowDataSpace).put("source_data_space", sourceDataSpace)
-        .put("interpolating", interpolationDelayNs > 0L).put("interpolation_delay_ms", interpolationDelayNs / 1e6).put("between", between.get())
+        .put("interpolating", interpolationDelayNs > 0L).put("interpolation_delay_ms", interpolationDelayNs / 1e6)
+        .put("output_frames", outputFrames.total).put("between", outputFrames.between).put("sample_ms", SystemClock.elapsedRealtime())
         .put("late", late.get()).put("interpolation_unsupported", unsupported).put("interpolation_overloaded", overloaded)
         .put("anime4k", anime4kDrawn != null).put("anime4k_hdr", anime4kHdr).put("anime4k_overloaded", anime4kOverloaded)
         .put("anime4k_refused", VideoLayerNative.anime4kRefused())

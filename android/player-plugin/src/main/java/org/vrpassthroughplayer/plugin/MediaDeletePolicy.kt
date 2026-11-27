@@ -5,8 +5,11 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 
 internal object MediaDeletePolicy {
-    fun local(file: File, roots: List<File>, folder: Boolean = false): File {
-        require(file.isAbsolute && (folder || MediaKinds.supportedFileName(file.name))) { "File deletion unavailable for this source" }
+    private fun allowed(name: String, folder: Boolean, forRename: Boolean) =
+        folder || if (forRename) MediaKinds.renameableFileName(name) else MediaKinds.supportedFileName(name)
+
+    fun local(file: File, roots: List<File>, folder: Boolean = false, forRename: Boolean = false): File {
+        require(file.isAbsolute && allowed(file.name, folder, forRename)) { "File deletion unavailable for this source" }
         val path = file.toPath().normalize()
         require(file.absolutePath == path.toString() && file.canonicalPath == file.absolutePath) { "File changed; refresh the folder" }
         require(roots.any { path.startsWith(it.canonicalFile.toPath()) && path != it.canonicalFile.toPath() }) { "File deletion unavailable for this source" }
@@ -17,10 +20,10 @@ internal object MediaDeletePolicy {
         check(size == expectedSize && (expectedModified < 0 || modified == expectedModified)) { "File changed; refresh the folder" }
     }
     fun regular(file: File) = Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS)
-    fun smbPath(path: String, folder: Boolean = false): String {
+    fun smbPath(path: String, folder: Boolean = false, forRename: Boolean = false): String {
         val parts = path.split('/')
         require(parts.size >= 2 && parts.none { it.isEmpty() || it in setOf(".", "..") || it.any { c -> c in "\\\u0000:?*" } }
-            && (folder || MediaKinds.supportedFileName(parts.last()))) { "File deletion unavailable for this source" }
+            && allowed(parts.last(), folder, forRename)) { "File deletion unavailable for this source" }
         return path
     }
 }

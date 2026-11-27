@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/drivers/webdav"
@@ -36,7 +37,8 @@ type cursorCloudSession struct {
 	cursors map[int]string
 }
 
-var cursorCloudSessions = map[string]*cursorCloudSession{} // Serialized JNI calls only.
+var cursorMu sync.Mutex
+var cursorCloudSessions = map[string]*cursorCloudSession{}
 
 func cursorListingRoutes(router *gin.Engine) { router.POST("/directory", cursorDirectory) }
 
@@ -118,19 +120,7 @@ func readCursorDirectory(ctx context.Context, storage driver.Driver, native curs
 	if pageSize != 48 {
 		key += "\x00" + strconv.Itoa(pageSize)
 	}
-	if folderID == "" {
-		for k, s := range cursorCloudSessions {
-			if strings.HasPrefix(k, mount+remote+"\x00") && s.storage == storage && time.Now().Before(s.expires) {
-				folderID = s.folder.GetID()
-				break
-			}
-		}
-	}
-	session := cursorCloudSessions[key]
-	if session != nil && (session.storage != storage || time.Now().After(session.expires) || folderID != "" && session.folder.GetID() != folderID) {
-		delete(cursorCloudSessions, key)
-		session = nil
-	}
+	session, folderID := findCursorSession(key, mount, remote, folderID, storage)
 	if session == nil {
 		if offset != 0 && !isDirect {
 			return cursorCloudPage{}, errDirectoryPageExpired
@@ -142,19 +132,9 @@ func readCursorDirectory(ctx context.Context, storage driver.Driver, native curs
 		if folder == nil || !folder.IsDir() {
 			return cursorCloudPage{}, errors.New("cloud folder not found")
 		}
-		if len(cursorCloudSessions) >= 8 {
-			var oldest string
-			var expiry time.Time
-			for k, s := range cursorCloudSessions {
-				if oldest == "" || s.expires.Before(expiry) {
-					oldest, expiry = k, s.expires
-				}
-			}
-			delete(cursorCloudSessions, oldest)
-		}
-		session = &cursorCloudSession{storage: storage, folder: folder, pages: map[int]cursorCloudPage{}, cursors: map[int]string{0: ""}}
-		cursorCloudSessions[key] = session
+		session = rememberCursorSession(key, storage, folder)
 	}
+	cursorMu.Lock()
 	if refresh {
 		// Keep the current start cursor; discard following pages from the old view.
 		for i := range session.pages {
@@ -175,9 +155,11 @@ func readCursorDirectory(ctx context.Context, storage driver.Driver, native curs
 	cached, wasCached := session.pages[offset]
 	if wasCached && time.Now().Before(cached.expires) {
 		cached.cacheHit = true
+		cursorMu.Unlock()
 		return cached, nil
 	}
 	cursor, ok := session.cursors[offset]
+	cursorMu.Unlock()
 	if !ok && isDirect {
 		cursor, ok = direct.PlayerOffsetCursor(offset), true
 	}
@@ -205,6 +187,8 @@ func readCursorDirectory(ctx context.Context, storage driver.Driver, native curs
 	if len(objects) > pageSize || total < -1 || total > 2147483647 || len(next) > 16384 || next != "" && next == cursor {
 		return cursorCloudPage{}, errors.New("invalid directory page or repeated cursor")
 	}
+	cursorMu.Lock()
+	defer cursorMu.Unlock()
 	for previous, token := range session.cursors {
 		if next != "" && previous <= offset && next == token {
 			return cursorCloudPage{}, errors.New("directory cursor cycle")
@@ -254,6 +238,41 @@ func readCursorDirectory(ctx context.Context, storage driver.Driver, native curs
 	return result, nil
 }
 
+func findCursorSession(key, mount, remote, folderID string, storage driver.Driver) (*cursorCloudSession, string) {
+	cursorMu.Lock()
+	defer cursorMu.Unlock()
+	if folderID == "" {
+		for k, s := range cursorCloudSessions {
+			if strings.HasPrefix(k, mount+remote+"\x00") && s.storage == storage && time.Now().Before(s.expires) {
+				folderID = s.folder.GetID()
+				break
+			}
+		}
+	}
+	session := cursorCloudSessions[key]
+	if session != nil && (session.storage != storage || time.Now().After(session.expires) || folderID != "" && session.folder.GetID() != folderID) {
+		delete(cursorCloudSessions, key)
+		session = nil
+	}
+	return session, folderID
+}
+func rememberCursorSession(key string, storage driver.Driver, folder model.Obj) *cursorCloudSession {
+	cursorMu.Lock()
+	defer cursorMu.Unlock()
+	if len(cursorCloudSessions) >= 8 {
+		var oldest string
+		var expiry time.Time
+		for k, s := range cursorCloudSessions {
+			if oldest == "" || s.expires.Before(expiry) {
+				oldest, expiry = k, s.expires
+			}
+		}
+		delete(cursorCloudSessions, oldest)
+	}
+	session := &cursorCloudSession{storage: storage, folder: folder, pages: map[int]cursorCloudPage{}, cursors: map[int]string{0: ""}}
+	cursorCloudSessions[key] = session
+	return session
+}
 func trimCursorPages(session *cursorCloudSession, offset int) {
 	keys := make([]int, 0, len(session.cursors))
 	for k := range session.cursors {
@@ -298,6 +317,8 @@ func trimCursorPages(session *cursorCloudSession, offset int) {
 
 func dropCursorStorage(id int) {
 	// DAV snapshots may outlive an evicted directory session.
+	cursorMu.Lock()
+	defer cursorMu.Unlock()
 	webdav.PlayerDropStorage(uint(id))
 	for key, session := range cursorCloudSessions {
 		if uint(id) == session.storage.GetStorage().ID {

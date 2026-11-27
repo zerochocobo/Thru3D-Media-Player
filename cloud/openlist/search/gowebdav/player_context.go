@@ -8,7 +8,7 @@ import (
 
 // A request-local client keeps cancellation isolated from playback and other
 // accounts while reusing the configured transport, cookies and DAV auth policy.
-func (c *Client) PlayerReadDir(ctx context.Context, path string) ([]os.FileInfo, error) {
+func (c *Client) playerContext(ctx context.Context) *Client {
 	c.authMutex.Lock()
 	auth := c.auth
 	view := NewClient(c.root, auth.User(), auth.Pass())
@@ -27,6 +27,13 @@ func (c *Client) PlayerReadDir(ctx context.Context, path string) ([]os.FileInfo,
 			interceptor(method, r)
 		}
 	}
+	return view
+}
+func (c *Client) PlayerStat(ctx context.Context, path string) (os.FileInfo, error) {
+	return c.playerContext(ctx).Stat(path)
+}
+func (c *Client) PlayerReadDir(ctx context.Context, path string) ([]os.FileInfo, error) {
+	view := c.playerContext(ctx)
 	files, err := view.playerBoundedReadDir(path)
 	if err == nil {
 		view.authMutex.Lock()

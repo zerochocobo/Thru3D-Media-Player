@@ -39,6 +39,9 @@ func _run() -> void:
 			{"name": "grade_unlocked", "page": 0, "picture_quality": true, "grade_curves_locked": false}]:
 		state.merge({"picture_quality": false, "picture_quality_available": true, "grade_curves_locked": true, "picture_quality_blocker": "", "reuse_last_picture": false, "picture_clear_available": false, "picture_source": "last", "capture": {}, "disc_menu_available": false}, true)
 		state.merge(shot, true)
+		state.picture_interpolation = shot.name == "settings_on"
+		if state.picture_interpolation:
+			state.interpolation_caption = preload("res://scripts/i18n.gd").t("Interpolation · Source %d → Output %d FPS") % [24, 71]
 		menu.section = 1 if shot.has("depth_open") else 0
 		menu._adjustment = "" if shot.has("depth_open") else "picture"
 		menu._picture_tab = 1 if shot.has("page") else 0

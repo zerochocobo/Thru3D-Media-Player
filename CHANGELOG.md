@@ -4,6 +4,22 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.19.0 — 2026-11-27
+
+- Added spatial reading mode. Open compatible EPUB, MOBI, AZW3, TXT and PDF files from Books in the library. Use controllers or hand gestures to turn pages. The reading menu includes contents, search, bookmarks, read-aloud, auto page turning, day and night paper colors, type size and line spacing, and downloadable fonts. Hold Grip to move the book.
+- The reading ring shows progress and time spent reading each book. Save books and songs played from folders to Favorites, and filter Favorites by Books or Music.
+- Added Wizard’s Attic, a seated scene where you can use a wand to watch videos on the Star Mirror, grow plants, brew potions and defend the windows. The attic appears first among built-in scenes and opens by default on fresh installs. Existing users start in their previously selected scene.
+- An offline experience folder is pinned at the top of Local files. It contains two videos, two images and a sample book in the interface language, so you can try 2D-to-3D video, person passthrough, 3D photos and spatial reading.
+- Play individual songs directly from library folders or add them to a playlist. Use the Music filter to select and add multiple songs at once.
+- Picture settings show the source frame rate and measured output frame rate for frame interpolation. Once interpolation is active, closing the menu can show the readout in the upper left for 10 seconds.
+- Added a ground grid for adjusting freely placed and upright screens. Choose Off, Videos, or Videos and photos, with Videos as the default. It can appear in non-3D scenes or all scenes and stays visible while dragging with Grip.
+- The video placement option is now called Upright screen. Its bottom edge stays in place when resizing, and you can push or pull to adjust the distance.
+- Open books from local storage, SMB, cloud drives and DLNA. Long TXT books lay out the current chapter first and paginate the rest in the background, so you can start reading sooner.
+- With file management enabled, rename music, books, subtitles and other files in writable locations while keeping their original extensions.
+- Improved responsiveness when using multiple cloud drive accounts. Other accounts can still browse files and open videos while one account is slow or times out. Closing a view, changing videos or switching accounts cancels pending browsing or playback preparation for the previous selection.
+- Fixed unwanted indentation in some EPUBs converted from PDF, getting stuck after a network book fails to open, and a black block below the reading ring in the cinema scene.
+- Fixed the bottom row of folder items overlapping Rename and Delete in file management mode.
+
 ## 0.18.11 — 2026-11-26
 
 - Added Preview shape. Library previews crop to fill by default. Choose Whole picture to show the full image in newly generated previews.

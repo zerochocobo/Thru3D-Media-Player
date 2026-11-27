@@ -7,6 +7,17 @@ import org.junit.Test
 import java.net.URI
 
 class DlnaLibraryTest {
+    @Test fun directoryReportsDocumentAndAttachmentKindsWithoutAPlaybackFallback() {
+        val names = listOf("Song.flac", "Film.ja.srt", "Room.glb", "Guide.pdf", "Novel.epub")
+        val entries = DlnaClient.didl(xml(names.joinToString("") { name ->
+            """<item id="$name"><dc:title>${name.substringBeforeLast('.')}</dc:title><res protocolInfo="http-get:*:application/octet-stream:*">/$name</res></item>"""
+        }), "http://nas:8200/")
+        assertEquals(names, (0 until entries.length()).map { entries.getJSONObject(it).getString("title") })
+        assertEquals(listOf("audio", "subtitle", "scene", "pdf", "book"), (0 until entries.length()).map { entries.getJSONObject(it).getString("kind") })
+        assertTrue(MediaKinds.listedFileName("Film.ja.srt"))
+        assertFalse(MediaKinds.supportedFileName("Film.ja.srt"))
+        assertFalse(MediaKinds.listedFileName("data.xlsx"))
+    }
     private fun xml(body: String) = """<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:s="http://www.sec.co.kr/" xmlns:p="http://www.pv.com/pvns/">$body</DIDL-Lite>"""
     private fun item(body: String) = """<item id="v_1"><dc:title>Movie</dc:title>$body</item>"""
     private fun escape(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -119,6 +130,7 @@ class DlnaLibraryTest {
         assertFalse(audio.has("subtitles"))
         assertEquals("audio", entries.getJSONObject(1).getString("kind"))
         assertEquals("Speech", entries.getJSONObject(1).getString("title"))
+        assertEquals("Speech.mp3", entries.getJSONObject(1).getString("audio_import_title"))
         assertEquals("audio", entries.getJSONObject(2).getString("kind"))
         assertEquals("Reference.mp3", entries.getJSONObject(2).getString("title"))
         assertEquals("video", entries.getJSONObject(3).getString("kind"))
@@ -387,7 +399,8 @@ class DlnaLibraryTest {
                     assertEquals(listOf("metadata:v_1", "children:0"), f.requests)
                     val message = messages.single()
                     assertTrue(message.startsWith("playback_lookup outcome=parent_selected metadata={phase=complete http=200"))
-                    assertTrue(message.contains("$expectedCounts parsed_matches=0 parsed_videos=0 parsed_http_videos=0} parent={"))
+                    val listed = if (mode == "no_video_resource") 1 else 0
+                    assertTrue(message.contains("$expectedCounts parsed_matches=$listed parsed_videos=0 parsed_http_videos=0} parent={"))
                     assertTrue(message.endsWith("parsed_matches=1 parsed_videos=1 parsed_http_videos=1}"))
                     assertEquals(if (mode == "empty") 0 else 1, Regex("didl_objects=(\\d+)").find(message)!!.groupValues[1].toInt())
                     assertEquals(message, DiagnosticLogs.redact(DiagnosticLogs.condense(message)).trimEnd())
@@ -865,7 +878,7 @@ class DlnaLibraryTest {
             val offset = Regex("<StartingIndex>([0-9]+)</StartingIndex>").find(body)!!.groupValues[1].toInt()
             offsets.add(offset)
             val children = when (offset) {
-                0 -> """<container id="10"><dc:title>Folder10</dc:title></container><item id="document"><dc:title>Document</dc:title><res protocolInfo="http-get:*:application/pdf:*">/a.pdf</res></item>"""
+                0 -> """<container id="10"><dc:title>Folder10</dc:title></container><item id="unsupported"><dc:title>Spreadsheet</dc:title><res protocolInfo="http-get:*:application/octet-stream:*">/a.xlsx</res></item>"""
                 2 -> """<item id="video"><dc:title>Movie10</dc:title><res protocolInfo="http-get:*:video/mp4:*">/v.mp4</res></item><container id="2"><dc:title>Folder2</dc:title></container>"""
                 else -> error("Wrong offset $offset")
             }

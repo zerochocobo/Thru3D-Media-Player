@@ -96,6 +96,10 @@ internal object DiagnosticLogs {
         append(if (full) "Detail: full\n\n" else "Detail: compact (VrApi every 10 s and whenever frames, stale frames or free memory go wrong; " +
             "other periodic lines every 30 s; repeated messages merged)\n\n")
         append(webBetaSection()).append('\n')
+        if (PlaybackPrivacy.diagnostics) {
+            val history = CloudRequestTrail.history(context).ifEmpty { OpenListBackend.requestDiagnostics() }
+            if (history.isNotEmpty()) append("== Cloud workers and requests ==\n").append(redact(history)).append('\n')
+        }
         append(webBrowserSection()).append('\n')
         if (DouyinPlaybackLog.enabled && PlaybackPrivacy.diagnostics) {
             append("== Douyin hardware decoder Surface and Gecko composite (same draw) ==\n")
@@ -126,8 +130,9 @@ internal object DiagnosticLogs {
         append(events(context, if (full) 6000 else 1500)).append('\n')
         append("== Log of this session ==\n")
         val log = logcat(android.os.Process.myPid(), "-t", "30000")
-        val session = if (DouyinPlaybackLog.enabled) log.lineSequence()
-            .filterNot { it.contains("Thru3DGeckoFrame:") }.joinToString("\n") else log
+        val session = log.lineSequence().filterNot {
+            it.contains("Thru3DCloud:") || DouyinPlaybackLog.enabled && it.contains("Thru3DGeckoFrame:")
+        }.joinToString("\n")
         append(redact(if (full) session else condense(session)))
     }
 

@@ -196,7 +196,7 @@ internal object CloudLibrary {
         val name = item.getString("name")
         if (kind == "subtitle") {
             if (item.getBoolean("is_dir") || !SidecarSubtitles.supportedFile(name)) return null
-        } else if (!item.getBoolean("is_dir") && !MediaKinds.supportedFileName(name)) return null
+        } else if (!item.getBoolean("is_dir") && !MediaKinds.listedFileName(name)) return null
         val remotePath = item.optString("path")
         val location = if (remotePath.isEmpty()) "" else CloudPaths.child(remotePath.substringBeforeLast('/').ifEmpty { "/" }, name)
         return JSONObject().put("title", name).put("container", item.getBoolean("is_dir"))
@@ -277,7 +277,7 @@ internal object CloudLibrary {
 
     /** Provider metadata contains literal names, not URLs with query/fragment delimiters. */
     internal fun directoryEntry(path: String, file: CloudFile, client: CloudClient, subtitlesOnly: Boolean = false): JSONObject? {
-        if (!file.folder && !(if (subtitlesOnly) SidecarSubtitles.supportedFile(file.name) else MediaKinds.supportedFileName(file.name))) return null
+        if (!file.folder && !(if (subtitlesOnly) SidecarSubtitles.supportedFile(file.name) else MediaKinds.listedFileName(file.name))) return null
         val child = CloudPaths.child(path, file.name)
         return JSONObject().put("id", child).put("title", file.name).put("container", file.folder)
             .put("size", file.size).put("modified", file.modified).put("can_delete", client.canDelete && file.canDelete)
@@ -396,21 +396,29 @@ internal object CloudLibrary {
         } catch (error: Exception) { published.close(); if (published !== source) source.close(); throw error }
     }
 
-    fun playable(uri: String, server: LocalStreamServer): String = safe {
-        val (id, remote) = split(CloudPaths.path(uri))
-        val account = credentials(id)
-        val companions = playbackPages.forVideo(id, identity(account), remote)
-        val client = drive(account, folderId = companions.folderId)
-        val file = locate(client, remote, companions.files.singleOrNull { it.id == remote && !it.folder })
-        val source = source(account, client, file, objectLookup = true)
-        source.prepare()
-        synchronized(this) {
-            if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
-            stopStreams()
-            val url = server.publish(source, file.name, IsoMetadataMemory.key(identity(account), id, file.objectId, file.size, file.modified))
-            activeStreams.getOrPut(id) { ArrayList() }.add(server to url)
-            playbackCompanions[id] = CloudPlaybackPages.Playback(remote, identity(account), companions)
-            url
+    private fun <T> preparePlayback(cancellation: CloudCancellation?, work: (CloudCancellation) -> T): T =
+        if (cancellation == null) work(CloudCancellation("playback")) else cancellation.prepare(work)
+
+    fun playable(uri: String, server: LocalStreamServer, cancellation: CloudCancellation? = null): String = safe {
+        preparePlayback(cancellation) { transport ->
+            val (id, remote) = split(CloudPaths.path(uri))
+            val account = credentials(id)
+            val companions = playbackPages.forVideo(id, identity(account), remote)
+            val client = drive(account, transport, companions.folderId)
+            val file = locate(client, remote, companions.files.singleOrNull { it.id == remote && !it.folder })
+            val source = source(account, client, file, objectLookup = true)
+            try {
+                source.prepare()
+                synchronized(this) {
+                    if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
+                    transport.checkActive()
+                    stopStreams()
+                    val url = server.publish(source, file.name, IsoMetadataMemory.key(identity(account), id, file.objectId, file.size, file.modified))
+                    activeStreams.getOrPut(id) { ArrayList() }.add(server to url)
+                    playbackCompanions[id] = CloudPlaybackPages.Playback(remote, identity(account), companions)
+                    url
+                }
+            } catch (error: Exception) { source.close(); throw error }
         }
     }
 
@@ -437,29 +445,34 @@ internal object CloudLibrary {
         SidecarAudio.forCloud(remote, selected.automatic(client)) { publishCompanion(account, client, it, server, selected) }
     }
     /** A VIDEO_TS folder, named by its VIDEO_TS.IFO, as one disc image under the video's lease. */
-    fun discPlayable(uri: String, server: LocalStreamServer): String = safe {
-        val (id, remote) = split(CloudPaths.path(uri))
-        val account = credentials(id)
-        val parent = remote.substringBeforeLast('/').ifEmpty { "/" }
-        val companions = playbackPages.forVideo(id, identity(account), remote)
-        val client = drive(account, folderId = companions.folderId)
-        val files = (if (companions.complete) companions.files else client.list(parent)).filter { !it.folder }
-        val disc = DvdFolderSource.of(files.map { it.name to it.size }) { name ->
-            val file = client.findForPlayback(CloudPaths.child(parent, name), files.single { it.name == name })
-            source(account, client, file).also { part ->
-                try { part.prepare() } catch (error: Exception) { part.close(); throw error }
+    fun discPlayable(uri: String, server: LocalStreamServer, cancellation: CloudCancellation? = null): String = safe {
+        preparePlayback(cancellation) { transport ->
+            val (id, remote) = split(CloudPaths.path(uri))
+            val account = credentials(id)
+            val parent = remote.substringBeforeLast('/').ifEmpty { "/" }
+            val companions = playbackPages.forVideo(id, identity(account), remote)
+            val client = drive(account, transport, companions.folderId)
+            val files = (if (companions.complete) companions.files else client.list(parent)).filter { !it.folder }
+            val disc = DvdFolderSource.of(files.map { it.name to it.size }, onVerifying = { opening ->
+                cancellation?.attachAction { transport.cancel(); opening.close() }
+            }) { name ->
+                val file = client.findForPlayback(CloudPaths.child(parent, name), files.single { it.name == name })
+                source(account, client, file).also { part ->
+                    try { part.prepare() } catch (error: Exception) { part.close(); throw error }
+                }
             }
+            try {
+                synchronized(this) {
+                    if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
+                    transport.checkActive()
+                    stopStreams()
+                    val url = server.publish(disc, "video.iso", IsoMetadataMemory.key(identity(account), id, remote, disc.identity))
+                    activeStreams.getOrPut(id) { ArrayList() }.add(server to url)
+                    playbackCompanions[id] = CloudPlaybackPages.Playback(remote, identity(account), companions)
+                    url
+                }
+            } catch (error: Exception) { disc.close(); throw error }
         }
-        try {
-            synchronized(this) {
-                if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
-                stopStreams()
-                val url = server.publish(disc, "video.iso", IsoMetadataMemory.key(identity(account), id, remote, disc.identity))
-                activeStreams.getOrPut(id) { ArrayList() }.add(server to url)
-                playbackCompanions[id] = CloudPlaybackPages.Playback(remote, identity(account), companions)
-                url
-            }
-        } catch (error: Exception) { disc.close(); throw error }
     }
 
     fun subtitleFiles(uri: String): List<String> = safe {
@@ -522,13 +535,14 @@ internal object CloudLibrary {
             val (id, remote) = split(path)
             drive(credentials(id)).list(remote).map { DavEntry(CloudPaths.child(path, it.name), it.name, it.folder, it.size) }
         }
-        override fun source(path: String): StreamSource = safe {
-            val (id, remote) = split(path)
-            val account = credentials(id)
-            val client = drive(account, folderId = playbackPages.folderId(id, identity(account), remote.substringBeforeLast('/').ifEmpty { "/" }))
-            val file = client.find(remote)
-            source(account, client, file)
-        }
+        override fun source(path: String): StreamSource = fileSource(path, CloudHttp)
+    }
+    fun fileSource(path: String, transport: CloudTransport): StreamSource = safe {
+        val (id, remote) = split(path)
+        val account = credentials(id)
+        val client = drive(account, transport, folderId = playbackPages.folderId(id, identity(account), remote.substringBeforeLast('/').ifEmpty { "/" }))
+        val file = client.find(remote)
+        source(account, client, file)
     }
     private inline fun <T> safe(block: () -> T): T = try { block() }
         catch (error: CloudFailure) { throw error }

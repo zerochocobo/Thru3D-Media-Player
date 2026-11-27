@@ -31,6 +31,20 @@ class MediaDeletePolicyTest {
             assertThrows(IllegalArgumentException::class.java) { MediaDeletePolicy.smbPath(path) }
     }
 
+    @Test fun renameAcceptsListedFilesThroughTheSameLocalAndSmbPathChecks() {
+        val root = Files.createTempDirectory("rename-root").toFile().canonicalFile
+        try {
+            for (name in listOf("a.MP4", "a.jpg", "a.FlAc", "a.pdf", "a.epub", "a.zip", "a.zh.SRT", "a.GLB")) {
+                assertEquals(root.resolve(name), MediaDeletePolicy.local(root.resolve(name), listOf(root), forRename = true))
+                assertEquals("share/$name", MediaDeletePolicy.smbPath("share/$name", forRename = true))
+            }
+            for (name in listOf("a.nfo", "VIDEO_TS.IFO", "../a.srt")) {
+                assertThrows(IllegalArgumentException::class.java) { MediaDeletePolicy.smbPath("share/$name", forRename = true) }
+                assertThrows(IllegalArgumentException::class.java) { MediaDeletePolicy.local(root.resolve(name), listOf(root), forRename = true) }
+            }
+        } finally { root.delete() }
+    }
+
     @Test fun smbAcceptsLiteralHashAndPercentWithoutInterpretingEscapes() {
         for (path in listOf("Video/#合集%2F/图#1%252F.jpg", "Video/a%2f.mp4", "Video/100%.pdf")) {
             assertEquals(path, MediaDeletePolicy.smbPath(path))

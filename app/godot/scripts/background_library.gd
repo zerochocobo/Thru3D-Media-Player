@@ -9,7 +9,7 @@ const Background := preload("res://scripts/app_background.gd")
 const Info := preload("res://scripts/image_info.gd")
 const Rules := preload("res://scripts/panorama_background_rules.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
-const MODES := [{"id":"global", "label":"Global", "default":"cinema", "hidden":false,"section":"appearance","cinema":true},
+const MODES := [{"id":"global", "label":"Global", "default":"magic_cottage", "hidden":false,"section":"appearance","cinema":true},
 	{"id":"image", "label":"Image mode", "default":"belfast", "hidden":false,"section":"photo_background","cinema":false},
 	{"id":"reading", "label":"Reading mode", "default":"", "hidden":true,"section":"reading_background","cinema":false}]
 var directory := "user://background_library"
@@ -105,8 +105,9 @@ func bind(mode: String, id: String, yaw: float = 0, brightness: float = 1) -> bo
 	changed.emit(); return true
 
 func allowed(mode: String, id: String) -> bool:
+	if id == "magic_cottage" and not Background.magic_cottage_available(): return false
 	if id == "private_beach" and not Background.private_beach_available(): return false
-	return valid_mode(mode) and (assets.has(id) or id in ["belfast","morning","night","dark","passthrough"] or (mode_definition(mode).get("cinema",false) and id in ["cinema","private_beach"]))
+	return valid_mode(mode) and (assets.has(id) or id in ["belfast","morning","night","dark","passthrough"] or (mode_definition(mode).get("cinema",false) and id in ["cinema","private_beach","magic_cottage"]))
 
 func rows() -> Array:
 	var result: Array = []

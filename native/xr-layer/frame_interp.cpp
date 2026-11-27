@@ -503,11 +503,11 @@ bool frame_interp::pair_push(GLuint texture, int width, int height, jlong id, jl
     return pair_estimate(id, before_id);
 }
 
-bool frame_interp::pair_show(GLuint image, jlong before_id, jlong after_id, float phase) {
+float frame_interp::pair_show(GLuint image, jlong before_id, jlong after_id, float phase) {
     Engine& e = pair_engine;
     const Kept* first = kept_of(e, before_id);
     const Kept* second = kept_of(e, after_id);
-    if (!image || (!first && !second)) return false;
+    if (!image || (!first && !second)) return -1.0f;
     Saved saved;
     constexpr GLenum kFramebufferSrgb = 0x8DB9; // GL_FRAMEBUFFER_SRGB_EXT
     const GLboolean encoding = e.srgb_control ? glIsEnabled(kFramebufferSrgb) : GL_TRUE;
@@ -521,22 +521,25 @@ bool frame_interp::pair_show(GLuint image, jlong before_id, jlong after_id, floa
     const GLuint a = first ? first->texture : second->texture, b = second ? second->texture : first->texture;
     const bool drawn = between(e, a, b, pair, phase, e.width, e.height, image, true, only);
     if (e.srgb_control && !encoding) glDisable(kFramebufferSrgb);
-    return drawn;
+    if (!drawn) return -1.0f;
+    return only == 1 ? 0.0f : only == 2 ? 1.0f : phase;
 }
 
-GLuint frame_interp::pair_picture(jlong before_id, jlong after_id, float phase) {
+GLuint frame_interp::pair_picture(jlong before_id, jlong after_id, float& phase) {
     Engine& e = pair_engine;
     Kept* first = kept_of(e, before_id);
     Kept* second = kept_of(e, after_id);
     if (!first && !second) return 0;
-    if (!second || (first && phase <= 0.0f)) return first->texture;
-    if (!first || phase >= 1.0f) return second->texture;
+    if (!second || (first && phase <= 0.0f)) { phase = 0.0f; return first->texture; }
+    if (!first || phase >= 1.0f) { phase = 1.0f; return second->texture; }
     Saved saved;
     if (!e.mixed_texture) { glActiveTexture(GL_TEXTURE0); e.mixed_texture = make(GL_RGBA8, e.width, e.height, 1, GL_LINEAR, GL_LINEAR); }
     // Without its motion (the frames came faster than they showed) the nearer frame shows as it is.
     const Pair* pair = pair_of(e, before_id, after_id);
-    if (!pair || !between(e, first->texture, second->texture, pair, phase, e.width, e.height, e.mixed_texture))
-        return phase < 0.5f ? first->texture : second->texture;
+    if (!pair || !between(e, first->texture, second->texture, pair, phase, e.width, e.height, e.mixed_texture)) {
+        phase = phase < 0.5f ? 0.0f : 1.0f;
+        return phase == 0.0f ? first->texture : second->texture;
+    }
     return e.mixed_texture;
 }
 

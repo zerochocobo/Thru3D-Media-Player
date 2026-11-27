@@ -2,6 +2,135 @@
   "schema": 1,
   "entries": [
     {
+      "version": "0.19.0",
+      "date": "2026-11-27",
+      "title": {
+        "zh": "空间阅读、魔法阁楼与离线体验",
+        "zh_Hant": "空間閱讀、魔法閣樓與離線體驗",
+        "en": "Spatial reading, Wizard’s Attic and offline experiences",
+        "ja": "空間読書・魔法使いの屋根裏・オフライン体験"
+      },
+      "items": [
+        {
+          "id": "spatial-reading-mode",
+          "text": {
+            "zh": "新增空间阅读模式。可在资料库「书籍」中打开兼容的 EPUB、MOBI、AZW3、TXT 和 PDF。支持手柄或手势翻页、目录、搜索、书签、逐段朗读、自动翻页、日夜纸色、字号行距和可下载字体。按住握持键可拖动书本。",
+            "zh_Hant": "新增空間閱讀模式。可在資料庫「書籍」中開啟相容的 EPUB、MOBI、AZW3、TXT 和 PDF。支援控制器或手勢翻頁、目錄、搜尋、書籤、逐段朗讀、自動翻頁、日夜紙色、字級行距和可下載字型。按住握把可拖曳書本。",
+            "en": "Added spatial reading mode. Open compatible EPUB, MOBI, AZW3, TXT and PDF files from Books in the library. Use controllers or hand gestures to turn pages. The reading menu includes contents, search, bookmarks, read-aloud, auto page turning, day and night paper colors, type size and line spacing, and downloadable fonts. Hold Grip to move the book.",
+            "ja": "空間読書モードを追加しました。ライブラリの「本」から対応する EPUB、MOBI、AZW3、TXT、PDF を開けます。コントローラーやハンドジェスチャーでページをめくれます。目次、検索、しおり、段落ごとの読み上げ、自動ページめくり、昼夜の紙色、文字サイズと行間、ダウンロードできるフォントに対応します。グリップを押したまま本を移動できます。"
+          }
+        },
+        {
+          "id": "reading-time-and-media-favorites",
+          "text": {
+            "zh": "新增单本阅读时长统计，阅读圆盘可查看进度与时长。书籍和从目录播放的歌曲可加入全局收藏，收藏夹支持按书籍和音乐筛选。",
+            "zh_Hant": "新增單本閱讀時間統計，閱讀圓盤可查看進度與時間。書籍和從資料夾播放的歌曲可加入全域收藏，收藏夾支援依書籍和音樂篩選。",
+            "en": "The reading ring shows progress and time spent reading each book. Save books and songs played from folders to Favorites, and filter Favorites by Books or Music.",
+            "ja": "リングメニューに本ごとの読書進捗と読書時間を表示します。本やフォルダーから再生した曲をお気に入りに登録でき、お気に入りを本や音楽で絞り込めます。"
+          }
+        },
+        {
+          "id": "wizards-attic",
+          "text": {
+            "zh": "新增内置场景「魔法阁楼」，可坐着用魔杖体验星镜观影、草木培育、炼药和守窗互动。阁楼排在内置场景首位，新安装默认进入阁楼，已有用户按原场景选择进入。",
+            "zh_Hant": "新增內建場景「魔法閣樓」，可坐著用魔杖體驗星鏡觀影、草木培育、煉藥和守窗互動。閣樓排在內建場景首位，全新安裝預設進入閣樓，既有使用者依原場景選擇進入。",
+            "en": "Added Wizard’s Attic, a seated scene where you can use a wand to watch videos on the Star Mirror, grow plants, brew potions and defend the windows. The attic appears first among built-in scenes and opens by default on fresh installs. Existing users start in their previously selected scene.",
+            "ja": "内蔵シーン「魔法使いの屋根裏」を追加しました。座ったまま魔法の杖を使い、星の鏡での動画鑑賞、植物の栽培、魔法薬の調合、窓を守る遊びを楽しめます。内蔵シーンの先頭に表示され、新規インストール時の初期シーンになります。既存のユーザーはこれまで選んでいたシーンから開始します。"
+          }
+        },
+        {
+          "id": "builtin-offline-experience-folder",
+          "text": {
+            "zh": "「本地文件」中置顶离线「体验内容」，包含两段视频、两张图片和与界面语言对应的样书，可体验 2D 转 3D、人像透视、照片 3D 和空间阅读。",
+            "zh_Hant": "「本機檔案」中置頂離線「體驗內容」，包含兩段影片、兩張圖片和與介面語言對應的試讀書籍，可體驗 2D 轉 3D、人物透視、照片 3D 和空間閱讀。",
+            "en": "An offline experience folder is pinned at the top of Local files. It contains two videos, two images and a sample book in the interface language, so you can try 2D-to-3D video, person passthrough, 3D photos and spatial reading.",
+            "ja": "「ローカルファイル」の先頭にオフラインの体験フォルダーを追加しました。動画2本、画像2枚、画面の言語に合ったサンプル本で、動画の2D→3D、人物パススルー、写真の3D表示、空間読書を試せます。"
+          }
+        },
+        {
+          "id": "directory-music-playlists",
+          "text": {
+            "zh": "可在资料库目录中直接播放单首歌曲或加入自建歌单，也可在「音乐」筛选下多选并批量加入歌单。",
+            "zh_Hant": "可在資料庫的資料夾中直接播放單首歌曲或加入自訂歌單，也可在「音樂」篩選下多選並批次加入歌單。",
+            "en": "Play individual songs directly from library folders or add them to a playlist. Use the Music filter to select and add multiple songs at once.",
+            "ja": "ライブラリのフォルダーから曲を直接再生したり、プレイリストに追加したりできます。「音楽」フィルターでは複数の曲をまとめて選択し、プレイリストに追加できます。"
+          }
+        },
+        {
+          "id": "interpolation-live-output-fps",
+          "text": {
+            "zh": "画质设置可查看补帧的原片帧率与实际输出帧率。补帧生效后收起菜单，可在播放画面左上角短暂显示 10 秒。",
+            "zh_Hant": "畫質設定可查看補幀的原片畫格率與實際輸出畫格率。補幀生效後收起選單，可在播放畫面左上角短暫顯示 10 秒。",
+            "en": "Picture settings show the source frame rate and measured output frame rate for frame interpolation. Once interpolation is active, closing the menu can show the readout in the upper left for 10 seconds.",
+            "ja": "画質設定でフレーム補間の元動画のフレームレートと実際の出力フレームレートを確認できます。補間が有効になった後でメニューを閉じると、画面左上に10秒間表示できます。"
+          }
+        },
+        {
+          "id": "screen-adjustment-grid-preferences",
+          "text": {
+            "zh": "新增「调整时显示定位线」。自由摆放和直立的画面都可使用。可选「关闭」「视频」或「视频＋图片」，默认「视频」。场景范围可选非 3D 场景或全部场景，握持拖动时定位线持续显示。",
+            "zh_Hant": "新增「調整時顯示定位線」。自由擺放和直立的畫面都可使用。可選擇關閉、影片或影片加圖片，預設為影片。場景範圍可選非 3D 場景或全部場景，握持拖曳時定位線會持續顯示。",
+            "en": "Added a ground grid for adjusting freely placed and upright screens. Choose Off, Videos, or Videos and photos, with Videos as the default. It can appear in non-3D scenes or all scenes and stays visible while dragging with Grip.",
+            "ja": "自由配置と直立配置のどちらでも、画面調整時に床のグリッドを表示できます。オフ、動画、動画と画像から選べ、初期設定は動画です。非3Dシーンまたはすべてのシーンで表示でき、グリップでドラッグしている間は表示が続きます。"
+          }
+        },
+        {
+          "id": "upright-screen-label",
+          "text": {
+            "zh": "视频摆放选项「影院银幕」改名为「直立银幕」。缩放时底边固定，推拉可调整远近。",
+            "zh_Hant": "影片擺放選項「影院銀幕」改名為「直立銀幕」。縮放時底邊固定，推拉可調整遠近。",
+            "en": "The video placement option is now called Upright screen. Its bottom edge stays in place when resizing, and you can push or pull to adjust the distance.",
+            "ja": "動画の配置設定を「直立スクリーン」に改名しました。拡大・縮小時には下端が固定され、押し引きで距離を調整できます。"
+          }
+        },
+        {
+          "id": "reading-sources-long-books",
+          "text": {
+            "zh": "书籍可从本地、SMB、网盘和 DLNA 打开。长篇 TXT 先排出当前章节，其余章节在后台处理，减少打开长书的等待。",
+            "zh_Hant": "書籍可從本機、SMB、網路硬碟和 DLNA 開啟。長篇 TXT 先排出目前章節，其餘章節在背景處理，減少開啟長篇書籍的等待時間。",
+            "en": "Open books from local storage, SMB, cloud drives and DLNA. Long TXT books lay out the current chapter first and paginate the rest in the background, so you can start reading sooner.",
+            "ja": "本はローカルストレージ、SMB、クラウドドライブ、DLNA から開けます。長い TXT は現在の章から先に組版し、残りのページはバックグラウンドで処理するため、すぐに読み始められます。"
+          }
+        },
+        {
+          "id": "library-file-rename",
+          "text": {
+            "zh": "开启文件管理后，可为可写来源中的音乐、书籍、字幕等普通文件改名，并保留原扩展名。",
+            "zh_Hant": "開啟檔案管理後，可重新命名可寫入來源中的音樂、書籍、字幕等一般檔案，並保留原始副檔名。",
+            "en": "With file management enabled, rename music, books, subtitles and other files in writable locations while keeping their original extensions.",
+            "ja": "ファイル管理を有効にすると、書き込み可能な場所にある音楽、本、字幕などのファイルを、拡張子を保ったまま名前変更できます。"
+          }
+        },
+        {
+          "id": "cloud-account-request-isolation",
+          "text": {
+            "zh": "改善多网盘同时使用。单个账号加载缓慢或超时时，其他账号仍可浏览文件和打开视频。关闭、换片或切换账号时，会取消尚未完成的旧浏览或起播准备。",
+            "zh_Hant": "改善同時使用多個網路硬碟時的穩定性。單一帳號載入緩慢或逾時時，其他帳號仍可瀏覽檔案和開啟影片。關閉、換片或切換帳號時，會取消尚未完成的舊瀏覽或播放準備。",
+            "en": "Improved responsiveness when using multiple cloud drive accounts. Other accounts can still browse files and open videos while one account is slow or times out. Closing a view, changing videos or switching accounts cancels pending browsing or playback preparation for the previous selection.",
+            "ja": "複数のクラウドドライブアカウントを使用する際の応答性を改善しました。あるアカウントの応答が遅い場合やタイムアウトした場合でも、ほかのアカウントでファイルを閲覧し、動画を開けます。画面を閉じたり、動画やアカウントを切り替えたりすると、前の一覧取得や再生準備のうち処理中のものをキャンセルします。"
+          }
+        },
+        {
+          "id": "reading-layout-and-exit-fixes",
+          "text": {
+            "zh": "修复部分由 PDF 转制的 EPUB 每行误缩进、网络书籍打开失败后无法退出，以及影院阅读时圆盘下方出现黑块的问题。",
+            "zh_Hant": "修正部分由 PDF 轉製的 EPUB 每行錯誤縮排、網路書籍開啟失敗後無法離開，以及在影院閱讀時圓盤下方出現黑塊的問題。",
+            "en": "Fixed unwanted indentation in some EPUBs converted from PDF, getting stuck after a network book fails to open, and a black block below the reading ring in the cinema scene.",
+            "ja": "PDFから変換した一部のEPUBで行ごとに誤って字下げされる問題、ネットワーク上の本が開けなかった後に閉じられない問題、シアターで読書中にリングの下に黒い四角が表示される問題を修正しました。"
+          }
+        },
+        {
+          "id": "library-directory-management-footer",
+          "text": {
+            "zh": "修复目录管理时末排卡片与「改名」「删除」按钮重叠的问题。",
+            "zh_Hant": "修正管理資料夾時，最後一排卡片與「重新命名」「刪除」按鈕重疊的問題。",
+            "en": "Fixed the bottom row of folder items overlapping Rename and Delete in file management mode.",
+            "ja": "ファイル管理中に、一覧の最下段のカードが「名前の変更」「削除」ボタンと重なる問題を修正しました。"
+          }
+        }
+      ]
+    },
+    {
       "version": "0.18.11",
       "date": "2026-11-26",
       "title": {

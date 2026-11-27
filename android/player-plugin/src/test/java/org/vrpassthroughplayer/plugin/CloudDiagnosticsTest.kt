@@ -25,6 +25,16 @@ class CloudDiagnosticsTest {
         }
         assertEquals("AUTH-ROOT MEMBER API 500", member.code)
         assertEquals("cloud_membership_required", member.reason)
+        val declined = assertThrows(CloudFailure::class.java) {
+            CloudDiagnostics.checkCore(JSONObject().put("code", 500).put("message", "Cloud request failed")
+                .put("error_detail", "directory.list\nguangya sign in required; refresh declined (invalid_grant)"), "/directory")
+        }
+        assertEquals("cloud_login_required", CloudDiagnostics.response(declined, "cloud.browse").getString("error_reason"))
+        assertEquals("AUTH-ROOT LOGIN API 500", CloudLoginFailure(Stage.ROOT, declined).code)
+        val outage = assertThrows(CloudFailure::class.java) {
+            CloudDiagnostics.checkCore(JSONObject().put("code", 500).put("error_detail", "guangya sign-in unavailable (HTTP 502)"), "/directory")
+        }
+        assertEquals("cloud_unavailable", outage.reason)
         val exchange = CloudLoginFailure(Stage.EXCHANGE, SocketTimeoutException("private provider URL"))
         assertEquals("AUTH-EXCHANGE TIMEOUT", exchange.code)
     }

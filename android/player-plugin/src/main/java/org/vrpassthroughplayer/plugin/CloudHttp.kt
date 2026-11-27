@@ -13,7 +13,8 @@ internal fun interface CloudTransport {
     fun request(url: String, cookie: String, form: Map<String, String>?): CloudResponse
 }
 internal class CloudResponse(val json: JSONObject, val cookies: List<String> = emptyList())
-internal class CloudCancellation : CloudTransport {
+internal class CloudCancellation(val kind: String = "background", val owner: Int = 0) : CloudTransport {
+    fun mark(stage: String) = CloudRequestTrail.record("$kind=$owner stage=$stage")
     @Volatile var cancelled = false
         private set
     private var active: HttpURLConnection? = null
@@ -28,6 +29,15 @@ internal class CloudCancellation : CloudTransport {
         active = connection
     }
     @Synchronized fun detach(connection: HttpURLConnection) { if (active === connection) active = null }
+    fun checkActive() { if (cancelled) throw CloudFailure() }
+
+    // A published video or a retained view can outlive the opening session.
+    // Only operations performed during preparation inherit its cancellation.
+    fun <T> prepare(work: (CloudCancellation) -> T): T {
+        val child = CloudCancellation(kind, owner)
+        attachAction(child::cancel)
+        return try { work(child) } finally { detachAction() }
+    }
     fun cancel() {
         val (connection, action) = synchronized(this) {
             cancelled = true
