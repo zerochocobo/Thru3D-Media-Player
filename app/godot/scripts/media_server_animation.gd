@@ -1,155 +1,186 @@
 extends RefCounted
 
 const Methods := preload("res://scripts/platform_methods.gd")
+const Track := preload("res://scripts/media_artwork_track.gd")
 const DWELL_MS := 250
-const POLL_MS := 33
+const MAX_PLAYING := 3
+const ROTATE_MS := 12000
 var _owner: WeakRef
-var focus := {}
-var autoplay := {} # The visible backdrop or the open picture, rebuilt with the menu.
-var active := {}
+var focus := {}:
+	set(value):
+		if not is_same(focus, value) and (not focus.is_empty() or not value.is_empty()): _plan_at = 0
+		focus = value
+var autoplay := {}: # The current slideshow backdrop or the open picture.
+	set(value):
+		autoplay = value
+		_plan_at = 0
+var auto_covers := false:
+	set(value):
+		auto_covers = value
+		_plan_at = 0
 var foreground := true
-var _checked := {} # Recently confirmed stills. Keys include server, item and image tag.
-var _due := 0
-var _request := 0
-var _session := 0
-var _token := 0
-var _texture: ImageTexture
-var _native_handle := 0
+var _cards := {}
+var _tracks := {}
+var _stills := {}
+var _listings := {}
+var _last_focus := ""
 var _rebind_until := 0
+var _rotation := 0
+var _rotate_at := 0
+var _plan_at := 0
+var _scrolling := false
 
 func _init(browser: RefCounted) -> void:
 	_owner = weakref(browser)
 
-func binding(node: Dictionary, surface: MeshInstance3D, poster: Texture2D) -> Dictionary:
+func begin_layout() -> void:
+	_last_focus = str(focus.get("key", _last_focus))
+	focus = {}
+	autoplay = {}
+	_cards.clear()
+
+func binding(node: Dictionary, surface: MeshInstance3D, poster: Texture2D, card := true) -> Dictionary:
 	var browser = _owner.get_ref()
 	var req: Dictionary = browser._image_request(node)
 	if str(req.scene_id).is_empty(): return {}
-	# These providers return the same original at every poster size. Share its
-	# probe and disk cache when opening a thumbnail in the picture viewer.
 	if req.has("max_width") and browser.server.get("provider") in ["emby", "jellyfin"]:
 		req.max_width = 512
+	var image_key: String = browser._request_image_key(req)
+	var candidates := [{"key": image_key, "req": req}]
+	var identity := image_key
+	var lookup := ""
+	if card:
+		# Some compatible servers expose only the first tag in list summaries.
+		if browser.view in ["scenes", "home"] and browser.server.get("provider") in ["emby", "jellyfin"] \
+			and node.get("kind") == "video" and node.get("preview_backdrops", []).size() < 2:
+			lookup = str(node.id)
+			identity += "|lookup:" + lookup
+		for image in node.get("preview_backdrops", []):
+			var other: Dictionary = browser._image_request({"cover_image": image})
+			var other_key: String = browser._request_image_key(other)
+			if other_key == image_key: continue
+			candidates.append({"key": other_key, "req": other})
+			identity += "|" + other_key
+		# A film may appear in two strips on the same page.
+		var base := identity
+		var copy := 1
+		while _cards.has(identity):
+			copy += 1
+			identity = base + "#" + str(copy)
+	else: identity = "background:" + image_key
 	var edge := 640 if browser.view in ["detail", "metadata", "picture"] else 512
-	return {"key": browser._request_image_key(req), "req": req, "surface": surface, "poster": poster,
-		"edge": edge, "material_id": surface.material_override.get_instance_id()}
-
-func _show(slot: Dictionary, value: Texture2D, restoring: bool = false) -> void:
-	if slot.is_empty() or not is_instance_valid(slot.surface): return
-	var material: Material = slot.surface.material_override
-	if material is ShaderMaterial:
-		if restoring and material.get_shader_parameter("picture") != _texture: return
-		if material.get_shader_parameter("picture") != value:
-			material.set_shader_parameter("picture", value)
-	elif material is BaseMaterial3D:
-		if restoring and material.albedo_texture != _texture: return
-		if material.albedo_texture != value: material.albedo_texture = value
-	else: return
-	_owner.get_ref().menu.composition_nodes_changed.emit([slot.surface])
+	var slot := {"key": identity, "req": req, "candidates": candidates, "lookup": lookup, "surface": surface,
+		"poster": poster, "edge": edge, "footprint": surface.mesh.size}
+	if card: _cards[identity] = slot
+	return slot
 
 func stop() -> void:
-	# Untyped: a platform freed first (teardown) must reach the validity checks below, not fail on assignment.
-	var platform: Variant = _owner.get_ref().menu.platform
-	if _request > 0 and is_instance_valid(platform): platform.media_server_cancel(_request)
-	if _session > 0 and is_instance_valid(platform): platform.media_artwork_stop(_session)
-	if _texture != null and not active.is_empty(): _show(active, active.poster, true)
-	_request = 0
-	_session = 0
-	_texture = null
-	_native_handle = 0
-	_token = 0
-	_due = 0
-	_rebind_until = 0
-	active = {}
+	var menu: Node = _owner.get_ref().menu
+	for track in _tracks.values(): track.close(menu)
+	_tracks.clear()
+	_plan_at = 0
 
 func clear() -> void:
 	stop()
-	focus = {}
-	autoplay = {}
+	begin_layout()
+	_last_focus = ""
+	_rebind_until = 0
+	_rotation = 0
+	_rotate_at = 0
 
 func clear_cache() -> void:
 	clear()
-	_checked.clear()
+	_stills.clear()
+	_listings.clear()
+
+func _visible(slot: Dictionary) -> bool:
+	return not slot.is_empty() and is_instance_valid(slot.surface) and slot.surface.is_visible_in_tree()
+
+func _wanted(browser: RefCounted, now: int) -> Array:
+	var pointed := focus
+	# A redraw clears ray hits for one frame. Rebind only if the same card was drawn again.
+	if pointed.is_empty() and not _last_focus.is_empty() and _cards.has(_last_focus) and _tracks.has(_last_focus):
+		if _rebind_until == 0: _rebind_until = now + 40
+		if now < _rebind_until: pointed = _cards[_last_focus]
+	if not focus.is_empty() or pointed.is_empty():
+		_last_focus = ""
+		_rebind_until = 0
+	if _scrolling or not _visible(pointed): pointed = {}
+	var background := _visible(autoplay)
+	if browser.view == "picture": return [autoplay] if background else []
+	if not auto_covers:
+		if _scrolling: return []
+		if not pointed.is_empty(): return [pointed]
+		return [autoplay] if background else []
+
+	var wanted := []
+	if background: wanted.append(autoplay)
+	if not pointed.is_empty(): wanted.append(pointed)
+	if _cards.is_empty(): return wanted
+	if _rotate_at == 0: _rotate_at = now + ROTATE_MS
+	if now >= _rotate_at:
+		_rotation = (_rotation + 1) % _cards.size()
+		_rotate_at = now + ROTATE_MS
+	var cards := _cards.values()
+	for i in cards.size():
+		var card: Dictionary = cards[(i + _rotation) % cards.size()]
+		if is_same(card, pointed) or not _visible(card): continue
+		# Keep already playing visible cards while scrolling; probe new ones after settling.
+		var track: Track = _tracks.get(card.key)
+		if not _scrolling or (track != null and track.session > 0): wanted.append(card)
+	return wanted
 
 func tick(now: int) -> void:
-	if focus.is_empty() and autoplay.is_empty() and active.is_empty(): return
+	if focus.is_empty() and autoplay.is_empty() and _tracks.is_empty() and (not auto_covers or _cards.is_empty()): return
 	var browser = _owner.get_ref()
 	var menu: Node = browser.menu
-	var wanted: Dictionary = autoplay if browser.view == "picture" or focus.is_empty() else focus
 	if not foreground or not menu.is_visible_in_tree() or menu.section != menu.Section.MEDIA_SERVER \
-		or menu.release_notes.opened or menu.archives.browsing or browser.settings_open \
-		or not browser.keyboard.is_empty() or not browser.detail_actions.is_empty() or browser.sorting() \
-		or not browser.gallery.capture.is_empty() or absf(menu._fling) > 0.4:
-		if not active.is_empty(): stop()
+		or menu.release_notes.opened or menu.archives.browsing or browser.settings_open or browser.sources_open \
+		or not browser.keyboard.is_empty() or not browser.detail_actions.is_empty() or browser.sorting():
+		if not _tracks.is_empty(): stop()
 		return
-	# Rebuilding buttons clears both rays for a frame. Wait for the replacement
-	# card before switching back to the backdrop or closing its decoder.
-	if focus.is_empty() and browser.view != "picture" and not active.is_empty() and not is_instance_valid(active.surface):
-		if _rebind_until == 0: _rebind_until = now + 40
-		if now < _rebind_until: return
-	if wanted.is_empty() or not is_instance_valid(wanted.surface) or not wanted.surface.is_visible_in_tree():
-		if not active.is_empty(): stop()
-		return
-	_rebind_until = 0
-	if active.get("key") != wanted.key or active.edge != wanted.edge:
-		stop()
-		active = wanted
-		_due = now if browser.view == "picture" else now + DWELL_MS
-	elif active != wanted:
-		if _texture != null: _show(active, active.poster, true)
-		active = wanted
-		if _texture != null: _show(active, _texture)
-	if _due == 0 or now < _due: return
-	if _session == 0:
-		_due = 0
-		if int(_checked.get(active.key, 0)) > now or not Methods.supports(menu.platform, "media_artwork_start"): return
-		var body: Dictionary = active.req.duplicate()
-		body.merge({"action": "cover_animation", "server_id": browser.server.id, "generation": browser.generation})
-		_request = menu.platform.media_server_request(JSON.stringify(body))
-		return
-	_due = maxi(_due + POLL_MS, now + 1)
-	var raw: String = menu.platform.media_artwork_frame(_session)
-	var frame: Variant = JSON.parse_string(raw) if not raw.is_empty() else null
-	if frame == null or frame.get("failed", false):
-		var slot := active
-		stop()
-		active = slot # Keep its ordinary poster until focus changes.
-		return
-	var token := int(frame.get("token", 0))
-	if token > 0 and token != _token:
-		var width := int(frame.width)
-		var height := int(frame.height)
-		if _native_handle == 0 or not menu.platform.media_artwork_upload(_session, token, _native_handle):
-			_native_handle = 0
-			var pixels: PackedByteArray = menu.platform.media_artwork_pixels(_session, token)
-			if width <= 0 or height <= 0 or pixels.size() != width * height * 4: return
-			var image := Image.create_from_data(width, height, false, Image.FORMAT_RGBA8, pixels)
-			if _texture == null:
-				_texture = ImageTexture.create_from_image(image)
-				if RenderingServer.get_current_rendering_method() == "gl_compatibility":
-					_native_handle = RenderingServer.texture_get_native_handle(_texture.get_rid())
-			else: _texture.update(image)
-		_token = token
-		_show(active, _texture)
-	if frame.get("ended", false):
-		menu.platform.media_artwork_stop(_session)
-		_session = 0
-		_due = 0
+
+	var scrolling: bool = not browser.gallery.capture.is_empty() or absf(menu._fling) > 0.4
+	if scrolling != _scrolling:
+		_scrolling = scrolling
+		_plan_at = 0
+	if now >= _plan_at:
+		_plan_at = now + 80
+		_select(browser, now)
+		if _rebind_until > now: _plan_at = mini(_plan_at, _rebind_until)
+	for track in _tracks.values():
+		if track.finished: continue
+		track.tick(browser, _stills, _listings, now)
+		if track.finished: _plan_at = 0
+
+func _select(browser: RefCounted, now: int) -> void:
+	var menu: Node = browser.menu
+	var kept := {}
+	var busy := 0
+	for slot in _wanted(browser, now):
+		var track: Track = _tracks.get(slot.key)
+		if track == null or not track.finished:
+			if busy >= MAX_PLAYING: continue
+			busy += 1
+		if track == null:
+			if not Methods.supports(menu.platform, "media_artwork_start"): continue
+			track = Track.new(slot, now if browser.view == "picture" else now + DWELL_MS)
+		else: track.rebind(menu, slot)
+		kept[slot.key] = track
+	for key in _tracks:
+		if not kept.has(key): _tracks[key].close(menu)
+	_tracks = kept
 
 func receive(id: int, payload: String) -> bool:
-	if id <= 0 or id != _request: return false
-	_request = 0
-	var browser = _owner.get_ref()
-	var requested_key: String = active.key
-	var requested_edge: int = active.edge
-	# A response can arrive between the pointer/visibility change and the next UI tick.
-	tick(Time.get_ticks_msec())
-	var data: Variant = JSON.parse_string(payload)
-	if active.get("key") != requested_key or active.edge != requested_edge or not data is Dictionary or data.get("state") != "ready" \
-		or data.get("server_id") != browser.server.get("id") or data.get("generation") != browser.generation: return true
-	var path := str(data.get("path", ""))
-	if path.is_empty():
-		if _checked.size() >= 256: _checked.erase(_checked.keys()[0])
-		_checked[active.key] = Time.get_ticks_msec() + 300000
-	else:
-		_session = browser.menu.platform.media_artwork_start(path, active.edge)
-		if _session > 0: _due = Time.get_ticks_msec()
-	return true
+	if id <= 0: return false
+	for track in _tracks.values():
+		if track.request != id: continue
+		# Focus, visibility or navigation may have changed since this request was sent.
+		var now := Time.get_ticks_msec()
+		_plan_at = 0
+		tick(now)
+		if track.request == id:
+			track.receive(_owner.get_ref(), _stills, _listings, JSON.parse_string(payload), now)
+			if track.finished: _plan_at = 0
+		return true
+	return false

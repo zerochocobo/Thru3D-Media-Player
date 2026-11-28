@@ -58,6 +58,14 @@ func _run() -> void:
 	check(not visuals.hands.right_hand.hand_gate.visible and not visuals.hands.right_hand.controller_gate.visible, "Hidden hand models do not expose the emulated controller")
 	check(visuals.hands.left_hand.controller_gate.visible, "Hidden hand models leave physical controllers visible")
 	check(trackers[1].has_tracking_data, "Hidden hand models preserve tracking for pointing")
+	# Watching with nothing interactive hides everything; an open book still draws the optical hands
+	# (they turn its pages) but not the controller beside them (the book draws its wand there).
+	visuals.update_visibility(true, {}, false)
+	check(not visuals.hands.right_hand.hand_gate.visible and not visuals.hands.left_hand.controller_gate.visible, "Nothing is drawn while only watching")
+	visuals.update_visibility(true, {}, false, {}, true, {}, true)
+	check(visuals.hands.right_hand.hand_gate.visible and not visuals.hands.left_hand.controller_gate.visible, "While reading, tracked hands are drawn and controllers are not")
+	visuals.update_visibility(true, {}, false, {}, false, {}, true)
+	check(not visuals.hands.right_hand.hand_gate.visible, "Hand models turned off stay off while reading")
 	visuals.update_visibility(true)
 	var hand_material: ShaderMaterial = visuals._material
 	check(hand_material.render_priority > 25 and hand_material.render_priority < 28, "Hand models draw after menu holes and before the wrist watch")

@@ -7,6 +7,7 @@ void vertex() {
 	media_direction = VERTEX;
 }
 void fragment() {
+	if (near_side(media_direction)) { discard; }
 	if (!outside_alignment(aligned_eye_uv(eye_uv(UV, media_direction)))) { discard; }
 	ALBEDO = vec3(0.0);
 	ALPHA = 1.0;

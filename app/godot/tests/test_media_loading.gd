@@ -70,6 +70,24 @@ func run() -> void:
 	check(video._opening_deadline_ms == 61902, "Further actual data keeps the request pending")
 	video._check_open_timeout(61901)
 	check(video.media.error.is_empty(), "An active slow read remains pending until its inactivity deadline")
+	# A cold Alpha model holds the first frame while it compiles (UU4VEVGZ: 40 s against a 30 s wait).
+	video.media.begin(9); video._waiting_first = true; video._loading_poll_ms = 0; video._loading_bytes = -1
+	video.local_uri = "file:///sdcard/Movies/test.mp4"; video._opening_deadline_ms = 0
+	video._loading_started_ms = 100000; video._output_deadline_ms = 130000
+	video.platform.status = {"remote": false, "phase": "reading", "alpha_model_preparing": true}
+	video._poll_loading(129000)
+	check(video._output_deadline_ms == 159000, "A compiling Alpha model keeps the first-frame wait pending")
+	check(video.loading_caption() == I18n.t("Preparing the model"), "The wait says the model is being prepared")
+	video._poll_loading(455000)
+	check(video._output_deadline_ms == 100000 + Video.ALPHA_MODEL_WAIT_MS, "The model wait has an upper limit")
+	video._loading_poll_ms = 0; video._poll_loading(470000)
+	check(video._output_deadline_ms == 100000 + Video.ALPHA_MODEL_WAIT_MS, "Polling past the limit does not extend it")
+	video.media.begin(10); video._waiting_first = true; video._loading_poll_ms = 0
+	video._loading_started_ms = 100000; video._output_deadline_ms = 130000
+	video.platform.status = {"remote": false, "phase": "reading"}
+	video._poll_loading(129000)
+	check(video._output_deadline_ms == 130000, "A ready model leaves the ordinary first-frame wait unchanged")
+	check(video.loading_caption() != I18n.t("Preparing the model"), "No model caption once the model is ready")
 	var photo := Photo.new(); photo.loading = true; photo._loading_status = {"remote": true, "phase": "reading", "bytes_per_second": 2400000}
 	photo._loading_started_ms = Time.get_ticks_msec() - 15000
 	var photo_menu := PhotoMenu.new(); photo_menu._state = photo.snapshot()

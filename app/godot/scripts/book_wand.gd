@@ -24,6 +24,14 @@ void fragment() {
 """
 const LENGTH := 0.34
 const DEFAULT_GLOW := Color(1.0, 0.85, 0.52)
+## The modelled wands (tools/wands/build_wands.py), each LENGTH long with its pommel at the origin.
+const STYLES := ["walnut", "gnarled", "ash", "ebony", "rosewood"]
+const NAMES := {"walnut": "Walnut wand", "gnarled": "Gnarled wand", "ash": "Ash wand", "ebony": "Ebony wand", "rosewood": "Rosewood wand"}
+const DEFAULT_STYLE := "walnut"
+static var _library: MeshLibrary
+static var _wood: ShaderMaterial
+var style := ""
+var _body := MeshInstance3D.new()
 var tip := Node3D.new()
 var _halo := MeshInstance3D.new()
 var _trail: CPUParticles3D
@@ -49,20 +57,9 @@ static func sparks(amount: int, lifetime: float, size: float, colour: Color) -> 
 	return particles
 
 func _init() -> void:
-	var shaft := MeshInstance3D.new()
-	var wood := CylinderMesh.new(); wood.top_radius = 0.0035; wood.bottom_radius = 0.0095; wood.height = LENGTH; wood.radial_segments = 10; wood.rings = 1
-	shaft.mesh = wood
-	# The cylinder's axis is +y: lay it along -z with the thin end forward.
-	shaft.transform = Transform3D(Basis(Vector3.RIGHT, -PI * 0.5), Vector3(0, 0, -LENGTH * 0.5))
-	var bark := StandardMaterial3D.new(); bark.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED; bark.albedo_color = Color(0.23, 0.15, 0.10)
-	shaft.material_override = bark
-	add_child(shaft)
-	var grip := MeshInstance3D.new()
-	var band := CylinderMesh.new(); band.top_radius = 0.0105; band.bottom_radius = 0.0115; band.height = 0.018; band.radial_segments = 10
-	grip.mesh = band; grip.transform = Transform3D(Basis(Vector3.RIGHT, -PI * 0.5), Vector3(0, 0, -0.07))
-	var gold := StandardMaterial3D.new(); gold.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED; gold.albedo_color = Color(0.83, 0.66, 0.30)
-	grip.material_override = gold
-	add_child(grip)
+	_body.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(_body)
+	set_style(DEFAULT_STYLE)
 	tip.position = Vector3(0, 0, -LENGTH)
 	add_child(tip)
 	# Small: the tip sits between the eyes and the page, and a broad glow would hide the line being read.
@@ -72,6 +69,26 @@ func _init() -> void:
 	_trail = sparks(48, 0.7, 0.014, Color(1.0, 0.80, 0.42))
 	tip.add_child(_trail)
 	visible = false
+
+## A known style id, or the default for anything else (an old or hand-edited setting).
+static func valid_style(id: String) -> String:
+	return id if id in STYLES else DEFAULT_STYLE
+
+## The menu picture of a style: its handle and the start of its shaft, lying corner to corner.
+static func picture(id: String) -> Texture2D:
+	return load("res://assets/wands/%s.png" % valid_style(id))
+
+func set_style(id: String) -> void:
+	id = valid_style(id)
+	if id == style: return
+	style = id
+	if _library == null:
+		_library = load("res://assets/wands/wands.res")
+		_wood = ShaderMaterial.new()
+		_wood.shader = preload("res://assets/wands/wand.gdshader")
+		_wood.set_shader_parameter("atlas", load("res://assets/wands/wands.png"))
+	_body.mesh = _library.get_item_mesh(_library.find_item_by_name(id))
+	_body.material_override = _wood
 
 func aim(origin: Vector3, direction: Vector3) -> void:
 	if direction.length_squared() < 0.0001: visible = false; return

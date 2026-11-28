@@ -5,6 +5,7 @@ extends RefCounted
 
 const Methods := preload("res://scripts/platform_methods.gd")
 const Narration := preload("res://scripts/narration_settings.gd")
+const Memory := preload("res://scripts/file_narration_memory.gd")
 ## Reading speeds offered, as multiples of the voice's own pace.
 const SPEEDS := [0.8, 0.9, 1.0, 1.15, 1.3, 1.5, 1.8]
 const DEFAULT_SPEED := 2
@@ -40,6 +41,10 @@ var _quiet_since := 0
 const QUIET_RETRY_MS := 2000
 var _session := 0
 var _layout := 0
+## Reading one paragraph only, to hear the chosen voice: stops by itself when it is done.
+var audition := false
+## The reader's own cloned voices, [{"id", "name"}], as the app's voice manager lists them.
+var personal_voices: Callable
 
 func _init(owner: Node3D) -> void:
 	reader = owner
@@ -54,7 +59,7 @@ func restore(settings: ConfigFile) -> void:
 	voices = {}
 	for lang in Narration.VOICES:
 		var saved := str(settings.get_value("book", "voice_" + lang, ""))
-		if saved in Narration.VOICES[lang]: voices[lang] = saved
+		if saved in Narration.VOICES[lang] or Memory.valid_custom_voice(saved): voices[lang] = saved
 
 func store(settings: ConfigFile) -> void:
 	settings.set_value("book", "speech_speed", speed)
@@ -81,17 +86,34 @@ func voice() -> String:
 	var lang := language()
 	return str(voices.get(lang, Narration.VOICES[lang][0]))
 
+## The cloned voices there are now (the list arrives a moment after it is first asked for).
+func cloned() -> Array:
+	var listed: Variant = personal_voices.call() if personal_voices.is_valid() else []
+	return (listed as Array).filter(func(item): return item is Dictionary and Memory.valid_custom_voice(str(item.get("id", "")))) if listed is Array else []
+
+## A preset of the book's language, or one of the reader's own cloned voices (they speak any language).
 func set_voice(value: String) -> void:
-	if not value in Narration.VOICES[language()]: return
+	if not (value in Narration.VOICES[language()] or Memory.valid_custom_voice(value)): return
 	voices[language()] = value
 	_restart_if_on()
+
+## Reads the first paragraph of the open page in the chosen voice, then stops; pressed again, stops.
+func preview() -> bool:
+	if on:
+		if audition: stop(); return true
+		return false
+	audition = start()
+	return audition
 
 func set_speed(value: int) -> void:
 	speed = clampi(value, 0, SPEEDS.size() - 1)
 	_restart_if_on()
 
 func _restart_if_on() -> void:
-	if on: _configured = ""; start(cursor)
+	if on:
+		_configured = ""
+		if audition: stop(); preview()
+		else: start(cursor)
 
 func _configure() -> bool:
 	var platform: Object = reader.platform
@@ -100,7 +122,12 @@ func _configure() -> bool:
 	if Methods.supports(platform, "comic_reader_speech_enabled"): platform.comic_reader_speech_enabled(true)
 	if Methods.supports(platform, "comic_reader_speed"): platform.comic_reader_speed(float(SPEEDS[speed]))
 	# The language comes from the words themselves; the pages carry the book's declared one.
-	if not platform.comic_reader_configure(voice(), language()): return false
+	if not platform.comic_reader_configure(voice(), language()):
+		# A cloned voice deleted since it was chosen: the book's own preset reads instead.
+		if not voice() in Narration.VOICES[language()]:
+			voices.erase(language())
+			return _configure()
+		return false
 	_configured = identity
 	return true
 
@@ -133,7 +160,7 @@ func start(page: int = -1, paragraph: int = 0) -> bool:
 
 func stop(release: bool = true) -> void:
 	var was := on
-	on = false; cursor = -1; blocks = []; index = 0; _waiting = false
+	on = false; cursor = -1; blocks = []; index = 0; _waiting = false; audition = false
 	reader.show_reading(-1, [])
 	var platform: Object = reader.platform
 	if was and is_instance_valid(platform) and Methods.supports(platform, "comic_reader_stop"): platform.comic_reader_stop()
@@ -161,12 +188,29 @@ func _speak() -> void:
 	if not reader.platform.comic_reader_read(_epoch, 0, int(row.id), voice(), 1.0):
 		stop(); reader.tell("Read aloud could not start"); return
 	_waiting = true; _quiet_since = 0
+	# The words carried over from the page just read are on the next page: the leaf turns as the voice
+	# reaches them, not after the sentence has ended there.
+	var over: bool = row.get("next", false) and cursor + 1 < reader.count
+	if over and not _shown(cursor + 1): _turn_ahead()
 	# The next utterance is synthesised while this one plays.
 	if index + 1 < blocks.size(): reader.platform.book_reader_next(_epoch, 0, int(blocks[index + 1].id))
 	elif cursor + 1 < reader.count:
 		var ahead := _rows(cursor + 1)
 		if not ahead.is_empty(): reader.platform.book_reader_next(_epoch, 1, int(ahead[0].id))
-	reader.show_reading(cursor, row.get("hit_rect", []))
+	reader.show_reading(cursor + (1 if over else 0), row.get("hit_rect", []))
+
+## Whether [page] is open, or is where the leaf now in the air will open the book.
+func _shown(page: int) -> bool:
+	if page in reader.open_pages(): return true
+	if reader._turn.is_empty() or not reader._turn.get("commit", true): return false
+	var to := int(reader._turn.get("to", -1))
+	return page == to or (not reader.single and page == to - 1)
+
+## Turns the leaf for the voice; what the reader sees next is its own turn, not one by hand.
+func _turn_ahead() -> bool:
+	if not reader.turn(1): return false
+	_expect = reader.page + reader._step() if reader._turn.is_empty() else int(reader._turn.get("to", reader.page))
+	return true
 
 func _next_page() -> void:
 	var next := cursor + 1
@@ -175,9 +219,7 @@ func _next_page() -> void:
 		else: reader.tell("The end of the book")
 		stop(); return
 	# The voice has reached a page that is not open: turn the leaf, and read on as it falls.
-	if not next in reader.open_pages():
-		if not reader.turn(1): stop(); return
-		_expect = reader.page + reader._step() if reader._turn.is_empty() else int(reader._turn.get("to", reader.page))
+	if not _shown(next) and not _turn_ahead(): stop(); return
 	_load(next)
 
 func tick() -> void:
@@ -208,6 +250,7 @@ func tick() -> void:
 		stop(); reader.tell("Read aloud could not start"); return
 	if _waiting and finished > _finished:
 		_finished = finished; _waiting = false
+		if audition: stop(); reader._refresh_bar(); return
 		index += 1
 		_speak()
 		return

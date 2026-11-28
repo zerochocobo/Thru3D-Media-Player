@@ -60,6 +60,17 @@ func _run() -> void:
 		main._update_controller_feedback(.016)
 	await _shot("pointing")
 	main.rays.clear()
+	# The herbal's first page: the pot part-grown and dry, read from the seat.
+	var cottage = main.cottage
+	cottage.archive.effective_ms = 900000
+	cottage.archive.stage = 0
+	var eye := room * Vector3(0,1.15,1.82)
+	main.xr_camera.global_position = eye
+	main.xr_camera.look_at(room * Vector3(0,1.05,.9), Vector3.UP)
+	cottage.eye = main.xr_camera.global_transform
+	cottage.open_book("Herbal")
+	for i in 60: await process_frame
+	await _shot("herbal-page")
 	viewport.queue_free()
 	await process_frame
 	quit(0)

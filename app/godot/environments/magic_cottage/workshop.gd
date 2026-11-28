@@ -56,6 +56,8 @@ var pearls := Node3D.new()
 var spell_tint := Color.WHITE
 var focus_lamps := {}
 var beams := {}
+## The attic's wand, chosen in its scene settings (book_wand.gd STYLES).
+var wand_style := Wand.DEFAULT_STYLE
 var open_shelf := ""
 ## What each hand's wand is resting on; the object glows faintly and the controller ticks once.
 var hovered := {}
@@ -135,6 +137,7 @@ func _ready() -> void:
 	volume.atlas = atlas
 	for hand in ["left_hand","right_hand"]:
 		var wand := Wand.new()
+		wand.set_style(wand_style)
 		add_child(wand)
 		wands[hand] = wand
 		var dot := gem(room,.021,Color("#ffe7a1"))
@@ -166,6 +169,10 @@ func diagnose() -> void:
 
 func wall() -> int:
 	return int(Time.get_unix_time_from_system())
+
+func set_wand_style(style: String) -> void:
+	wand_style = Wand.valid_style(style)
+	for wand in wands.values(): wand.set_style(wand_style)
 
 ## A thin guide ray from the wand tip; aim() stretches it to what the wand is about to use.
 func beam() -> MeshInstance3D:

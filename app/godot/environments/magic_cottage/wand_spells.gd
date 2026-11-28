@@ -380,13 +380,55 @@ func fish(m: Mark) -> void:
 			forward = (m.frame.x*cos(a)+m.frame.y*.45*sin(a)).normalized()
 	if forward.length_squared()<.5: forward=Vector3.FORWARD
 	var up := Vector3.RIGHT if absf(forward.y)>.98 else Vector3.UP
-	var axes := Basis.looking_at(forward,up)
-	jewel(pos,Vector3(.067,.091,.20),Color("#ef984d"),axes)
-	jewel(pos+axes.y*.067,Vector3(.035,.050,.096),IVORY,axes)
-	for side in [-1.,1.]:
-		bead(pos-axes.z*.123+axes.x*.045*side+axes.y*.024,.012,Color("#392341"))
-		var tail := axes.rotated(axes.x,side*.55)
-		jewel(pos+axes.z*.213+axes.y*.045*side+axes.x*.04*sin(elapsed*10.),Vector3(.022,.044,.096),IVORY,tail)
+	koi(pos,Basis.looking_at(forward,up),m.time*1.7+float(m.hand.length()))
+
+## A koi about 34 cm long: a spine of five segments that ripples from head to tail, orange and ivory
+## patches, a dorsal fin, beating side fins, a forked veil tail, eyes, barbels and a few bubbles.
+func koi(pos: Vector3, axes: Basis, phase: float) -> void:
+	const LENGTHS := [.070,.075,.070,.060,.050]
+	const WIDTHS := [.048,.055,.050,.039,.024]
+	const BODY := [Color("#f2803a"),Color("#ef7432"),Color("#f07c36"),Color("#f38f44"),Color("#f5a352")]
+	var swim := elapsed*9.+phase
+	var spine: Array[Vector3] = [pos-axes.z*.16]
+	for k in LENGTHS.size():
+		var sway := .55*sin(swim-k*.95)*pow((k+1.)/LENGTHS.size(),1.4)
+		var heading := axes.rotated(axes.y,sway)
+		spine.append(spine[k]+heading.z*float(LENGTHS[k]))
+	for k in LENGTHS.size():
+		var a: Vector3 = spine[k]
+		var b: Vector3 = spine[k+1]
+		var along := (b-a).normalized()
+		var side := axes.y.cross(along).normalized()
+		var basis := Basis(side,axes.y,along)
+		jewel((a+b)*.5,Vector3(WIDTHS[k],WIDTHS[k]*1.22,float(LENGTHS[k])*.95),BODY[k],basis)
+		# Ivory patches lie over the back of the second and fourth segments, as on a kohaku.
+		if k in [1,3]:
+			jewel((a+b)*.5+axes.y*float(WIDTHS[k])*.38+side*.006*(k-2),Vector3(WIDTHS[k]*.86,WIDTHS[k]*.80,float(LENGTHS[k])*.70),Color("#fff3e2"),basis)
+	var head: Vector3 = spine[0]
+	var nose := head-axes.z*.035
+	jewel(head+axes.y*.012-axes.z*.008,Vector3(.040,.038,.040),Color("#d8462a"),axes)
+	for s: float in [-1.,1.]:
+		bead(head+axes.x*.038*s+axes.y*.018,.010,Color("#25182b"))
+		line(nose+axes.x*.012*s,nose+axes.x*.045*s+axes.z*.030-axes.y*.018,.0025,IVORY)
+		# Side fins open and close against the body.
+		var beat := .5+.5*sin(elapsed*6.+phase+s)
+		var root: Vector3 = spine[1]+axes.x*.045*s-axes.y*.020
+		wing(root,root+axes.z*.055,root+(axes.x*s*(.035+.035*beat)+axes.z*.030-axes.y*.030),Color(1.,.86,.70))
+	# Dorsal fin along the back from the second to the fourth segment.
+	var back := axes.y*.062
+	wing(spine[1]+back*.9,spine[3]+back*.7,spine[2]+back*1.75,Color(1.,.80,.60))
+	# The veil tail spreads into two lobes that trail the last segment's sway.
+	var tail: Vector3 = spine[spine.size()-1]
+	var trail := (tail-spine[spine.size()-2]).normalized()
+	var flare := axes.y.cross(trail).normalized()*.025*sin(swim-5.)
+	for s: float in [-1.,1.]:
+		var tip := tail+trail*.115+axes.y*.068*s+flare
+		wing(tail,tip,tail+trail*.075+axes.y*.016*s,Color(1.,.93,.82))
+		wing(tail,tip,tail+trail*.045+axes.y*.050*s,Color(1.,.70,.45))
+	halo((head+tail)*.5,.30,Color("#ffb066"))
+	for i in 4:
+		var u := fposmod(elapsed*.9+i*.25+phase,1.)
+		bead(tail+trail*(.03+.10*u)+Vector3.UP*.16*u+axes.x*.02*sin(i*2.3),.007*(1.-u)+.002,Color("#bfe9ff"))
 
 func moon(m: Mark) -> void:
 	var t := clampf(m.time/m.lifespan,0.,1.)

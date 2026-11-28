@@ -54,6 +54,15 @@ inline const char* render_failure_reason(const std::string& text) {
     return source_format_changed(text) ? "source_format_changed" : text == kSourceFrameLost ? "source_frame_lost" : "video_output_failed";
 }
 
+// The render thread stores render_error and then render_failed; the control thread publishes the
+// failure reason a little later. A status read in between must still carry the classified reason,
+// or a lost source frame reports as a plain output failure and skips the reopen.
+inline PlaybackFailure published_failure(const std::string& reason, const std::string& stage, bool render_failed,
+    const std::string& render_error) {
+    if (!reason.empty() || !render_failed) return {reason, stage, ""};
+    return {render_failure_reason(render_error), "output", ""};
+}
+
 inline PlaybackFailure playback_exception_failure(const std::string& text) {
     if (source_format_changed(text))
         return {"source_format_changed", "output", ""};

@@ -294,7 +294,8 @@ func _commit_order(result: Dictionary) -> void:
 	order_change_pending = order_change_pending or changed
 
 func _finish_view() -> void:
-	menu.refresh()
+	# Rows built in batches replace the list alone unless the page around it changed too.
+	menu.refresh_rows()
 	if order_change_pending and batch.is_empty():
 		order_change_pending = false
 		menu.directory_order_changed.emit()

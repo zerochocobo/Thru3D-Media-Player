@@ -73,6 +73,7 @@ func _run() -> void:
 	menu._go_back(); await settle()
 	menu.experience_seen_version = Menu.Experience.GUIDE_VERSION - 1
 	menu._activate(Menu.ROW_BASE)
+	menu._activate(Menu.FILTER_BASE) # The book filter followed into the folder.
 	var portrait: Dictionary = menu.rows[1]
 	menu._choose(portrait)
 	check(menu.take_experience_hint(portrait.uri) == "portrait_passthrough" and menu.take_experience_hint(portrait.uri).is_empty(), "New revision offers the chosen action once")

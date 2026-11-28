@@ -410,6 +410,8 @@ var _output_deadline_ms := 0
 var _buffering_deadline_ms := 0
 const OPEN_TIMEOUT_MS := 60000
 const OUTPUT_TIMEOUT_MS := 30000
+## Longest cold Alpha compile seen in reports is about 5 minutes (iQIYI A091).
+const ALPHA_MODEL_WAIT_MS := 360000
 var _thumbnail_busy := false
 var _cover_request := 0
 var _cover_checked := false
@@ -2898,7 +2900,10 @@ func set_immersive_adjustment(key: String, value: float) -> bool:
 	return true
 
 func zoom_view(amount: float) -> void:
-	set_immersive_adjustment("view_zoom", view_zoom + amount)
+	set_immersive_adjustment("view_zoom", view_zoom + amount * ImmersiveAdjustments.zoom_rate(view_zoom))
+
+func _seat_materials() -> Array:
+	return [material, portrait.material, portrait.core, _hole_material, _alignment_border]
 
 func _reset_projection_view() -> void:
 	reset_view(false)
@@ -3385,6 +3390,7 @@ func _check_playback_timeout(now_ms: int) -> void:
 	# Exported diagnostics: what the picture was still waiting for when the wait ran out.
 	DiagnosticLog.record("mpv_wait_timeout", {"code": code, "session_id": id, "state": media.state, "frames": media.frame_counter,
 		"waiting_first": _waiting_first, "requested_play": requested_play, "alpha": alpha_requested, "depth": depth_requested,
+		"alpha_model_preparing": bool(_loading_status.get("alpha_model_preparing", false)),
 		"pending_revision": not _pending_revision.is_empty(), "bound": not _binding.ticket.is_empty(), "layer": _binding.layer,
 		"transition": mode_transition.stage, "seek_in_flight": control.in_flight > 0,
 		"bound_session": int(_binding.ticket.get("session_id", 0)), "bound_frozen": _is_frozen(),
@@ -3463,6 +3469,7 @@ func loading_caption() -> String:
 	if buffering and not _waiting_first: status.phase = "buffering"
 	elif _waiting_first and status.get("phase", "") == "reading" and not buffering and not str(media.playback.get("details", {}).get("codec", "")).is_empty():
 		status.phase = "preparing"
+	if _waiting_first and bool(status.get("alpha_model_preparing", false)): return I18n.t("Preparing the model")
 	if not status.has("bytes_per_second"):
 		var speed := str(media.playback.get("details", {}).get("cache_speed", ""))
 		if speed.is_valid_float(): status.bytes_per_second = float(speed)
@@ -3474,9 +3481,18 @@ func _poll_loading(now_ms: int) -> void:
 	elif _buffering_started_ms == 0: _buffering_started_ms = now_ms
 	if not media.accepts(media.session_id) or (not _waiting_first and not buffering) or now_ms < _loading_poll_ms: return
 	_loading_poll_ms = now_ms + 500
+	var model_preparing := false
 	if PlatformMethods.supports(platform, "get_mpv_loading_status"):
 		var report: Variant = JSON.parse_string(platform.get_mpv_loading_status(media.session_id))
-		if report is Dictionary: _loading_status = report
+		if report is Dictionary:
+			_loading_status = report
+			model_preparing = bool(report.get("alpha_model_preparing", false))
+	if model_preparing and _waiting_first:
+		# A cold Alpha model compiles before the first frame: 40 s on Quest 3S, minutes on PICO Neo3.
+		# The wait is not a stalled output; only a compile still running after the limit fails.
+		var limit := _loading_started_ms + ALPHA_MODEL_WAIT_MS
+		if _opening_deadline_ms > 0: _opening_deadline_ms = maxi(_opening_deadline_ms, mini(now_ms + OPEN_TIMEOUT_MS, limit))
+		if _output_deadline_ms > 0: _output_deadline_ms = maxi(_output_deadline_ms, mini(now_ms + OUTPUT_TIMEOUT_MS, limit))
 	var bytes := int(_loading_status.get("bytes", -1))
 	var progressing := bytes > 0 and bytes > _loading_bytes
 	if not _loading_status.has("bytes"):
@@ -4161,6 +4177,9 @@ func playback_end_ready() -> bool:
 func _process(_delta: float) -> void:
 	if video_layer: video_layer.sync_qiyu_passthrough()
 	_send_color_levels()
+	# Monochrome film's grain where the eye buffers grade: a new pattern each frame.
+	if color_grade.mono.size() > 10 and color_grade.mono[9] > 0.0:
+		material.set_shader_parameter("grade_mono_grain", Vector3(color_grade.mono[9], color_grade.mono[10], float(Engine.get_process_frames() % 997)))
 	_binding.refresh_plain()
 	server_playback.poll(self)
 	if vr_passthrough.active():
@@ -4289,7 +4308,7 @@ func _stereo_focus_scale() -> float:
 
 ## Zoom and position put the viewer off the sphere's centre by a fraction of its radius. A focused
 ## sphere is smaller, so its centre moves towards the viewer to keep that fraction: the picture then
-## looks the same size at every focus distance, and the viewer never ends up outside it.
+## looks the same size at every focus distance. Zoomed out past 1, the viewer is outside both.
 ## The movement in the sphere's own axes and units.
 func _stereo_focus_centre() -> Vector3:
 	return Vector3(view_horizontal, view_vertical, -view_zoom) * SPHERE_RADIUS * (_stereo_focus_scale() - 1.0)
@@ -4445,7 +4464,7 @@ func _show_fisheye_picture(origin: XROrigin3D, extras: Array) -> bool:
 		var source := RenderingServer.texture_get_native_handle(_binding.color_texture())
 		var drawn: bool = platform.enhance_layer_fisheye(VideoLayer.PICTURE_SLOT, source, external, params,
 			PackedFloat32Array([1.0 if staged else 0.0, remapped.x, remapped.y, values[0], window[0], window[1], window[2], window[3], values[1]])
-				+ values.slice(2, 13) + PackedFloat32Array([values[17], values[18]])) if quality \
+				+ values.slice(2, 13) + PackedFloat32Array([values[17], values[18]]) + values.slice(MONO_AT, MONO_AT + MONO_FLOATS)) if quality \
 			else platform.remap_layer_fisheye(VideoLayer.PICTURE_SLOT, source, external, params)
 		if not platform.release_layer_image(VideoLayer.PICTURE_SLOT, false) or not drawn: return _fisheye_fail("remap", picture)
 		_picture_token = token
@@ -4667,6 +4686,37 @@ const ANIME4K_TIER_DEFAULT := PictureMemory.ANIME4K_TIER_DEFAULT
 var picture_anime4k_tier := ANIME4K_TIER_DEFAULT:
 	set(value):
 		picture_anime4k_tier = clampi(int(value), 0, ANIME4K_RESTORE_MS.size() - 1)
+## Monochrome film (the plugins tab): the grade's last step turns the picture black and white with a
+## film's look (native/xr-layer/picture_glsl.h). It runs wherever the mode grades, 2D->3D's pairs included,
+## and costs a few arithmetic steps a pixel: nothing gates it but the mode itself.
+var picture_mono := false
+var picture_mono_style := 0:
+	set(value):
+		picture_mono_style = clampi(int(value), 0, MONO_STYLES.size() - 1)
+var picture_mono_grain := PictureMemory.MONO_GRAIN_DEFAULT:
+	set(value):
+		picture_mono_grain = clampi(int(value), 0, MONO_GRAIN.size() - 1)
+## Per style: the film's weights of red, green and blue, the chroma lift, the S curve's power and its
+## pivot, the black point and paper white. Standard: Kodak Tri-X's weights (SweetFX Monochrome.fx,
+## CeeJay.dk, MIT), a moderate S. Noir: an orange filter's weights (darker blue skies, lighter skin), a
+## strong S around mid grey, deeper blacks. Soft: Ilford Pan F's weights, a flatter curve, dimmer highlights. The pivot
+## sits a little below mid grey: lower buried the shadows of dark scenes, higher washed out bright ones.
+const MONO_STYLES := [[0.25, 0.35, 0.40, 0.12, 1.2, 0.45, 0.0, 1.0], [0.42, 0.44, 0.14, 0.08, 1.45, 0.5, 0.03, 0.98],
+	[0.33, 0.36, 0.31, 0.15, 0.9, 0.45, 0.0, 0.94]]
+## Per grain level (off, low, medium, high): its amount and its cell in output pixels.
+const MONO_GRAIN := [Vector2(0.0, 1.0), Vector2(0.045, 1.0), Vector2(0.075, 1.5), Vector2(0.11, 2.2)]
+
+func _mono_running() -> bool:
+	return picture_quality and picture_mono and picture_quality_available()
+
+## Monochrome film as the grade carries it after its 11 values (picture_glsl.h), or empty.
+func _mono_values() -> PackedFloat32Array:
+	if not _mono_running(): return PackedFloat32Array()
+	var style: Array = MONO_STYLES[picture_mono_style]
+	var grain: Vector2 = MONO_GRAIN[picture_mono_grain]
+	# The pivot travels as the exponent that takes it to 0.5.
+	return PackedFloat32Array([1.0] + style.slice(0, 5) + [log(0.5) / log(style[5])] + style.slice(6) + [grain.x, grain.y])
+
 ## Quest 3's GPU milliseconds per source megapixel of each network, by tier S, M, L, VL: restoring, and
 ## enlarging (its doubled output included). docs/ANIME4K_PLUGIN_BENCH_20261125_CN.md; VL from the DVD's.
 const ANIME4K_RESTORE_MS := [1.23, 3.56, 5.6, 12.0]
@@ -4848,6 +4898,7 @@ func picture_snapshot() -> Dictionary:
 	return {"picture_quality": picture_quality, "picture_sharpness": picture_sharpness,
 		"picture_upscale": picture_upscale, "picture_denoise": picture_denoise, "picture_interpolation": picture_interpolation,
 		"picture_anime4k": picture_anime4k, "picture_anime4k_mode": picture_anime4k_mode, "picture_anime4k_tier": picture_anime4k_tier,
+		"picture_mono": picture_mono, "picture_mono_style": picture_mono_style, "picture_mono_grain": picture_mono_grain,
 		"color_grade": color_grade.snapshot()}
 
 func _apply_picture(picture: Dictionary) -> void:
@@ -4859,8 +4910,12 @@ func _apply_picture(picture: Dictionary) -> void:
 	picture_anime4k = picture.get("picture_anime4k", false)
 	picture_anime4k_mode = picture.get("picture_anime4k_mode", Anime4k.A)
 	picture_anime4k_tier = picture.get("picture_anime4k_tier", ANIME4K_TIER_DEFAULT)
+	picture_mono = picture.get("picture_mono", false)
+	picture_mono_style = picture.get("picture_mono_style", 0)
+	picture_mono_grain = picture.get("picture_mono_grain", PictureMemory.MONO_GRAIN_DEFAULT)
 	color_grade.restore(picture.color_grade)
 	_sync_picture_lock()
+	color_grade.mono = _mono_values()
 	color_grade.apply(material)
 
 func _open_picture(uri: String, eligible: bool, diagnostic: bool = false) -> void:
@@ -4935,7 +4990,8 @@ func picture_diagnostic() -> String:
 	var interpolation := "" if not picture_interpolation else " fi" if picture_interpolation_blocker().is_empty() else " fi:" + picture_interpolation_blocker()
 	var anime4k := "" if not picture_anime4k else " a4k%s%s%s" % ["ABC"[picture_anime4k_mode - 1], ["S", "M", "L", "VL"][picture_anime4k_tier],
 		"" if picture_anime4k_blocker().is_empty() else ":" + picture_anime4k_blocker()]
-	return "on up%d%s dn%d sh%.2f%s%s%s" % [picture_upscale, ":load" if upscale_overloaded else "", picture_denoise, picture_sharpness, interpolation, anime4k, "" if blocker.is_empty() else " blocked:" + blocker]
+	var mono := "" if not picture_mono else " bw%d g%d" % [picture_mono_style, picture_mono_grain]
+	return "on up%d%s dn%d sh%.2f%s%s%s%s" % [picture_upscale, ":load" if upscale_overloaded else "", picture_denoise, picture_sharpness, interpolation, anime4k, mono, "" if blocker.is_empty() else " blocked:" + blocker]
 
 func clear_current_picture() -> void:
 	if picture_source != "file" or not _picture_can_remember(): return
@@ -5140,26 +5196,38 @@ var _picture_upscaled := false # super resolution enlarged that picture
 var _frame_picture_look := []
 
 ## Gamma and saturation wait for the mode wherever it could run; elsewhere the shader applies them as before.
+## Monochrome film follows the mode on and off.
 func _sync_picture_lock() -> void:
 	var locked := picture_quality_available() and not picture_quality
-	if locked == color_grade.curves_locked: return
+	var mono := _mono_values()
+	if locked == color_grade.curves_locked and mono == color_grade.mono: return
 	color_grade.curves_locked = locked
+	color_grade.mono = mono
 	color_grade.apply(material)
 
 ## The mode's settings as the plugin takes them: sharpening, 1 when graded, the grade's gain, gamma and
 ## offset per channel, contrast and saturation; then super resolution: its level, the kind and the eyes;
 ## then the denoising's step and tolerance; then 1 for frame interpolation; then Anime4K's mode (0 where it
-## does not run), tier and this headset's budget in milliseconds.
+## does not run), tier and this headset's budget in milliseconds; then monochrome film's 11 from MONO_AT
+## (1 when on, picture_glsl.h), which grade the picture even with the Original preset.
 func _picture_values() -> PackedFloat32Array:
 	var p := color_grade.values()
 	var gain := color_grade.gain()
-	return PackedFloat32Array([sharpen_strength(picture_sharpness), 0.0 if color_grade.preset == "Original" else 1.0, gain.x, gain.y, gain.z,
+	var mono := _mono_values()
+	if mono.is_empty(): mono.resize(MONO_FLOATS)
+	return PackedFloat32Array([sharpen_strength(picture_sharpness), 0.0 if color_grade.preset == "Original" and mono[0] < 0.5 else 1.0, gain.x, gain.y, gain.z,
 		p.red_gamma * p.gamma, p.green_gamma * p.gamma, p.blue_gamma * p.gamma,
 		p.red_offset, p.green_offset, p.blue_offset, p.contrast, p.saturation,
 		float(picture_upscale) if _layout_pending == null and not upscale_overloaded else 0.0, _upscale_kind(), 2.0 if stereo_sbs and not top_bottom else 1.0,
 		2.0 if stereo_sbs and top_bottom else 1.0, DENOISE[picture_denoise].x, DENOISE[picture_denoise].y,
 		1.0 if picture_interpolation and picture_interpolation_blocker().is_empty() else 0.0,
-		float(picture_anime4k_mode) if _anime4k_running() else 0.0, float(picture_anime4k_tier), anime4k_budget_ms()])
+		float(picture_anime4k_mode) if _anime4k_running() else 0.0, float(picture_anime4k_tier), anime4k_budget_ms()]) + mono
+
+const MONO_AT := 23
+const MONO_FLOATS := 11
+## The grade a draw takes from _picture_values' [look]: its 11 values and monochrome film's 11, or none.
+static func _look_grade(look: PackedFloat32Array) -> PackedFloat32Array:
+	return look.slice(2, 13) + look.slice(MONO_AT, MONO_AT + MONO_FLOATS) if look[1] > 0.5 else PackedFloat32Array()
 
 ## Sharpening and grade for the layer copy, sent when they change; it draws its frame again with them.
 func _sync_copy_picture() -> void:
@@ -5644,7 +5712,7 @@ func _show_depth_picture(origin: XROrigin3D, extras: Array = []) -> bool:
 		if size == Vector2i.ZERO or platform.acquire_layer_image(VideoLayer.PICTURE_SLOT) <= 0:
 			return false
 		var copied: bool = platform.enhance_layer_texture(VideoLayer.PICTURE_SLOT, warp, source.x, source.y, 2, 1,
-			look[0], look.slice(2, 13) if look[1] > 0.5 else PackedFloat32Array(), look[17], look[18]) if quality \
+			look[0], _look_grade(look), look[17], look[18]) if quality \
 			else platform.copy_layer_texture(VideoLayer.PICTURE_SLOT, warp)
 		if not platform.release_layer_image(VideoLayer.PICTURE_SLOT, false) or not copied:
 			if quality:
@@ -5701,7 +5769,7 @@ func _interpolate_pair(ticket: Dictionary, source: Vector2i, size: Vector2i, loo
 		_stop_pair_interpolation() # the kept pairs are of the other kind: from this pair on
 	_pair_direct = direct
 	_pair_frame = Engine.get_process_frames()
-	var grade := look.slice(2, 13) if look[1] > 0.5 else PackedFloat32Array()
+	var grade := _look_grade(look)
 	var token := int(ticket.get("slot_token", 0))
 	if token != _pair_token:
 		_pair_token = token
@@ -5896,10 +5964,10 @@ func _show_frame_picture(origin: XROrigin3D, extras: Array) -> bool:
 		if not networks.is_empty():
 			# The networks' result is kept by the frame's token: a slider moved on a paused frame does not run them again.
 			copied = platform.enhance_layer_texture_plugin(VideoLayer.PICTURE_SLOT, int(ticket.color_texture_id), source.x, source.y, 1, 1,
-				look[0], look.slice(2, 13) if look[1] > 0.5 else PackedFloat32Array(), look[17], look[18], networks, token)
+				look[0], _look_grade(look), look[17], look[18], networks, token)
 		elif quality:
 			copied = platform.enhance_layer_texture(VideoLayer.PICTURE_SLOT, int(ticket.color_texture_id), source.x, source.y,
-				2 if stereo_sbs and not top_bottom else 1, 2 if stereo_sbs and top_bottom else 1, look[0], look.slice(2, 13) if look[1] > 0.5 else PackedFloat32Array(), look[17], look[18])
+				2 if stereo_sbs and not top_bottom else 1, 2 if stereo_sbs and top_bottom else 1, look[0], _look_grade(look), look[17], look[18])
 		else:
 			copied = platform.copy_layer_texture(VideoLayer.PICTURE_SLOT, int(ticket.color_texture_id))
 		if not platform.release_layer_image(VideoLayer.PICTURE_SLOT, false) or not copied:

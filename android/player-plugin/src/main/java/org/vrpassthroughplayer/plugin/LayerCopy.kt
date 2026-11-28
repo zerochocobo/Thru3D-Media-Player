@@ -60,7 +60,7 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
     @Volatile private var halfDegrees = if (windowDegrees > 0f) windowDegrees else START_DEGREES
     private var sinceResize = 0 // copy thread: draws since the window last changed size
     private val area = FloatArray(8) // copy thread
-    private val grade = FloatArray(11) // copy thread
+    private val grade = FloatArray(GRADE_FLOATS + MONO_FLOATS) // copy thread: the grade, then monochrome film
     @Volatile private var deep = deep || quality // false again where the display offers no 10-bit surface
     @Volatile private var strength = 0f // the sharpening drawn last
     private var working = false // copy thread: the last draw denoised, enlarged or sharpened inside the window
@@ -441,7 +441,7 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
             val denoising = quality && look != null && look.size >= 19 && look[18] > 0f
             strength = maxOf(amount, 0f)
             working = amount >= 0f && (amount > 0f || denoising || outW > w)
-            val graded = if (quality && look != null && look.size >= 13 && look[1] > 0.5f) grade.also { look.copyInto(it, 0, 2, 13) } else null
+            val graded = if (quality && look != null && look.size >= 13 && look[1] > 0.5f) grade.also { gradeOf(look, it) } else null
             val area = if (working) window() else null
             val step = if (denoising) look!![17] else 0f
             val tolerance = if (denoising) look!![18] else 0f
@@ -697,8 +697,20 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
          * its level (0 off, 1 moderate, 2 maximum), the picture's kind (0 flat, 1 VR180, 2 VR360) and its
          * eyes across and down; then the denoising's step in source pixels and its tolerance (0: off); then
          * 1 for frame interpolation; then Anime4K's mode (0 off, 1 A, 2 B, 3 C), tier (0 S .. 3 VL) and this
-         * headset's budget for it in milliseconds. */
+         * headset's budget for it in milliseconds; then monochrome film's 11 values ([MONO_AT]). */
         @Volatile var picture: FloatArray? = null
+        private const val GRADE_FLOATS = 11
+        /** Monochrome film after the rest of [picture], at [MONO_AT] (native/xr-layer/picture_glsl.h). */
+        private const val MONO_AT = 23
+        private const val MONO_FLOATS = 11
+
+        /** The grade a draw takes from the settings [look] into [into]: its 11 values, then monochrome
+         * film's 11 (off when the settings have none). */
+        internal fun gradeOf(look: FloatArray, into: FloatArray) {
+            look.copyInto(into, 0, 2, 2 + GRADE_FLOATS)
+            into.fill(0f, GRADE_FLOATS, into.size)
+            if (look.size >= MONO_AT + MONO_FLOATS) look.copyInto(into, GRADE_FLOATS, MONO_AT, MONO_AT + MONO_FLOATS)
+        }
         /** The user turned frame interpolation on again after it stopped for a file: try it again. */
         val retries = AtomicLong()
         private const val FLAT_LONG = 3840.0

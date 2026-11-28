@@ -10,6 +10,7 @@ void vertex() {
 }
 
 void fragment() {
+	if (near_side(media_direction)) { discard; }
 	vec2 source_uv = color_uv(eye_uv(UV, media_direction));
 	vec3 rgb = texture(video_texture, oes_uv(source_uv)).rgb;
 	if (packed_color && reserved_color(source_uv)) { rgb = vec3(0.0); }

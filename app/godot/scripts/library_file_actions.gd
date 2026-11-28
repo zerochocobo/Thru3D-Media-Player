@@ -117,6 +117,17 @@ func entry_state() -> String:
 		var volume: Dictionary = menu._local_volume()
 		if menu._local_path().begins_with("usb://") or menu._local_path().begins_with("content://") or volume.get("removable", false) or volume.get("read_only", false): return "read_only"
 	var entries: Array = {menu.Section.LOCAL: menu._local_entries, menu.Section.SMB: menu._smb_entries, menu.Section.CLOUD: menu._cloud_entries}.get(menu.section, [])
+	# A cloud page reloading has no entries yet; its folder keeps the state it had, so the edit
+	# button stays where it is (disabled while loading) instead of leaving and coming back.
+	if menu.section == menu.Section.CLOUD:
+		if menu._cloud_busy and entries.is_empty() and _cloud_state.get("path") == menu._cloud_path(): return str(_cloud_state.state)
+		var state := _entry_state(entries)
+		if not menu._cloud_busy: _cloud_state = {"path": menu._cloud_path(), "state": state}
+		return state
+	return _entry_state(entries)
+
+var _cloud_state := {}
+func _entry_state(entries: Array) -> String:
 	var supported: bool = menu.PlatformMethods.supports(menu.platform, "media_file_delete") or \
 		(menu.PlatformMethods.supports(menu.platform, "media_file_rename_prepare") and menu.PlatformMethods.supports(menu.platform, "media_file_rename"))
 	if not supported: return ""
@@ -435,9 +446,15 @@ func receive(id: int, payload: String) -> bool:
 
 func draw_header() -> void:
 	if not sortable(): return
-	menu._button(SORT, "", menu._action_position(0.25), Vector2(0.09, 0.065), not editing and pending == 0 and not menu._cloud_busy, "sort")
+	menu._button(SORT, "", menu._action_position(0.25), Vector2(0.09, 0.065), sort_enabled(), "sort")
 	menu._tips[SORT] = menu.I18n.t("Sort")
 	draw_entry(menu._action_position(0.36))
+
+func sort_enabled() -> bool:
+	return not editing and pending == 0 and not menu._cloud_busy
+
+func edit_enabled(available: bool) -> bool:
+	return available and pending == 0 and not uncertain and not (menu.section == menu.Section.CLOUD and menu._cloud_busy)
 
 func draw_entry(position: Vector2) -> void:
 	if menu.directory_music.selecting: return
@@ -445,10 +462,11 @@ func draw_entry(position: Vector2) -> void:
 	if enabled and editing and folder(): state = "available"
 	if state.is_empty() or list_management(): return
 	var available := state == "available"
-	menu._button(EDIT_MODE, "", position, Vector2(0.09, 0.065), available and pending == 0 and not uncertain and not (menu.section == menu.Section.CLOUD and menu._cloud_busy), "check" if editing else "select", editing)
+	menu._button(EDIT_MODE, "", position, Vector2(0.09, 0.065), edit_enabled(available), "check" if editing else "select", editing)
 	var button: Dictionary = menu._buttons.back()
 	button.hover_disabled = true
 	if not enabled or not available:
+		button.fixed_ink = true
 		# This button opens Settings; the badge describes locked editing, not a dead hit target.
 		for child in button.node.get_children():
 			if child is MeshInstance3D and child.material_override is BaseMaterial3D: child.material_override.albedo_color = menu.MUTED

@@ -63,6 +63,9 @@ internal object CloudDiagnostics {
         val detail = result.optString("error_detail").ifBlank { message }
         if (result.optString("error_reason") in setOf("cloud_page_expired", "cloud_location_expired", "cloud_metadata_limit"))
             throw CloudFailure(result.getString("error_reason"), detail, apiCode = code.takeIf { it != 0 })
+        // Moved or deleted since it was listed or played: not a connection failure.
+        if (result.optString("error_reason") == "cloud_file_missing")
+            throw CloudFailure("cloud_file_missing", "OpenList $route · code $code\n$detail", apiCode = code.takeIf { it != 0 })
         // Drivers report these provider rejections as text; the screens need them as reasons.
         val reason = detail.lowercase().let {
             when {

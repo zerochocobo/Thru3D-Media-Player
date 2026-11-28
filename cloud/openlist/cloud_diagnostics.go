@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/OpenListTeam/OpenList/v4/internal/errs"
 	sdk "github.com/OpenListTeam/115-sdk-go"
 	"github.com/gin-gonic/gin"
 )
@@ -63,5 +64,10 @@ func cloudListError(c *gin.Context, stage string, err error) {
 		// keeps the actual provider response without that private wrapper.
 		detail = fmt.Sprintf("115 code: %d, message: %s", provider.Code, provider.Message)
 	}
-	c.JSON(200, gin.H{"code": 500, "message": "Cloud request failed", "error_detail": stage + "\n" + cloudDiagnosticText(detail)})
+	result := gin.H{"code": 500, "message": "Cloud request failed", "error_detail": stage + "\n" + cloudDiagnosticText(detail)}
+	// A moved or deleted file is not a connection failure: let the player say so.
+	if errors.Is(err, sdk.ErrObjectNotFound) || errors.Is(err, errs.ObjectNotFound) {
+		result["error_reason"] = "cloud_file_missing"
+	}
+	c.JSON(200, result)
 }

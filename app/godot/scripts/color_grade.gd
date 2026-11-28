@@ -19,6 +19,10 @@ const CURVES := ["gamma", "saturation", "red_gamma", "green_gamma", "blue_gamma"
 var preset := "Original"
 var custom: Dictionary = DEFAULTS.duplicate()
 var curves_locked := false
+## Monochrome film from the plugins tab, in place of the saturation (picture_glsl.h's order: 1, the weights
+## of red, green and blue, the chroma lift, the S curve's power and the exponent taking its pivot to 0.5,
+## the black point, paper white, the grain's amount and cell). Empty: none. Not part of the saved grade.
+var mono := PackedFloat32Array()
 
 static func limits(key: String) -> Vector3:
 	match key:
@@ -120,8 +124,9 @@ func gain() -> Vector3:
 
 ## The grade as one per-channel scale and bias, which the compositor applies to a whole layer
 ## (XR_KHR_composition_layer_color_scale_bias): (rgb * gain - 0.5) * contrast + 0.5 + offset.
-## Empty when gamma or saturation make it non-linear.
+## Empty when gamma, saturation or monochrome film make it non-linear.
 func linear_terms() -> Dictionary:
+	if not mono.is_empty(): return {}
 	if preset == "Original": return {"scale": Vector3.ONE, "bias": Vector3.ZERO}
 	var p := values()
 	if not is_equal_approx(p.saturation, 1.0) or not (Vector3(p.red_gamma, p.green_gamma, p.blue_gamma) * p.gamma).is_equal_approx(Vector3.ONE):
@@ -157,7 +162,12 @@ static func _to_encoded(value: float) -> float:
 func apply(material: ShaderMaterial) -> void:
 	if not material: return
 	var p := values()
-	material.set_shader_parameter("grade_enabled", preset != "Original")
+	material.set_shader_parameter("grade_enabled", preset != "Original" or not mono.is_empty())
+	material.set_shader_parameter("grade_mono", not mono.is_empty())
+	if not mono.is_empty():
+		material.set_shader_parameter("grade_mono_weights", Vector4(mono[1], mono[2], mono[3], mono[4]))
+		material.set_shader_parameter("grade_mono_tone", Vector4(mono[5], mono[6], mono[7], mono[8]))
+		material.set_shader_parameter("grade_mono_grain", Vector3(mono[9], mono[10], 0.0))
 	material.set_shader_parameter("display_decode", QiyuController.runtime and QiyuController.page_decode)
 	material.set_shader_parameter("display_gamma", QiyuController.DISPLAY_GAMMA)
 	material.set_shader_parameter("display_dither", QiyuController.runtime and QiyuController.page_decode and QiyuController.linear_eye_buffer)

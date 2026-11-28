@@ -151,6 +151,9 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
                             "delete_file" -> client.deleteFile(req)
                             "browse" -> client.browse(req)
                             "folder_artwork" -> client.folderArtwork(req.getString("scene_id"))
+                            "preview_backdrops" -> JSONObject().put("images",
+                                (client as? EmbyClient ?: throw MediaServerFailure("Server query unsupported"))
+                                    .previewBackdrops(req.getString("scene_id")))
                             "candidates" -> client.candidates(req)
                             "detail" -> JSONObject().put("detail", client.detail(req.getString("scene_id")))
                             "cover", "cover_animation" -> cover(app, account, client, http, req, posterGeneration)

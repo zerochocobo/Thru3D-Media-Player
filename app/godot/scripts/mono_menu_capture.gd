@@ -7,6 +7,7 @@ const Composition := preload("res://scripts/menu_composition.gd")
 const Ui := preload("res://scripts/ray_menu.gd")
 const SHADER := preload("res://shaders/menu_zero_parallax.gdshader")
 const RAY_SHADER := preload("res://shaders/menu_zero_parallax_ray.gdshader")
+const DOT_SHADER := preload("res://shaders/menu_zero_parallax_dot.gdshader")
 const COPY_SHADER := preload("res://shaders/menu_mono_equirect.gdshader")
 const HOLE_SHADER := preload("res://shaders/menu_zero_parallax_hole.gdshader")
 const BIT := 1 << Composition.GROUP_BIT
@@ -256,6 +257,18 @@ func _mask(node: Node, nodes: Array[VisualInstance3D], plane: Node3D = null) -> 
 			# Keep one material so restoring cannot discard those fresh endpoints.
 			saved["ray_shader"] = node.material_override.shader
 			node.material_override.shader = RAY_SHADER
+		elif node.has_meta("menu_pointer") and node is MeshInstance3D and node.material_override is BaseMaterial3D:
+			# The reticle also stays in the eye buffer. Inside the capture it only moved when the
+			# picture was redrawn (head motion or the 250 ms check), trailing the beam's end.
+			var original: BaseMaterial3D = node.material_override
+			var material: ShaderMaterial = node.get_meta("mono_dot_material") if node.has_meta("mono_dot_material") else null
+			if material == null:
+				material = ShaderMaterial.new(); material.shader = DOT_SHADER
+				node.set_meta("mono_dot_material", material)
+			material.set_shader_parameter("dot_color", original.albedo_color)
+			material.render_priority = original.render_priority
+			saved["dot_material"] = original
+			node.material_override = material
 		else:
 			# The normal per-plane compositor is orthographic: tiny ink/plate Z offsets
 			# only set draw order. A perspective mono capture magnifies those offsets
@@ -289,6 +302,7 @@ func _restore() -> void:
 		if not is_instance_valid(saved.node): continue
 		saved.node.layers = saved.layers
 		if saved.has("ray_shader"): saved.node.material_override.shader = saved.ray_shader
+		if saved.has("dot_material"): saved.node.material_override = saved.dot_material
 	originals.clear()
 
 func stop() -> void:

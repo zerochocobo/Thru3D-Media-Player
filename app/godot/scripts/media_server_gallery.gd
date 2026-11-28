@@ -248,7 +248,7 @@ func _picture(node: Dictionary, center: Vector2, area: Vector2, parent: Node3D =
 		var material = menu._material(Color.WHITE, 12); material.albedo_texture = texture
 		picture.material_override = material; browser._fit_picture(picture, texture, area)
 		if parent: style_hover_picture(picture, node)
-		elif browser.view == "picture": browser.artwork.autoplay = browser.artwork.binding(node, picture, texture)
+		elif browser.view == "picture": browser.artwork.autoplay = browser.artwork.binding(node, picture, texture, false)
 		else: bind_poster(node, picture, texture)
 	else:
 		menu._icon("image", Vector3(center.x, center.y, 0.008), minf(area.x, area.y) * 0.4, menu.MUTED, parent if parent else menu)

@@ -304,6 +304,15 @@ const PICTURE_ANIME4K_BLOCKERS := {
 const PICTURE_ANIME4K_TOO_HEAVY := "Too heavy for this video's resolution."
 const PICTURE_ANIME4K_C_SIZE := "Mode C enlarges, and this video is already large."
 const PICTURE_ANIME4K_REPLACES := "Anime4K is on: it enlarges and cleans the picture itself."
+## The plugins tab: monochrome film, its styles and grain.
+const PICTURE_MONO_HINT := "Monochrome film: shows the video in black and white with the tones and grain of film. Colors of the same brightness stay apart."
+const PICTURE_MONO_STYLES := ["Standard", "Noir", "Soft"]
+const PICTURE_MONO_STYLE_HINTS := ["Standard: the tones of a classic black-and-white film, with moderate contrast.",
+	"Noir: as through an orange filter: darker skies and reds, strong contrast, deep blacks.",
+	"Soft: low contrast and gentle highlights."]
+const PICTURE_MONO_GRAINS := ["Off", "Low", "Medium", "High"]
+const PICTURE_MONO_GRAIN_HINT := "Film grain, new in every frame."
+const PICTURE_MONO_REPLACES := "Monochrome film is on: the picture is black and white."
 const PICTURE_UPSCALE_FULL := {false: "This video is already %d×%d: flat video is enlarged up to 4K, so there is nothing to enlarge.", true: "This video is already %d×%d: VR video is enlarged up to 6K, so there is nothing to enlarge."}
 ## The three Alpha sliders fold under one header, as in the library's video settings; closed each time.
 var _alpha_expanded := false
@@ -1001,13 +1010,15 @@ func _picture_key() -> Array:
 		_state.get("picture_upscale_available"), _state.get("picture_denoise"), _state.get("picture_upscale"), _state.get("picture_upscale_blocker"),
 		_state.get("picture_interpolation"), _state.get("picture_interpolation_blocker"),
 		_state.get("picture_anime4k"), _state.get("picture_anime4k_mode"), _state.get("picture_anime4k_tier"), _state.get("picture_anime4k_blocker"), _state.get("picture_anime4k_tiers"),
+		_state.get("picture_mono"), _state.get("picture_mono_style"), _state.get("picture_mono_grain"),
 		_state.get("picture_source"), _state.get("picture_clear_available"), _state.get("reuse_last_picture"), _state.get("picture_inherit_available")]
 
 func _open_picture_controls() -> void:
 	picture_controls_open_id = int(_state.get("picture_open_id", 0))
 	_adjustment = "picture"
-	# Anime4K on: the panel opens on the plugins tab, where its settings are.
-	_picture_tab = (2 if _state.get("picture_anime4k", false) else 0) if _state.get("picture_quality_supported", false) else 1
+	# A plugin on: the panel opens on the plugins tab, where its settings are.
+	var plugged: bool = _state.get("picture_anime4k", false) or _state.get("picture_mono", false)
+	_picture_tab = (2 if plugged else 0) if _state.get("picture_quality_supported", false) else 1
 	_picture_advanced = false
 	_grade_page = 0
 	_capture_open = false
@@ -1019,8 +1030,8 @@ func _draw_picture_panel() -> void:
 	var in_color := _picture_tab == 1 or not has_mode
 	var in_plugins := _picture_tab == 2 and has_mode
 	var keys: Array = Grade.PAGES[_grade_page] if _picture_advanced else ["exposure", "contrast", "saturation"]
-	# The plugins tab: Anime4K's switch, and its mode and level beneath it while it is on.
-	var plugin_rows := 3 if _state.get("picture_anime4k", false) else 1
+	# The plugins tab: each plugin's switch, and its two rows beneath it while it is on.
+	var plugin_rows := (3 if _state.get("picture_anime4k", false) else 1) + (3 if _state.get("picture_mono", false) else 1)
 	var height := (0.41 + 0.064 * keys.size()) if in_color and _picture_advanced \
 		else (0.55 if in_color else 0.243 + 0.064 * plugin_rows if in_plugins else 0.499)
 	if not in_color and not in_plugins and _show_interpolation_caption(): height += 0.042
@@ -1084,6 +1095,7 @@ func _draw_picture_color(x: float, y: float, keys: Array) -> void:
 		var row_y := y - 0.061 - index * 0.064
 		_adjustment_row(450 + index, key, "Brightness" if key == "exposure" and not _picture_advanced else Grade.NAMES[key], Grade.limits(key), row_y)
 		if _grade_locked(key): _lock_row(450 + index, row_y)
+		elif key == "saturation" and _mono_on(): _lock_row(450 + index, row_y, PICTURE_MONO_REPLACES)
 	var last := y - 0.053 - keys.size() * 0.064
 	_button(PICTURE_ADVANCED, I18n.t("Advanced color" if not _picture_advanced else "Back"), Vector2(x - 0.215, last), Vector2(0.25, 0.05))
 	set_label_size(_buttons.back().node.get_child(0), TEXT_AUX)
@@ -2752,9 +2764,37 @@ func _interpolation_caption() -> String:
 func _anime4k_on() -> bool:
 	return _state.get("picture_anime4k", false) and str(_state.get("picture_anime4k_blocker", "")).is_empty()
 
-## The plugins tab: Anime4K's switch; while it is on, its mode and level beneath it. A level too heavy
-## for this video's resolution is greyed with that reason; the rows are when it cannot run on this video.
+func _mono_on() -> bool:
+	return _state.get("picture_mono", false) and _state.get("picture_quality_available", false) and _state.get("picture_quality", false)
+
+## The plugins tab: Anime4K, then monochrome film beneath it.
 func _picture_plugin_rows(y: float) -> void:
+	_picture_anime4k_rows(y)
+	_picture_mono_rows(y - (0.192 if _state.get("picture_anime4k", false) else 0.064))
+
+## Monochrome film's switch; while it is on, its style and grain beneath it. It runs wherever the mode does.
+func _picture_mono_rows(y: float) -> void:
+	var x := PICTURE_PANEL_X
+	var on: bool = _state.get("picture_quality_available", false) and _state.get("picture_quality", false)
+	var enabled: bool = _state.get("picture_mono", false)
+	var heading := _label(I18n.t("Monochrome film"), Vector3(x - 0.33, y, 0.004), TEXT_BODY)
+	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	choices.field(null, {"key": "picture_mono", "value": enabled, "switch": true, "choices": [], "hint": PICTURE_MONO_HINT}, Vector2(x + 0.29, y), 0.09, 0.05)
+	if not on:
+		var toggle: Dictionary = _buttons.back()
+		toggle.enabled = false
+		toggle["hover_disabled"] = true
+		_tips[toggle.target] = I18n.t(PICTURE_LOCKED_HINT)
+		heading.modulate = MUTED
+	if not enabled: return
+	_picture_choice_row("Style", "picture_mono_style", int(_state.get("picture_mono_style", 0)), range(PICTURE_MONO_STYLES.size()).map(
+		func(index): return {"value": index, "label": PICTURE_MONO_STYLES[index], "hint": PICTURE_MONO_STYLE_HINTS[index]}), y - 0.064, on, "")
+	_picture_choice_row("Grain", "picture_mono_grain", int(_state.get("picture_mono_grain", 1)), range(PICTURE_MONO_GRAINS.size()).map(
+		func(index): return {"value": index, "label": PICTURE_MONO_GRAINS[index], "hint": PICTURE_MONO_GRAIN_HINT}), y - 0.128, on, "")
+
+## Anime4K's switch; while it is on, its mode and level beneath it. A level too heavy for this video's
+## resolution is greyed with that reason; the rows are when it cannot run on this video.
+func _picture_anime4k_rows(y: float) -> void:
 	var x := PICTURE_PANEL_X
 	var on: bool = _state.get("picture_quality_available", false) and _state.get("picture_quality", false)
 	var enabled: bool = _state.get("picture_anime4k", false)
@@ -2810,13 +2850,13 @@ func _picture_choice_row(title: String, key: String, value: int, options: Array,
 		_icon("lock", Vector3(_slider_geometry().reset_x, y, 0.006), 0.028, MUTED)
 
 ## A slider that waits for picture quality mode: its value stays on show, without a knob to take.
-func _lock_row(target: int, y: float) -> void:
+func _lock_row(target: int, y: float, reason: String = PICTURE_LOCKED_HINT) -> void:
 	var row: Dictionary = _adjust_rows[target]
 	row.button.enabled = false
 	row.button["hover_disabled"] = true
 	row.knob.visible = false
 	row.label.modulate = MUTED
-	_tips[target] = I18n.t(PICTURE_LOCKED_HINT)
+	_tips[target] = I18n.t(reason)
 	# The lock takes the reset's place: a locked slider has nothing to reset.
 	if row.has("reset"):
 		row.reset.enabled = false
@@ -3553,6 +3593,7 @@ var _depth_rail_nodes: Array[Node3D] = []
 ## Picture choices held the same way: the option under the trigger applies once the hold is long
 ## enough, and the menu clears down to its row until the release. A tap stays a plain choice.
 const HOLD_CHOICE_KEYS := ["picture_upscale", "picture_denoise", "picture_interpolation", "picture_anime4k_mode", "picture_anime4k_tier",
+	"picture_mono_style", "picture_mono_grain",
 	# Subtitle options that change how the captions look or sit on the picture.
 	"subtitle_follow_view", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line", "subtitle_below_screen",
 	"depth_edge_steady", "depth_edge_fade"]

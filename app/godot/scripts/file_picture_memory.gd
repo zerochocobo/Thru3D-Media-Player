@@ -4,6 +4,7 @@ const Grade := preload("res://scripts/color_grade.gd")
 const SHARPNESS_DEFAULT := 0.5
 const SHARPNESS_MAX := 2.0
 const ANIME4K_TIER_DEFAULT := 1 # M
+const MONO_GRAIN_DEFAULT := 1 # low
 
 func _bank_path(bank: int) -> String:
 	return directory.path_join("video_pictures_%d.json" % bank)
@@ -21,6 +22,10 @@ func _valid_value(value: Variant) -> bool:
 	if value.has("picture_anime4k") and not (value.picture_anime4k is bool or value.picture_anime4k is int or value.picture_anime4k is float): return false
 	for key in ["picture_anime4k_mode", "picture_anime4k_tier"]:
 		if value.has(key) and not (value[key] is int or value[key] is float): return false
+	# Absent before monochrome film: off, the standard style, low grain.
+	if value.has("picture_mono") and not value.picture_mono is bool: return false
+	for key in ["picture_mono_style", "picture_mono_grain"]:
+		if value.has(key) and not (value[key] is int or value[key] is float): return false
 	var grade: Variant = value.get("color_grade")
 	return grade is Dictionary and grade.get("preset") in Grade.PRESETS and grade.get("custom") is Dictionary
 
@@ -35,6 +40,9 @@ func _normalize_value(value: Dictionary) -> Dictionary:
 		"picture_anime4k": bool(value.get("picture_anime4k", false)),
 		"picture_anime4k_mode": clampi(int(value.get("picture_anime4k_mode", _first_build_mode(value))), 1, 3),
 		"picture_anime4k_tier": clampi(int(value.get("picture_anime4k_tier", ANIME4K_TIER_DEFAULT)), 0, 3),
+		"picture_mono": bool(value.get("picture_mono", false)),
+		"picture_mono_style": clampi(int(value.get("picture_mono_style", 0)), 0, 2),
+		"picture_mono_grain": clampi(int(value.get("picture_mono_grain", MONO_GRAIN_DEFAULT)), 0, 3),
 		"color_grade": grade.snapshot()}
 
 ## Anime4K's mode as its first test build saved it (picture_anime4k 1 to 3), or A.
@@ -58,17 +66,17 @@ func load_defaults(settings: ConfigFile) -> Dictionary:
 
 static func is_adjustment(key: String) -> bool:
 	return key in ["picture_sharpness", "picture_quality", "picture_upscale", "picture_denoise", "picture_interpolation",
-		"picture_anime4k", "picture_anime4k_mode", "picture_anime4k_tier",
+		"picture_anime4k", "picture_anime4k_mode", "picture_anime4k_tier", "picture_mono", "picture_mono_style", "picture_mono_grain",
 		"grade_preset", "grade_reset", "grade_reset_page"] or Grade.DEFAULTS.has(key)
 
 func edited(picture: Dictionary, key: String, value: Variant) -> Dictionary:
 	var result := picture.duplicate(true)
 	match key:
-		"picture_quality", "picture_interpolation", "picture_anime4k": result[key] = bool(value)
+		"picture_quality", "picture_interpolation", "picture_anime4k", "picture_mono": result[key] = bool(value)
 		"picture_sharpness":
 			if not is_finite(float(value)): return picture
 			result[key] = float(value) / 100.0
-		"picture_upscale", "picture_denoise", "picture_anime4k_mode", "picture_anime4k_tier": result[key] = int(value)
+		"picture_upscale", "picture_denoise", "picture_anime4k_mode", "picture_anime4k_tier", "picture_mono_style", "picture_mono_grain": result[key] = int(value)
 		_:
 			var grade := Grade.new()
 			grade.restore(result.color_grade)

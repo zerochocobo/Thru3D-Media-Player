@@ -38,6 +38,14 @@ class CloudDiagnosticsTest {
         val exchange = CloudLoginFailure(Stage.EXCHANGE, SocketTimeoutException("private provider URL"))
         assertEquals("AUTH-EXCHANGE TIMEOUT", exchange.code)
     }
+    @Test fun movedOrDeletedCloudFileIsReportedAsMissingNotAsAnOutage() {
+        val missing = assertThrows(CloudFailure::class.java) {
+            CloudDiagnostics.checkCore(JSONObject().put("code", 500).put("message", "Cloud request failed")
+                .put("error_reason", "cloud_file_missing").put("error_detail", "stat115.lookup\nobject not found"), "/stat115")
+        }
+        assertEquals("cloud_file_missing", missing.reason)
+        assertTrue(missing.detail.contains("stat115.lookup"))
+    }
     @Test fun expiredDirectoryCursorsRemainActionableInTheBrowseDto() {
         for (reason in listOf("cloud_page_expired", "cloud_location_expired")) {
             val failure = assertThrows(CloudFailure::class.java) {

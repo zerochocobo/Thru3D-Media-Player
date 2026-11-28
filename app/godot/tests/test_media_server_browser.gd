@@ -39,6 +39,10 @@ func _run() -> void:
 	check(b.modal_open() and b.view == "servers" and b.history.is_empty(), "Settings opens over landing page without changing navigation")
 	check(menu._buttons.all(func(button): return not button.enabled or button.target >= Browser.ACTION + 181), "Settings blocks underlying actions")
 	check(not menu._in_list(Vector3(0, 0, 0)), "Settings blocks list dragging")
+	check(not b.artwork.auto_covers and menu._buttons.any(func(button): return button.target == Browser.AUTO_COVERS and button.enabled), "Autoplay is off by default and available in global server settings")
+	for enabled in [true, false]:
+		menu._activate(Browser.AUTO_COVERS)
+		check(b.artwork.auto_covers == enabled and changes.back() == ["autoplay_animated_covers", enabled], "Global artwork toggle saves the new state")
 	for i in 3:
 		b.action(Browser.ACTION + 182 + i)
 		check(b.backdrop.mode == ["off", "static", "slideshow"][i] and changes.back() == ["library_backdrop", b.backdrop.mode], "Background selection immediately emits persistent setting")

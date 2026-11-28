@@ -37,10 +37,10 @@ func _run() -> void:
 		var folders: Array=menu.rows.filter(func(row):return row.has("container"))
 		if folders.is_empty(): check(false,"Missing folder after filtering: "+str(menu.rows)); menu.queue_free(); quit(1); return
 		menu._choose(folders[0]); await create_timer(0.01).timeout
-		check(menu.media_filter==0 and has_video(menu),"Opening a child does not hide its videos "+str(source))
-		menu._activate(Menu.FILTER_BASE+2); menu._go_back(); await process_frame
-		# Each folder keeps the filter it was left with (2026-10-22): the parent had images chosen.
-		check(menu.media_filter==2 and not has_video(menu),"Going back restores the filter the parent folder was left with")
+		# The chosen type carries into subfolders (2026-11-28 user report).
+		check(menu.media_filter==2 and not has_video(menu),"Opening a child keeps the chosen file type "+str(source))
+		menu._activate(Menu.FILTER_BASE+1); menu._go_back(); await process_frame
+		check(menu.media_filter==1 and has_video(menu) and not menu.rows.any(func(row):return row.get("kind")=="image"),"Going back keeps the type last chosen "+str(source))
 		menu._activate(Menu.FILTER_BASE+2); menu.dismiss(); menu.toggle()
 		check(menu.media_filter==0 and has_video(menu),"Reopening the browser shows all files again")
 		menu._activate(Menu.FILTER_BASE+2); menu.remember_playback_context(); menu.dismiss(); menu.show_playback_files(true)
@@ -48,7 +48,9 @@ func _run() -> void:
 		menu.set_compact(false); menu.visible=true
 	menu.section=Menu.Section.CLOUD; menu._cloud_stack=[{"id":"drive","title":"Drive"}]; menu.media_filter=2; menu.refresh()
 	menu._cloud_stack.append({"id":"child","title":"Child"}); menu.refresh()
-	check(menu.media_filter==0,"Cloud folder navigation also expires a manual filter")
+	check(menu.media_filter==2,"Cloud subfolders keep the chosen file type")
+	menu._cloud_stack=[{"id":"other-drive","title":"Other"}]; menu.refresh()
+	check(menu.media_filter==0,"Another cloud account starts with all files")
 	menu.section=Menu.Section.RECENT; menu.media_filter=2; menu.collections.switch_tab(1); menu.collections.switch_tab(0)
 	check(menu.media_filter==0,"Recent and Favorites tabs do not remember an old file-type filter")
 	menu.section=Menu.Section.LOCAL; menu.begin_media_browse(2)
@@ -57,6 +59,8 @@ func _run() -> void:
 	menu.begin_media_browse(1); menu._go_back(); await process_frame
 	check(menu.media_filter==1 and has_video(menu) and not menu.rows.any(func(row):return row.get("kind")=="image"),"An explicit external video picker also retains its intended scope")
 	menu._activate(Menu.FILTER_BASE+2); menu._choose({"container":{"id":"/another","title":"Another"}}); await process_frame
-	check(menu.media_browse_intent==0 and menu.media_filter==0 and has_video(menu),"A manual filter replaces the external intent and expires normally")
+	check(menu.media_browse_intent==0 and menu.media_filter==2 and not has_video(menu),"A manual filter replaces the external intent and carries into subfolders")
+	menu.section=Menu.Section.SMB; menu._smb_server="server"; menu._smb_path="share"; menu.refresh()
+	check(menu.media_filter==0,"Another source starts with all files")
 	menu.queue_free(); await process_frame
 	print("Library filter scope: %d checks, %d failures" % [checks,failures.size()]); quit(0 if failures.is_empty() else 1)

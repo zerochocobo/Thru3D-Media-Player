@@ -45,7 +45,7 @@ internal class BookBridge(private val context: () -> Context?, private val ready
             val result = try {
                 val started = System.nanoTime()
                 val file = source(Uri.parse(uri), next)
-                val look = BookStyle.parse(style).let { it.withFont(font(it.font)) }
+                val look = BookStyle.parse(style).let { it.withFont(font(it.font)).withPicture(picture(it.picture)) }
                 val name = Uri.parse(uri).lastPathSegment ?: uri
                 val saved = layouts(uri, file, look)
                 val pages = if (pdf(file)) PdfSheets(file, name.substringAfterLast('/').substringBeforeLast('.'), look)
@@ -79,6 +79,15 @@ internal class BookBridge(private val context: () -> Context?, private val ready
         val file = runCatching { java.io.File(path).canonicalFile }.getOrNull() ?: return ""
         return file.path.takeIf { it.startsWith(home + java.io.File.separator) && file.isFile &&
             file.extension.lowercase() in setOf("otf", "ttf") } ?: ""
+    }
+
+    /** The paper picture is only read from the app's own files: the one the reader made, a PNG. */
+    private fun picture(path: String): String {
+        if (path.isEmpty()) return ""
+        val home = context()?.filesDir?.canonicalPath ?: return ""
+        val file = runCatching { java.io.File(path).canonicalFile }.getOrNull() ?: return ""
+        return file.path.takeIf { it.startsWith(home + java.io.File.separator) && file.isFile &&
+            file.extension.lowercase() == "png" && file.length() < 4L * 1024 * 1024 } ?: ""
     }
 
     private fun layouts(uri: String, file: File, look: BookStyle): File? = runCatching {

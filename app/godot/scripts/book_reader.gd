@@ -13,6 +13,7 @@ const MarkMemory := preload("res://scripts/book_mark_memory.gd")
 const Privacy := preload("res://scripts/media_privacy.gd")
 const Narration := preload("res://scripts/book_narration.gd")
 const Fonts := preload("res://scripts/book_fonts.gd")
+const PaperPicture := preload("res://scripts/book_paper_picture.gd")
 ## A warm wash over the paragraph being read aloud, with a bar in the margin beside it. Added on top
 ## of the page (and its sharp layer), so it never dims the words.
 const READING_SHADER := """
@@ -44,17 +45,28 @@ const PAPERS := [
 	{"paper": "#23211E", "ink": "#B9B2A4", "faint": "#6B665C", "cover": Color(0.07, 0.07, 0.08), "night": true},
 	{"paper": "#C7E3C3", "ink": "#1B2219", "faint": "#6F8069", "cover": Color(0.12, 0.20, 0.14)},
 	{"paper": "#0E0E0E", "ink": "#8E897F", "faint": "#55524C", "cover": Color(0.04, 0.04, 0.05), "night": true},
-	{"paper": "#17201B", "ink": "#97A89C", "faint": "#56625A", "cover": Color(0.05, 0.08, 0.06), "night": true}]
+	{"paper": "#17201B", "ink": "#97A89C", "faint": "#56625A", "cover": Color(0.05, 0.08, 0.06), "night": true},
+	# More papers for long reading (2026-11-28), added after the first seven so saved choices keep theirs:
+	# apricot, pale blue and kraft by day; deep blue and brown by night.
+	{"paper": "#EFE2D4", "ink": "#2A201B", "faint": "#8F7F72", "cover": Color(0.30, 0.18, 0.15)},
+	{"paper": "#DCE6EC", "ink": "#18212A", "faint": "#748392", "cover": Color(0.12, 0.17, 0.25)},
+	{"paper": "#DDCCA8", "ink": "#2A2316", "faint": "#857659", "cover": Color(0.27, 0.19, 0.11)},
+	{"paper": "#141A24", "ink": "#93A0B3", "faint": "#525D6E", "cover": Color(0.04, 0.05, 0.09), "night": true},
+	{"paper": "#251D16", "ink": "#B4A285", "faint": "#6A5D4B", "cover": Color(0.09, 0.06, 0.04), "night": true}]
 ## The papers as the settings show them, lightest first: day papers, then night ones.
-const DAY_PAPERS := [2, 0, 4, 1]
-const NIGHT_PAPERS := [3, 6, 5]
+const DAY_PAPERS := [2, 0, 7, 8, 4, 9, 1]
+const NIGHT_PAPERS := [3, 11, 6, 10, 5]
+## How far the darkest part of the reader's picture moves the paper towards the ink.
+const PICTURE_STRENGTH := 0.36
 ## Space between lines (in type sizes), between paragraphs (in lines), and how much of the widest
 ## text block a line fills (smaller: wider margins at the same type size).
 const SPACINGS := [1.4, 1.6, 1.75, 2.0, 2.2]
 const DEFAULT_SPACING := 2
 const PARAGRAPHS := [0.0, 0.3, 0.7, 1.2]
 const DEFAULT_PARAGRAPH := 1
-const MEASURES := [1.0, 0.92, 0.84, 0.76]
+## The first step runs the text past the usual block into the outer margins, for the most words a page holds.
+const MEASURES := [1.12, 1.0, 0.92, 0.84, 0.76]
+const DEFAULT_MEASURE := 1
 ## Seconds a page stays open while the pages turn by themselves; a spread stays twice as long.
 const AUTO_SECONDS := [10, 15, 20, 30, 45, 60, 90]
 const DEFAULT_AUTO := 3
@@ -73,9 +85,9 @@ const SIZES := [0.6, 0.75, 0.88, 1.0, 1.15, 1.3, 1.5]
 const REACHES := [0.45, 0.6, 0.8, 1.0, 1.25, 1.55]
 const DEFAULT_SIZE := 3
 const DEFAULT_REACH := 3
-## A little below the eyes, where a reader's gaze rests for hours without tiring the neck.
-const LIFT := -0.45
-const LEAN := 8.0
+## The tome hangs where the reader was looking when it was placed, its middle on that line of sight
+## and its face square to it (2026-11-28: it used to hang lower and lean the other way, so a level gaze
+## fell on the top third of the page, which did not face the eyes).
 ## Paper brightness steps: a large bright page in a dark scene glares through the lenses.
 const LIGHTS := [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4]
 ## Warmth takes blue, then some green, out of the page, for long reading at night.
@@ -90,8 +102,13 @@ const RIFFLE_SECONDS := 0.5
 const FLICK := 2.0
 
 signal closed
+## The reader wants a picture under the words and has none yet, or asked for another.
+signal picture_wanted
 signal library_requested
 signal changed
+## The reader chose a wand while a scene with its own wand (the Wizard's Attic) was on show: the
+## scene's setting takes it, so the wand does not change each time a book is picked up there.
+signal scene_wand_chosen(style: String)
 ## A small touch in the wand hand: a leaf lifted, landed or a chapter begun.
 signal felt(strength: float)
 ## Search hits for the request [token]: {"query", "hits": [{"at", "chapter", "text", "mark"}], "more"}.
@@ -126,11 +143,29 @@ var single := false
 var size_step := DEFAULT_SIZE
 var reach_step := DEFAULT_REACH
 var _frame := Transform3D.IDENTITY
+## How far the reader looked up (+) or down (-) when the tome was placed upright, in radians.
+var _pitch := 0.0
 var light := 0
 var warmth := 0
+## The reading wand, and the scene's own while one is set; the scene's is the one drawn.
+var wand_style := Wand.DEFAULT_STYLE
+var scene_wand := ""
 var spacing := DEFAULT_SPACING
 var paragraph := DEFAULT_PARAGRAPH
-var measure := 0
+var measure := DEFAULT_MEASURE
+## How a leaf goes over (the model's CURL, LOW or INSTANT), and whether the paper is heard.
+var turn_style := 0
+var page_sound := true
+## The reader's own picture printed faintly under the words (text books only; printed pages keep theirs).
+var picture := false
+var pictures := PaperPicture.new()
+## The tome brought nearer and made smaller together (so it looks the same) when where it would hang
+## reaches below the floor of the scene; 1 when it fits.
+var fit := 1.0
+## Where the floor is in the world, or null when the scene does not say.
+var floor_provider: Callable
+const FLOOR_CLEARANCE := 0.15
+const LEAST_FIT := 0.3
 ## The paper last chosen for day and for night, so the switch between them comes back to each.
 var day_paper := 0
 var night_paper := 3
@@ -220,6 +255,8 @@ func _init() -> void:
 	add_child(wand)
 	add_child(layers)
 	add_child(fonts)
+	add_child(pictures)
+	pictures.finished.connect(_on_picture)
 	fonts.changed.connect(_on_fonts_changed)
 	# Where the wand touches the page: a faint point that never washes out the words under it.
 	var spot := QuadMesh.new(); spot.size = Vector2.ONE * 0.09
@@ -253,9 +290,16 @@ func restore_settings(source: ConfigFile) -> void:
 	var older := [0, 1, 3, 4]
 	light = clampi(int(source.get_value("book", "brightness", older[clampi(int(source.get_value("book", "light", 0)), 0, 3)])), 0, LIGHTS.size() - 1)
 	warmth = clampi(int(source.get_value("book", "warmth", 0)), 0, WARMTHS.size() - 1)
+	wand_style = Wand.valid_style(str(source.get_value("book", "wand", Wand.DEFAULT_STYLE)))
+	wand.set_style(shown_wand())
 	spacing = clampi(int(source.get_value("book", "spacing", DEFAULT_SPACING)), 0, SPACINGS.size() - 1)
 	paragraph = clampi(int(source.get_value("book", "paragraph", DEFAULT_PARAGRAPH)), 0, PARAGRAPHS.size() - 1)
-	measure = clampi(int(source.get_value("book", "measure", 0)), 0, MEASURES.size() - 1)
+	# Margins gained a narrower step in front of the four there were (2026-11-28): older saves move up one.
+	var older_margin := int(source.get_value("book", "measure", 0)) + 1
+	measure = clampi(int(source.get_value("book", "margins", older_margin)), 0, MEASURES.size() - 1)
+	turn_style = clampi(int(source.get_value("book", "turn_style", 0)), 0, 2)
+	page_sound = bool(source.get_value("book", "turn_sound", true))
+	picture = bool(source.get_value("book", "paper_picture", false)) and PaperPicture.present()
 	for way in TURNS:
 		turns[way] = bool(source.get_value("book", "turn_" + way, source.get_value("book", "swish", true) if way == "swish" else true))
 	if not turns.values().has(true): turns.buttons = true
@@ -274,7 +318,10 @@ func _store() -> void:
 	settings.set_value("book", "font", font); settings.set_value("book", "paper", paper); settings.set_value("book", "spread", not single)
 	settings.set_value("book", "paper_day", day_paper); settings.set_value("book", "paper_night", night_paper)
 	settings.set_value("book", "brightness", light); settings.set_value("book", "warmth", warmth)
-	settings.set_value("book", "spacing", spacing); settings.set_value("book", "paragraph", paragraph); settings.set_value("book", "measure", measure)
+	settings.set_value("book", "wand", wand_style)
+	settings.set_value("book", "spacing", spacing); settings.set_value("book", "paragraph", paragraph); settings.set_value("book", "margins", measure)
+	settings.set_value("book", "turn_style", turn_style); settings.set_value("book", "turn_sound", page_sound)
+	settings.set_value("book", "paper_picture", picture)
 	for way in TURNS: settings.set_value("book", "turn_" + way, turns[way])
 	settings.set_value("book", "auto", auto_step)
 	narration.store(settings)
@@ -287,7 +334,8 @@ func _store() -> void:
 func _layout() -> void:
 	var look: Dictionary = PAPERS[paper]
 	model.paper = Color(str(look.paper)); model.cover = look.cover; model.single = single; model.light = tint()
-	var scale: float = SCALE * float(SIZES[size_step])
+	model.turn_style = turn_style; model.quiet = not page_sound
+	var scale: float = SCALE * float(SIZES[size_step]) * fit
 	model.scale = Vector3.ONE * scale
 	# One page at a time hangs straight ahead; the leaves already read lie off to the left.
 	model.position = Vector3(-model.page_size.x * scale * 0.5 if single else 0.0, 0, 0)
@@ -347,6 +395,7 @@ func _style() -> String:
 	var look: Dictionary = PAPERS[paper]
 	_laid_font = font_path()
 	return JSON.stringify({"columns": COLUMNS[font], "paper": look.paper, "ink": look.ink, "faint": look.faint, "font": _laid_font,
+		"picture": PaperPicture.absolute() if picture and PaperPicture.present() else "", "picture_strength": PICTURE_STRENGTH,
 		"spacing": SPACINGS[spacing], "paragraph": PARAGRAPHS[paragraph], "measure": MEASURES[measure],
 		"remaining": I18n.t("%d pages left in chapter"), "at": _restore})
 
@@ -600,7 +649,11 @@ func go_to(index: int) -> void:
 func leap(index: int) -> void:
 	if count <= 0: return
 	var to := _spread(index)
-	if absi(to - page) <= _step() * 2: go_to(to); return
+	if absi(to - page) <= _step() * 2 or turn_style == Model.INSTANT:
+		var moved := to != page
+		go_to(to)
+		if moved and turn_style == Model.INSTANT: model.sound(0.8, -2.0); _landed()
+		return
 	_turn = {}; _queued = 0; model.turn(0.0)
 	_riffle = {"direction": signi(to - page), "phase": 0.0, "to": to, "from": fraction()}
 	_reading_direction = int(_riffle.direction)
@@ -721,7 +774,9 @@ func _process(delta: float) -> void:
 		return
 	if _turn.is_empty() or _turn.held: return
 	var target := float(_turn.target)
-	LeafMotion.advance(_turn,delta,_queued != 0)
+	# Without the animation a leaf let go (or asked for) lands at once.
+	if turn_style == Model.INSTANT: _turn.amount = target
+	else: LeafMotion.advance(_turn,delta,_queued != 0)
 	model.turn(float(_turn.amount))
 	if not is_equal_approx(float(_turn.amount), target): return
 	var committed: bool = _turn.commit
@@ -862,6 +917,24 @@ func set_turn(way: String, value: bool) -> bool:
 func set_light(value: int) -> void:
 	light = clampi(value, 0, LIGHTS.size() - 1); _store(); _layout()
 
+func shown_wand() -> String:
+	return scene_wand if not scene_wand.is_empty() else wand_style
+
+## The scene's wand while it has one ("" when it has none); cheap to call every frame.
+func set_scene_wand(style: String) -> void:
+	if style == scene_wand: return
+	scene_wand = style
+	wand.set_style(shown_wand())
+
+func set_wand(style: String) -> void:
+	style = Wand.valid_style(style)
+	if not scene_wand.is_empty():
+		scene_wand = style
+		scene_wand_chosen.emit(style)
+	else:
+		wand_style = style; _store()
+	wand.set_style(shown_wand())
+
 func set_warmth(value: int) -> void:
 	warmth = clampi(value, 0, WARMTHS.size() - 1); _store(); _layout()
 
@@ -881,6 +954,28 @@ func set_paragraph(value: int) -> void:
 func set_measure(value: int) -> void:
 	value = clampi(value, 0, MEASURES.size() - 1)
 	if value != measure: measure = value; _store(); _restyle()
+
+## Prints the picture under the words, or plain paper again. Without one yet, the reader is asked for one.
+func set_picture(value: bool) -> void:
+	if value and not PaperPicture.present(): picture_wanted.emit(); return
+	if value == picture: return
+	picture = value; _store(); _restyle(); _refresh_bar()
+
+## The picture the reader chose in the library: made into the paper's texture, then shown.
+func choose_picture(uri: String) -> void:
+	pictures.platform = platform
+	if pictures.choose(uri): _tell("Preparing the paper picture")
+
+func _on_picture(ok: bool) -> void:
+	if not ok: _tell("This picture could not be used"); _refresh_bar(); return
+	picture = true; _store(); _restyle(); _refresh_bar()
+
+func set_turn_style(value: int) -> void:
+	turn_style = clampi(value, 0, 2); _store(); _layout()
+
+func set_page_sound(value: bool) -> void:
+	page_sound = value; _store(); _layout()
+	if value: model.sound(1.0, -4.0)
 
 func set_auto_step(value: int) -> void:
 	auto_step = clampi(value, 0, AUTO_SECONDS.size() - 1); _auto_elapsed = 0.0; _store()
@@ -927,10 +1022,12 @@ func recenter() -> void:
 	if not head is Transform3D: return
 	var forward: Vector3 = -head.basis.z
 	var frame: Transform3D = head
+	_pitch = 0.0
 	if absf(forward.y) < 0.64:
+		# Upright: the frame stays level, the tome tilts with the gaze like a lectern.
+		_pitch = asin(clampf(forward.normalized().y, -1.0, 1.0))
 		forward.y = 0.0
 		frame = Transform3D(Basis.looking_at(forward.normalized(), Vector3.UP), head.origin)
-	# Its face leans down a little towards the reader below.
 	_frame = frame
 	_placed = true
 	_carried = null
@@ -948,8 +1045,8 @@ func keep_carried() -> void:
 	_carried_reach = REACHES[reach_step]
 	_home = global_transform
 
-## Where the tome hangs in the frame of the last recentre, at the reader's chosen distance; nearer,
-## it also sits less far below the eyes so the gaze still meets it at the same angle.
+## Where the tome hangs in the frame of the last recentre, at the reader's chosen distance along the
+## same line of sight.
 func _place() -> void:
 	var reach: float = REACHES[reach_step]
 	if _carried is Transform3D:
@@ -957,11 +1054,32 @@ func _place() -> void:
 		held.origin *= reach / _carried_reach
 		_home = _frame * held
 	else:
-		_home = _frame * Transform3D(Basis(Vector3.RIGHT, deg_to_rad(LEAN)), Vector3(0, LIFT * reach, -DISTANCE * reach))
+		var gaze := Basis(Vector3.RIGHT, _pitch)
+		_home = _frame * Transform3D(gaze, gaze * Vector3(0, 0, -DISTANCE * reach))
+		_fit_floor()
 	_pose()
+
+## Where the tome would hang reaches into the floor (a low seat, a small room): it comes nearer and
+## smaller together, about the reader's eyes, so the page looks just as large and stays above the floor.
+## Only when sitting or standing upright: lying down, the book hangs over the reader, not over the floor.
+func _fit_floor() -> void:
+	var was := fit
+	fit = 1.0
+	var ground: Variant = floor_provider.call() if floor_provider.is_valid() else null
+	if (ground is float or ground is int) and _frame.basis.y.normalized().y > 0.95:
+		var eye: float = _frame.origin.y
+		var scale: float = SCALE * float(SIZES[size_step])
+		var bottom: float = (_home * Vector3(0, -(model.page_size.y * 0.5 + 0.02) * scale, 0)).y
+		var room: float = eye - float(ground) - FLOOR_CLEARANCE
+		if bottom < float(ground) + FLOOR_CLEARANCE and room > 0.05 and eye - bottom > 0.01:
+			fit = clampf(room / (eye - bottom), LEAST_FIT, 1.0)
+	if not is_equal_approx(fit, 1.0): _home.origin = _frame.origin + (_home.origin - _frame.origin) * fit
+	if not is_equal_approx(fit, was): _layout()
 
 func set_size_step(value: int) -> void:
 	size_step = clampi(value, 0, SIZES.size() - 1); _store(); _layout()
+	# A larger tome may now reach the floor, a smaller one no longer need to come nearer.
+	if _placed and not _carried is Transform3D: _place()
 
 func set_reach_step(value: int) -> void:
 	reach_step = clampi(value, 0, REACHES.size() - 1); _store()

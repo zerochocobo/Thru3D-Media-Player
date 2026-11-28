@@ -1,10 +1,23 @@
 extends RefCounted
 ## A lateral palm trajectory owns the gesture; no static finger pose is required.
 const HANDS := ["right_hand", "left_hand"]
-const TRAVEL := 0.18
-const MIN_SPEED := 0.30
-const MAX_SECONDS := 0.85
-const GAP_SECONDS := 0.12
+## The photo wall's tuning; the open book loosens it with [method for_book].
+var TRAVEL := 0.18
+var MIN_SPEED := 0.30
+var PEAK_SPEED := 0.40
+var MAX_SECONDS := 0.85
+var GAP_SECONDS := 0.12
+var COOLDOWN := 1.0
+## Off the line of the sweep, up/down and towards/away (metres).
+var DRIFT := Vector2(0.14, 0.18)
+## The head may move this far (metres, degrees) during a sweep.
+var HEAD_MOVE := Vector2(0.075, 18.0)
+## A sweep is spoiled by the hand closing into a pinch; a relaxed open hand often brings thumb and
+## index close as it sweeps, which reads as a pinch from the joints alone.
+var PINCH_SPOILS := true
+## After a sweep, the hand must come to rest before the next counts; with [member REARM_ON_RETURN],
+## the way back is ignored and the next sweep may begin as soon as the hand turns again.
+var REARM_ON_RETURN := false
 var states := {}
 var diagnostics: Array[Dictionary] = []
 var clock := 0.0
@@ -12,6 +25,14 @@ var cooldown_until := 0.0
 
 func cancel() -> void:
 	states.clear()
+
+## Turning pages by waving is done again and again while reading, often with a relaxed hand and the
+## head following the page: shorter, slower sweeps count, brief tracking losses during a fast sweep
+## are bridged, and waving back and forth keeps turning pages one way.
+func for_book() -> RefCounted:
+	TRAVEL = 0.12; MIN_SPEED = 0.22; PEAK_SPEED = 0.30; GAP_SECONDS = 0.25; COOLDOWN = 0.35
+	DRIFT = Vector2(0.2, 0.25); HEAD_MOVE = Vector2(0.12, 30.0); PINCH_SPOILS = false; REARM_ON_RETURN = true
+	return self
 
 func _start(sample: Dictionary, head: Transform3D, scale: float) -> Dictionary:
 	var forward := -head.basis.z; forward.y = 0; forward = forward.normalized()
@@ -43,7 +64,7 @@ func update(inputs: Dictionary, enabled: bool, busy: bool, head: Transform3D, sc
 				states[hand].gap += dt
 				if states[hand].gap > GAP_SECONDS: _reject(hand, "tracking_gap", states[hand])
 			continue
-		if not sample.get("eligible", false) or sample.get("pinched", false) or sample.get("blocked", false):
+		if not sample.get("eligible", false) or (PINCH_SPOILS and sample.get("pinched", false)) or sample.get("blocked", false):
 			if states.has(hand): _reject(hand, "pose_or_region", states[hand])
 			continue
 		if not states.has(hand):
@@ -59,9 +80,16 @@ func update(inputs: Dictionary, enabled: bool, busy: bool, head: Transform3D, sc
 		if state.locked:
 			# The return stroke cannot trigger another batch. Rearm only after a quiet endpoint.
 			state.stable = float(state.stable) + elapsed if step.length() / elapsed < 0.12 else 0.0
+			if REARM_ON_RETURN:
+				# Or as the way back ends: the hand slows or turns into the next sweep. The return is
+				# then never a sweep of its own, and a reader waving back and forth turns every time.
+				var along: float = (state.basis.inverse() * step).x / elapsed
+				if signf(along) == -float(state.sign) and absf(along) > 0.15: state.returning = true
+				elif state.get("returning", false) and clock >= cooldown_until and (signf(along) == float(state.sign) or absf(along) < 0.12):
+					states[hand] = _start(sample, head, scale); continue
 			if clock >= cooldown_until and state.stable >= 0.22: states[hand] = _start(sample, head, scale)
 			continue
-		if head.origin.distance_to(state.head.origin) / scale > 0.075 or head.basis.z.dot(state.head.basis.z) < cos(deg_to_rad(18.0)):
+		if head.origin.distance_to(state.head.origin) / scale > HEAD_MOVE.x or head.basis.z.dot(state.head.basis.z) < cos(deg_to_rad(HEAD_MOVE.y)):
 			_reject(hand, "head_motion", state); states[hand] = _start(sample, head, scale); continue
 		if not state.moving:
 			if absf(offset.x) < 0.025:
@@ -73,13 +101,13 @@ func update(inputs: Dictionary, enabled: bool, busy: bool, head: Transform3D, sc
 		else: state.age += elapsed
 		state.peak = maxf(state.peak, absf((state.basis.inverse() * step).x) / elapsed)
 		state.furthest = maxf(state.furthest, absf(offset.x))
-		if state.age > MAX_SECONDS or absf(offset.y) > 0.14 or absf(offset.z) > 0.18 \
+		if state.age > MAX_SECONDS or absf(offset.y) > DRIFT.x or absf(offset.z) > DRIFT.y \
 			or absf(offset.x) + 0.045 < state.furthest or signf(offset.x) != state.sign:
 			_reject(hand, "trajectory", state); states[hand] = _start(sample, head, scale); continue
 		if clock < cooldown_until: continue
 		if absf(offset.x) >= TRAVEL and absf(offset.x) > maxf(absf(offset.y), absf(offset.z)) * 1.6 \
-			and absf(offset.x) / maxf(0.05, state.age) >= MIN_SPEED and state.peak >= 0.40:
-			state.locked = true; state.stable = 0.0; cooldown_until = clock + 1.0
+			and absf(offset.x) / maxf(0.05, state.age) >= MIN_SPEED and state.peak >= PEAK_SPEED:
+			state.locked = true; state.stable = 0.0; cooldown_until = clock + COOLDOWN
 			diagnostics.append({"hand": hand, "reason": "accepted", "travel_m": snappedf(absf(offset.x), 0.01),
 				"duration_ms": roundi(state.age * 1000), "peak_mps": snappedf(state.peak, 0.01)})
 			actions.append({"hand": hand, "direction": 1 if offset.x < 0 else -1})

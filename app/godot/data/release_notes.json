@@ -2,6 +2,175 @@
   "schema": 1,
   "entries": [
     {
+      "version": "0.19.1",
+      "date": "2026-11-28",
+      "title": {
+        "zh": "黑白胶片与阅读体验",
+        "zh_Hant": "黑白膠片與閱讀體驗",
+        "en": "Monochrome film and reading updates",
+        "ja": "モノクロフィルムと読書機能の更新"
+      },
+      "items": [
+        {
+          "id": "monochrome-film-plugin",
+          "text": {
+            "zh": "新增「黑白胶片」画质插件。可选标准、黑色电影、柔和三种风格并调节颗粒，按视频记忆，支持 2D 转 3D。",
+            "zh_Hant": "新增「黑白膠片」畫質外掛。可選標準、黑色電影、柔和三種風格並調整顆粒，依影片記憶，支援 2D 轉 3D。",
+            "en": "Add the Monochrome Film picture plugin with Standard, Film Noir and Soft styles and adjustable grain. Settings are saved per video and work with 2D-to-3D playback.",
+            "ja": "画質プラグインに「モノクロフィルム」を追加。標準・フィルムノワール・ソフトの3種類と粒子の強さを動画ごとに保存でき、2Dから3Dへの変換にも対応します。"
+          }
+        },
+        {
+          "id": "attic-reading-wand-selection",
+          "text": {
+            "zh": "新增五款原创魔杖，可在魔法阁楼场景设置和阅读设置中选择。在阁楼阅读时使用阁楼的魔杖。",
+            "zh_Hant": "新增五款原創魔杖，可在魔法閣樓場景設定和閱讀設定中選擇。在閣樓閱讀時使用閣樓的魔杖。",
+            "en": "Choose from five original wands in Wizard’s Attic scene settings and reading settings. Reading in the attic uses the wand selected for the scene.",
+            "ja": "5種類のオリジナルの杖を追加。魔法使いの屋根裏のシーン設定と読書設定から選べます。屋根裏で読書するときは、シーン設定で選んだ杖を使います。"
+          }
+        },
+        {
+          "id": "reading-paper-palettes-and-picture",
+          "text": {
+            "zh": "新增五种阅读纸色。文字类电子书可从资料库选图，设为淡化的图片纸面。",
+            "zh_Hant": "新增五種閱讀紙色。文字類電子書可從資料庫選圖，設為淡化的圖片紙面。",
+            "en": "Add five paper colors for reading. For text-based ebooks, choose an image from the library to use as a subtle page background.",
+            "ja": "読書用の紙色を5種類追加。テキスト形式の電子書籍では、ライブラリから選んだ画像を淡い紙面の背景にできます。"
+          }
+        },
+        {
+          "id": "reading-page-turn-style-and-sound",
+          "text": {
+            "zh": "新增翻页动画与声音设置。可选整页卷起、贴着书页翻或无动画，翻页声音可单独开关。",
+            "zh_Hant": "新增翻頁動畫與聲音設定。可選整頁捲起、貼著書頁翻或無動畫，翻頁聲音可單獨開關。",
+            "en": "Choose a full page curl, a low page turn or no animation. Page-turn sounds can be switched on or off separately.",
+            "ja": "ページをめくるアニメーションを、高くめくる・低くめくる・アニメーションなしから選べます。ページをめくる音は個別にオン・オフできます。"
+          }
+        },
+        {
+          "id": "reading-voice-preview-and-clones",
+          "text": {
+            "zh": "新增阅读音色试听。朗读可选择「我的克隆音色」中已有的音色。",
+            "zh_Hant": "新增閱讀音色試聽。朗讀可選擇「我的克隆音色」中已有的音色。",
+            "en": "Preview a narration voice before reading aloud. Your saved cloned voices are also available for book narration.",
+            "ja": "読み上げ音声を試聴できるようになりました。登録済みのクローン音声も書籍の読み上げに使えます。"
+          }
+        },
+        {
+          "id": "media-server-cover-previews",
+          "text": {
+            "zh": "新增媒体服务器封面预览。指向静态海报可播放兼容的动态背景图，移开恢复原海报。也可在媒体服务器设置中开启「自动播放动态封面」。",
+            "zh_Hant": "新增媒體伺服器封面預覽。指向靜態海報可播放相容的動態背景圖，移開恢復原海報。也可在媒體伺服器設定中開啟「自動播放動態封面」。",
+            "en": "Point at a static media server poster to preview a compatible animated backdrop. The poster returns when you point away. To play visible animated covers automatically, enable Auto-play Animated Covers in media server settings.",
+            "ja": "メディアサーバーの静止画ポスターを指すと、対応するアニメーション背景をプレビューできます。ポインターを離すと元のポスターに戻ります。メディアサーバー設定からアニメーションカバーの自動再生も有効にできます。"
+          }
+        },
+        {
+          "id": "spatial-reading-placement-and-controls",
+          "text": {
+            "zh": "改善空间阅读。居中时书本对准视线，使用手势时可看到双手，挥手翻页更容易。新增更窄的页边距档位，跨页朗读时随读到的位置翻页。",
+            "zh_Hant": "改善空間閱讀。置中時書本對準視線，使用手勢時可看到雙手，揮手翻頁更容易。新增更窄的頁邊距選項，跨頁朗讀時隨讀到的位置翻頁。",
+            "en": "Recenter the book at eye level in your line of sight and see your tracked hands while reading. Hand-swipe turns are easier, a narrower margin is available, and read-aloud turns the page as the narration crosses the page break.",
+            "ja": "本を中央に戻すと視線の正面に配置され、ハンドトラッキング中は手が表示されます。手を振ってページをめくりやすくなり、より狭い余白も選べます。読み上げでは次のページの文に差しかかるとページがめくれます。"
+          }
+        },
+        {
+          "id": "attic-bloom-timers-and-effects",
+          "text": {
+            "zh": "改善魔法阁楼。草木志显示预计开花时间和浇水后的等待时间，并重做锦鲤、流星骤雨和地面霜花效果。",
+            "zh_Hant": "改善魔法閣樓。草木誌顯示預計開花時間和澆水後的等待時間，並重做錦鯉、流星驟雨和地面霜花效果。",
+            "en": "The Wizard’s Attic herb book now shows estimated bloom times and how long blooms take after watering. Koi, meteor showers and frost on the floor have updated effects.",
+            "ja": "魔法使いの屋根裏の植物図鑑に、開花までの目安と水やり後にかかる時間を表示します。錦鯉、流星群、床に広がる霜の演出も作り直しました。"
+          }
+        },
+        {
+          "id": "library-directory-file-type-filters",
+          "text": {
+            "zh": "改善资料库分类切换。同一来源内进出文件夹时保留所选分类。本地、SMB、DLNA、最近播放和网盘切换分类时减少整页刷新。",
+            "zh_Hant": "改善資料庫分類切換。同一來源內進出資料夾時保留所選分類。本機、SMB、DLNA、最近播放和網路磁碟切換分類時減少整頁重新整理。",
+            "en": "Keep the selected file type as you navigate folders in the same source. Switching file types triggers fewer full-page refreshes in local, SMB and DLNA folders, Recently Played, and cloud storage.",
+            "ja": "同じソース内でフォルダーを移動しても、選択したファイルの種類を維持します。ローカル・SMB・DLNAフォルダー、最近の再生、クラウドストレージで種類を切り替える際の画面全体の更新を減らしました。"
+          }
+        },
+        {
+          "id": "cloud-paged-list-controls",
+          "text": {
+            "zh": "改善网盘分页浏览。加载列表时，导航栏和编辑按钮保持在原位。",
+            "zh_Hant": "改善網路磁碟分頁瀏覽。載入清單時，導覽列和編輯按鈕保持在原位。",
+            "en": "The navigation bar and edit button stay in place while paged cloud listings load.",
+            "ja": "クラウドストレージのページ読み込み中も、ナビゲーションバーと編集ボタンの位置が変わらなくなりました。"
+          }
+        },
+        {
+          "id": "immersive-video-wider-zoom-out",
+          "text": {
+            "zh": "改善 VR180 和 360° 视频的缩放范围，最小可缩到约 0.25 倍。",
+            "zh_Hant": "改善 VR180 和 360° 影片的縮放範圍，最小可縮到約 0.25 倍。",
+            "en": "Zoom VR180 and 360° videos out to about 0.25×.",
+            "ja": "VR180・360°動画を約0.25倍まで縮小できるようになりました。"
+          }
+        },
+        {
+          "id": "imported-scene-library-capacity",
+          "text": {
+            "zh": "改善场景管理，可保存的导入场景上限由 64 个提高到 256 个。",
+            "zh_Hant": "改善場景管理，可儲存的匯入場景上限由 64 個提高到 256 個。",
+            "en": "The imported scene library now holds up to 256 scenes, up from 64.",
+            "ja": "保存できるインポート済みシーンの上限を64件から256件に引き上げました。"
+          }
+        },
+        {
+          "id": "webdav-provider-card-click",
+          "text": {
+            "zh": "修复网盘服务列表中「添加 WebDAV」点击无反应的问题。",
+            "zh_Hant": "修復網路磁碟服務清單中「新增 WebDAV」點擊無反應的問題。",
+            "en": "Fix the Add WebDAV card in the cloud storage list failing to open its setup form.",
+            "ja": "クラウドストレージ一覧で「WebDAVを追加」を選んでも設定画面が開かない問題を修正しました。"
+          }
+        },
+        {
+          "id": "cloud-missing-file-message",
+          "text": {
+            "zh": "修复网盘文件或目录移走、删除后仍提示连接失败的问题，现在会提示找不到文件或账号。",
+            "zh_Hant": "修復網路磁碟的檔案或資料夾移動、刪除後仍提示連線失敗的問題，現在會提示找不到檔案或帳號。",
+            "en": "Show a missing file or account message when a cloud file or folder has moved or been deleted. Previously this could appear as a connection error.",
+            "ja": "クラウド上のファイルやフォルダーを移動・削除した場合に接続エラーと表示される問題を修正し、ファイルまたはアカウントが見つからない旨を表示します。"
+          }
+        },
+        {
+          "id": "video-passthrough-first-frame-timeout",
+          "text": {
+            "zh": "修复开启视频透视时模型准备较慢导致首帧提前超时的问题。加载时会显示「正在准备模型」。",
+            "zh_Hant": "修復開啟影片透視時模型準備較慢，導致第一幀提早逾時的問題。載入時會顯示「正在準備模型」。",
+            "en": "Fix premature first-frame timeouts when the model takes longer to initialize after enabling video passthrough. The loading screen indicates that the model is being prepared.",
+            "ja": "動画パススルーを有効にした際、モデルの準備に時間がかかると最初のフレームの読み込みが早期にタイムアウトする問題を修正しました。準備中はその旨を表示します。"
+          }
+        },
+        {
+          "id": "video-output-reopen-race",
+          "text": {
+            "zh": "修复部分可恢复的视频输出中断未触发自动重开的问题。",
+            "zh_Hant": "修復部分可恢復的影片輸出中斷未觸發自動重新播放的問題。",
+            "en": "Fix a case where some recoverable video output interruptions skipped the automatic reopen attempt.",
+            "ja": "復旧可能な一部の映像出力中断で、動画が自動で開き直されなかった問題を修正しました。"
+          }
+        },
+        {
+          "id": "zero-parallax-playback-reticle",
+          "scope": [
+            "quest",
+            "openxr"
+          ],
+          "text": {
+            "zh": "修复无视差播放控制栏上的黄色落点跟不上射线的问题。",
+            "zh_Hant": "修復無視差播放控制列上的黃色落點跟不上射線的問題。",
+            "en": "Fix the yellow pointer dot lagging behind the ray on the zero-parallax playback controls.",
+            "ja": "視差なしの再生操作バーで、黄色い照準点がポインターの光線に遅れて動く問題を修正しました。"
+          }
+        }
+      ]
+    },
+    {
       "version": "0.19.0",
       "date": "2026-11-27",
       "title": {

@@ -245,6 +245,17 @@ func _run() -> void:
 	var layer := preload("res://scripts/video_layer.gd").new(null)
 	var packed: PackedFloat32Array = layer.layer_values(video, origin)
 	check(Vector3(packed[2], packed[3], packed[4]).is_equal_approx(video.panel.global_position), "Compositor and eye-buffer sphere share translated pose")
+	# Far zoom-out: past one radius the eyes are outside the sphere and the shaders learn where.
+	video.set_immersive_adjustment("view_zoom", .9)
+	check(video.material.get_shader_parameter("viewer_seat") == Vector3.ZERO, "Inside the sphere nothing is skipped")
+	video.set_immersive_adjustment("view_zoom", 2.5)
+	var seat: Vector3 = video.material.get_shader_parameter("viewer_seat")
+	check(seat.is_equal_approx(-Vector3(video.view_horizontal, video.view_vertical, -2.5) * video.SPHERE_RADIUS), "Outside the sphere the shaders get the eyes in mesh space")
+	check(video._hole_material.get_shader_parameter("viewer_seat") == seat, "Layer hole skips the same near side")
+	video.set_immersive_adjustment("view_zoom", 9.0)
+	check(is_equal_approx(video.view_zoom, Controls.ZOOM_LIMITS.y) and Controls.ZOOM_LIMITS.y >= 3.0, "Zoom-out reaches about 0.25x")
+	check(Controls.zoom_rate(-.4) == 1.0 and Controls.zoom_rate(2.0) == 3.0, "Zoom speeds up only beyond the old range")
+	video.set_immersive_adjustment("view_zoom", 0.0)
 	video.commit_stereo_view(); var sequence: int = video.mode_memory.sequence
 	Privacy.configure_file_settings(Privacy.NONE)
 	video.set_immersive_adjustment("view_horizontal", .3); video.commit_stereo_view()

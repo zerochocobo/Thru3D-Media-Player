@@ -114,6 +114,9 @@ const PATHS := {
 	"heart_filled": '<path d="M12 21L3.5 12.5C-2 6.5 5 0 12 6C19 0 26 6.5 20.5 12.5Z" fill="white"/>',
 	"bookmark": '<path d="M6 3H18V21L12 17 6 21Z"/>',
 	"book_here": '<path d="M3 13C6 11.6 9 11.6 12 13C15 11.6 18 11.6 21 13V21C18 19.6 15 19.6 12 21C9 19.6 6 19.6 3 21ZM12 13V21M12 2V9M8.5 5.5L12 9 15.5 5.5"/>',
+	"turn_curl": '<path d="M3 15C6 13.6 9 13.6 12 15C15 13.6 18 13.6 21 15V21C18 19.6 15 19.6 12 21C9 19.6 6 19.6 3 21ZM12 15V21M18 13C18 2.5 6 2.5 6 12.5M8.6 10.2L6 12.5 3.9 9.8"/>',
+	"turn_low": '<path d="M3 15C6 13.6 9 13.6 12 15C15 13.6 18 13.6 21 15V21C18 19.6 15 19.6 12 21C9 19.6 6 19.6 3 21ZM12 15V21M18 12.5C16.5 9 7.5 9 6 12.5M8.6 13L6 12.5 6.7 9.9"/>',
+	"turn_instant": '<path d="M3 15C6 13.6 9 13.6 12 15C15 13.6 18 13.6 21 15V21C18 19.6 15 19.6 12 21C9 19.6 6 19.6 3 21ZM12 15V21M17 8H7M10 5L7 8 10 11"/>',
 	"auto_turn": '<path d="M3 11C6 9.6 9 9.6 12 11C15 9.6 18 9.6 21 11V21C18 19.6 15 19.6 12 21C9 19.6 6 19.6 3 21ZM12 11V21M6.5 7C9 2.8 15 2.8 17.5 7M17.8 3.8L17.5 7 14.4 6.4"/>',
 	"bookmark_add": '<path d="M5 3H14M5 3V21L11 17 17 21V13M17 3V11M13 7H21"/>',
 	"undo": '<path d="M8 5L3 10 8 15M3 10H14A6 6 0 0 1 14 22"/>',
@@ -194,7 +197,7 @@ const PATHS := {
 	"dome": '<path d="M3 17A9 9 0 0 1 21 17Z"/><path d="M12 8V17M7.5 9.5L9.5 17M16.5 9.5L14.5 17"/>',
 	"fisheye": '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/>',
 	"more": '<circle cx="5" cy="12" r="1.6" fill="white"/><circle cx="12" cy="12" r="1.6" fill="white"/><circle cx="19" cy="12" r="1.6" fill="white"/>',
-	"hourglass": '<path d="M6 3H18M6 21H18M7 3C7 9 17 9 17 12S7 15 7 21M17 3C17 9 7 9 7 12S17 15 17 21"/>',
+	"hourglass": '<path d="M6 3H18M6 21H18M8 3V6Q8 9 12 12Q16 15 16 18V21M16 3V6Q16 9 12 12Q8 15 8 18V21"/><path d="M9.5 20H14.5Q14 17.5 12 16.5Q10 17.5 9.5 20Z" fill="white" stroke="none"/>',
 	# Media detection: a playable frame with signal arcs picked up from the page.
 	"media_detect": '<rect x="2" y="8" width="14" height="12" rx="2"/><path d="M7 11.5L11.5 14 7 16.5Z" fill="white" stroke="none"/><path d="M17 2A5 5 0 0 1 22 7M17 4.5A2.5 2.5 0 0 1 19.5 7"/>',
 	"video": '<rect x="2" y="5" width="15" height="14" rx="2"/><path d="M17 10L22 7V17L17 14"/>',

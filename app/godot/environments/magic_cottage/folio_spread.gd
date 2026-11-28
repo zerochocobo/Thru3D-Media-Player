@@ -161,12 +161,20 @@ func pot(archive: Discovery) -> void:
 		var reached := archive.stage>=i
 		slab(marks,Vector3(LEFT+WIDTH*marks_at[i],.040,.022),Vector3(.016,.022,.001),Color("#6f9a4c") if reached else Color("#a88c62"))
 		label(names[i],LEFT+WIDTH*marks_at[i],.006,.014,heading if reached else ink)
-	label("已浇透 · 生长加倍" if archive.wet else "提壶浇水 · 生长加倍",.19,-.030,.017,ink if archive.wet else heading)
+	label("已浇透 · 生长加倍" if archive.wet else "提壶浇水 · 生长加倍",.19,-.026,.017,ink if archive.wet else heading)
+	label(bloom_hint(archive),.19,-.049,.015,ink)
 	for i in Discovery.SPECIES.size():
 		var x := LEFT+.012+(i%5)*.0615
 		var y := -.105-(i/5)*.036
 		slab(marks,Vector3(x,y,.020),Vector3(.030,.030,.001),Plant.PALETTE[i] if archive.herbs.has(i) else Color("#c9b083"))
 	label("已育成  %d / 10"%archive.herbs.size(),.19,-.072,.014,ink)
+
+## How long until the pot flowers, in whole minutes of time spent in the attic.
+static func bloom_hint(archive: Discovery) -> String:
+	if archive.stage == 2: return "已开花 · 收入图鉴"
+	var left := float(Discovery.FULL-archive.effective_ms)/60000.
+	if archive.wet: return "约 %d 分钟后开花" % maxi(1,ceili(left*.5))
+	return "约 %d 分钟后开花 · 浇水后 %d 分钟" % [maxi(1,ceili(left)),maxi(1,ceili(left*.5))]
 
 func side(index: int) -> Texture2D:
 	return views[index].get_texture()

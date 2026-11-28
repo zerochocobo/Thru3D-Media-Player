@@ -46,6 +46,8 @@ def check_files(files):
         path = PurePosixPath(name)
         if path.is_absolute() or '..' in path.parts or '\\' in name or ':' in name:
             errors.append(f'{name}: unsafe path')
+        if name in {'app/godot/assets/wands/wands.res', 'app/godot/assets/wands/wands.png', 'app/godot/assets/wands/wands.png.import'}:
+            errors.append(f'{name}: excluded wand model or material payload')
         if name.startswith('media-source/') or name == 'app/godot/data/experience.dat' or (name.startswith('app/godot/environments/magic_cottage/') and path.suffix not in {'.gd', '.gdshader', '.gdshaderinc', '.uid'}):
             errors.append(f'{name}: excluded scene or experience payload')
         if path.name.lower() in {'voice.json', 'voice.new', 'reference.wav'} or ('narration' in path.parts and 'voices' in path.parts) or data.startswith(b'T3VOICE1'):

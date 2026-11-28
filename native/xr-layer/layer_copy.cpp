@@ -54,7 +54,7 @@ GLuint part_program = 0;
 GLint part_scale = -1, part_flip = -1, part_rect = -1;
 struct Box { float u0, v0, u1, v1; };
 // The colour grade's uniforms in one program (color_grade.gdshaderinc holds the same arithmetic).
-struct Grade { GLint graded = -1, curved = -1, gain = -1, curve = -1, lift = -1, contrast = -1, saturation = -1; };
+struct Grade { GLuint program = 0; GLint graded = -1, curved = -1, gain = -1, curve = -1, lift = -1, contrast = -1, saturation = -1; };
 Grade part_grade, sharp_grade, finish_grade;
 // Super resolution (FSR 1): sources under the display's density are enlarged with EASU into a texture
 // of the output's size, which the finishing program sharpens (RCAS) and grades onto the surface. Like
@@ -131,6 +131,7 @@ GLuint link(const char* vertex, const char* fragment);
 
 Grade grade_locations(GLuint id) {
     Grade at;
+    at.program = id;
     at.graded = glGetUniformLocation(id, "graded"); at.curved = glGetUniformLocation(id, "curved");
     at.gain = glGetUniformLocation(id, "gain"); at.curve = glGetUniformLocation(id, "curve");
     at.lift = glGetUniformLocation(id, "lift"); at.contrast = glGetUniformLocation(id, "contrast");
@@ -138,10 +139,11 @@ Grade grade_locations(GLuint id) {
     return at;
 }
 
-/** values: gain, gamma and offset per channel, contrast, saturation (11), or null for no grade. The
- * gamma step is left out while every exponent is 1. */
+/** values: gain, gamma and offset per channel, contrast, saturation, then monochrome film (kGradeAll,
+ * picture_glsl.h), or null for no grade. The gamma step is left out while every exponent is 1. */
 void set_grade(const Grade& at, const jfloat* values) {
     glUniform1i(at.graded, values ? 1 : 0);
+    set_mono(at.program, values);
     if (!values) return;
     glUniform3f(at.gain, values[0], values[1], values[2]);
     glUniform3f(at.curve, values[3], values[4], values[5]);
@@ -547,9 +549,8 @@ bool layer_copy::blit(JNIEnv* env, AHardwareBuffer* buffer, jint width, jint hei
     const float sx = static_cast<float>(width) / buffer_width, sy = static_cast<float>(height) / buffer_height;
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture);
-    jfloat graded[11];
-    const bool grading = picture && grade && env->GetArrayLength(grade) >= 11;
-    if (grading) env->GetFloatArrayRegion(grade, 0, 11, graded);
+    jfloat graded[kGradeAll];
+    const bool grading = picture && read_grade(env, grade, graded);
     // u, v, half width, half height (eye UV), eyes across, eyes down, longitude wraps, debug tint.
     jfloat area[8] = {0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f};
     if (sharp && window && env->GetArrayLength(window) >= 8) env->GetFloatArrayRegion(window, 0, 8, area);

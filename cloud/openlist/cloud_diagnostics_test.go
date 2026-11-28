@@ -2,11 +2,13 @@ package cloudcore
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/OpenListTeam/OpenList/v4/internal/errs"
 	sdk "github.com/OpenListTeam/115-sdk-go"
 	"github.com/gin-gonic/gin"
 )
@@ -23,6 +25,30 @@ func TestCloudListFailureKeepsWrapped115ResponseWithoutPrivatePath(t *testing.T)
 	detail := result["error_detail"].(string)
 	if !strings.Contains(detail, "115 code: 430004") || !strings.Contains(detail, "文件夹不存在或无权限") || !strings.Contains(detail, "list115.list") || strings.Contains(detail, "private/account") {
 		t.Fatal("provider failure was lost or private wrapper leaked", detail)
+	}
+}
+
+func TestCloudListFailureMarksMissingFile(t *testing.T) {
+	for _, err := range []error{
+		fmt.Errorf("lookup: %w", sdk.ErrObjectNotFound),
+		&sdk.Error{Code: 430004, Message: "文件夹不存在或无权限"},
+		fmt.Errorf("get: %w", errs.ObjectNotFound),
+		errors.New("connection reset"),
+	} {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		cloudListError(c, "stat115.lookup", err)
+		var result map[string]any
+		if json.Unmarshal(w.Body.Bytes(), &result) != nil {
+			t.Fatal(w.Body.String())
+		}
+		want := "cloud_file_missing"
+		if err.Error() == "connection reset" {
+			want = ""
+		}
+		if got, _ := result["error_reason"].(string); got != want {
+			t.Fatal(err, "reason", got)
+		}
 	}
 }
 

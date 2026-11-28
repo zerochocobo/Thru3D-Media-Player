@@ -317,6 +317,8 @@ if ((Get-Content (Join-Path $logDirectory 'recent-pointer-host.log') -Raw) -matc
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'color-grade-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Color grading controls failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_color_grade.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'color-grade-render.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'color-grade-render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Color grading pixels failed.' }
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 2400 --script res://tests/test_monochrome_film.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'monochrome-film.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'monochrome-film.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Monochrome film failed.' }
 # Library pictures render a frame, so this one needs a renderer.
 & $env:GODOT_EXE --xr-mode off --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/test_thumbnails.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'thumbnails-host.log')
 if ($LASTEXITCODE -ne 0) { throw 'Library picture host regression failed.' }

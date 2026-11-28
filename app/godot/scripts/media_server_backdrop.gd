@@ -73,7 +73,7 @@ func draw() -> void:
 	surface.material_override = material
 	menu._apply_overlay_node(surface)
 	if mode == "slideshow":
-		browser.artwork.autoplay = browser.artwork.binding(wanted[0], surface, current)
+		browser.artwork.autoplay = browser.artwork.binding(wanted[0], surface, current, false)
 
 func tick(delta: float) -> void:
 	if not active():
@@ -114,4 +114,4 @@ func tick(delta: float) -> void:
 		surface.material_override.set_shader_parameter("picture", current)
 		surface.material_override.set_shader_parameter("upcoming", current)
 		surface.material_override.set_shader_parameter("transition", 0.0)
-		browser.artwork.autoplay = browser.artwork.binding(wanted[1], surface, current)
+		browser.artwork.autoplay = browser.artwork.binding(wanted[1], surface, current, false)

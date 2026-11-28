@@ -91,6 +91,14 @@ func run() -> void:
 	check(w.models.get_node("Atlas").material_overlay==null and w.models.get_node("Herbal").material_overlay==w.hover_tint and pulses.size()==2,"the glow follows the wand")
 	check(w.press(hand,ray(w,"Herbal")) and w.volume.visible and w.volume.kind=="Herbal" and w.volume.entries[0].has("pot"),"the herbal opens on the pot")
 	w.release(hand,ray(w,"Herbal"))
+	var Spread := preload("res://environments/magic_cottage/folio_spread.gd")
+	var pot := Discovery.new()
+	pot.effective_ms = 900000
+	check(Spread.bloom_hint(pot)=="约 45 分钟后开花 · 浇水后 23 分钟","the pot page says how long a dry pot takes, and with water")
+	pot.wet = true
+	check(Spread.bloom_hint(pot)=="约 23 分钟后开花","a watered pot counts at double speed")
+	pot.stage = 2
+	check(Spread.bloom_hint(pot)=="已开花 · 收入图鉴","a flowered pot says so")
 	check(w.back() and (w.volume.closing or not w.volume.visible),"B closes an open book")
 	w.volume.close()
 	check(not w.back(),"B with nothing to end is left to the player")

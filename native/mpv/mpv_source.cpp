@@ -1873,6 +1873,8 @@ struct Source final {
     std::string status() {
         std::string snapshot, state_copy, error_copy, reason_copy, stage_copy, render_error_copy, final_copy = "null";
         int held = 0, retiring = 0, code_copy = 0, http_status_copy = 0;
+        // Read the flag before render_error: the render thread writes them in the other order.
+        const bool render_failed_copy = render_failed.load();
         { std::lock_guard<std::mutex> lock(status_mutex); snapshot = details; state_copy = state; error_copy = error;
             code_copy = mpv_failure_code; reason_copy = failure_reason; stage_copy = failure_stage; http_status_copy = failure_http_status; }
         { std::lock_guard<std::mutex> lock(frames_mutex); render_error_copy = render_error;
@@ -1882,12 +1884,14 @@ struct Source final {
                     ",\"render_sequence\":" + std::to_string(final_ticket.render_sequence) + "}";
             for (auto& slot : slots) { held += slot.phase == Phase::acquired; retiring += slot.phase == Phase::retiring; }
         }
+        { const auto classified = quest::published_failure(reason_copy, stage_copy, render_failed_copy, render_error_copy);
+            reason_copy = classified.reason; stage_copy = classified.stage; }
         return "{\"backend\":\"Android_libmpv\",\"state\":" + quote(state_copy) + ",\"error\":" + quote(error_copy) +
             ",\"mpv_code\":" + std::to_string(code_copy) + ",\"failure_reason\":" + quote(reason_copy) + ",\"failure_stage\":" + quote(stage_copy) +
             ",\"http_status\":" + std::to_string(http_status_copy) +
             ",\"render_error\":" + quote(render_error_copy) + ",\"done\":" + (done.load() ? "true" : "false") +
             ",\"close_wait\":" + close_wait() +
-            ",\"render_failed\":" + (render_failed.load() ? "true" : "false") + ",\"closing\":" + (closing.load() ? "true" : "false") +
+            ",\"render_failed\":" + (render_failed_copy ? "true" : "false") + ",\"closing\":" + (closing.load() ? "true" : "false") +
             ",\"rendered\":" + std::to_string(rendered.load()) + ",\"published\":" + std::to_string(published.load()) +
             ",\"skipped\":" + std::to_string(skipped.load()) + ",\"acquired\":" + std::to_string(acquired.load()) +
             ",\"released\":" + std::to_string(released.load()) + ",\"held_slots\":" + std::to_string(held) +

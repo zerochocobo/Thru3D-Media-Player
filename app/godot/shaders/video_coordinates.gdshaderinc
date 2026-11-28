@@ -14,8 +14,16 @@ uniform int video_geometry = 0;
 uniform vec2 source_size = vec2(1920.0, 1080.0);
 uniform vec2 packed_size = vec2(768.0, 432.0);
 uniform bool packed_color = false;
+// The eyes in the mesh's own space when zoomed out beyond the sphere; zero inside it.
+uniform vec3 viewer_seat = vec3(0.0);
 varying flat int eye_index;
 varying vec3 media_direction;
+
+// From outside, only the far bowl shows its inner face: the near side (where the inner face
+// turns away from the eyes) would cover the picture. Always false while inside the sphere.
+bool near_side(vec3 p) {
+	return dot(p, viewer_seat) > dot(p, p);
+}
 
 int source_eye() {
 	if (!stereo_sbs) { return 0; }

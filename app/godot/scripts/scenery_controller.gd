@@ -226,6 +226,7 @@ func snapshot(mode: String) -> Dictionary:
 		var options := {}
 		for key in app._cottage_screen.DEFAULTS: options[key] = app._cottage_screen.option(app.settings, key)
 		state["cottage_screen"] = options
+		state["attic_wand"] = app._attic_wand()
 		state["screen_edit_locked"] = app.screen_edit_lock.locked()
 	var selected: String=str(library.bindings.get(mode,{}).get("id",background.choice))
 	var status:=_error if not _error.is_empty() else library.error
@@ -291,6 +292,7 @@ func _command(operation: String,value: Variant) -> void:
 			elif key=="scene_play_dim": app.scene_import.set_play_dim(float(value.value))
 			elif key=="scene_backdrop": app.scene_import.set_backdrop(str(value.value))
 			elif key=="scene_screen_pin": app.scene_import.set_screen_pinned(bool(value.value))
+			elif key=="attic_wand": app._on_setting_changed(key,value.value)
 			elif key.begins_with("cottage_") and mode=="global" and _background(mode).choice=="magic_cottage": app._on_setting_changed(key,value.value)
 			elif key.begins_with("cinema_") or key.begins_with("beach_"): app._on_setting_changed(key,value.value)
 			else:

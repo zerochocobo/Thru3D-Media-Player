@@ -152,20 +152,32 @@ func moths(t: float,movie: bool) -> void:
 
 func winter(t: float,e: float) -> void:
 	for side: float in [-1.,1.]:
+		# Frost ferns: a curling stem whose fronds shorten toward the tip, each frond with a pair of
+		# twigs, and a six-armed crystal where the stem stops.
 		for root in 5:
 			var start:=Vector3(side*(3.98-.63*root),.066,-4.12+.31*root)
 			var d:=Vector3(-side*.40,0.,.91).normalized()
-			var lateral:=d.cross(Vector3.UP)
+			var curl:=side*(.13 if root%2 else -.09)
 			var prev:=start
 			for j in range(1,7):
 				var growth:=smoothstep(j*.15+root*.31,j*.15+root*.31+.57,t)*e
-				var p:=prev+d*.37*growth
-				line(prev,p,.016*growth,ICE)
+				d=d.rotated(Vector3.UP,curl)
+				var lateral:=d.cross(Vector3.UP)
+				var p:=prev+d*.34*growth
+				line(prev,p,(.017-.0015*j)*growth,ICE)
+				var reach:=(.30-.035*j)*growth
 				for s: float in [-1.,1.]:
-					var fork:=p+(lateral*s*.22+d*.17)*growth
-					line(p,fork,.010*growth,TEAL.lerp(ICE,.55))
-					line(fork,fork+d*.11*growth,.008*growth,ICE)
+					var frond:=(lateral*s*.80+d*.60).normalized()
+					var mid:=prev.lerp(p,.5)
+					var tip:=mid+frond*reach
+					line(mid,tip,.008*growth,TEAL.lerp(ICE,.55))
+					var twig_at:=mid+frond*reach*.55
+					line(twig_at,twig_at+(frond+d*.9).normalized()*reach*.35,.005*growth,ICE)
 				prev=p
+			var bloom:=smoothstep(.9+root*.31,1.45+root*.31,t)*e
+			for k in 3:
+				var arm:=Vector3.RIGHT.rotated(Vector3.UP,PI*k/3.+root)*.075*bloom
+				line(prev-arm,prev+arm,.007*bloom,WHITE)
 		for j in 11:
 			var x:=side*(.27+j*.35)
 			var h:=3.15+.98*cos(j*.135)
@@ -177,25 +189,37 @@ func winter(t: float,e: float) -> void:
 				var b:=a+PI*.5
 				wing(root+Vector3(cos(a),0,sin(a))*.058*e,root+Vector3(cos(b),0,sin(b))*.058*e,tip,ICE if k%2 else TEAL)
 
+## Meteors pour from both upper windows toward the floor: a bright head in a glow, a long tail
+## that cools from white to ice to violet, a spark trail, and a ring and burst where each lands.
 func shower(t: float,e: float) -> void:
 	for i in 27:
 		var side:= -1. if i%2==0 else 1.
+		var big:=i%5==0
 		var a:=Vector3(side*(2.5+1.6*absf(sin(i*2.))),3.65+.63*sin(i*1.8),-4.60)
 		var b:=Vector3(side*(1.70+1.50*absf(cos(i*1.3))),.14,-2.80+.68*sin(i*2.1))
 		var phase:=fposmod(t*(.34+.045*(i%4))+i*.145,1.)
 		if phase<.74:
 			var u:=phase/.74
 			var p:=a.lerp(b,u*u)
-			var tail:=a.lerp(b,maxf(0.,u*u-.19))
-			line(p,tail,(.014 if i%5 else .035)*e,ICE)
-			bead(p,(.032 if i%5 else .079)*e,WHITE)
-			if i%5==0: halo(p,.36*e,GOLD)
-		elif i%3==0:
+			var prev:=p
+			for k in 6:
+				var tail:=a.lerp(b,maxf(0.,u*u-.055*(k+1)*(1.4 if big else 1.)))
+				var w:=(.030 if big else .016)*(1.-k/6.)*e
+				line(prev,tail,w,WHITE.lerp(ICE,k/3.) if k<3 else ICE.lerp(PURPLE,(k-3)/3.).darkened(.12*(k-3)))
+				prev=tail
+				if k%2==1: bead(tail+Vector3(sin(i*5.+k),cos(i*3.+k),0.)*.03,.006*e,GOLD)
+			bead(p,(.070 if big else .034)*e,WHITE)
+			halo(p,(.62 if big else .26)*e,GOLD if big else ICE)
+		else:
 			var u:=(phase-.74)/.26
-			for j in 7:
-				var angle:=TAU*j/7.
-				var p:=b+Vector3(cos(angle)*u*.41,.50*sin(PI*u),sin(angle)*u*.41)
-				bead(p,.031*(1.-u)*e,GOLD)
+			# The landing ring spreads and is gone before it could dim to a grey band on the floor.
+			if u<.55: hoop(b+Vector3.UP*.01,Vector3.UP,(.08+(.55 if big else .32)*u/.55)*e*(1.-u/.55*.35),GOLD if big else ICE)
+			if i%3==0 or big:
+				for j in 7:
+					var angle:=TAU*j/7.+i
+					var q:=b+Vector3(cos(angle)*u*.41,.50*sin(PI*u),sin(angle)*u*.41)
+					bead(q,.031*(1.-u)*e,GOLD)
+				if u<.35: halo(b+Vector3.UP*.08,(.9 if big else .5)*(1.-u/.35)*e,GOLD)
 
 func orrery(t: float,e: float,movie: bool) -> void:
 	var center:=Vector3(0,3.78,-3.83) if movie else Vector3(0,2.39,-3.67)

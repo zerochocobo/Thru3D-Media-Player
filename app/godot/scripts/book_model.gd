@@ -115,6 +115,17 @@ var single := false
 var light := Color.WHITE
 ## Which side the turning leaf is over: 1 the right, -1 the left, 0 while no leaf is in the air.
 var leaf_side := 0
+## How a leaf goes over: 0 curls up and over (standing tall at the middle of the turn), 1 stays low
+## over the pages (a reader sitting close never has a page rise towards the face), 2 is not shown at
+## all (the pages change at once; a leaf held with the trigger still shows, low).
+var turn_style := 0
+const CURL := 0
+const LOW := 1
+const INSTANT := 2
+## How high a low leaf rises, as a share of the curl's.
+const LOW_RISE := 0.16
+## The paper makes no sound.
+var quiet := false
 
 var _left := MeshInstance3D.new()
 var _right := MeshInstance3D.new()
@@ -317,6 +328,11 @@ func _bend(amount: float) -> PackedVector2Array:
 		point += Vector2(cos(angle), sin(angle)) * step
 		# Resting leaves follow the dip of the gutter; a lifted one straightens out of it.
 		section.append(Vector2(point.x, maxf(point.y, _dip(absf(point.x)) + 0.0006)))
+	if turn_style != CURL:
+		# The same sweep pressed flat: the leaf folds over close to the pages instead of standing up.
+		for i in section.size():
+			var rest := _dip(absf(section[i].x)) + 0.0006
+			section[i].y = rest + maxf(section[i].y - rest, 0.0) * LOW_RISE
 	return section
 
 ## Blank leaves fluttering across while the book falls open at a distant page: [phase] runs 0..1.
@@ -361,6 +377,7 @@ static func rustle() -> AudioStreamWAV:
 	return stream
 
 func sound(pitch: float, loud: float = 0.0) -> void:
+	if quiet: return
 	_sound.pitch_scale = pitch; _sound.volume_db = -8.0 + loud
 	_sound.play()
 

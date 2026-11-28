@@ -56,7 +56,8 @@ const LISTS := ["contents", "marks", "search", "settings"]
 const TextInput := preload("res://scripts/system_text_input.gd")
 const SIZE_BASE := 40
 const PAPER_BASE := 60
-const LIGHT_BASE := 70
+## Above the twelve papers (60..71).
+const LIGHT_BASE := 86
 const ONE_PAGE := 80
 const TWO_PAGES := 81
 ## The settings' rows, well clear of the list rows (ROW + index).
@@ -72,6 +73,14 @@ const SECTION_BASE := 50080
 const AUTO_SWITCH := 50090
 const READ := 3
 const READ_SWITCH := 50091
+const SOUND_SWITCH := 50092
+const STYLE_BASE := 50093
+const PREVIEW := 50096
+const CLONE_BASE := 50180
+const WAND_BASE := 50190
+const CLONES := 5
+const PICTURE_SWITCH := 50097
+const PICTURE_CHOOSE := 50098
 const VOICE_BASE := 50100
 const SPEED_BASE := 50120
 const FONT_BASE := 50140
@@ -123,6 +132,9 @@ var _hits: Array = []
 var _more := false
 var _searched := ""
 var _font_redraw := 0
+## The cloned voices the read page last showed, to redraw it when the list arrives or changes.
+var _cloned_ids: Array = []
+var _audition_drawn := false
 
 func composition_root() -> Node3D: return self
 func has_pointer_capture() -> bool: return false
@@ -232,6 +244,9 @@ func _process(delta: float) -> void:
 		# The compositor measures the ring when it repaints: it repaints as the ring grows.
 		composition_changed.emit()
 	if mode == "bar" and Time.get_ticks_msec() - _touched > IDLE_MS: dismiss()
+	if mode == "settings" and section == "read" and Time.get_ticks_msec() > _font_redraw:
+		_font_redraw = Time.get_ticks_msec() + 400
+		if reader.narration.cloned().map(func(item): return str(item.id)) != _cloned_ids or reader.narration.audition != _audition_drawn: refresh()
 	if mode == "settings" and section == "font" and Time.get_ticks_msec() > _font_redraw:
 		_font_redraw = Time.get_ticks_msec() + 500
 		if reader.fonts.rows.any(func(item): return reader.fonts.state_of(str(item.slug)) in ["loading", "queued"]): refresh()
@@ -365,6 +380,7 @@ func _draw_settings() -> void:
 	_backdrop.material_override.set_shader_parameter("corner_radius", 0.028)
 	_backdrop.material_override.set_shader_parameter("solid", true)
 	_glyph(BACK, "back", Vector2(-0.51, 0.455), 0.075, true, I18n.t("Back"))
+	_row_step = 0.13 if section in ["look", "book"] else ROW_STEP
 	var fixed: bool = reader.info.get("fixed", false)
 	for i in SECTIONS.size():
 		var item: Array = SECTIONS[i]
@@ -387,7 +403,10 @@ const ROW_TOP := 0.29
 const ROW_STEP := 0.165
 const CELL := 0.085
 
-func _row_y(row: int) -> float: return ROW_TOP - row * ROW_STEP
+## The looks page holds five rows; the others four.
+var _row_step := ROW_STEP
+
+func _row_y(row: int) -> float: return ROW_TOP - row * _row_step
 
 func _cell(row: int, index: int) -> Vector2: return Vector2(-0.2 + index * 0.1, _row_y(row))
 
@@ -430,14 +449,21 @@ func _draw_look() -> void:
 		_swatch(PAPER_BASE + index, Color(str(reader.PAPERS[index].paper)), Color(str(reader.PAPERS[index].ink)), _cell(1, i), index == reader.paper)
 	var paper := Color(str(reader.PAPERS[reader.paper].paper))
 	var ink := Color(str(reader.PAPERS[reader.paper].ink))
-	_row_label("Brightness", 2)
+	# A picture of the reader's own under the words: on or off, and another one from the library.
+	_row_label("Paper picture", 2)
+	var printed: bool = reader.info.get("fixed", false)
+	_choice(PICTURE_SWITCH, "", _cell(2, 0), reader.picture, not printed, "image",
+		I18n.t("Plain paper" if reader.picture else "Paper picture"))
+	_choice(PICTURE_CHOOSE, "", _cell(2, 1), false, not printed and not reader.pictures.busy, "hourglass" if reader.pictures.busy else "folder",
+		I18n.t("Choose a picture"))
+	_row_label("Brightness", 3)
 	for i in reader.LIGHTS.size():
 		var shade: Color = reader.tint(i, reader.warmth)
-		_swatch(LIGHT_BASE + i, paper * shade, ink * shade, _cell(2, i), i == reader.light, "")
-	_row_label("Warmth", 3)
+		_swatch(LIGHT_BASE + i, paper * shade, ink * shade, _cell(3, i), i == reader.light, "")
+	_row_label("Warmth", 4)
 	for i in reader.WARMTHS.size():
 		var shade: Color = reader.tint(reader.light, i)
-		_swatch(WARM_BASE + i, paper * shade, ink * shade, _cell(3, i), i == reader.warmth, "")
+		_swatch(WARM_BASE + i, paper * shade, ink * shade, _cell(4, i), i == reader.warmth, "")
 
 func _draw_type() -> void:
 	_row_label("Text size", 0)
@@ -467,19 +493,31 @@ func _draw_book() -> void:
 	_row_label("Distance", 2)
 	for i in reader.REACHES.size():
 		_choice(REACH_BASE + i, str(i + 1), _cell(2, i), i == reader.reach_step)
-	_row_label("Bring the book here", 3)
-	_choice(RECENTER, "", _cell(3, 0), false, true, "book_here", I18n.t("Bring the book here"))
+	# Bringing the book here is on the ring; this row says how a page goes over.
+	_row_label("Page turn animation", 3)
+	for i in TURN_STYLES.size():
+		_choice(STYLE_BASE + i, "", _cell(3, i), i == reader.turn_style, true, str(TURN_STYLES[i][0]), I18n.t(str(TURN_STYLES[i][1])))
+	# In the Wizard's Attic this is the attic's own wand: the scene setting wins over the book's.
+	_row_label("Wand", 4)
+	for i in reader.Wand.STYLES.size():
+		var style: String = reader.Wand.STYLES[i]
+		_choice(WAND_BASE + i, "", _cell(4, i), style == reader.shown_wand(), true, "", I18n.t(str(reader.Wand.NAMES[style])))
+		var picture := _icon("info", Vector3(0, 0, 0.004), CELL * 0.82, Color.WHITE, _buttons.back().node)
+		picture.material_override.albedo_texture = reader.Wand.picture(style)
 
 const TURN_ROWS := [["swish", "bolt", "Swish the wand"], ["drag", "single_page", "Pull a page with the trigger"],
 	["buttons", "gamepad", "A / X buttons"], ["stick", "forward", "Thumbstick"], ["palm", "hand_unlocked", "Wave a hand across the book"]]
 
-## Each way of turning pages is a switch; at least one stays on.
+const TURN_STYLES := [["turn_curl", "Page curl"], ["turn_low", "Low page turn"], ["turn_instant", "No animation"]]
+
+## Each way of turning pages is a switch; at least one stays on. Under them, the sound of the paper.
 func _draw_turns() -> void:
-	for i in TURN_ROWS.size():
-		var item: Array = TURN_ROWS[i]
-		var on: bool = reader.turns.get(item[0], false)
-		var y := ROW_TOP - i * 0.135
-		_button(TURN_BASE + i, "", Vector2(0.0, y), Vector2(1.04, 0.115), true)
+	for i in TURN_ROWS.size() + 1:
+		var sound := i == TURN_ROWS.size()
+		var item: Array = ["", "sound" if reader.page_sound else "mute", "Page turn sound"] if sound else TURN_ROWS[i]
+		var on: bool = reader.page_sound if sound else reader.turns.get(item[0], false)
+		var y := ROW_TOP + 0.01 - i * 0.113
+		_button(SOUND_SWITCH if sound else TURN_BASE + i, "", Vector2(0.0, y), Vector2(1.04, 0.1), true)
 		var node: Node3D = _buttons.back().node
 		var ink := UiTheme.color("text") if on else MUTED
 		_icon(str(item[1]), Vector3(-0.46, 0, 0.004), 0.05, ink, node)
@@ -487,13 +525,19 @@ func _draw_turns() -> void:
 		words.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; words.modulate = ink
 		_icon("check" if on else "circle", Vector3(0.46, 0, 0.004), 0.05, ACCENT if on else MUTED, node)
 
-## Reading aloud: on or off, the voice for the book's language and how fast it reads.
+## Reading aloud: on or off with a short audition, the voice for the book's language (a preset or one
+## of the reader's own cloned voices) and how fast it reads.
 func _draw_read() -> void:
 	var narration: RefCounted = reader.narration
 	var can: bool = reader.count > 0 and narration.supported()
+	var reading: bool = narration.on and not narration.audition
+	_audition_drawn = narration.audition
 	_row_label("Read aloud", 0)
-	_choice(READ_SWITCH, "", _cell(0, 0), narration.on, can, "stop" if narration.on else "voice",
-		I18n.t("Stop reading aloud" if narration.on else "Read aloud"))
+	_choice(READ_SWITCH, "", _cell(0, 0), reading, can, "stop" if reading else "voice",
+		I18n.t("Stop reading aloud" if reading else "Read aloud"))
+	# Reading aloud already speaks in a newly chosen voice; the audition is for choosing before.
+	_choice(PREVIEW, "", _cell(0, 1), narration.audition, can and not reading, "stop" if narration.audition else "play",
+		I18n.t("Stop preview" if narration.audition else "Preview voice"))
 	_row_label("Voice", 1)
 	var voices: Array = Narration.VOICES[narration.language()]
 	for i in voices.size():
@@ -502,9 +546,20 @@ func _draw_read() -> void:
 		_button(VOICE_BASE + i, "", Vector2(-0.16 + i * 0.15, _row_y(1)), Vector2(0.14, 0.085), true, "", chosen)
 		var words := _label(I18n.t(str(info[0])) + str(int(info[1])), Vector3(0, 0, 0.004), 16, _buttons.back().node)
 		words.modulate = UiTheme.color("primary_ink") if chosen else UiTheme.color("text")
-	_row_label("Reading speed", 2)
+	var cloned: Array = narration.cloned()
+	_cloned_ids = cloned.map(func(item): return str(item.id))
+	var row := 2
+	if not cloned.is_empty():
+		_row_label("My cloned voices", row)
+		for i in mini(cloned.size(), CLONES):
+			var chosen: bool = str(cloned[i].id) == narration.voice()
+			_button(CLONE_BASE + i, "", Vector2(-0.16 + i * 0.15, _row_y(row)), Vector2(0.14, 0.085), true, "", chosen)
+			var words := _label(_fit_title(str(cloned[i].get("name", "")), "", 0.125, 15), Vector3(0, 0, 0.004), 15, _buttons.back().node)
+			words.modulate = UiTheme.color("primary_ink") if chosen else UiTheme.color("text")
+		row += 1
+	_row_label("Reading speed", row)
 	for i in narration.SPEEDS.size():
-		_choice(SPEED_BASE + i, str(narration.SPEEDS[i]), _cell(2, i), i == narration.speed)
+		_choice(SPEED_BASE + i, str(narration.SPEEDS[i]), _cell(row, i), i == narration.speed)
 
 ## The fonts for the open book's language: the system's, then free ones fetched when first chosen.
 func _draw_fonts() -> void:
@@ -587,6 +642,11 @@ func _setting(target: int) -> bool:
 		var way := str(TURN_ROWS[target - TURN_BASE][0])
 		reader.set_turn(way, not reader.turns.get(way, false))
 	elif target == AUTO_SWITCH: reader.set_auto(not reader.auto)
+	elif target == SOUND_SWITCH: reader.set_page_sound(not reader.page_sound)
+	elif target == PICTURE_SWITCH: reader.set_picture(not reader.picture)
+	elif target == PICTURE_CHOOSE: reader.picture_wanted.emit()
+	elif target >= STYLE_BASE and target < STYLE_BASE + TURN_STYLES.size(): reader.set_turn_style(target - STYLE_BASE)
+	elif target >= WAND_BASE and target < WAND_BASE + reader.Wand.STYLES.size(): reader.set_wand(reader.Wand.STYLES[target - WAND_BASE])
 	elif target >= FONT_REMOVE_BASE and target < FONT_REMOVE_BASE + 12:
 		var ids: Array = [""] + reader.fonts.fonts_for(reader.variant()).map(func(item): return str(item.slug))
 		if target - FONT_REMOVE_BASE < ids.size(): reader.remove_font(str(ids[target - FONT_REMOVE_BASE]))
@@ -598,6 +658,9 @@ func _setting(target: int) -> bool:
 		var voices: Array = Narration.VOICES[reader.narration.language()]
 		if target - VOICE_BASE < voices.size(): reader.narration.set_voice(str(voices[target - VOICE_BASE])); reader.save_reading()
 	elif target >= SPEED_BASE and target < SPEED_BASE + 8: reader.narration.set_speed(target - SPEED_BASE); reader.save_reading()
+	elif target == PREVIEW: reader.narration.preview()
+	elif target >= CLONE_BASE and target < CLONE_BASE + CLONES:
+		if target - CLONE_BASE < _cloned_ids.size(): reader.narration.set_voice(str(_cloned_ids[target - CLONE_BASE])); reader.save_reading()
 	else: return false
 	refresh()
 	return true

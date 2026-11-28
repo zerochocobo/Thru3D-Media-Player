@@ -240,7 +240,7 @@ var photo_hands := PhotoHandGestures.new()
 var photo_swipe := PhotoPalmSwipe.new()
 var memory_swipe := preload("res://scripts/memory_swipe.gd").new()
 ## A palm swept across in front of the book turns its page: the same trajectory test as the photo wall.
-var book_swipe := preload("res://scripts/memory_swipe.gd").new()
+var book_swipe: RefCounted = preload("res://scripts/memory_swipe.gd").new().for_book()
 var _gallery_save_after := 0
 var _gallery_saved_state := ""
 var _pip_image_target: WeakRef
@@ -555,8 +555,12 @@ func _ready() -> void:
 	book.head_provider = _head_pose
 	book.closed.connect(_on_book_closed)
 	book.felt.connect(_on_book_felt)
+	book.scene_wand_chosen.connect(func(style: String): _on_setting_changed("attic_wand", style))
 	book.library_requested.connect(_show_recent_menu)
 	book.bar.scene_requested.connect(func(): if scenery: scenery.open())
+	book.floor_provider = _book_floor
+	book.picture_wanted.connect(_begin_book_picture)
+	book.narration.personal_voices = func() -> Array: return video.narration.voice_manager_snapshot().get("narration_personal_voices", []) if video else []
 	book.bar.audio_state = background_audio.snapshot
 	book.bar.music_toggle = background_audio.toggle_pause
 	book.bar.music_requested.connect(_show_book_music)
@@ -2298,7 +2302,7 @@ func _process_immersive_sticks(left: Vector2, right: Vector2, delta: float) -> b
 			immersive_sticks.alignment_value = clampf(immersive_sticks.alignment_value + amount * ImmersiveAdjustments.ALIGNMENT_SPEED, span.x, span.y)
 			video.set_stereo_alignment("stereo_horizontal", immersive_sticks.alignment_value)
 		else:
-			video.set_immersive_adjustment(action.key, float(video.get(action.key)) + amount * (ZOOM_SPEED if action.key == "view_zoom" else ImmersiveAdjustments.MOVE_SPEED))
+			video.set_immersive_adjustment(action.key, float(video.get(action.key)) + amount * (ZOOM_SPEED * ImmersiveAdjustments.zoom_rate(video.view_zoom) if action.key == "view_zoom" else ImmersiveAdjustments.MOVE_SPEED))
 		adjusting = true
 		_show_immersive_adjustment(action.key)
 		if controller_feedback: controller_feedback.wake(hand)
@@ -3023,7 +3027,7 @@ func _update_controller_feedback(delta: float) -> void:
 		var reveal_only: bool = not feedback_visible and not watching and not _ray_reveal.is_empty()
 		for hand in ["left_hand", "right_hand"]: hidden_hands[hand] = hand_lock.blocked(hand) or (reveal_only and not _ray_reveal.has(hand))
 		input_visuals.update_visibility(focused, alphas, feedback_visible or watching or reveal_only, hidden_hands, _hand_models_visible(),
-			{"left_hand": controller_presence.engaged("left_hand"), "right_hand": controller_presence.engaged("right_hand")})
+			{"left_hand": controller_presence.engaged("left_hand"), "right_hand": controller_presence.engaged("right_hand")}, book != null and book.active)
 
 func _menu_pointer_owned(menu: Node3D, hand: String) -> bool:
 	if menu == null: return false
@@ -3793,6 +3797,15 @@ func _book_button(action: String, hand: String, first: bool) -> String:
 				else: book.bar.open()
 			return "routed.book_bar"
 	return ""
+
+## The floor the tome must stay above: the attic's own, an imported room's under the viewer's eyes,
+## or the real floor under the play space.
+func _book_floor() -> Variant:
+	if cottage and cottage.visible and cottage.aligned: return cottage.global_transform.origin.y
+	var head: Variant = _head_pose()
+	if scene_import and scene_import.movable() and head is Transform3D: return head.origin.y - scene_import.eye_height()
+	if xr_origin == null: return null
+	return xr_origin.global_position.y - XrFloor.offset() * XRServer.world_scale
 
 ## Whether this hand's ray meets the book or passes just beside it (as the wand's [member BookReader.pointing]).
 func _book_points(hand: String) -> bool:
@@ -5393,6 +5406,12 @@ func _sync_airplay_password() -> void:
 		platform_plugin.airplay_receiver_require_password(bool(settings.get_value("casting", "airplay_require_password", false)))
 
 func _on_setting_changed(key: String, value: Variant) -> void:
+	if key == "attic_wand":
+		var style: String = BookReader.Wand.valid_style(str(value))
+		settings.set_value("appearance", "attic_wand", style); settings.save(settings_path)
+		if cottage: cottage.set_wand_style(style)
+		if book and not book.scene_wand.is_empty(): book.set_scene_wand(style)
+		return
 	if key.begins_with("cottage_"):
 		var option := key.trim_prefix("cottage_")
 		if option != "play_dim" and screen_edit_lock.deny("", "cottage_screen"): return
@@ -5443,6 +5462,10 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			settings.set_value("media_server", "report_interval_ms", ServerPlayback.normalize_interval(value))
 			settings.save(settings_path)
 			_sync_server_report_interval()
+		"autoplay_animated_covers":
+			settings.set_value("media_server", key, bool(value))
+			settings.save(settings_path)
+			recent_menu.server_browser.artwork.auto_covers = bool(value)
 		"narration_voice_manager": video.narration.global_voice_command(value)
 		"external_bindings":
 			_release_external()
@@ -5942,7 +5965,8 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		if not photo_active and video: video.set_video_aspect_lock(bool(value))
 		return
 	if screen_edit_lock.guard(key): return
-	if key in ["picture_quality", "picture_upscale", "picture_denoise", "picture_interpolation", "picture_anime4k", "picture_anime4k_mode", "picture_anime4k_tier"]:
+	if key in ["picture_quality", "picture_upscale", "picture_denoise", "picture_interpolation", "picture_anime4k", "picture_anime4k_mode", "picture_anime4k_tier",
+			"picture_mono", "picture_mono_style", "picture_mono_grain"]:
 		if photo_active or not video: return
 		if not _picture_controls_current(): return
 		if key in ["picture_interpolation", "picture_quality"]:
@@ -6294,6 +6318,7 @@ func _menu_state() -> Dictionary:
 		"interpolation_caption": interpolation_feedback.caption(),
 		"picture_anime4k": video.picture_anime4k, "picture_anime4k_mode": video.picture_anime4k_mode, "picture_anime4k_tier": video.picture_anime4k_tier,
 		"picture_anime4k_blocker": video.picture_anime4k_blocker(), "picture_anime4k_tiers": video.anime4k_tiers(),
+		"picture_mono": video.picture_mono, "picture_mono_style": video.picture_mono_style, "picture_mono_grain": video.picture_mono_grain,
 		"picture_upscale_sizes": video.picture_upscale_sizes(),
 		# Options that leave the compositor layer carry a warning only where the layer exists.
 		"layer_available": video.video_layer != null and video.video_layer.available(),
@@ -7296,7 +7321,8 @@ func _cinema_desktop_input(event: InputEvent) -> bool:
 		return true
 	return false
 
-func _sync_cottage(selected: bool, shown: bool) -> void:
+## create: build the room now if its resources are in; false only queues it for the next frame.
+func _sync_cottage(selected: bool, shown: bool, create := true) -> void:
 	_cottage_pending.clear()
 	if not selected:
 		if cottage:
@@ -7304,10 +7330,11 @@ func _sync_cottage(selected: bool, shown: bool) -> void:
 			cottage.queue_free()
 			cottage = null
 			_cottage_mouse = false
+			if book: book.set_scene_wand("")
 		_cottage_resources.clear()
 		return
 	if not cottage:
-		if not _cottage_resources_loaded():
+		if not create or not _cottage_resources_loaded():
 			_cottage_pending = [selected, shown]
 			return
 		cottage = MagicCottage.new()
@@ -7315,6 +7342,7 @@ func _sync_cottage(selected: bool, shown: bool) -> void:
 		cottage.archive.directory = settings_path.get_base_dir().path_join("magic_cottage")
 		cottage.film_library_requested.connect(_open_cottage_films)
 		cottage.pulse.connect(_cottage_pulse)
+		cottage.wand_style = _attic_wand()
 		add_child(cottage)
 	cottage.present(shown)
 	cottage.set_brightness(background.brightness)
@@ -7341,7 +7369,12 @@ func _open_cottage_films() -> void:
 	if recent_menu is LibraryMenu and recent_menu.section in [LibraryMenu.Section.WEB, LibraryMenu.Section.SETTINGS]:
 		recent_menu._activate(LibraryMenu.NAV_BASE + LibraryMenu.Section.RECENT)
 
+## The attic's wand; a book read in the attic uses it too, so the wand stays put when a book is opened.
+func _attic_wand() -> String:
+	return BookReader.Wand.valid_style(str(settings.get_value("appearance", "attic_wand", BookReader.Wand.DEFAULT_STYLE)))
+
 func _tick_cottage(delta: float) -> void:
+	if book: book.set_scene_wand(_attic_wand() if cottage.visible else "")
 	var pose: Variant = _head_pose()
 	if not cottage.aligned and pose != null: cottage.align_to(pose)
 	cottage.tick(delta,preload("res://scripts/session_usage.gd").milliseconds(),pose)
@@ -7420,7 +7453,9 @@ func _update_background() -> void:
 		wants_passthrough = scenery.choice == "passthrough"
 		hide_scenery = false
 	if video: video.alpha_over_scenery = keep_background and scenery.choice != "passthrough"
-	_sync_cottage(background.choice == "magic_cottage", not hide_scenery and not wants_passthrough and not photo_active and not (puzzle_game and puzzle_game.active))
+	# Background updates can come while the app is still adding its own children (a setting restored
+	# at startup), where add_child fails: the room is built on the next frame instead.
+	_sync_cottage(background.choice == "magic_cottage", not hide_scenery and not wants_passthrough and not photo_active and not (puzzle_game and puzzle_game.active), false)
 	if cinema_environment:
 		var wanted := beach_environment if background.choice=="private_beach" else grand_cinema_environment
 		if wanted and wanted!=cinema_environment:
@@ -7471,6 +7506,7 @@ func _update_background() -> void:
 func _connect_session_controls(menu: Node3D) -> void:
 	if menu == recent_menu:
 		recent_menu.server_browser.backdrop.mode = str(settings.get_value("ui", "library_backdrop", "slideshow"))
+		recent_menu.server_browser.artwork.auto_covers = bool(settings.get_value("media_server", "autoplay_animated_covers", false))
 	if menu.has_method("set_bar_transparency"):
 		menu.set_bar_transparency(float(settings.get_value("ui", "bar_transparency", 14.0)))
 	menu.layout_head_provider = _head_pose
@@ -8542,6 +8578,9 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		if video and command.has("picture_anime4k"): video.picture_anime4k = bool(command.picture_anime4k)
 		if video and command.has("picture_anime4k_mode"): video.picture_anime4k_mode = int(command.picture_anime4k_mode)
 		if video and command.has("picture_anime4k_tier"): video.picture_anime4k_tier = int(command.picture_anime4k_tier)
+		if video and command.has("picture_mono"): video.picture_mono = bool(command.picture_mono)
+		if video and command.has("picture_mono_style"): video.picture_mono_style = int(command.picture_mono_style)
+		if video and command.has("picture_mono_grain"): video.picture_mono_grain = int(command.picture_mono_grain)
 		if video and command.get("grade") is Dictionary:
 			for key in command.grade: video.color_grade.adjust(str(key), command.grade[key])
 			video.color_grade.apply(video.material)
@@ -8658,7 +8697,10 @@ func _debug_menu_nav(target: String) -> void:
 			for button in buttons:
 				if argument in button.text:
 					recent_menu._activate(button.target); break
+		# Icon-only buttons (the cloud "+" and similar) have no text to match.
+		"target": recent_menu._activate(int(argument))
 		"list": print("MENU_NAV ", JSON.stringify(buttons.map(func(b): return b.text).filter(func(t): return not t.is_empty())))
+		"targets": print("MENU_NAV ", JSON.stringify(buttons.map(func(b): return [b.target, b.text])))
 
 var _finishing_app := false
 func _on_app_action(operation: String, menu: Node3D) -> void:
@@ -8789,13 +8831,32 @@ func _begin_pip_image(window: Node3D) -> void:
 	_show_full_library()
 	recent_menu.begin_image_picker()
 
+## The reader asked for a picture under the words: the library's image picker, then back to the book.
+var _book_picture_pick := false
+
+func _begin_book_picture() -> void:
+	if not book or not book.active or not recent_menu is LibraryMenu: return
+	book.bar.dismiss()
+	_book_picture_pick = true
+	_show_full_library()
+	recent_menu.begin_image_picker()
+
+func _end_book_picture(uri: String) -> void:
+	_book_picture_pick = false
+	if recent_menu.visible: recent_menu.dismiss()
+	if not book or not book.active: return
+	if not uri.is_empty(): book.choose_picture(uri)
+	book.bar.section = "look"; book.bar.open("settings")
+
 func _on_pip_image_selected(uri: String, _title: String) -> void:
+	if _book_picture_pick: _end_book_picture(uri); return
 	var window: Node3D = _pip_image_target.get_ref() if _pip_image_target else null
 	_pip_image_target = null
 	if is_instance_valid(window) and video and not photo_active: video.pip.load_image(window, uri, recent_menu.selected_pdf.duplicate())
 	_show_player_menu()
 
 func _on_pip_image_cancelled() -> void:
+	if _book_picture_pick: _end_book_picture(""); return
 	_pip_image_target = null
 	_show_player_menu()
 

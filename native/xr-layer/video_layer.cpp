@@ -1268,13 +1268,18 @@ GLuint fisheye_program(bool external) {
  * look (null: none) is picture quality mode: staged (1: the remap goes to a texture of the next two
  * values' width and height, which enhance_frame denoises, enlarges, sharpens and grades into the image),
  * the sharpening as on the layer copy, the window's centre and half size in one eye's picture (no size:
- * the whole picture), 1 when graded and the grade's 11 values, the denoising's step and tolerance. */
+ * the whole picture), 1 when graded and the grade's 11 values, the denoising's step and tolerance; then monochrome film's 11 (picture_glsl.h), if any. */
 jboolean remap_fisheye(JNIEnv* env, jint slot, jint texture, jboolean external, jfloatArray params, jfloatArray look) {
     std::lock_guard<std::mutex> lock(mutex);
     Picture* target = picture(slot);
     if (!target || !params || env->GetArrayLength(params) < 9) return JNI_FALSE;
-    float q[22] = {};
-    if (look && env->GetArrayLength(look) >= 22) env->GetFloatArrayRegion(look, 0, 22, q); else look = nullptr;
+    float q[22 + kMonoFloats] = {};
+    const jsize look_length = look ? env->GetArrayLength(look) : 0;
+    if (look_length >= 22) env->GetFloatArrayRegion(look, 0, look_length >= 22 + kMonoFloats ? 22 + kMonoFloats : 22, q); else look = nullptr;
+    // The grade with monochrome film after it, as enhance_frame and the program take it.
+    float g[kGradeAll] = {};
+    for (int index = 0; index < kGradeFloats; ++index) g[index] = q[9 + index];
+    for (int index = 0; index < kMonoFloats; ++index) g[kGradeFloats + index] = q[22 + index];
     const bool staged = look && q[0] > 0.5f && q[1] >= 1.0f && q[2] >= 1.0f;
     const float sharpen = look && !staged && q[3] > 0.0f ? q[3] : 0.0f;
     Picture& p = *target;
@@ -1332,8 +1337,8 @@ jboolean remap_fisheye(JNIEnv* env, jint slot, jint texture, jboolean external, 
             glUniform4f(glGetUniformLocation(program, "window"), q[4], q[5], q[6], q[7]);
             const bool graded = look && !staged && q[8] > 0.5f;
             glUniform1i(glGetUniformLocation(program, "graded"), graded ? 1 : 0);
+            set_mono(program, graded ? g : nullptr);
             if (graded) {
-                const float* g = q + 9;
                 glUniform3f(glGetUniformLocation(program, "gain"), g[0], g[1], g[2]);
                 glUniform3f(glGetUniformLocation(program, "curve"), g[3], g[4], g[5]);
                 glUniform3f(glGetUniformLocation(program, "lift"), g[6], g[7], g[8]);
@@ -1381,7 +1386,7 @@ jboolean remap_fisheye(JNIEnv* env, jint slot, jint texture, jboolean external, 
     if (!staged) return JNI_TRUE;
     EnhanceSource from;
     from.texture = fisheye_staged; from.width = fisheye_staged_size[0]; from.height = fisheye_staged_size[1];
-    return enhance_frame(enhance, p.acquired, p.width, p.height, true, from, q[3], q[8] > 0.5f ? q + 9 : nullptr, q[20], q[21]) ? JNI_TRUE : JNI_FALSE;
+    return enhance_frame(enhance, p.acquired, p.width, p.height, true, from, q[3], q[8] > 0.5f ? g : nullptr, q[20], q[21]) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -1859,6 +1864,7 @@ bool enhance_frame(Enhance& e, GLuint target, int width, int height, bool linear
             const bool graded = grade != nullptr;
             const float* values = grade;
             glUniform1i(glGetUniformLocation(program, "graded"), graded ? 1 : 0);
+            set_mono(program, grade);
             if (graded) {
                 glUniform3f(glGetUniformLocation(program, "gain"), values[0], values[1], values[2]);
                 glUniform3f(glGetUniformLocation(program, "curve"), values[3], values[4], values[5]);
@@ -1882,7 +1888,7 @@ bool enhance_frame(Enhance& e, GLuint target, int width, int height, bool linear
 }
 } // namespace
 
-/** enhance_frame for a software-decoded frame into the whole acquired image of [slot] (grade: 11 values,
+/** enhance_frame for a software-decoded frame into the whole acquired image of [slot] (grade: 11 values or 21 with monochrome film,
  * or null for none). */
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_VideoLayerNative_enhanceTexture(JNIEnv* env, jclass, jint slot, jint texture,
@@ -1891,9 +1897,8 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_enhanceTexture(JNIEnv* env,
     std::lock_guard<std::mutex> lock(mutex);
     Picture* target = picture(slot);
     if (!target || !target->acquired || texture <= 0) return JNI_FALSE;
-    jfloat values[11];
-    const bool graded = grade && env->GetArrayLength(grade) >= 11;
-    if (graded) env->GetFloatArrayRegion(grade, 0, 11, values);
+    jfloat values[kGradeAll];
+    const bool graded = read_grade(env, grade, values);
     EnhanceSource from;
     from.texture = static_cast<GLuint>(texture); from.width = source_width; from.height = source_height;
     from.eyes_across = eyes_across; from.eyes_down = eyes_down;
@@ -1910,9 +1915,8 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_enhanceTexturePlugin(JNIEnv
     std::lock_guard<std::mutex> lock(mutex);
     Picture* target = picture(slot);
     if (!target || !target->acquired || texture <= 0) return JNI_FALSE;
-    jfloat values[11];
-    const bool graded = grade && env->GetArrayLength(grade) >= 11;
-    if (graded) env->GetFloatArrayRegion(grade, 0, 11, values);
+    jfloat values[kGradeAll];
+    const bool graded = read_grade(env, grade, values);
     EnhanceSource from;
     from.texture = static_cast<GLuint>(texture); from.width = source_width; from.height = source_height;
     from.eyes_across = eyes_across; from.eyes_down = eyes_down;
@@ -1957,9 +1961,8 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_interpPairDrawPhase(JNIEnv*
     if (!target || !target->acquired) return -1.0f;
     const GLuint texture = frame_interp::pair_picture(before, after, phase);
     if (!texture) return -1.0f;
-    jfloat values[11];
-    const bool graded = grade && env->GetArrayLength(grade) >= 11;
-    if (graded) env->GetFloatArrayRegion(grade, 0, 11, values);
+    jfloat values[kGradeAll];
+    const bool graded = read_grade(env, grade, values);
     EnhanceSource from;
     from.texture = texture; from.width = source_width; from.height = source_height; from.eyes_across = 2;
     return enhance_frame(enhance, target->acquired, target->width, target->height, true, from, sharpen, graded ? values : nullptr,
@@ -1975,9 +1978,8 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_interpPairPushEnhanced(JNIE
     if (texture <= 0) return JNI_FALSE;
     const GLuint copy = frame_interp::pair_slot(width, height, id);
     if (!copy) return JNI_FALSE;
-    jfloat values[11];
-    const bool graded = grade && env->GetArrayLength(grade) >= 11;
-    if (graded) env->GetFloatArrayRegion(grade, 0, 11, values);
+    jfloat values[kGradeAll];
+    const bool graded = read_grade(env, grade, values);
     EnhanceSource from;
     from.texture = static_cast<GLuint>(texture); from.width = width; from.height = height; from.eyes_across = 2;
     if (!enhance_frame(enhance, copy, width, height, false, from, sharpen, graded ? values : nullptr, denoise_step, denoise_tolerance)) {
@@ -2033,7 +2035,7 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_createEnhancer(JNIEnv*, jcl
 }
 
 /** Draws [texture] (a GL_TEXTURE_2D page of source_width x source_height, eyes_across pictures side by side)
- * into the current EGL surface of the same size: denoised, sharpened and graded (11 values, or null) inside
+ * into the current EGL surface of the same size: denoised, sharpened and graded (11 or 21 values, or null) inside
  * [region] (x0, y0, x1, y1 of each eye's UV), the rest as it is; rows as they are. keep_alpha: the page's
  * alpha passes on. */
 extern "C" JNIEXPORT jboolean JNICALL
@@ -2042,9 +2044,8 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_enhanceToWindow(JNIEnv* env
         jfloat denoise_tolerance, jfloatArray region, jboolean keep_alpha) {
     Enhance* e = reinterpret_cast<Enhance*>(handle);
     if (!e || texture <= 0 || source_width <= 0 || source_height <= 0 || !region || env->GetArrayLength(region) != 4) return JNI_FALSE;
-    jfloat values[11];
-    const bool graded = grade && env->GetArrayLength(grade) >= 11;
-    if (graded) env->GetFloatArrayRegion(grade, 0, 11, values);
+    jfloat values[kGradeAll];
+    const bool graded = read_grade(env, grade, values);
     EnhanceSource from;
     from.texture = static_cast<GLuint>(texture); from.width = source_width; from.height = source_height;
     from.eyes_across = eyes_across == 2 ? 2 : 1;

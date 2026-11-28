@@ -98,7 +98,7 @@ func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, heigh
 		var edit_width := maxf(0.11, menu.text_width(menu.I18n.t(str(edit.get("label", ""))), menu.TEXT_BODY) + 0.025) if not edit.is_empty() else 0.0
 		var used := edit_width
 		for option in options:
-			var cell := height if option.has("swatch") else maxf(height * 2.1, menu.text_width(_option_label(option), menu.TEXT_BODY) + 0.03)
+			var cell := height if option.has("swatch") or option.has("picture") else maxf(height * 2.1, menu.text_width(_option_label(option), menu.TEXT_BODY) + 0.03)
 			widths.append(cell); used += cell
 		var scale := minf(1, width / used)
 		var diameter := height * scale
@@ -107,7 +107,7 @@ func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, heigh
 		for index in options.size():
 			var option: Dictionary = options[index]
 			var selected := same(row.value, option.value)
-			var swatch := option.has("swatch")
+			var swatch := option.has("swatch") or option.has("picture")
 			var cell_width := widths[index] * scale
 			var target := _button({"kind": "choose", "key": key, "value": option.value}, "" if swatch else _option_label(option),
 				Vector2(left + cell_width / 2, centre.y), Vector2(cell_width, diameter), parent, selected)
@@ -121,6 +121,12 @@ func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, heigh
 			button.hover_color = UiTheme.color("swatch_ring")
 			button.node.material_override.set_shader_parameter("surface_color", button.base_color)
 			button.node.material_override.set_shader_parameter("corner_radius", diameter / 2)
+			if option.has("picture"):
+				# A picture of the choice itself (a wand, say); the lit ring marks the chosen one.
+				var picture: MeshInstance3D = menu._icon("info", Vector3(0, 0, 0.004), diameter * 0.86, Color.WHITE, button.node)
+				picture.material_override.albedo_texture = option.picture
+				picture.material_override.render_priority = 15
+				continue
 			var disc: MeshInstance3D = menu._quad(Vector2.ONE * (diameter - 0.012), Vector3(0, 0, 0.004), option.swatch, 14)
 			disc.name = "ColorSwatch"
 			disc.material_override.set_shader_parameter("corner_radius", diameter / 2)

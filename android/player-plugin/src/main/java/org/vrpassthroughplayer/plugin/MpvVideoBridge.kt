@@ -689,6 +689,8 @@ internal class MpvVideoBridge(
         return JSONObject().put("remote", host.remote).put("phase", host.loadingPhase)
             .put("elapsed_ms", host.elapsedMs()).apply {
                 if (progress != null) put("bytes", progress.bytes).put("bytes_per_second", progress.bytesPerSecond)
+                // A cold Alpha model compiles for 40 s (Quest 3S) to minutes (PICO Neo3) and holds the first frame.
+                if (session.alpha && session.model?.isReady() == false) put("alpha_model_preparing", true)
             }.toString()
     }
     private fun prepareModel(session: Session, depthModel: Pair<Long, String>? = null) {

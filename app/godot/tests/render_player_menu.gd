@@ -102,18 +102,21 @@ func _run() -> void:
 			await RenderingServer.frame_post_draw
 			await RenderingServer.frame_post_draw
 			viewport.get_texture().get_image().save_png(output.path_join("%s_%d.png" % [detail, page]))
-	# The plugins tab: Anime4K's switch alone while off, its mode and level beneath it while on.
+	# The plugins tab: each plugin's switch alone while off, its two rows beneath it while on.
 	state.merge({"picture_quality_supported": true, "picture_quality_available": true, "picture_quality": true,
-		"picture_anime4k_mode": 1, "picture_anime4k_tier": 1, "picture_anime4k_blocker": "", "picture_anime4k_tiers": [true, true, true, false]})
+		"picture_anime4k_mode": 1, "picture_anime4k_tier": 1, "picture_anime4k_blocker": "", "picture_anime4k_tiers": [true, true, true, false],
+		"picture_mono_style": 1, "picture_mono_grain": 1})
 	menu._adjustment = "picture"; menu._picture_advanced = false; menu._picture_tab = 2
-	for anime4k in [false, true]:
-		state.picture_anime4k = anime4k
+	for plugins in [[false, false], [true, false], [false, true], [true, true]]:
+		state.picture_anime4k = plugins[0]
+		state.picture_mono = plugins[1]
 		menu.refresh()
 		await process_frame
 		await RenderingServer.frame_post_draw
 		await RenderingServer.frame_post_draw
-		viewport.get_texture().get_image().save_png(output.path_join("plugins_%s.png" % ("on" if anime4k else "off")))
+		viewport.get_texture().get_image().save_png(output.path_join("plugins_%s%s.png" % ["on" if plugins[0] else "off", "_mono" if plugins[1] else ""]))
 	state.picture_anime4k = false
+	state.picture_mono = false
 	menu._adjustment = ""
 	state.geometry = 1
 	state.stereo = true

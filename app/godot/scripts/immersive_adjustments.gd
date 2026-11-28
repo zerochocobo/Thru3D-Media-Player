@@ -2,7 +2,9 @@ extends RefCounted
 ## Fixed grip-stick controls. Values are fractions of the projection sphere radius.
 const KEYS := ["view_horizontal", "view_vertical", "view_zoom"]
 const OFFSET_LIMIT := 0.5
-const ZOOM_LIMITS := Vector2(-0.5, 0.6)
+## Past 1 the viewer stands outside the sphere and sees the far side as a bowl: about 0.25x at 3,
+## the far zoom-out users asked for to ease eye strain (2026-11-28).
+const ZOOM_LIMITS := Vector2(-0.5, 3.0)
 const MOVE_SPEED := 0.25
 const ALIGNMENT_SPEED := 2.0 # percent of one eye per second
 const FEEDBACK_HOLD_MS := 850
@@ -51,6 +53,11 @@ static func value_text(key: String, value: float) -> String:
 
 static func limits(key: String) -> Vector2:
 	return ZOOM_LIMITS if key == "view_zoom" else Vector2(-OFFSET_LIMIT, OFFSET_LIMIT)
+
+## Zooming out speeds up with distance, so the stick reaches the far end in about two seconds
+## while the familiar range near 0 keeps its old pace.
+static func zoom_rate(zoom: float) -> float:
+	return 1.0 + maxf(zoom, 0.0)
 
 static func valid(value: Dictionary) -> bool:
 	for key in KEYS:

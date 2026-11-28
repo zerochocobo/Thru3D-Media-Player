@@ -45,12 +45,15 @@ func run() -> void:
 	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS; root.add_child(viewport)
 	var camera := Camera3D.new(); camera.fov = 65; viewport.add_child(camera)
 	var menu := Menu.new(); camera.add_child(menu); menu.attach_platform(platform)
+	main.recent_menu = menu
 	menu.visible = true; menu.section = Menu.Section.MEDIA_SERVER; menu.status = ""
 	menu.settings_provider = func(): return {Reports.INTERVAL_KEY: Reports.load_interval(main.settings)}
 	menu.setting_changed.connect(main._on_setting_changed)
 	var b: RefCounted = menu.server_browser; b.view = "servers"; menu.refresh()
 	check(b.report_interval_ms() == 10000, "The global server menu initially shows ten seconds")
 	click(menu, Browser.ACTION + 180)
+	click(menu, Browser.AUTO_COVERS)
+	check(b.artwork.auto_covers and main.settings.get_value("media_server", "autoplay_animated_covers", false), "A ray click saves autoplay from the server settings dialog")
 	check(b.settings_open and b.modal_open(), "Gear opens the ray-driven settings menu")
 	var scroll: float = menu.scroll; menu.stick_scroll(-1, 0.5); menu.stick_scroll_horizontal(1, 0.5)
 	check(menu.scroll == scroll and not menu._in_list(Vector3.ZERO), "Settings prevents stick and drag input from reaching the underlying library")
@@ -72,9 +75,14 @@ func run() -> void:
 		b.server = {"id": provider, "provider": provider, "name": provider.capitalize()}
 		b.view = "home"; b.capabilities = {"artwork": true, "home_layout": "libraries"}; menu.refresh()
 		click(menu, Browser.ACTION + 180)
+		check(b.artwork.auto_covers, "Autoplay applies to every server account")
 		check(b.report_interval_ms() == 19500, "Switching server or account retains the one global setting")
 		b.back()
 	var restored := Main.new(); restored.settings_path = path; restored.settings.load(path)
+	b.artwork.auto_covers = false
+	restored.recent_menu = menu
+	restored._connect_session_controls(menu)
+	check(b.artwork.auto_covers, "A new application restores the saved autoplay choice to the browser")
 	restored.platform_plugin = platform; restored._sync_server_report_interval()
 	check(Reports.load_interval(restored.settings) == 19500 and platform.intervals.back() == 19500, "A fresh application settings instance restores and applies the saved interval")
 	var output := OS.get_environment("VRPP_SERVER_SETTINGS_PREVIEW")

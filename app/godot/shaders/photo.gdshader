@@ -71,6 +71,7 @@ float slideshow_amount(vec2 frame_uv, vec2 photo_uv) {
 
 void vertex() { eye_index = test_eye >= 0 ? test_eye : int(VIEW_INDEX); media_direction = VERTEX; }
 void fragment() {
+	if (near_side(media_direction)) { discard; }
 	if (spatial_hidden) { discard; }
 	vec2 photo_uv = video_geometry == 0 ? slideshow_uv(UV, slideshow_mapping) : UV;
 	vec4 comic = comic_overlay_enabled ? texture(comic_overlay_texture, photo_uv) : vec4(0.0);

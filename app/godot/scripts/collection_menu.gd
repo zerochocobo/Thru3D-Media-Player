@@ -126,14 +126,58 @@ func draw_list_row(slot: int, row: Dictionary, centre: Vector2, parent: Node3D) 
 	if title.text != str(row.title): menu._tips[menu.ROW_BASE + slot] = str(row.title)
 	menu._progress_on(node, float(info.ratio), Vector2(0, -0.043), width - 0.03)
 
-func update_hover() -> void:
+## A grid card's hover actions are made the first time it is pointed at (2026-11-28): three
+## buttons on every card were most of the cost of redrawing a page of recent files.
+var _pending_actions := {}
+
+func forget_pending_actions() -> void:
+	_pending_actions.clear()
+
+func _card_actions(slot: int, row: Dictionary, centre: Vector2, folder: bool, location: Dictionary, parent: Node3D) -> void:
+	var spacing := 0.05 if folder else 0.085
+	_row_button(PLAY_ROW, slot, centre + Vector2(-spacing, 0.04), "folder" if folder else "play", "Open" if folder else "Play", not location.is_empty() if folder else true, parent, true)
+	if not folder: _row_button(DIRECTORY_ROW, slot, centre + Vector2(0, 0.04), "folder", "Open location", not location.is_empty(), parent, true)
+	_row_button(REMOVE_ROW, slot, centre + Vector2(spacing, 0.04), ("star" if row.get("pending_unfavorite", false) else "star_filled") if home_tab == 1 else "trash", _remove_tip(row), true, parent, true)
+
+func _remove_tip(row: Dictionary) -> String:
+	return ("Restore favorite" if row.get("pending_unfavorite", false) else "Remove favorite") if home_tab == 1 else "Remove from recent"
+
+## A hidden mark where the actions float keeps their capture plane in place, so actions made later
+## join it instead of regrouping the whole menu.
+func _hover_plane(parent: Node3D, centre: Vector2) -> void:
+	# Drawn with a row, it leaves with that row when the list recycles it; the next row draws another.
+	if parent.has_meta("collection_hover_plane") and is_instance_valid(parent.get_meta("collection_hover_plane")): return
+	var mark: MeshInstance3D = menu._quad(Vector2(0.075, 0.075), Vector3(centre.x, centre.y + 0.04, 0.026), menu.TILE, 14)
+	mark.visible = false
+	parent.add_child(mark); parent.set_meta("collection_hover_plane", mark)
+
+## Makes the actions of card [row_id] if they are still owed.
+func make_actions(row_id: int) -> void:
+	var pending: Dictionary = _pending_actions.get(row_id, {})
+	_pending_actions.erase(row_id)
+	if pending.is_empty() or not is_instance_valid(pending.tile) or not is_instance_valid(pending.parent): return
+	var buttons: int = menu._buttons.size()
+	var children: int = pending.parent.get_child_count()
+	menu.set_meta("composition_adopting", true)
+	pending.make.call()
+	menu.set_meta("composition_adopting", false)
+	menu.adopt_row_nodes(row_id - menu.ROW_BASE, menu._buttons.slice(buttons), pending.parent.get_children().slice(children), pending.tile)
+
+## Row targets of the cards under a ray, by the card or one of its actions.
+func _hovered_rows() -> Dictionary:
 	var hovered := {}
-	if not home(): return
 	for value in menu._hover.values():
 		var id := int(value)
 		if menu._row_target(id): hovered[id] = true
 		for base in [PLAY_ROW, DIRECTORY_ROW, REMOVE_ROW]:
 			if id >= base and id < base + 64: hovered[menu.ROW_BASE + id - base] = true
+	return hovered
+
+func update_hover() -> void:
+	if not home(): return
+	var hovered := _hovered_rows()
+	for row_id in hovered:
+		if _pending_actions.has(row_id): make_actions(row_id)
 	for button in menu._buttons:
 		if not button.has("collection_hover"): continue
 		var row_id: int = button.collection_hover
@@ -285,10 +329,17 @@ func decorate_row(slot: int, row: Dictionary, centre: Vector2, grid: bool, paren
 	if grid:
 		_source_chip(row, centre, parent)
 		if row.has("source_label"): menu._tips[menu.ROW_BASE + slot] = str(row.title) + "\n" + str(row.source_label)
-		var spacing := 0.05 if folder else 0.085
-		_row_button(PLAY_ROW, slot, centre + Vector2(-spacing, 0.04), "folder" if folder else "play", "Open" if folder else "Play", not location.is_empty() if folder else true, parent, true)
-		if not folder: _row_button(DIRECTORY_ROW, slot, centre + Vector2(0, 0.04), "folder", "Open location", not location.is_empty(), parent, true)
-		_row_button(REMOVE_ROW, slot, centre + Vector2(spacing, 0.04), ("star" if row.get("pending_unfavorite", false) else "star_filled") if home_tab == 1 else "trash", ("Restore favorite" if row.get("pending_unfavorite", false) else "Remove favorite") if home_tab == 1 else "Remove from recent", true, parent, true)
+		# A card under the ray as it is redrawn keeps its actions at once.
+		if _hovered_rows().has(menu.ROW_BASE + slot):
+			_card_actions(slot, row, centre, folder, location, parent); return
+		_hover_plane(parent, centre)
+		var tile: Array = menu._buttons.filter(func(button): return button.target == menu.ROW_BASE + slot)
+		# Their tooltips are known now; the buttons come with the first hover.
+		menu._tips[PLAY_ROW + slot] = menu.I18n.t("Location unavailable" if folder and location.is_empty() else "Open" if folder else "Play")
+		if not folder: menu._tips[DIRECTORY_ROW + slot] = menu.I18n.t("Open location" if not location.is_empty() else "Location unavailable")
+		menu._tips[REMOVE_ROW + slot] = menu.I18n.t(_remove_tip(row))
+		_pending_actions[menu.ROW_BASE + slot] = {"tile": tile.back().node if not tile.is_empty() else null,
+			"parent": parent, "make": _card_actions.bind(slot, row, centre, folder, location, parent)}
 	else:
 		_row_button(SELECT_ROW, slot, Vector2(-0.48 if menu.compact else -0.405, centre.y), "check" if selection.has(str(row.uri)) else "checkbox", "Select", true, parent)
 		if not folder: _row_button(DIRECTORY_ROW, slot, Vector2(0.37 if menu.compact else 0.65, centre.y), "folder", "Open location", not location.is_empty(), parent)

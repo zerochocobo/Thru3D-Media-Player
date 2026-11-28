@@ -83,7 +83,9 @@ internal class AirplayMirror(private val render: (Runnable) -> Unit, private val
     fun claimPlayer(): android.os.ParcelFileDescriptor? = playerPipe?.claim()
     fun openPlayer(id: Long): Boolean {
         if (id != epoch || id <= 0 || attached || attaching.get() || playerPipe != null || !packets.videoReady()) return false
-        val pipe = AirplayPlayerPipe()
+        val pipe = runCatching { AirplayPlayerPipe() }.getOrElse {
+            Log.w("Thru3D-Airplay", "Player pipe unavailable: ${it.javaClass.simpleName}"); return false
+        }
         playerPipe = pipe
         worker.post {
             if (epoch != id || playerPipe !== pipe) { pipe.close(); return@post }

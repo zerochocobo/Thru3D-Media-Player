@@ -7,3 +7,7 @@ Frame Interpolation (Beta) is off by default and remembered per video. Regular p
 The MIT Anime4K sources, lock and coefficients are in third_party/anime4k, with a separate packaged notice. The generated GLES header is reproduced by tools/anime4k/Generate-Anime4kGlsl.ps1. The project does not include separate model weights, personal images, video samples or performance-study captures. Optional tools/anime4k/reference.py and tools/frame_interp/harness.py operate on separately supplied images/frames.
 
 The project code remains GPL-3.0-only; retain upstream notices. Source/host tests do not establish motion quality, audio synchronization or performance on every headset.
+
+## 0.19.1 Monochrome Film
+
+The Plugins tab offers Standard, Film Noir and Soft styles plus Off/Low/Medium/High grain, remembered per video. Film-weighted grayscale, chroma compensation and a pivoted S curve preserve tonal separation; frame-varying grain is applied at the final grade stage in place of saturation. It works on the supported video drawing paths, including 2D-to-3D; depth inference still reads the color source. There is no local-contrast pass, grain does not follow disparity, and stereoscopic benefit is not claimed from source tests.

@@ -78,6 +78,23 @@ func run() -> void:
 	eye.position += Vector3(0.0004, 0, 0); mono.update()
 	check(mono.captures == drawn, "Head motion inside the tolerance keeps it")
 	check((mono.hole.global_position - eye.global_position).is_equal_approx(held), "The layer mask stays on the head between captures")
+	# The reticle follows the beam in the eye buffer: sweeping it along one target redraws nothing.
+	var sweep_start := eye.global_position + Vector3(0.25,-0.2,-0.3)
+	var seek: Dictionary = menu._buttons.filter(func(button): return button.target == menu.SEEK)[0]
+	var sweep_dot: MeshInstance3D = menu._pointers.right_hand.dot
+	# Entering the timeline changes the hover highlight once; that redraw is expected.
+	menu.update_pointer("right_hand",sweep_start,PointerTest.aim(menu,eye.global_position,sweep_start,seek.node.global_position),true)
+	for settle in 2: mono._checked_ms = 0; mono.update()
+	drawn = mono.captures
+	for step in 4:
+		var aim_at: Vector3 = seek.node.global_position + menu.global_basis.x * (0.05 * step - 0.08)
+		menu.update_pointer("right_hand",sweep_start,PointerTest.aim(menu,eye.global_position,sweep_start,aim_at),true)
+		mono._checked_ms = 0; mono.update()
+		var sweep_vertices: PackedVector3Array = menu._pointers.right_hand.line.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+		check(menu._pointers.right_hand.line.to_global(sweep_vertices[1]).is_equal_approx(sweep_dot.global_position),"Swept beam ends at the reticle centre")
+	check(mono.captures == drawn, "Sweeping the reticle along the timeline redraws no capture")
+	check(sweep_dot.layers & Mono.BIT == 0 and eye.cull_mask & sweep_dot.layers != 0, "Mono reticle is drawn by the eye camera every frame")
+	check(sweep_dot.material_override is ShaderMaterial and sweep_dot.material_override.shader == Mono.DOT_SHADER, "Mono reticle uses the zero-parallax eye-buffer shader")
 	eye.position += Vector3(0.002, 0, 0); mono.update()
 	check(mono.captures == drawn + 1, "Head motion across the menu redraws it")
 	menu.composition_changed.emit(); mono.update()
@@ -93,6 +110,7 @@ func run() -> void:
 	mono.update(); mono.stop()
 	menu.set_scene_overlay(false)
 	check(menu._pointers.right_hand.line.material_override.shader != Mono.RAY_SHADER,"Leaving mono and cinema restores the finite-depth ray shader")
+	check(menu._pointers.right_hand.dot.material_override is StandardMaterial3D,"Leaving mono restores the finite-depth reticle material")
 	for saved in originals:
 		check(saved.node.transform.is_equal_approx(saved.pose),"Stopping mid-frame restores original UI transforms")
 	menu.dismiss(); compositor.set_active(false); view.queue_free(); await process_frame

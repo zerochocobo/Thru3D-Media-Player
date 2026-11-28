@@ -6,11 +6,15 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.19.0** (Android versionCode **130**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.19.1** (Android versionCode **132**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
 ## Features
+
+- Monochrome Film picture plugin with Standard, Film Noir and Soft styles, adjustable grain and per-video memory, including 2D-to-3D playback. See [picture plugins](docs/PICTURE_PLUGINS.md).
+- Reading paper/image backgrounds, page-turn animation and sound options, narration voice preview and saved cloned voices. Five original wand choices are shared with Wizard’s Attic when reading there; model/material assets are supplied separately.
+- Media-server poster hover previews and optional automatic animated-cover playback; VR180/360° zoom out to about 0.25× and an imported scene capacity of 256.
 
 - Spatial reading for compatible EPUB, MOBI, AZW3, TXT and PDF from local, SMB, cloud and DLNA sources, with controller/hand page turns, bookmarks, search, read-aloud, typography and per-book reading time. See [reading source scope](docs/BOOK_SOURCE.md).
 - Wizard’s Attic: a seated wand scene with a Star Mirror, plants, potions and window defense. Fresh installs use it by default; existing scene choices are retained. Scene assets are supplied separately. See [scenery](docs/SCENERY.md).

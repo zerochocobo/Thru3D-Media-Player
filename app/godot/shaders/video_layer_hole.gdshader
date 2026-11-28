@@ -18,6 +18,7 @@ void vertex() {
 }
 
 void fragment() {
+	if (near_side(media_direction)) { discard; }
 	if (any(lessThan(UV, keep_rect.xy)) || any(greaterThan(UV, keep_rect.xy + keep_rect.zw))) { discard; }
 	// Uniform branch: the spherical mapping runs only while a stereo alignment offset crops the
 	// edges. VR180/360 holes cover most of each eye, and the trigonometry per pixel cost frame

@@ -29,5 +29,11 @@ int main() {
     assert(!source_format_changed("MPV immutable color render: something happened"));
     assert(std::string(render_failure_reason(kSourceSizeChanged)) == "source_format_changed" && std::string(render_failure_reason(kSourceFrameLost)) == "source_frame_lost");
     assert(std::string(render_failure_reason("MPV producer completion fence failed")) == "video_output_failed");
-    std::cout << "Playback failure native checks passed: 22\n";
+    // A status read before the control thread publishes still classifies the render failure.
+    assert(published_failure("", "", true, kSourceFrameLost).reason == "source_frame_lost" && published_failure("", "", true, kSourceFrameLost).stage == "output");
+    assert(published_failure("", "", true, kSourceSizeChanged).reason == "source_format_changed");
+    assert(published_failure("", "", true, "").reason == "video_output_failed");
+    assert(published_failure("network_timeout", "reading", true, kSourceFrameLost).reason == "network_timeout");
+    assert(published_failure("", "", false, kSourceFrameLost).reason.empty());
+    std::cout << "Playback failure native checks passed: 27\n";
 }

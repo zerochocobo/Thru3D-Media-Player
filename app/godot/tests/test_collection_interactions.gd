@@ -73,6 +73,10 @@ func tap(menu: Node3D, id: int) -> void:
 	if target != id: return
 	menu.press_pointer("right_controller", origin, direction, true)
 	menu.release_pointer("right_controller", origin, direction, true)
+## Card actions are made when the card is first pointed at, as the next frame's ray does after a redraw.
+func hover_card(menu: Node3D, slot: int) -> void:
+	var tile: Dictionary = menu._buttons.filter(func(b):return b.target == menu.ROW_BASE + slot)[0]
+	menu.update_pointer("right_controller", tile.node.to_global(Vector3(0, -0.08, 0.6)), -tile.node.global_basis.z, true)
 func enter_pin(menu: Node3D, pin: String) -> void:
 	for digit in pin: tap(menu, menu.collections.KEY + int(digit))
 	tap(menu, menu.collections.SUBMIT)
@@ -247,14 +251,17 @@ func run() -> void:
 	check(store.list_favorites().size() == 1, "Grid removal works through a real ray click")
 	check(menu.rows.size() == 2 and menu.rows[0].get("pending_unfavorite", false), "Unfavorited card remains briefly for an immediate toggle back")
 	check(menu._tips[menu.collections.REMOVE_ROW] == "Restore favorite", "Empty-star tooltip offers to restore the favorite")
+	hover_card(menu, 0)
 	var toggle_button: Dictionary = menu._buttons.filter(func(b):return b.target == menu.collections.REMOVE_ROW)[0]
 	menu.update_pointer("right_controller", toggle_button.node.to_global(Vector3(0, 0, 0.6)), -toggle_button.node.global_basis.z, true)
 	tap(menu, menu.collections.REMOVE_ROW)
 	check(store.contains(toggled_uri) and float(store.lookup(toggled_uri).added) == added, "Clicking the empty star restores the original favorite and ordering")
 	check(not store.can_undo(), "Toggling back clears the now-redundant removal undo")
+	hover_card(menu, 0)
 	toggle_button = menu._buttons.filter(func(b):return b.target == menu.collections.REMOVE_ROW)[0]
 	menu.update_pointer("right_controller", toggle_button.node.to_global(Vector3(0, 0, 0.6)), -toggle_button.node.global_basis.z, true)
 	tap(menu, menu.collections.REMOVE_ROW)
+	hover_card(menu, 0)
 	toggle_button = menu._buttons.filter(func(b):return b.target == menu.collections.REMOVE_ROW)[0]
 	var stale_origin: Vector3 = toggle_button.node.to_global(Vector3(0, 0, 0.6))
 	var stale_direction: Vector3 = -toggle_button.node.global_basis.z

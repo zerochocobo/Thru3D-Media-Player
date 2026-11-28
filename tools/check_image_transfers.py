@@ -13,6 +13,8 @@ PATTERN = re.compile(r"CompressFormat\s*\.\s*PNG|\bsave_png(?:_to_buffer)?\s*\(|
 EXCEPTIONS = {
     # Persistent, user-selected background/creation assets; not per-load bridge files.
     "app/godot/scripts/app_background.gd": ['if image.save_png(path) != OK: return {}'],
+    # The reader's paper picture: made once when chosen, kept in the app's files for the book pages to print.
+    "app/godot/scripts/book_paper_picture.gd": ['return texture.save_png(PATH) == OK'],
     "app/godot/scripts/puzzle/puzzle_store.gd": [
         'if image.save_png(assets.path_join("image.tmp.png"))!=OK: return {}',
         'thumbnail.save_png(assets.path_join("thumb.png"))'],

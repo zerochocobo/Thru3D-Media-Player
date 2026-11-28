@@ -7,6 +7,35 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class EmbyArtworkTest {
+    @Test fun sparseSummaryCanResolveTheItemsOtherBackdropIndicesOnDemand() {
+        MediaServerClientTest.Fixture { request, _, _ ->
+            assertTrue(request.contains("/Items/film/Images "))
+            MediaServerClientTest.Reply(body = """[{"ImageType":"Primary"},{"ImageType":"Backdrop","ImageIndex":0},
+                {"ImageType":"Backdrop","ImageIndex":7},{"ImageType":"Backdrop","ImageIndex":7},
+                {"ImageType":"Backdrop","ImageIndex":-1}]""".toByteArray())
+        }.use { fixture ->
+            val account = MediaServerAccount("test", "Test", fixture.url, "fake", "jellyfin", "user1")
+            MediaServerHttp(account).use { http ->
+                assertEquals(listOf(0, 7), EmbyClient(account, http).previewBackdrops("film").objects().map { it.getInt("image_index") })
+            }
+        }
+    }
+    @Test fun listRetainsIndexedPreviewCandidatesAlongsideTheStaticPoster() {
+        MediaServerClientTest.Fixture { _, _, _ ->
+            MediaServerClientTest.Reply(body = """{"Items":[{"Id":"film","Type":"Movie","ImageTags":{"Primary":"poster"},
+                "BackdropImageTags":["still","moving","","later"]}],"TotalRecordCount":1}""".toByteArray())
+        }.use { fixture ->
+            val account = MediaServerAccount("test", "Test", fixture.url, "fake", "jellyfin", "user1")
+            MediaServerHttp(account).use { http ->
+                val client = EmbyClient(account, http)
+                val film = client.browse(JSONObject()).getJSONArray("entries").getJSONObject(0)
+                assertEquals("Primary", film.getJSONObject("cover_image").getString("image_type"))
+                val previews = film.getJSONArray("preview_backdrops").objects()
+                assertEquals(listOf(0, 1, 3), previews.map { it.getInt("image_index") })
+                assertEquals(listOf("still", "moving", "later"), previews.map { it.getString("image_tag") })
+            }
+        }
+    }
     @Test fun detailBackgroundsPreferOwnThenInheritedThenLandscapeFallbacks() {
         val cases = listOf(
             Triple(""""BackdropImageTags":["a","b"],"ParentBackdropItemId":"series","ParentBackdropImageTags":["parent"]""", "[]", listOf("film/Backdrop/0", "film/Backdrop/1")),

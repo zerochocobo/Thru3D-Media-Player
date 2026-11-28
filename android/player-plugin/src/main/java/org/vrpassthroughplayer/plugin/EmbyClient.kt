@@ -55,7 +55,8 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         try {
             val args = linkedMapOf<String, Any>("Recursive" to true, "IncludeItemTypes" to "Movie,Episode,Video",
                 "Limit" to 16, "StartIndex" to 0, "SortBy" to "DatePlayed", "SortOrder" to "Descending",
-                "Fields" to "MediaSources,MediaStreams,PrimaryImageAspectRatio", "EnableUserData" to true, "EnableImages" to true)
+                "Fields" to "MediaSources,MediaStreams,PrimaryImageAspectRatio", "EnableUserData" to true, "EnableImages" to true,
+                "ImageTypeLimit" to 128)
             val watched = get("Users/${user()}/Items", args).getJSONArray("Items").objects().filter { item ->
                 val state = item.optJSONObject("UserData") ?: JSONObject()
                 state.optLong("PlaybackPositionTicks") > 0 || state.optInt("PlayCount") > 0 || state.optBoolean("Played") ||
@@ -82,7 +83,7 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
             else -> "Movie,Series,Video,BoxSet"
         }
         val args = linkedMapOf<String, Any>("Recursive" to !folders,
-            "StartIndex" to (page - 1) * 48, "Limit" to 48, "EnableTotalRecordCount" to true,
+            "StartIndex" to (page - 1) * 48, "Limit" to 48, "EnableTotalRecordCount" to true, "ImageTypeLimit" to 128,
             "Fields" to "MediaSources,MediaStreams,Overview,People,Genres,Studios,Chapters,Tags,Path,ParentId,ChildCount,PrimaryImageAspectRatio,Width,Height",
             "SortBy" to (mapOf("title" to "SortName", "date" to "PremiereDate", "duration" to "Runtime", "rating100" to "CommunityRating")[request.optString("sort")] ?: "DateCreated"),
             "SortOrder" to if (request.optString("direction") == "ASC") "Ascending" else "Descending")
@@ -277,6 +278,16 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
             }
         }
         result.put("image_variants", variants)
+        // Artwork tags carry an index and revision, but do not say which original is animated.
+        val backdropTags = data.optJSONArray("BackdropImageTags")
+        if (backdropTags != null && backdropTags.length() > 0) {
+            val previews = JSONArray()
+            for (index in 0 until minOf(backdropTags.length(), 128)) {
+                val tag = backdropTags.optString(index)
+                if (tag.isNotBlank()) previews.put(imageNode(id, "Backdrop", index, tag))
+            }
+            result.put("preview_backdrops", previews)
+        }
         val coverType = listOf("Primary", "Thumb", "Backdrop").firstOrNull { variants.has(it) }
         result.put("has_cover", coverType != null)
         if (coverType != null) result.put("cover_image", variants.getJSONObject(coverType))
@@ -288,6 +299,7 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         val artwork = images(data)
         val result = playableDetail(data).put("description", data.optString("Overview"))
             .put("images", artwork).put("backdrops", backdrops(data, artwork))
+            .put("preview_backdrops", JSONArray(artwork.objects().filter { it.optString("image_type") == "Backdrop" }))
         var hasAdditionalParts = false
         if (result.optInt("part_count") > 1 || partMarker.containsMatchIn(result.optString("basename"))) {
             val additional = additionalParts(id)
@@ -437,8 +449,7 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         for (type in listOf("Primary", "Thumb", "Art", "Banner")) if (tags.optString(type).isNotBlank()) add(type, 0)
         for (index in 0 until minOf(128, data.optJSONArray("BackdropImageTags")?.length() ?: 0)) add("Backdrop", index)
         try {
-            val raw = http.bytes(account.endpoint("Items/$id/Images"), 1024 * 1024)
-            JSONArray(String(raw, Charsets.UTF_8)).objects().take(128).forEach {
+            imageList(id).forEach {
                 val type = it.optString("ImageType"); val index = it.optInt("ImageIndex", 0)
                 add(type, index)
                 images["$type/$index"]?.put("width", it.optInt("Width"))?.put("height", it.optInt("Height"))
@@ -448,6 +459,17 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
             // A server without image enumeration still supplies its tagged images.
         }
         return JSONArray(images.values.take(128))
+    }
+    fun previewBackdrops(id: String): JSONArray {
+        val itemId = mediaId(id)
+        return JSONArray(imageList(itemId).filter { it.optString("ImageType") == "Backdrop" }.mapNotNull {
+            val index = it.optInt("ImageIndex", 0)
+            if (index in 0..9999) imageNode(itemId, "Backdrop", index, it.optString("ImageTag")) else null
+        }.distinctBy { it.getInt("image_index") })
+    }
+    private fun imageList(id: String): List<JSONObject> {
+        val raw = http.bytes(account.endpoint("Items/$id/Images"), 1024 * 1024)
+        return JSONArray(String(raw, Charsets.UTF_8)).objects().take(128)
     }
     override fun cover(id: String): URI = account.endpoint("Items/${mediaId(id)}/Images/Primary?maxWidth=512&quality=85")
     override fun image(id: String, type: String, index: Int, tag: String, width: Int, original: Boolean): URI {

@@ -70,3 +70,7 @@ Earlier requirements in [MODELS.md](MODELS.md) still apply. Supply these payload
 - `res://environments/magic_cottage/wall_ivy.res`
 - `res://environments/magic_cottage/workshop.res`
 - `res://data/experience.dat`
+
+## 0.19.1 wand payloads
+
+Supply `res://assets/wands/wands.res` and `res://assets/wands/wands.png` separately. Public tools/wands/build_wands.py and pack_wands.gd retain the generation/packing source; Blender masters, mesh libraries and the material atlas are excluded. Five small menu pictures are runtime UI previews, separate from the full model/texture payload.

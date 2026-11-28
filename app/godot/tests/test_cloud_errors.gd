@@ -14,7 +14,7 @@ func enabled(menu: Node, target: int) -> bool:
 	return menu._buttons.any(func(button): return button.target == target and button.enabled)
 
 func has_header_loading(menu: Node) -> bool:
-	var loading: Array = menu._labels.filter(func(label): return label.text == "Loading…")
+	var loading: Array = menu._labels.filter(func(label): return label.text == "Loading…" and label.visible)
 	return loading.size() == 1 and loading[0].position.y > 0 and loading[0].modulate == menu.ACCENT
 
 func _run() -> void:
@@ -79,7 +79,7 @@ func _run() -> void:
 		check(menu.rows.size() == 48 and has_header_loading(menu),
 			"Paging with existing files shows a single visible loading label above them")
 		platform.respond(platform.requests.size())
-		check(not menu.text_snapshot().contains("Loading…"), "The loading label disappears after paging")
+		check(not menu._labels.any(func(label): return label.text == "Loading…" and label.visible), "The loading label disappears after paging")
 		menu._go_back(); platform.respond(platform.requests.size())
 		menu._activate(Menu.NAV_BASE + Menu.Section.RECENT)
 	menu.free(); platform.free()

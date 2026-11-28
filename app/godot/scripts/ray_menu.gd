@@ -452,7 +452,7 @@ func _draw_pointer(hand: String, origin: Vector3, endpoint: Vector3, valid: bool
 	if valid:
 		var mono := not _mono_pointer_projection().is_empty()
 		var tip := to_local(endpoint)
-		# Mono capture already draws the reticle above the menu. Separate Z biases
+		# Mono capture draws the reticle at zero parallax above the menu. Separate Z biases
 		# would move its angular centre away from the eye-buffer line's endpoint.
 		var line_tip := tip if mono else tip + Vector3(0, 0, 0.006)
 		PointerRay.draw(pointer.line, origin, to_global(line_tip))
@@ -567,6 +567,18 @@ func _button(target: int, text: String, centre: Vector2, size: Vector2, enabled:
 	if not _captions_queued:
 		_captions_queued = true
 		_grow_captions.call_deferred()
+
+## Enables or disables a drawn button in place, with the inks _button gives it. A button whose
+## icon keeps its own ink (fixed_ink) changes only its caption.
+func _set_button_enabled(button: Dictionary, enabled: bool) -> void:
+	if button.enabled == enabled or not is_instance_valid(button.node): return
+	button.enabled = enabled
+	var ink: Color = button.foreground if enabled else UiTheme.color("disabled_ink")
+	for child in button.node.get_children():
+		if child is Label3D: child.modulate = ink
+		elif child is MeshInstance3D and child.material_override is BaseMaterial3D and not button.get("fixed_ink", false):
+			child.material_override.albedo_color = button.foreground if enabled else MUTED
+	_update_highlights()
 
 ## Runs once the layout that added the buttons is complete, so it sees each control as its caller
 ## left it. A full-width row sets all its captions larger, any other button its lone caption, each

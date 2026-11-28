@@ -82,7 +82,9 @@ func _ready() -> void:
 
 ## show_hand_models only hides the optical hand meshes; controllers and pointers stay.
 ## controllers_in_use draws the controller even while a mixed-mode runtime reports that optical hand.
-func update_visibility(focused: bool, controller_opacity: Dictionary = {}, interaction_visible: bool = true, hidden_hands: Dictionary = {}, show_hand_models: bool = true, controllers_in_use: Dictionary = {}) -> void:
+## hands_in_use draws optical hands even when nothing else is interactive (reading: the hands turn the
+## pages, while a controller there is drawn as the book's wand instead).
+func update_visibility(focused: bool, controller_opacity: Dictionary = {}, interaction_visible: bool = true, hidden_hands: Dictionary = {}, show_hand_models: bool = true, controllers_in_use: Dictionary = {}, hands_in_use := false) -> void:
 	for hand in hands:
 		var entry: Dictionary = hands[hand]
 		var tracker := XRServer.get_tracker("/user/hand_tracker/" + hand.trim_suffix("_hand")) as XRHandTracker
@@ -91,7 +93,7 @@ func update_visibility(focused: bool, controller_opacity: Dictionary = {}, inter
 		entry["interaction_visible"] = interaction_visible
 		entry["optical"] = optical
 		entry["opacity_visible"] = float(controller_opacity.get(hand, 1.0)) > 0.0
-		entry.hand_gate.visible = focused and interaction_visible and optical and not hidden_hands.get(hand, false) and show_hand_models
+		entry.hand_gate.visible = focused and (interaction_visible or hands_in_use) and optical and not hidden_hands.get(hand, false) and show_hand_models
 		entry.controller_gate.visible = focused and interaction_visible and not optical and _pose_tracked(entry.grip) and float(controller_opacity.get(hand, 1.0)) > 0.0 and not hidden_hands.get(hand, false)
 		# A runtime container may exist before its drawable model, or retain hidden
 		# meshes. Neither condition may suppress the bundled controller fallback.

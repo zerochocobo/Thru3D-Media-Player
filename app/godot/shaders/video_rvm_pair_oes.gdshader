@@ -182,6 +182,7 @@ vec3 minified_color(vec2 p, vec2 dx, vec2 dy, vec2 lo, vec2 hi, int max_taps) {
 }
 
 void fragment() {
+	if (near_side(media_direction)) { discard; }
 	// Plain playback (no mask, depth, PiP, packed Alpha, stream mesh or sharpening): projection, eye,
 	// alignment, footprint, grade and captions only. Quest 2 stand-in for QIYU A091, 8K VR180 in the eye
 	// buffer at 1.00x: 24.9 ms GPU on the full body below, 16.3 ms on this path (2026-11-25).

@@ -48,6 +48,7 @@ const GALLERY := 10125
 const COTTAGE_SCREEN := 10126
 const COTTAGE_RESET := 10127
 const CottageFilm := preload("res://environments/magic_cottage/film_screen.gd")
+const Wand := preload("res://scripts/book_wand.gd")
 const ADDING_CARD := "adding"
 var _followed := ""
 ## Set whenever the scene page is come to afresh: its list then turns to the scene in use.
@@ -805,6 +806,11 @@ func _draw_adjust() -> void:
 		# Like the cinema, the attic always opens facing its arch from the seat.
 		rows=[{"key":"background_brightness","value":_state.get("brightness",1.0),"choices":[{"value":.5,"label":"50%"},{"value":.75,"label":"75%"},{"value":1.0,"label":"100%"},{"value":1.25,"label":"125%"}]}]
 		names=["Brightness"]
+		if _state.has("attic_wand"):
+			var wands: Array=[]
+			for style in Wand.STYLES: wands.append({"value":style,"label":Wand.NAMES[style],"picture":Wand.picture(style)})
+			rows.append({"key":"attic_wand","value":_state.attic_wand,"choices":wands,"swatches":true})
+			names.append("Wand")
 	elif choice not in ["dark","passthrough"]:
 		rows=[{"key":"background_yaw", "value":_state.get("yaw", 0), "slider":true, "span":Vector3(0, 359, 1),
 			"unit":"°", "decimals":0, "nudge_step":1, "nudge_sides":true, "wrap":true, "ticks":range(0, 360, 45)},

@@ -36,11 +36,16 @@ internal class BookStyle(val columns: Int = 22, val spacing: Float = 1.75f, val 
     /** How much of the widest text block a line fills: smaller leaves wider margins at the same type size. */
     val measure: Float = 1f,
     /** A downloaded font file for the text (absolute path, already checked by the bridge); empty: the system's. */
-    val font: String = "") {
+    val font: String = "",
+    /** The reader's own grey picture under the words (absolute path, already checked by the bridge); empty: plain paper. */
+    val picture: String = "",
+    /** How far its darkest part moves the paper towards the ink. */
+    val pictureStrength: Float = 0.36f) {
     /** What changes where the pages break, for the layout cache. */
     val key get() = "$columns/$spacing/$weight/$paragraph/$measure" +
         (if (font.isEmpty()) "" else java.io.File(font).let { "/${it.name}:${it.length()}" })
-    fun withFont(path: String) = BookStyle(columns, spacing, paper, ink, faint, weight, remaining, paragraph, measure, path)
+    fun withFont(path: String) = BookStyle(columns, spacing, paper, ink, faint, weight, remaining, paragraph, measure, path, picture, pictureStrength)
+    fun withPicture(path: String) = BookStyle(columns, spacing, paper, ink, faint, weight, remaining, paragraph, measure, font, path, pictureStrength)
     companion object {
         /** Reader settings arrive as JSON; anything missing or out of range keeps its default. */
         fun parse(json: String): BookStyle {
@@ -52,8 +57,9 @@ internal class BookStyle(val columns: Int = 22, val spacing: Float = 1.75f, val 
                 value.optDouble("weight", base.weight.toDouble()).toFloat().coerceIn(0f, 0.04f),
                 value.optString("remaining", "").take(60).takeIf { it.count { c -> c == '%' } == 1 && "%d" in it } ?: "",
                 value.optDouble("paragraph", base.paragraph.toDouble()).toFloat().coerceIn(0f, 1.5f),
-                value.optDouble("measure", base.measure.toDouble()).toFloat().coerceIn(0.7f, 1f),
-                value.optString("font", "").take(1024))
+                value.optDouble("measure", base.measure.toDouble()).toFloat().coerceIn(0.7f, 1.15f),
+                value.optString("font", "").take(1024), value.optString("picture", "").take(1024),
+                value.optDouble("picture_strength", base.pictureStrength.toDouble()).toFloat().coerceIn(0f, 0.5f))
         }
     }
 }
@@ -99,6 +105,12 @@ internal class BookPages(private val book: Book, private val look: BookStyle, sa
     private val measure = (CONTENT_WIDTH * look.measure).roundToInt()
     private val side = (WIDTH - measure) / 2f
     private val line = size * look.spacing
+
+    /** The reader's picture, read once for this layout; pages print it in the paper's own colours. */
+    private val paperPicture: Bitmap? by lazy {
+        if (look.picture.isEmpty()) null else runCatching { android.graphics.BitmapFactory.decodeFile(look.picture) }.getOrNull()
+    }
+    private val pictureInk by lazy { Paint(Paint.FILTER_BITMAP_FLAG).apply { colorFilter = android.graphics.ColorMatrixColorFilter(paperTone(look)) } }
 
     /** Paints are mutable native objects: every thread that lays text out owns a set. */
     private inner class Setter {
@@ -295,24 +307,31 @@ internal class BookPages(private val book: Book, private val look: BookStyle, sa
 
     /**
      * The page's paragraphs as read-aloud blocks in logical page coordinates. A paragraph cut by the page
-     * break is spoken to the end of that sentence here, and the next page starts after it, so a turn never
-     * splits a sentence in two.
+     * break is spoken to the end of that sentence here, and the next page starts after it. When that
+     * sentence runs on for more than a few words, the words past the break are their own utterance,
+     * marked "next": the leaf turns as the voice reaches them instead of after the sentence has ended
+     * on the next page (up to a long sentence later).
      */
     override fun text(page: Int): org.json.JSONObject {
         val sheet = sheets[page]
         val rows = org.json.JSONArray()
         var id = 0
+        fun speak(spoken: String, rect: org.json.JSONArray, next: Boolean) {
+            // One paragraph is one target; its speech is split so no utterance outgrows the audio buffers.
+            for ((part, words) in utterances(spoken).withIndex()) rows.put(org.json.JSONObject().put("id", id++).put("text", words)
+                .put("language", speech).put("eligible", words.any { it.isLetterOrDigit() }).put("solid", true)
+                .put("verified", true).put("follow_only", part > 0).put("hit_rect", rect).also { if (next) it.put("next", true) })
+        }
         for ((index, piece) in sheet.pieces.withIndex()) {
             val block = book.chapters[piece.chapter].flow.blocks[piece.block] as? BookBlock.Text ?: continue
             val from = if (index == 0 && piece.offset > 0) sentenceEnd(block.text, piece.offset).coerceAtMost(piece.end) else piece.offset
             val to = if (index == sheet.pieces.lastIndex && piece.end < block.text.length) sentenceEnd(block.text, piece.end) else piece.end
-            val spoken = if (from < to) block.text.substring(from, to).trim() else ""
             val top = TOP + piece.top
             val rect = org.json.JSONArray(listOf(side, top, side + measure, top + piece.height))
-            // One paragraph is one target; its speech is split so no utterance outgrows the audio buffers.
-            for ((part, words) in utterances(spoken).withIndex()) rows.put(org.json.JSONObject().put("id", id++).put("text", words)
-                .put("language", speech).put("eligible", words.any { it.isLetterOrDigit() }).put("solid", true)
-                .put("verified", true).put("follow_only", part > 0).put("hit_rect", rect))
+            val split = to - piece.end > CARRY_OVER && from < piece.end
+            speak(if (from < to) block.text.substring(from, if (split) piece.end else to).trim() else "", rect, false)
+            // On the next page the carried words open it: the first line there.
+            if (split) speak(block.text.substring(piece.end, to).trim(), org.json.JSONArray(listOf(side, TOP, side + measure, TOP + line)), true)
         }
         return org.json.JSONObject().put("state", "ready").put("page_size", org.json.JSONArray(listOf(WIDTH, HEIGHT))).put("blocks", rows)
     }
@@ -340,6 +359,9 @@ internal class BookPages(private val book: Book, private val look: BookStyle, sa
         try {
             val canvas = Canvas(bitmap)
             canvas.drawColor(look.paper)
+            paperPicture?.let { picture ->
+                canvas.drawBitmap(picture, null, android.graphics.Rect(0, 0, bitmap.width, bitmap.height), pictureInk)
+            }
             canvas.scale(scale, scale)
             for (piece in sheet.pieces) when (val block = book.chapters[piece.chapter].flow.blocks[piece.block]) {
                 is BookBlock.Text -> {
@@ -500,6 +522,21 @@ internal class BookPages(private val book: Book, private val look: BookStyle, sa
             return result.map { it.trim() }.filter { it.isNotEmpty() }
         }
         private const val UTTERANCE = 80
+        /**
+         * A grey picture printed as paper: white stays the paper, black moves towards the ink by the
+         * style's strength, every grey in between. Only the green channel is read (the picture is grey).
+         */
+        fun paperTone(look: BookStyle) = android.graphics.ColorMatrix(FloatArray(20).also { m ->
+            for ((row, shift) in listOf(16, 8, 0).withIndex()) {
+                val paper = (look.paper ushr shift and 0xFF).toFloat()
+                val reach = ((look.ink ushr shift and 0xFF) - paper) * look.pictureStrength
+                m[row * 5 + 1] = -reach / 255f
+                m[row * 5 + 4] = paper + reach
+            }
+            m[18] = 1f
+        })
+        /** Characters of a sentence past the page break that still ride with this page's words. */
+        const val CARRY_OVER = 16
         private val WIDE = setOf(Character.UnicodeScript.HAN, Character.UnicodeScript.HIRAGANA, Character.UnicodeScript.KATAKANA,
             Character.UnicodeScript.HANGUL, Character.UnicodeScript.BOPOMOFO, Character.UnicodeScript.COMMON)
         private const val CLOSERS = "。！？!?…”’」』）)\"'"

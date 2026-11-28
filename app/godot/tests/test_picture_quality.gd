@@ -374,7 +374,7 @@ func _anime4k() -> void:
 	video.picture_anime4k_mode = Video.Anime4k.A
 	video.picture_anime4k_tier = 3
 	check(video.picture_anime4k_blocker() == "tier" and video.anime4k_tiers() == [true, false, false, false], "4K affords only S")
-	check(video._picture_values().size() == 23 and video._picture_values()[20] == 0.0, "Where it does not run the copy is told mode 0")
+	check(video._picture_values().size() == Video.MONO_AT + Video.MONO_FLOATS and video._picture_values()[20] == 0.0, "Where it does not run the copy is told mode 0")
 	check(video._picture_values()[22] == Video.ANIME4K_BUDGET_MS, "The copy is told this headset's budget")
 	video.media.format = {"width": 1920, "height": 1080}
 	check(video.anime4k_tiers() == [true, true, false, false], "Quest 3 at 1080p: A at S and M")

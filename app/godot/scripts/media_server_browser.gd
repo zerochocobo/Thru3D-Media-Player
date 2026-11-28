@@ -14,6 +14,7 @@ const DETAIL_MORE := ACTION + 188
 const DELETE_FILE := ACTION + 189
 const CONFIRM_DELETE := ACTION + 190
 const CANCEL_DELETE := ACTION + 191
+const AUTO_COVERS := ACTION + 192
 const FILTER_NAMES := {"genres": "Genres", "tags": "Tags", "performers": "Performers", "studios": "Studios"}
 const Gallery := preload("res://scripts/media_server_gallery.gd")
 var gallery: RefCounted = Gallery.new(self)
@@ -854,6 +855,9 @@ func action(target: int) -> bool:
 		elif target in [ACTION + 185, ACTION + 186, ACTION + 187]:
 			var interval := Reports.DEFAULT_INTERVAL_MS if target == ACTION + 187 else report_interval_ms() + (-500 if target == ACTION + 185 else 500)
 			menu.setting_changed.emit(Reports.INTERVAL_KEY, Reports.normalize_interval(interval))
+		elif target == AUTO_COVERS:
+			artwork.auto_covers = not artwork.auto_covers
+			menu.setting_changed.emit("autoplay_animated_covers", artwork.auto_covers)
 		menu.refresh(); return true
 	if target == ACTION + 180 and view in ["servers", "home"] and keyboard.is_empty():
 		settings_open = true; gallery.capture.clear(); menu._drag.clear(); menu._fling = 0.0
@@ -1192,7 +1196,7 @@ func report_interval_ms() -> int:
 	return Reports.normalize_interval(preferences.get(Reports.INTERVAL_KEY, Reports.DEFAULT_INTERVAL_MS))
 
 func _draw_settings() -> void:
-	_dialog_panel(Vector2(1.02, 0.66), Vector2(0.12, 0.015), ACTION + 181)
+	_dialog_panel(Vector2(1.02, 0.79), Vector2(0.12, -0.05), ACTION + 181)
 	var title: Label3D = menu._label(I18n.t("Settings"), Vector3(-0.325, 0.25, 0.043), 21)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; title.render_priority = 32
 	_dialog_button(ACTION + 181, "", Vector2(0.56, 0.25), Vector2(0.06, 0.06), false, "close")
@@ -1209,6 +1213,9 @@ func _draw_settings() -> void:
 	background.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; background.render_priority = 32
 	for i in 3:
 		_dialog_button(ACTION + 182 + i, I18n.t(["Off", "Still image", "Slideshow"][i]), Vector2(-0.19 + i * 0.31, -0.23), Vector2(0.29, 0.08), backdrop.mode == ["off", "static", "slideshow"][i])
+	var animated: Label3D = menu._label(I18n.t("Auto-play animated covers"), Vector3(-0.325, -0.366, 0.043), 18)
+	animated.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; animated.render_priority = 32
+	_dialog_button(AUTO_COVERS, I18n.t("On" if artwork.auto_covers else "Off"), Vector2(0.45, -0.366), Vector2(0.20, 0.08), artwork.auto_covers)
 
 func _draw_sources_button() -> void:
 	menu._button(ACTION + 19, "", Vector2(-0.59, 0.62), Vector2(0.16, 0.07), true, "menu")

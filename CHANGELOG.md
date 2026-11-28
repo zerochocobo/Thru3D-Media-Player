@@ -4,6 +4,26 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.19.1 — 2026-11-28
+
+- Add the Monochrome Film picture plugin with Standard, Film Noir and Soft styles and adjustable grain. Settings are saved per video and work with 2D-to-3D playback.
+- Choose from five original wands in Wizard’s Attic scene settings and reading settings. Reading in the attic uses the wand selected for the scene.
+- Add five paper colors for reading. For text-based ebooks, choose an image from the library to use as a subtle page background.
+- Choose a full page curl, a low page turn or no animation. Page-turn sounds can be switched on or off separately.
+- Preview a narration voice before reading aloud. Your saved cloned voices are also available for book narration.
+- Point at a static media server poster to preview a compatible animated backdrop. The poster returns when you point away. To play visible animated covers automatically, enable Auto-play Animated Covers in media server settings.
+- Recenter the book at eye level in your line of sight and see your tracked hands while reading. Hand-swipe turns are easier, a narrower margin is available, and read-aloud turns the page as the narration crosses the page break.
+- The Wizard’s Attic herb book now shows estimated bloom times and how long blooms take after watering. Koi, meteor showers and frost on the floor have updated effects.
+- Keep the selected file type as you navigate folders in the same source. Switching file types triggers fewer full-page refreshes in local, SMB and DLNA folders, Recently Played, and cloud storage.
+- The navigation bar and edit button stay in place while paged cloud listings load.
+- Zoom VR180 and 360° videos out to about 0.25×.
+- The imported scene library now holds up to 256 scenes, up from 64.
+- Fix the Add WebDAV card in the cloud storage list failing to open its setup form.
+- Show a missing file or account message when a cloud file or folder has moved or been deleted. Previously this could appear as a connection error.
+- Fix premature first-frame timeouts when the model takes longer to initialize after enabling video passthrough. The loading screen indicates that the model is being prepared.
+- Fix a case where some recoverable video output interruptions skipped the automatic reopen attempt.
+- Fix the yellow pointer dot lagging behind the ray on the zero-parallax playback controls. (Quest / OpenXR)
+
 ## 0.19.0 — 2026-11-27
 
 - Added spatial reading mode. Open compatible EPUB, MOBI, AZW3, TXT and PDF files from Books in the library. Use controllers or hand gestures to turn pages. The reading menu includes contents, search, bookmarks, read-aloud, auto page turning, day and night paper colors, type size and line spacing, and downloadable fonts. Hold Grip to move the book.

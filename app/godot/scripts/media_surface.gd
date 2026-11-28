@@ -149,7 +149,21 @@ func _center_on_view() -> void:
 		panel.global_position = view_camera.global_position
 	else:
 		panel.position = Vector3(0, 1.6, 0)
-	panel.global_position += panel.global_basis * Vector3(view_horizontal, view_vertical, -view_zoom) * SPHERE_RADIUS
+	var offset := panel.global_basis * Vector3(view_horizontal, view_vertical, -view_zoom) * SPHERE_RADIUS
+	var eyes := panel.global_position
+	panel.global_position += offset
+	_set_viewer_seat(panel.to_local(eyes) if panel.is_inside_tree() else -Vector3(view_horizontal, view_vertical, -view_zoom) * SPHERE_RADIUS)
+
+## Zoomed out past the radius, the viewer stands outside the sphere: the shaders then skip the
+## near side, so a 360 picture shows only the far bowl (nothing between the eyes and the picture).
+## Inside the sphere the seat is zero and nothing is skipped.
+func _set_viewer_seat(seat: Vector3) -> void:
+	var outside := seat if seat.length() > SPHERE_RADIUS else Vector3.ZERO
+	for target in _seat_materials():
+		if target: target.set_shader_parameter("viewer_seat", outside)
+
+func _seat_materials() -> Array:
+	return [material]
 
 ## Drag: the picture follows the controller (radians; positive yaw turns it left, pitch up).
 func turn_view(yaw: float, pitch: float) -> void:
@@ -160,7 +174,7 @@ func turn_view(yaw: float, pitch: float) -> void:
 
 ## Move the shared sphere along its depth axis using the existing zoom direction.
 func zoom_view(amount: float) -> void:
-	view_zoom = clampf(view_zoom + amount, ZOOM_LIMITS.x, ZOOM_LIMITS.y)
+	view_zoom = clampf(view_zoom + amount * ImmersiveAdjustments.zoom_rate(view_zoom), ZOOM_LIMITS.x, ZOOM_LIMITS.y)
 	if geometry != Geometry.Geometry.FLAT:
 		_center_on_view()
 

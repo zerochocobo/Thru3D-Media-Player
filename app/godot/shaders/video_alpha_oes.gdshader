@@ -45,6 +45,7 @@ void vertex() {
 }
 
 void fragment() {
+	if (near_side(media_direction)) { discard; }
 	vec2 local_uv = eye_uv(UV, media_direction);
 	vec2 source_uv = color_uv(local_uv);
 	vec3 rgb = texture(video_texture, oes_uv(source_uv)).rgb;
